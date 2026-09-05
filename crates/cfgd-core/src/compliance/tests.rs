@@ -239,15 +239,13 @@ fn collect_system_checks_maps_drifts() {
     use crate::test_helpers::MockSystemConfigurator;
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("shell").with_drift(
-            vec![SystemDrift {
-                key: "defaultShell".into(),
-                expected: "/bin/zsh".into(),
-                actual: "/bin/bash".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("shell").with_drift(
+        vec![SystemDrift {
+            key: "defaultShell".into(),
+            expected: "/bin/zsh".into(),
+            actual: "/bin/bash".into(),
+        }],
+    )));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -267,15 +265,40 @@ fn collect_system_checks_maps_drifts() {
     assert!(checks[0].detail.as_deref().unwrap().contains("/bin/bash"));
 }
 
+/// Pins `system_checks_from_diffs`' `detail` to its stored byte shape.
+/// `ComplianceCheck` is serialized into the `-o json` payload and into
+/// `compliance_snapshots.snapshot_json`, whose content hash covers `detail`
+/// (see `snapshot_content_hash`), so this string is a persisted/hashed
+/// value, not a display string: a display-side spelling like
+/// `crate::output::drift_detail`'s `want: …, have: …` must never land here,
+/// because every stored machine's system-violation snapshot would re-hash on
+/// upgrade with nothing having actually changed.
+#[test]
+fn system_checks_from_diffs_pins_the_persisted_detail_shape() {
+    let diffs = vec![SystemDiff {
+        configurator: "shell".into(),
+        outcome: SystemDiffOutcome::Drifts(vec![SystemDrift {
+            key: "defaultShell".into(),
+            expected: "/bin/zsh".into(),
+            actual: "/bin/bash".into(),
+        }]),
+    }];
+
+    let checks = system_checks_from_diffs(&diffs);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("expected /bin/zsh, actual /bin/bash")
+    );
+}
+
 #[test]
 fn collect_system_checks_compliant_when_no_drift() {
     use crate::providers::ProviderRegistry;
     use crate::test_helpers::MockSystemConfigurator;
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("shell")));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("shell")));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -393,7 +416,7 @@ fn watch_package_manager_returns_installed() {
     use crate::providers::StubPackageManager;
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("mock").with_installed(&["ripgrep", "fd"]),
     ));
 
@@ -490,6 +513,45 @@ fn export_snapshot_to_file_yaml() {
 // collect_package_checks
 // -----------------------------------------------------------------------
 
+// A snapshot that both declares packages under a manager and watches that same
+// manager used to enumerate it once per section. One context makes the two
+// sections read one listing.
+#[test]
+#[serial_test::serial(enumeration_memo)]
+fn a_declared_and_watched_manager_is_enumerated_once_per_snapshot() {
+    use crate::config::MergedProfile;
+
+    // The count is a memo-hit claim, so the memo's age ceiling is pinned out of
+    // reach and the pin is serialized — it is process-global, and a sibling test
+    // pins it to zero.
+    let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+
+    let enumerations = crate::test_helpers::measured_in_a_stable_generation(|| {
+        let mgr =
+            crate::test_helpers::MockPackageManager::new("pipx").with_installed(&["ripgrep", "fd"]);
+        let enumerations = mgr.enumeration_counter();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(mgr));
+
+        let mut profile = MergedProfile::default();
+        profile.packages.pipx = vec!["ripgrep".into(), "fd".into()];
+
+        let printer = crate::test_helpers::test_printer();
+        let state = crate::test_helpers::test_state();
+        let cx = crate::providers::PackageContext::new(&printer, &state);
+
+        collect_package_checks(&profile, &[], &registry, &cx).unwrap();
+        collect_watched_package_manager_checks("pipx", &registry, &cx).unwrap();
+
+        enumerations.load(std::sync::atomic::Ordering::SeqCst)
+    });
+
+    assert_eq!(
+        enumerations, 1,
+        "the declared and watched sections must share one enumeration"
+    );
+}
+
 #[test]
 fn collect_package_checks_installed_package_compliant() {
     use crate::config::MergedProfile;
@@ -500,7 +562,7 @@ fn collect_package_checks_installed_package_compliant() {
     profile.packages.pipx = vec!["ripgrep".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
     ));
 
@@ -528,7 +590,7 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
     profile.packages.chocolatey = vec!["Wget".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("chocolatey")
             .case_folding()
             .with_installed(&["wget"]),
@@ -546,6 +608,79 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
     );
 }
 
+/// A snapshot is what an auditor reads when nobody is at the terminal, so a
+/// package installed BELOW its declared floor cannot read `installed` there
+/// while `cfgd verify` calls the same machine drifted. The floor verdict comes
+/// from the one engine (`package_version_floor`); only the vocabulary is
+/// compliance's own — a missed floor is a Violation naming both operands, an
+/// unjudgeable one a Warning, because a check that could not run is not a
+/// finding against the host.
+#[test]
+fn a_package_below_its_declared_floor_is_a_compliance_violation() {
+    use crate::config::MergedProfile;
+    use crate::modules::ResolvedPackage;
+    use crate::providers::StubPackageManager;
+
+    let pinned = |pkg: &str, min: &str| {
+        let mut m = crate::test_helpers::make_resolved_module("dev");
+        m.packages = vec![ResolvedPackage {
+            canonical_name: pkg.to_string(),
+            resolved_name: pkg.to_string(),
+            manager: "pipx".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(min.to_string()),
+        }];
+        m
+    };
+
+    let registry = |mgr: StubPackageManager| {
+        let mut r = ProviderRegistry::new();
+        r.add_package_manager(Box::new(mgr));
+        r
+    };
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+
+    let below = registry(StubPackageManager::new("pipx").with_installed_at("ripgrep", "1.0.0"));
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        &[pinned("ripgrep", "2")],
+        &below,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].status, ComplianceStatus::Violation, "{checks:?}");
+    let detail = checks[0].detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("1.0.0") && detail.contains('2'),
+        "the detail states both operands: {detail}"
+    );
+
+    let unjudgeable =
+        registry(StubPackageManager::new("pipx").with_installed_at("ripgrep", "git-20240101"));
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        &[pinned("ripgrep", "2")],
+        &unjudgeable,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(
+        checks[0].status,
+        ComplianceStatus::Warning,
+        "an unjudgeable version is a check that could not run: {checks:?}"
+    );
+}
+
 #[test]
 fn collect_package_checks_missing_package_violation() {
     use crate::config::MergedProfile;
@@ -555,7 +690,7 @@ fn collect_package_checks_missing_package_violation() {
     profile.packages.pipx = vec!["missing-pkg".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
@@ -581,7 +716,7 @@ fn collect_package_checks_empty_desired_skips_manager() {
 
     let profile = MergedProfile::default();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["curl"]),
     ));
 
@@ -603,7 +738,7 @@ fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages()
     profile.packages.pipx = vec!["ripgrep".into(), "fd".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed_error("permission denied: /var/lib/pipx"),
     ));
 
@@ -636,7 +771,7 @@ fn watch_package_manager_query_error_emits_warning() {
     use crate::providers::StubPackageManager;
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("snap")
             .with_installed_error("snapd not responding (no such file or directory)"),
     ));
@@ -670,12 +805,10 @@ fn collect_package_checks_multiple_managers() {
     profile.packages.dnf = vec!["fd-find".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
     ));
-    registry
-        .package_managers
-        .push(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
+    registry.add_package_manager(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
@@ -755,13 +888,11 @@ fn collect_system_checks_no_drift_compliant() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -778,13 +909,11 @@ fn collect_system_checks_with_drift_violation() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -827,13 +956,11 @@ fn collect_system_checks_diff_error_warning() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: true,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![],
+        should_fail: true,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -851,16 +978,14 @@ fn collect_system_checks_multiple_drifts_multiple_violations() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![
-                ("a".into(), "1".into(), "0".into()),
-                ("b".into(), "true".into(), "false".into()),
-            ],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![
+            ("a".into(), "1".into(), "0".into()),
+            ("b".into(), "true".into(), "false".into()),
+        ],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 2);
@@ -868,6 +993,132 @@ fn collect_system_checks_multiple_drifts_multiple_violations() {
         checks
             .iter()
             .all(|c| c.status == ComplianceStatus::Violation)
+    );
+}
+
+/// A configurator that answers like [`InlineSystemMock`] and counts how many
+/// times it was asked. The count IS the claim of the two tests below: a checkin
+/// diffs the machine for its compliance snapshot and again for its drift
+/// report, and every ask is whatever the real configurator spawns.
+struct CountingConfigurator {
+    diffs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::providers::SystemConfigurator for CountingConfigurator {
+    fn name(&self) -> &str {
+        "mock"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+    fn diff(
+        &self,
+        _desired: &serde_yaml::Value,
+    ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+        self.diffs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![crate::providers::SystemDrift {
+            key: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
+        }])
+    }
+    fn apply(
+        &self,
+        _desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> crate::errors::Result<()> {
+        Ok(())
+    }
+}
+
+fn counting_registry() -> (
+    ProviderRegistry,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let diffs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut registry = ProviderRegistry::new();
+    registry.add_system_configurator(Box::new(CountingConfigurator {
+        diffs: std::sync::Arc::clone(&diffs),
+    }));
+    (registry, diffs)
+}
+
+fn counting_profile() -> crate::config::MergedProfile {
+    let mut profile = crate::config::MergedProfile::default();
+    profile.system.insert(
+        "mock".to_string(),
+        serde_yaml::Value::String("desired".into()),
+    );
+    profile
+}
+
+#[test]
+fn a_snapshot_handed_collected_diffs_asks_no_configurator_again() {
+    let (registry, diffs) = counting_registry();
+    let profile = counting_profile();
+    let dir = tempfile::tempdir().unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+
+    let collected = collect_system_diffs(&profile, &[], &registry);
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let snapshot = collect_snapshot(
+        "default",
+        &profile,
+        &[],
+        dir.path(),
+        &registry,
+        &ComplianceScope::default(),
+        &[],
+        &printer,
+        &state,
+        Some(&collected),
+    )
+    .unwrap();
+
+    assert_eq!(
+        diffs.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the snapshot re-diffed a machine it was handed the answers for"
+    );
+    // And the drift report derived from the same answers names the same drift.
+    let drifts = system_drifts(&collected);
+    assert_eq!(drifts.len(), 1);
+    assert_eq!(drifts[0].0, "mock");
+    assert_eq!(drifts[0].1.key, "net.ipv4.ip_forward");
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // The check it renders is the one the un-handed path renders.
+    let system_checks: Vec<_> = snapshot
+        .checks
+        .iter()
+        .filter(|c| c.category == "system")
+        .collect();
+    assert_eq!(system_checks.len(), 1);
+    assert_eq!(system_checks[0].status, ComplianceStatus::Violation);
+    assert_eq!(
+        system_checks[0].key.as_deref(),
+        Some("mock.net.ipv4.ip_forward")
+    );
+}
+
+#[test]
+fn collected_diffs_render_exactly_what_collecting_inside_the_snapshot_renders() {
+    let (registry, diffs) = counting_registry();
+    let profile = counting_profile();
+
+    let from_collected = system_checks_from_diffs(&collect_system_diffs(&profile, &[], &registry));
+    let inline = collect_system_checks(&profile, &[], &registry).unwrap();
+
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        serde_json::to_value(&from_collected).unwrap(),
+        serde_json::to_value(&inline).unwrap(),
+        "reusing collected diffs must not change a single stored check"
     );
 }
 
@@ -1049,6 +1300,7 @@ use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 /// An empty resolved module to fill in one resource kind per test.
 fn empty_module(name: &str) -> ResolvedModule {
     ResolvedModule {
+        dep_pulled: false,
         name: name.to_string(),
         packages: Vec::new(),
         files: Vec::new(),
@@ -1360,15 +1612,17 @@ fn collect_package_checks_includes_module_only_package() {
         canonical_name: "ripgrep".into(),
         resolved_name: "ripgrep".into(),
         manager: "pipx".into(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
@@ -1395,11 +1649,13 @@ fn collect_package_checks_skips_unavailable_manager() {
         canonical_name: "fd".into(),
         resolved_name: "fd".into(),
         manager: "brew".into(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
 
     let registry = ProviderRegistry::new();
@@ -1428,15 +1684,13 @@ fn collect_system_checks_includes_module_only_tweak() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![SystemDrift {
-                key: "vm.swappiness".into(),
-                expected: "10".into(),
-                actual: "60".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![SystemDrift {
+            key: "vm.swappiness".into(),
+            expected: "10".into(),
+            actual: "60".into(),
+        }],
+    )));
 
     let checks = collect_system_checks(&profile, &[m], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -1476,11 +1730,13 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         canonical_name: "ripgrep".into(),
         resolved_name: "ripgrep".into(),
         manager: "pipx".into(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
     m.system.insert(
         "sysctl".to_string(),
@@ -1489,18 +1745,16 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
 
     let mut registry = ProviderRegistry::new();
     registry.file_manager = Some(Box::new(MockFileManager::new()));
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![SystemDrift {
-                key: "vm.swappiness".into(),
-                expected: "10".into(),
-                actual: "60".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![SystemDrift {
+            key: "vm.swappiness".into(),
+            expected: "10".into(),
+            actual: "60".into(),
+        }],
+    )));
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
@@ -1514,6 +1768,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         &["local".to_string()],
         &printer,
         &state,
+        None,
     )
     .unwrap();
 

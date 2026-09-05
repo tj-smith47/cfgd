@@ -6,7 +6,10 @@ paths: ["crates/cfgd/src/cli/**/*.rs"]
 
 Every `cmd_*` function in `crates/cfgd/src/cli/` must appear in this
 table. The audit greps for `cmd_*` declarations and fails if any are
-missing from the table.
+missing from the table. The third column is a RATIONALE (why the payload
+exists, who reads it), never an inventory of its keys: a key list here is a
+second copy of the `with_data` shape, and it drifted (`debug` listed three
+keys while carrying six). The keys live in the builder and its golden.
 
 | Command                      | has_data_payload? | Why / Why not                                      |
 |------------------------------|-------------------|----------------------------------------------------|
@@ -14,6 +17,7 @@ missing from the table.
 | apply                        | yes               | apply-result records consumed by CI                |
 | backup_list                  | yes               | backup inventory / snapshot list queried by scripts |
 | backup_restore               | yes               | restore result records                             |
+| backup_rollback              | yes               | rollback result records, and the copies a rollback could put back |
 | backup_run                   | yes               | backup-run result records                          |
 | checkin                      | yes               | machine identity exposed to gateway                |
 | clusterconfigpolicy_validate | yes               | validation result consumed by scripts/CI           |
@@ -32,20 +36,20 @@ missing from the table.
 | daemon_service               | no                | internal service registration; no scripting consumer |
 | daemon_status                | yes               | daemon health queried by scripts                   |
 | daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
-| debug                        | no                | kubectl plugin dev-tooling                         |
-| decide                       | no                | interactive flow                                   |
+| debug                        | yes               | ephemeral-container facts consumed by debug tooling |
+| decide                       | yes               | pending-decision listing + resolution records      |
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |
 | doctor                       | no                | dev-tooling                                        |
 | enroll                       | yes               | machine identity exposed to gateway                |
-| exec                         | no                | kubectl plugin; raw command execution              |
+| exec                         | yes               | the target a wrapper script ran a command against  |
 | explain                      | no                | dev-tooling                                        |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
 | image_pack                   | yes               | packed-image artifact + digest records             |
 | init                         | no                | one-shot setup; no scripting consumer              |
-| inject                       | no                | kubectl plugin; pod mutation                       |
+| inject                       | yes               | patch result records consumed by CI                |
 | log                          | no                | already a streaming log surface                    |
 | log_show_output              | no                | streaming log display helper                       |
 | machineconfig_validate       | yes               | validation result consumed by scripts/CI           |
@@ -95,7 +99,7 @@ missing from the table.
 | source_add                   | yes               | add-result records                                 |
 | source_create                | yes               | new source metadata                                |
 | source_edit                  | yes               | post-edit validation verdict (path + valid flag)   |
-| source_list                  | yes               | source inventory                                   |
+| source_list                  | yes               | source inventory queried by scripts; instants stay ISO 8601 where the human table ages them |
 | source_override              | yes               | override records                                   |
 | source_priority              | yes               | priority change records                            |
 | source_remove                | yes               | removal records                                    |
@@ -103,13 +107,12 @@ missing from the table.
 | source_show                  | yes               | introspection                                      |
 | source_update                | yes               | update result records                              |
 | source_validate              | yes               | validation result consumed by scripts/CI           |
-| state_forget_prefix          | yes               | cleared-row record (or forgotten:false) consumed by scripts |
-| status                       | yes               | drift + last-apply queried by scripts              |
+| status                       | yes               | drift + last-apply queried by scripts; the kubectl plugin's `cmd_status` shares the name and carries the fleet view a script pages |
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |
 | upgrade                      | yes               | upgrade result records                             |
-| verify                       | no                | dev-loop only                                      |
+| verify                       | yes               | per-resource pass/fail + standing rows queried by scripts |
 | version                      | yes               | version info queried by scripts                    |
 | workflow_generate            | yes               | generated workflow metadata                        |
 
-Error-path `Doc`s also carry `with_data` with a `{"error": "...", "name": "...", ...}` payload so structured consumers see a consistent shape on failure.
+Error-path `Doc`s also carry `with_data` with a `{"error": "...", "name": "...", ...}` payload so structured consumers see a consistent shape on failure. `name` is present only when the failure has a subject; `error` is always a real kind (a `CfgdError` variant's name, or `internal` for a genuinely untyped failure) — never the empty string or the literal placeholder `"error"`. See `docs/cli-reference.md`'s "Error output" section.

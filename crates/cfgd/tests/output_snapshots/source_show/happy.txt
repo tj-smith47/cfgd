@@ -1,18 +1,18 @@
-source:team-config
+Show source:team-config
   URL                 https://github.com/team/config
   Branch              main
   Priority            100
-  Accept Recommended  true
+  Accept Recommended  yes
   Profile             team
   Sync Interval       1h
-  Auto Apply          false
+  Auto Apply          no
   Pin Version         v1.2.3
 
 State
-  Status        synced
-  Last Fetched  2026-05-14T10:00:00Z
-  Last Commit   deadbeef1234
-  Version       3.1.0
+  Status       Active
+  Last Sync    18d ago
+  Last Commit  deadbeef1234
+  Signed       yes
 
 Managed Resources
   Type     Resource 
@@ -22,17 +22,26 @@ Managed Resources
   env      EDITOR   
 
 Modules
-  ⊙ dev-tools
-  ⊙ shell
+  ◉ dev-tools
+  ◉ shell
 
 Manifest
   Name         team-config
   Description  Team-wide baseline
-  Policy Summary
-    Required
-      Count  2
-      ⊙ file: ~/.bashrc
-      ⊙ env: EDITOR
-    Recommended
-      Count  1
-      ⊙ system: shellAliases
+  Version      3.1.0
+
+Policy
+  Require Signed Commits  yes (bypassed: security.allowUnsigned)
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
+  Allowed Target Paths    ~/.config/**, ~/.bashrc
+  Encryption
+    Required Targets  secrets/**
+    Backend           sops
+    Mode              Always
+  Required
+    ◉ file: ~/.bashrc
+    ◉ env: EDITOR
+  Recommended
+    ◉ system: shellAliases

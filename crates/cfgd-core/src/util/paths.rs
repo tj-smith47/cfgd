@@ -56,13 +56,22 @@ where
 /// it as the worker's first statement, so blocking dispatch sites cannot
 /// forget the guard. In production the override is always `None`; the wrapper
 /// costs one thread-local read and is otherwise transparent.
+///
+/// The caller's `tracing` dispatcher rides along the same way: the closure is
+/// a continuation of the caller's work, so its events belong on the caller's
+/// subscriber. With no scoped subscriber the captured dispatcher IS the global
+/// default and installing it changes nothing; with one (a caller tracing a
+/// bounded operation), the blocking half's events land beside the async
+/// half's instead of silently falling through to the global default.
 pub fn spawn_blocking_with_test_home<F, R>(f: F) -> tokio::task::JoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     let test_home = test_home_override();
+    let dispatcher = tracing::dispatcher::get_default(|d| d.clone());
     tokio::task::spawn_blocking(move || {
+        let _dispatch = tracing::dispatcher::set_default(&dispatcher);
         let _guard = test_home.as_deref().map(with_test_home_guard);
         f()
     })
@@ -145,7 +154,7 @@ pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
 ///      data shares one location. An existing `~/.config/cfgd` (from a build
 ///      that used it) is always preferred and read in place so an upgrade never
 ///      strands config; the CLI offers a one-time prompt to move it or pin
-///      `XDG_CONFIG_HOME` (see [`resolve_macos_config_dir`] and
+///      `XDG_CONFIG_HOME` (see `resolve_macos_config_dir` and
 ///      [`macos_legacy_config_migration`]).
 ///    - Windows: `%APPDATA%\cfgd`
 ///
@@ -340,6 +349,20 @@ pub fn move_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     }
 }
 
+/// Recreate `link` — a symlink inside a tree being copied — at `at`.
+///
+/// The ONE recreate both preserving copies take, and the ONE wording of a host
+/// that will not make links: the refusal names the link inside the SOURCE tree,
+/// the entry an operator can see and act on, rather than the counterpart under a
+/// copy cfgd named. Degrading to a skip would drop the link silently, which is
+/// exactly the neither-generation loss a preserving copy exists to prevent;
+/// [`crate::create_symlink`] words the privilege fix already.
+fn recreate_link(link: &std::path::Path, at: &std::path::Path) -> std::io::Result<()> {
+    let dest = std::fs::read_link(link)?;
+    super::fs_perms::create_symlink(&dest, at)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", link.posix())))
+}
+
 /// Recursively copy a directory tree, recreating symlinks as symlinks (unlike
 /// [`copy_dir_recursive`], which skips them). Used only by [`move_dir`]'s
 /// cross-filesystem fallback, where the whole tree is owned by the mover and
@@ -354,7 +377,7 @@ fn copy_tree_preserving_symlinks(
         let file_type = entry.file_type()?;
         let to = dst.join(entry.file_name());
         if file_type.is_symlink() {
-            crate::create_symlink(&std::fs::read_link(entry.path())?, &to)?;
+            recreate_link(&entry.path(), &to)?;
         } else if file_type.is_dir() {
             copy_tree_preserving_symlinks(&entry.path(), &to)?;
         } else {
@@ -555,10 +578,8 @@ pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::P
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
     }
-    let base =
-        directories::BaseDirs::new().ok_or(crate::errors::StateError::DirectoryNotWritable {
-            path: std::path::PathBuf::from("~/.cache/cfgd"),
-        })?;
+    let base = directories::BaseDirs::new()
+        .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" })?;
     Ok(base.cache_dir().join("cfgd"))
 }
 
@@ -649,6 +670,19 @@ pub fn resolve_cache_dir(
     }
 }
 
+/// The module cache root under a resolved cache dir: `<cache>/modules`.
+///
+/// The ONE composition of [`resolve_cache_dir`] plus `MODULE_CACHE_SEGMENT`;
+/// every caller resolving a module cache root from an override and a scope
+/// reaches this instead of re-joining the segment by hand, or a re-rooted
+/// cache dir (`--cache-dir`) and the module cache it should carry drift apart.
+pub fn module_cache_root(
+    cache_over: Option<&std::path::Path>,
+    scope: Scope,
+) -> crate::errors::Result<std::path::PathBuf> {
+    Ok(resolve_cache_dir(cache_over, scope)?.join(MODULE_CACHE_SEGMENT))
+}
+
 /// Resolve the runtime directory, applying an explicit override when present.
 ///
 /// When `None`, falls through to [`default_runtime_dir_for`] for the given
@@ -710,11 +744,41 @@ impl ResolvedDirs {
 
     /// The module cache directory: `<cache>/modules`.
     pub fn module_cache_dir(&self) -> std::path::PathBuf {
-        self.cache.join("modules")
+        self.cache.join(MODULE_CACHE_SEGMENT)
     }
 }
 
+/// The segment the module cache hangs off any cache root by.
+///
+/// Named once because two resolvers reach the same directory —
+/// [`ResolvedDirs::module_cache_dir`] from an already-resolved root and
+/// [`crate::modules::default_module_cache_dir`] from the per-user one — and a
+/// caller of either must land where the other writes.
+pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
+
 /// Expand `~` and `~/...` paths to the user's home directory.
+/// Fold every absolute path under the home directory in `text` to its `~/`
+/// spelling — the DISPLAY inverse of [`expand_tilde`], for a subject a person
+/// reads (`write ~/.cfgd.env`, `deploy ~/.config/nvim/init.lua`).
+///
+/// Display-only, exactly as `short_commit` is: a resource id, a stored
+/// description and every `-o json` field keep the absolute path, so nothing
+/// structured moves. One report used to spell one file two ways — the row
+/// absolute, the `source ~/.cfgd.env` hint beside it folded — and the absolute
+/// form is what pushed a two-target deploy row past the room its own elision
+/// respects. Folded on the POSIX spelling, so a Windows home folds too.
+pub fn fold_home_in_text(text: &str) -> String {
+    let Some(home) = home_dir_var() else {
+        return text.to_string();
+    };
+    let home = to_posix_string(&home);
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&format!("{home}/"), "~/")
+}
+
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
     let home = home_dir_var();
@@ -756,6 +820,76 @@ pub fn expand_env_value_tilde(value: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(":")
+}
+
+/// The character separating entries inside a `PATH` value on this host.
+///
+/// `std` exposes no constant for it (`env::split_paths` hides the split), and a
+/// generated env file's `PATH` line is folded in one place and rendered in
+/// another — two spellings of this character would concatenate two lists into
+/// one unusable entry.
+pub const PATH_LIST_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
+
+/// Whether a declared `PATH` segment references the `PATH` the shell already
+/// has, in any dialect's spelling. A declaration is authored once and rendered
+/// into every dialect, so `$PATH` in a value that ends up in a PowerShell file
+/// has to become `$env:PATH` there rather than a literal nobody set.
+pub fn is_inherited_path_ref(segment: &str) -> bool {
+    matches!(
+        segment.trim().to_ascii_uppercase().as_str(),
+        "$PATH" | "${PATH}" | "$ENV:PATH" | "%PATH%"
+    )
+}
+
+/// Fold one PATH entry to the single form two spellings of the same directory
+/// compare equal in: `$HOME` / `${HOME}` / `~` resolved to `home`, separators
+/// folded to `/`, and any trailing `/` dropped.
+///
+/// Comparison only — never render the result. A generated env file is written
+/// by two producers (cfgd's own bootstrapped-manager line and whatever the
+/// merged `PATH` env var declares), and without one key they publish the same
+/// directory twice under two spellings.
+pub fn normalize_path_entry(entry: &str, home: &std::path::Path) -> String {
+    let home = to_posix_string(home);
+    let home = home.trim_end_matches('/');
+    let entry = posixify_text(entry.trim());
+    // A prefix match must end at a segment boundary, or `$HOMEBREW_PREFIX`
+    // resolves as `$HOME` followed by a `BREW_PREFIX` remainder.
+    let expanded = ["${HOME}", "$HOME", "~"]
+        .iter()
+        .find_map(|token| {
+            let rest = entry.strip_prefix(token)?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| format!("{home}{rest}"))
+        })
+        .unwrap_or_else(|| entry.into_owned());
+    fold_path_case(expanded.trim_end_matches('/').to_string())
+}
+
+/// Fold a normalized `PATH` entry to the case two spellings of the same
+/// directory compare equal in: identity on every host but Windows, where
+/// `fold_path_case_windows` runs.
+// A plain code span, not a link — the function is compiled out under a
+// normal, non-Windows doc build.
+fn fold_path_case(s: String) -> String {
+    #[cfg(windows)]
+    {
+        fold_path_case_windows(s)
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
+/// The WINDOWS arm of [`fold_path_case`], split out and compiled under test on
+/// every host (not just Windows) so a test can assert `C:\Tools` and
+/// `c:\tools` fold to the same string — Windows paths are case-insensitive,
+/// so two spellings of one directory that reach `normalize_path_entry`
+/// differing only in case must compare equal or a `PATH` fold reads the same
+/// directory as two.
+#[cfg(any(windows, test))]
+fn fold_path_case_windows(s: String) -> String {
+    s.to_ascii_lowercase()
 }
 
 /// Resolve the user's home directory, consulting the test override first.
@@ -826,6 +960,38 @@ pub fn resolve_relative_path(
         validate_no_traversal(path)?;
         Ok(base.join(path))
     }
+}
+
+/// The ONE resolution of a `spec.files[].source` into the file the planner
+/// will actually read, and the reason the plan action and every surface that
+/// DESCRIBES that action name the same bytes.
+///
+/// `resolve_relative_path` validates the input; a resolved path that EXISTS is
+/// then checked for containment in `config_dir`, because a symlink inside the
+/// config directory can point anywhere and only canonicalization sees it.
+/// Refused resolutions answer `None` — a caller that must say why maps it onto
+/// its own error type (the file manager renders `PathTraversal`).
+///
+/// It lives here rather than in the file manager because `cfgd decide` renders
+/// what a withheld `files.*` decision would put on the machine, and that row
+/// has to read the same file the action would write. Two copies of the rule
+/// meant a source-delivered or symlinked path could be described by one and
+/// refused by the other. **Every managed file's source is resolved against the
+/// LOCAL config directory, whatever source delivered the entry** — nothing in
+/// composition rebases a source-delivered `source:` onto its own checkout — so
+/// there is exactly one rule here rather than a per-origin split.
+pub fn resolve_managed_file_source(
+    source: &str,
+    config_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if source.is_empty() {
+        return None;
+    }
+    let resolved = resolve_relative_path(&std::path::PathBuf::from(source), config_dir).ok()?;
+    if resolved.exists() && validate_path_within(&resolved, config_dir).is_err() {
+        return None;
+    }
+    Some(resolved)
 }
 
 /// Validate that a resolved path does not escape a root directory.
@@ -985,37 +1151,84 @@ pub fn dir_size(path: &std::path::Path) -> std::result::Result<u64, std::io::Err
 
 /// Recursively copy a directory from source to target.
 ///
-/// Skips symlinks to prevent symlink-following attacks and infinite loops.
+/// Skips symlinks to prevent symlink-following attacks and infinite loops. Use
+/// [`copy_dir_recursive_preserving_symlinks`] where the copy must be able to
+/// put the tree back exactly as it was.
 /// `fs::copy` already carries file modes across; each directory's mode is
 /// applied too (Unix), so a `0700` tree does not land as a `0755` copy that
 /// exposes what the original protected. Windows has no mode bits, so the copy
 /// inherits the destination's inherited ACL there.
+///
+/// Skipping symlinks on the READ side and creating the destination itself make
+/// this correct ONLY where cfgd owns the destination. Writing into live user
+/// data — a restore overlay — needs a walker that stats each DESTINATION entry
+/// unfollowed, or a symlink already standing there redirects the write.
 pub fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
+    copy_dir_tree(src, dst, SymlinkPolicy::Skip)
+}
+
+/// The same copy, with every symlink RECREATED at its counterpart name instead
+/// of skipped — its target string written back verbatim, relative or absolute,
+/// and never followed.
+///
+/// For a copy that is a REVERSIBILITY guarantee rather than a snapshot: the
+/// sidecar [`crate::reconciler::backup_file`] leaves beside a directory it
+/// displaces, and the staging `backup restore` and `backup rollback` publish
+/// from. A link the operator made inside a directory source is part of what
+/// that copy promises to put back, and one it drops is one the overlay can
+/// never replace — an overlay adds and replaces but never deletes, so the
+/// source lands as neither generation. Recreating a link is not following one:
+/// nothing is read or written through it, so the traversal stays inside the
+/// source exactly as the skip did.
+///
+/// A snapshot keeps the skip on purpose — see [`copy_dir_recursive`].
+pub fn copy_dir_recursive_preserving_symlinks(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
+    copy_dir_tree(src, dst, SymlinkPolicy::Recreate)
+}
+
+/// What a tree copy does with a symlink it meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymlinkPolicy {
+    Skip,
+    Recreate,
+}
+
+fn copy_dir_tree(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    links: SymlinkPolicy,
 ) -> std::result::Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
     // Resolved once, up front: a lexically disjoint `dst` can still land inside
     // `src` through a symlinked ancestor, and the walk would then find its own
     // output and descend into it forever.
     let dst_root = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
-    copy_dir_into(src, dst, &dst_root)
+    copy_dir_into(src, dst, &dst_root, links)
 }
 
 fn copy_dir_into(
     src: &std::path::Path,
     dst: &std::path::Path,
     dst_root: &std::path::Path,
+    links: SymlinkPolicy,
 ) -> std::result::Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        // Skip symlinks — prevents following links outside the source tree
+        let dst_path = dst.join(entry.file_name());
         if file_type.is_symlink() {
+            if links == SymlinkPolicy::Recreate {
+                recreate_link(&entry.path(), &dst_path)?;
+            }
             continue;
         }
-        let dst_path = dst.join(entry.file_name());
         if file_type.is_dir() {
             let entry_path = entry.path();
             if entry_path
@@ -1024,7 +1237,7 @@ fn copy_dir_into(
             {
                 continue;
             }
-            copy_dir_into(&entry_path, &dst_path, dst_root)?;
+            copy_dir_into(&entry_path, &dst_path, dst_root, links)?;
         } else {
             std::fs::copy(entry.path(), &dst_path)?;
         }
@@ -1168,14 +1381,18 @@ pub fn normalize_cfgd_version<'a>(s: &'a str, cfgd_version: &str) -> std::borrow
 /// The renderer formats durations as `{:.1}s`, so the span is always digits,
 /// one dot, exactly one digit, `s`, `)`. Anything else in parentheses — a
 /// package version, an exit code, a byte size — is left alone.
+///
+/// ` (<0.1s)` — the renderer's below-the-resolution floor — is the same slot
+/// and normalizes to the same placeholder: whether a given action lands under
+/// the floor is a property of the host, not of the render being pinned.
 pub fn normalize_snapshot_durations(raw: &str) -> String {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(raw.len());
     let mut i = 0;
     while i < chars.len() {
         match duration_span(&chars[i..]) {
-            Some(len) => {
-                out.push_str(" (XXs)");
+            Some((len, wall)) => {
+                out.push_str(if wall { " (XXs wall)" } else { " (XXs)" });
                 i += len;
             }
             None => {
@@ -1187,25 +1404,38 @@ pub fn normalize_snapshot_durations(raw: &str) -> String {
     out
 }
 
-/// Length in chars of a ` (N.Ns)` suffix opening at `window`, if there is one.
-fn duration_span(window: &[char]) -> Option<usize> {
+/// Length in chars of a ` (N.Ns)` or ` (<0.1s)` suffix opening at `window`, if
+/// there is one, and whether it is the wall-clock form (` (N.Ns wall)`) — a
+/// golden keeps the word, so the vocabulary of a run's total stays pinned.
+fn duration_span(window: &[char]) -> Option<(usize, bool)> {
     if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
         return None;
     }
-    let mut i = 2;
+    // The floor spelling differs from a measurement only by its leading `<`,
+    // and the digits behind it parse exactly as any other duration's do.
+    let mut i = if window.get(2) == Some(&'<') { 3 } else { 2 };
+    let digits_at = i;
     while window.get(i).is_some_and(char::is_ascii_digit) {
         i += 1;
     }
-    if i == 2 {
+    if i == digits_at {
         return None;
     }
     if window.get(i) != Some(&'.') || !window.get(i + 1).is_some_and(char::is_ascii_digit) {
         return None;
     }
-    if window.get(i + 2) != Some(&'s') || window.get(i + 3) != Some(&')') {
+    if window.get(i + 2) != Some(&'s') {
         return None;
     }
-    Some(i + 4)
+    let wall = [' ', 'w', 'a', 'l', 'l']
+        .iter()
+        .enumerate()
+        .all(|(k, c)| window.get(i + 3 + k) == Some(c));
+    let close = if wall { i + 8 } else { i + 3 };
+    if window.get(close) != Some(&')') {
+        return None;
+    }
+    Some((close + 1, wall))
 }
 
 /// Composite normalizer for snapshot tests: CRLF→LF, fold `\`→`/`, then
@@ -1218,10 +1448,25 @@ pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]
     let lf = normalize_line_endings(captured);
     let posix = posixify_text(&lf);
     let os = posixify_os_error_text(&posix);
-    let mut subs: Vec<(String, &str)> = paths
-        .iter()
-        .map(|(p, label)| (to_posix_string(p), *label))
-        .collect();
+    // Each path in BOTH spellings a report can render it in: the absolute one,
+    // and the `~/`-folded one every display slot goes through. A temp directory
+    // lives under the home directory on Windows, so the fold rewrote the very
+    // prefix the substitution was looking for and three goldens diverged there
+    // alone.
+    //
+    // Both spellings land on the same label, so a golden cannot say which one
+    // a slot rendered: that claim belongs to
+    // `no_report_slot_spells_the_home_directory_absolutely`, which reads the
+    // display slots unnormalized.
+    let mut subs: Vec<(String, &str)> = Vec::with_capacity(paths.len() * 2);
+    for (path, label) in paths {
+        let posix_path = to_posix_string(path);
+        let folded = fold_home_in_text(&posix_path);
+        if folded != posix_path {
+            subs.push((folded, *label));
+        }
+        subs.push((posix_path, *label));
+    }
     subs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
     let mut out = os.into_owned();
     for (p, label) in subs {
@@ -1289,7 +1534,7 @@ pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
         }
         // Walk back from `idx` to the last "<sep>: " — that's the boundary
         // between the error prefix (e.g. "io error on <PATH>: ") and the
-        // OS-native prose we collapse.
+        // OS-native prose being collapsed.
         let prefix = &rest[..idx];
         let cut = prefix.rfind(": ").map(|p| p + 2).unwrap_or(idx);
         out.push_str(&prefix[..cut]);

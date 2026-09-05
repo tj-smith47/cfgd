@@ -1319,12 +1319,14 @@ fn evaluate_patch_surfaces_an_unreadable_target() {
 /// Resolved module rooted at `dir` declaring one env var.
 fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
+        dep_pulled: false,
         name: "hosts-mod".to_string(),
         packages: Vec::new(),
         files: Vec::new(),
         env: vec![crate::config::EnvVar {
             name: "BUILD_HOST".to_string(),
             value: "build.internal".to_string(),
+            platforms: vec![],
         }],
         aliases: Vec::new(),
         system: std::collections::BTreeMap::new(),

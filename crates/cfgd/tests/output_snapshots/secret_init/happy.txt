@@ -2,4 +2,6 @@ Secrets Initialized
   Age key     <HOME>/.config/cfgd/age-key.txt
   .sops.yaml  <CONFIG_DIR>/.sops.yaml
 
-✓ Secrets setup complete — files can now be encrypted with 'cfgd secret encrypt'
+✓ Set up secrets
+
+→ Encrypt a file with `cfgd secret encrypt <file>`

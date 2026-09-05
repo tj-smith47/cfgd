@@ -75,6 +75,11 @@ pub struct CachedSource {
     /// Resolved tag name when the source was loaded with a `pinVersion` semver
     /// range or exact tag. `None` for HEAD-tracking sources and commit-SHA pins.
     pub resolved_ref: Option<String>,
+    /// Whether the checked-out HEAD carries a signature cfgd would accept, as
+    /// answered by [`head_signature_accepted`] at load time. Recorded whether
+    /// or not the source DEMANDS signed commits: a subscriber deciding whether
+    /// to start demanding them needs to know what the source already does.
+    pub head_signed: Option<bool>,
 }
 
 /// Manager for multiple config sources — handles fetching, caching, version checking.
@@ -83,6 +88,79 @@ pub struct SourceManager {
     sources: HashMap<String, CachedSource>,
     /// When true, skip signature verification even if a source requires it.
     allow_unsigned: bool,
+    /// Every advisory this manager has emitted, in the order it emitted them.
+    /// Recorded as well as printed so a caller that REUSES a composition can
+    /// re-state a condition that still holds without re-composing to hear it
+    /// again — a persistent warning that stops appearing reads as resolved. See
+    /// [`Self::take_advisories`].
+    advisories: Vec<SourceAdvisory>,
+    /// Whether a cache-freshness skip is announced as it is recorded. See
+    /// [`Self::set_announce_cache_skips`].
+    announce_cache_skips: bool,
+}
+
+/// One thing a composition said out loud, carried WITH the channel it was said
+/// on.
+///
+/// A re-stating caller must not pick the channel: a bypass announced through
+/// `alert` (which survives `Verbosity::Quiet` and structured output) and
+/// re-stated through `status_simple(Role::Warn, …)` is filtered away on exactly
+/// the runs it was written for — the daemon's quiet ticks — so the operator
+/// hears it once and then hears an unchanged machine go silent. The channel
+/// travels with the sentence so the first statement and every restatement are
+/// the same statement.
+#[derive(Clone, Debug)]
+pub(crate) struct SourceAdvisory {
+    message: String,
+    channel: AdvisoryChannel,
+}
+
+/// The two channels a source advisory is ever said on.
+#[derive(Clone, Copy, Debug)]
+enum AdvisoryChannel {
+    /// An ordinary warning, correctly suppressed at `Verbosity::Quiet` and
+    /// under `-o json`: the source was skipped and the composition went on.
+    Status,
+    /// Always visible, stderr only: the run acted against a security policy the
+    /// user declared.
+    Alert,
+}
+
+impl std::fmt::Display for SourceAdvisory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl SourceAdvisory {
+    /// A skip advisory built without a composition, for a test that drives a
+    /// holder's restatement rather than the composition that produced one.
+    #[cfg(test)]
+    pub(crate) fn skipped(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            channel: AdvisoryChannel::Status,
+        }
+    }
+
+    /// A bypass advisory built without a composition, for a test that drives a
+    /// holder's restatement of the ALERT channel — the one whose whole claim is
+    /// that it survives a quiet daemon tick.
+    #[cfg(test)]
+    pub(crate) fn bypassed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            channel: AdvisoryChannel::Alert,
+        }
+    }
+
+    /// Say it again, on the channel it was first said on.
+    pub(crate) fn restate(&self, printer: &Printer) {
+        match self.channel {
+            AdvisoryChannel::Status => printer.status_simple(Role::Warn, &self.message),
+            AdvisoryChannel::Alert => printer.alert(&self.message),
+        }
+    }
 }
 
 impl SourceManager {
@@ -92,12 +170,74 @@ impl SourceManager {
             cache_dir: cache_dir.to_path_buf(),
             sources: HashMap::new(),
             allow_unsigned: false,
+            advisories: Vec::new(),
+            announce_cache_skips: true,
         }
     }
 
     /// Set whether to allow unsigned source content (bypasses signature verification).
     pub fn set_allow_unsigned(&mut self, allow: bool) {
         self.allow_unsigned = allow;
+    }
+
+    /// Set whether a cache-freshness skip is ANNOUNCED as it is recorded.
+    ///
+    /// Both such advisories end in "run `cfgd sync`", so the verb that IS the
+    /// fetch prints a remedy already in progress. It stays RECORDED either
+    /// way: a caller that restates advisories later still sees it.
+    pub fn set_announce_cache_skips(&mut self, announce: bool) {
+        self.announce_cache_skips = announce;
+    }
+
+    /// Say — and remember — that a source was skipped and the composition went
+    /// on without it.
+    ///
+    /// The ONE emission point for a skip advisory, so the sentence a caller
+    /// re-states later is byte-identical to the one it first printed rather than
+    /// a second copy that can drift from it.
+    fn skip_advisory(&mut self, printer: &Printer, message: String) {
+        let advisory = SourceAdvisory {
+            message,
+            channel: AdvisoryChannel::Status,
+        };
+        if self.announce_cache_skips {
+            advisory.restate(printer);
+        }
+        self.advisories.push(advisory);
+    }
+
+    /// Say — and remember — that a policy this source declared was BYPASSED and
+    /// the composition went on anyway.
+    ///
+    /// `alert`, not `skip_advisory`'s `status_simple(Role::Warn, …)`: a bypass
+    /// is a statement about what the run actually did with the user's own
+    /// security setting, and every path that loads a source hands `load_source`
+    /// a `Verbosity::Quiet` printer (`cfgd sync`, `cfgd compliance`, the daemon)
+    /// under which a Warn status is filtered away. `alert` survives Quiet AND
+    /// structured output, which is the whole reason it exists. It is remembered
+    /// for the same reason a skip is: a holder that caches a composition across
+    /// ticks must re-state it, or a bypass that goes quiet reads as one that
+    /// stopped happening. `SourceAdvisory` carries that choice with the
+    /// sentence, so a re-stating caller cannot undo it.
+    fn bypass_advisory(&mut self, printer: &Printer, message: String) {
+        let advisory = SourceAdvisory {
+            message,
+            channel: AdvisoryChannel::Alert,
+        };
+        advisory.restate(printer);
+        self.advisories.push(advisory);
+    }
+
+    /// Take the advisories emitted since the last take.
+    ///
+    /// For a caller that holds a composition across more than one unit of work:
+    /// the conditions these describe (a source never synced, a checkout cloned
+    /// from an origin the spec no longer names, a signature check bypassed)
+    /// persist until someone runs `cfgd sync` or drops `--allow-unsigned`, so a
+    /// holder re-states them rather than letting them fall silent behind a cache
+    /// hit.
+    pub(crate) fn take_advisories(&mut self) -> Vec<SourceAdvisory> {
+        std::mem::take(&mut self.advisories)
     }
 
     /// Default source cache directory: `<cache-root>/sources` under the single
@@ -128,24 +268,38 @@ impl SourceManager {
     /// returned when sources were specified but every one of them failed.
     pub fn load_sources(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
         let mut loaded = 0;
-        for spec in sources {
-            match self.load_source(spec, printer) {
-                Ok(()) => loaded += 1,
-                Err(e) if spec.sync.required => {
-                    return Err(SourceError::FetchFailed {
-                        name: spec.name.clone(),
-                        message: format!("required source failed to load: {e}"),
+        // Each source is a clone or a fetch over the network, which is the
+        // longest wait any composing command takes and the one that used to
+        // happen with nothing on screen. Narrated here rather than at the call
+        // sites, so every command that composes gets it from one place.
+        // SILENT on both arms: `load_source` already writes the permanent
+        // failure lines for the source it could not fetch (`✗ Cloning source
+        // '<name>'` plus `✗ Failed to clone source '<name>'`), so a settled
+        // `Fail` here would be the same failure a third time — and `Role::Fail`
+        // survives `Verbosity::Quiet`, so it would land beside a `-o json`
+        // payload too.
+        printer.narrate_silent("Refreshing sources", |sp| -> Result<()> {
+            for spec in sources {
+                sp.set_message(format!("Refreshing source:{}", spec.name));
+                match self.load_source(spec, printer) {
+                    Ok(()) => loaded += 1,
+                    Err(e) if spec.sync.required => {
+                        return Err(SourceError::FetchFailed {
+                            name: spec.name.clone(),
+                            message: format!("required source failed to load: {e}"),
+                        }
+                        .into());
                     }
-                    .into());
-                }
-                Err(e) => {
-                    printer.status_simple(
-                        Role::Warn,
-                        format!("Failed to load source '{}': {}", spec.name, e),
-                    );
+                    Err(e) => {
+                        printer.status_simple(
+                            Role::Warn,
+                            format!("Failed to load source '{}': {}", spec.name, e),
+                        );
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
         if !sources.is_empty() && loaded == 0 {
             return Err(SourceError::GitError {
                 name: "all".to_string(),
@@ -169,24 +323,42 @@ impl SourceManager {
     /// signature fails still surfaces as an error (a broken desired-state config
     /// must be reported, not silently dropped).
     pub fn load_sources_cached(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
-        for spec in sources {
-            self.load_source_cached(spec, printer)?;
-        }
-        Ok(())
+        // No network here, but a cached checkout is still parsed, its manifest
+        // read and its signature verified per source — narrated for the same
+        // reason the refreshing loop is, and with the label that says which of
+        // the two a run is actually doing. Silent on both arms for the same
+        // reason `load_sources` is: `load_source_cached` words its own failure.
+        printer.narrate_silent("Loading cached sources", |sp| -> Result<()> {
+            for spec in sources {
+                sp.set_message(format!("Loading source:{}", spec.name));
+                self.load_source_cached(spec, printer)?;
+            }
+            Ok(())
+        })
     }
 
     /// Load a single source from its on-disk cache without fetching. A
     /// never-synced source (no cache dir) is warned about and skipped; a cached
-    /// source with a broken manifest or failed signature is a hard error.
+    /// source with a broken manifest or failed signature is a hard error, and
+    /// that refusal un-composes the source: nothing a subscription's demand
+    /// refuses stays in the map [`SourceManager::get`] answers from, the same
+    /// rule the fetch path holds when it rolls a refused fetch back to the
+    /// accepted commit. The checkout itself stays on disk for `cfgd sync` to
+    /// repair.
     pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         validate_source_name(&spec.name)?;
 
         let source_dir = self.cache_dir.join(&spec.name);
+        // The checkout DIRECTORY is an input of its own: a source that has never
+        // synced contributes nothing, and the arrival of its cache is what
+        // changes that answer — a fact no manifest read can report, because on
+        // this arm there is no manifest to read.
+        crate::record_config_input(&source_dir);
         if !source_dir.exists() {
-            printer.status_simple(
-                Role::Warn,
+            self.skip_advisory(
+                printer,
                 format!(
-                    "Source '{}' has no local cache yet — run 'cfgd sync' to fetch it; using local state only",
+                    "Source '{}' has no local cache yet — run `cfgd sync` to fetch it; using local state only",
                     spec.name
                 ),
             );
@@ -203,23 +375,22 @@ impl SourceManager {
         if Self::cached_recorded_origin(&source_dir)
             .is_some_and(|recorded| recorded != spec.origin.url)
         {
-            printer.status_simple(
-                Role::Warn,
+            self.skip_advisory(
+                printer,
                 format!(
-                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; using local state only",
+                    "Source '{}': cached checkout was cloned from a different origin, run `cfgd sync` to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name
                 ),
             );
             return Ok(());
         }
 
-        let manifest = self.parse_manifest(&spec.name, &source_dir)?;
-
         // A cached source still gets its signature verified — a tampered cache
         // must not silently feed a read path.
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        let manifest = self.judge_cached_head(spec, &source_dir, printer)?;
 
         let last_commit = Self::head_commit(&source_dir);
+        let head_signed = head_signature_accepted(&spec.name, &source_dir);
 
         let cached = CachedSource {
             name: spec.name.clone(),
@@ -230,6 +401,7 @@ impl SourceManager {
             last_commit,
             last_fetched: None,
             resolved_ref: None,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -271,13 +443,63 @@ impl SourceManager {
                 name: spec.name.clone(),
                 message: format!(
                     "'{}' is a local path or file:// URL, which is not allowed as a source \
-                     origin — pass a git URL (e.g. https://github.com/acme/config.git)",
+                     origin (pass a git URL, e.g. https://github.com/acme/config.git)",
                     spec.origin.url
                 ),
             }
             .into());
         }
 
+        // The cache root is a precondition of everything below, the lock file
+        // included, so it is created here with the wording a caller who cannot
+        // create it needs — before the lock's own silent `create_dir_all` would
+        // report the same failure as a bare io error. A root cfgd creates is
+        // owner-only; one the operator already made keeps the mode they gave
+        // it, because a cache directory can be deliberately shared and
+        // re-tightening it on every load would take that choice away.
+        //
+        // A load that then FAILS leaves the root and its lock file standing.
+        // Taking them back would mean deleting a lock file this process holds,
+        // which is precisely what strands a contender already blocked on it, so
+        // an empty cache root and a zero-byte `cache.lock` are the deliberate
+        // residue: the next load reuses both, and neither says anything untrue
+        // about the machine.
+        let created_cache_root = !self.cache_dir.exists();
+        std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
+            message: format!("cannot create cache dir: {e}"),
+        })?;
+        if created_cache_root {
+            let _ = crate::set_file_permissions(&self.cache_dir, 0o700);
+        }
+
+        self.load_source_locked(spec, printer)
+    }
+
+    /// Take the source-cache lock and run the load under it.
+    fn load_source_locked(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
+        // Everything from here to the end of the load is a check-then-act over
+        // a directory two cfgd processes can be told to own: the origin check
+        // reads `.git/config`, the discard removes the tree, and the clone or
+        // fetch rebuilds it. Unserialized, a second process's fetch resolves
+        // `origin` after this one re-pointed it, or clones into a tree this one
+        // is still removing.
+        //
+        // The notice goes through `alert`, not `status_simple`: the wait is
+        // unbounded and can cover another process's network clone, and the
+        // command most likely to contend (`cfgd sync`) hands `load_source` a
+        // Quiet printer that swallows every role but `Fail`. An advisory about
+        // what this run is actually doing has to survive that, so it takes the
+        // always-visible stderr channel `alert` and `deprecation` share.
+        let _cache_lock = crate::acquire_source_lock(&self.cache_dir, || {
+            printer.alert(cache_wait_notice(&spec.name));
+        })?;
+
+        self.load_source_guarded(spec, printer)
+    }
+
+    /// The body of [`Self::load_source`] that runs under the source-cache lock,
+    /// from the origin check through the completed clone or fetch.
+    fn load_source_guarded(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         let source_dir = self.cache_dir.join(&spec.name);
 
         // The cache is keyed by the source NAME alone, so nothing else ties an
@@ -295,13 +517,18 @@ impl SourceManager {
             && Self::cached_recorded_origin(&source_dir)
                 .is_none_or(|recorded| recorded != spec.origin.url)
         {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Source '{}': cached checkout was cloned from a different origin — discarding it and re-cloning from '{}'",
-                    spec.name, spec.origin.url
-                ),
-            );
+            printer
+                .status(
+                    Role::Warn,
+                    format!(
+                        "Source '{}': cached checkout was cloned from a different origin",
+                        spec.name
+                    ),
+                )
+                .detail(format!(
+                    "discarding it and re-cloning from '{}'",
+                    spec.origin.url
+                ));
             std::fs::remove_dir_all(&source_dir).map_err(|e| SourceError::CacheError {
                 message: format!(
                     "failed to discard stale cache for source '{}': {e}",
@@ -338,30 +565,67 @@ impl SourceManager {
                             spec.name, pin
                         ),
                     );
-                    return self.load_from_existing_cache(spec, &source_dir);
+                    return self.load_from_existing_cache(spec, &source_dir, printer);
                 }
                 Err(e) => return Err(e),
             },
             None => None,
         };
 
+        // Verify-then-publish. The fetch below moves the working checkout onto
+        // the fetched head before anything can judge it — half the demand
+        // (`constraints.requireSignedCommits`) lives in the manifest inside
+        // that tree, so it cannot be read until the tree is there — which means
+        // the commit that WAS accepted has to be read first and put back when
+        // the new one is refused. Left published, a single refused fetch
+        // strands the cache on the very commit it rejected, and every later
+        // read of that source fails on it forever: the read path verifies the
+        // cached head too, and `cfgd sync` composes from the cache before it
+        // fetches, so the one command that could replace the commit is the one
+        // the commit locks out.
+        let accepted_head = Self::head_commit(&source_dir);
+
+        let published = self.publish_fetched_source(spec, &source_dir, pinned_ref, printer);
+        if published.is_err() {
+            self.restore_accepted_checkout(
+                &spec.name,
+                &source_dir,
+                accepted_head.as_deref(),
+                printer,
+            );
+        }
+        published
+    }
+
+    /// Fetch (or clone) the subscribed ref, judge what arrived, and publish it
+    /// into the in-memory source map. Every `Err` leaves the checkout for
+    /// [`Self::restore_accepted_checkout`] to put back — this function never
+    /// decides what a refusal costs.
+    fn publish_fetched_source(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        pinned_ref: Option<ResolvedRef>,
+        printer: &Printer,
+    ) -> Result<()> {
         match (&pinned_ref, source_dir.exists()) {
             (Some(resolved), true) => {
-                self.checkout_pinned_ref(spec, &source_dir, resolved, printer)?
+                self.checkout_pinned_ref(spec, source_dir, resolved, printer)?
             }
             (Some(resolved), false) => {
-                self.clone_pinned_source(spec, &source_dir, resolved, printer)?
+                self.clone_pinned_source(spec, source_dir, resolved, printer)?
             }
-            (None, true) => self.fetch_source(spec, &source_dir, printer)?,
-            (None, false) => self.clone_source(spec, &source_dir, printer)?,
+            (None, true) => self.fetch_source(spec, source_dir, printer)?,
+            (None, false) => self.clone_source(spec, source_dir, printer)?,
         }
 
-        let manifest = self.parse_manifest(&spec.name, &source_dir)?;
+        let manifest = self.parse_manifest(&spec.name, source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints, printer)?;
 
-        let last_commit = Self::head_commit(&source_dir);
+        let last_commit = Self::head_commit(source_dir);
+        let head_signed = head_signature_accepted(&spec.name, source_dir);
 
         let resolved_ref = pinned_ref.as_ref().and_then(|r| match r {
             ResolvedRef::Tag { tag, .. } => Some(tag.clone()),
@@ -372,28 +636,127 @@ impl SourceManager {
             name: spec.name.clone(),
             origin_url: spec.origin.url.clone(),
             origin_branch: spec.origin.branch.clone(),
-            local_path: source_dir,
+            local_path: source_dir.to_path_buf(),
             manifest,
             last_commit,
             last_fetched: Some(crate::utc_now_iso8601()),
             resolved_ref,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
         Ok(())
     }
 
+    /// Put the cache back where a refused fetch found it: on the last accepted
+    /// commit, or — when this run is the one that created the checkout — gone.
+    ///
+    /// The two arms are what make composing a refused commit unrepresentable:
+    /// after this returns the cache holds a commit some earlier load accepted,
+    /// or it holds nothing at all and the next load clones afresh. A reset that
+    /// itself fails falls through to the removal rather than leaving the
+    /// rejected commit standing. Called under the source-cache lock (from
+    /// [`Self::load_source_guarded`]), which is why the removal is inline
+    /// rather than through [`discard_cached_checkout`], whose own acquire
+    /// would deadlock against the guard already held.
+    fn restore_accepted_checkout(
+        &mut self,
+        name: &str,
+        source_dir: &Path,
+        accepted_head: Option<&str>,
+        printer: &Printer,
+    ) {
+        if let Some(commit) = accepted_head {
+            match reset_checkout_to(source_dir, commit) {
+                Ok(()) => {
+                    // The map still describes that commit, so the entry an
+                    // earlier load left is exactly what the checkout now holds.
+                    printer.status_simple(
+                        Role::Info,
+                        format!(
+                            "Source '{name}': kept the previously accepted commit {}",
+                            crate::short_commit(commit)
+                        ),
+                    );
+                    return;
+                }
+                // The removal below is what discards the checkout, and it may
+                // fail too, so claiming the discard HERE in the past tense
+                // would report one event as two contradictory lines.
+                Err(e) => printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Source '{name}': could not restore the previously accepted commit ({e})"
+                    ),
+                ),
+            }
+        }
+
+        // Nothing accepted survives here, so nothing may stay composed either.
+        self.sources.remove(name);
+        match std::fs::remove_dir_all(source_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!("Source '{name}': could not discard the refused checkout: {e}"),
+            ),
+        }
+    }
+
+    /// Parse and signature-verify a cached checkout, answering its manifest.
+    ///
+    /// A refusal UN-COMPOSES the source: `self.sources` loses whatever an
+    /// earlier accepted load of the same name left there, the same rule
+    /// `restore_accepted_checkout` holds on the fetch path. Nothing a
+    /// subscription's demand refuses may stay composed — the map is what
+    /// [`SourceManager::get`] answers from, and a caller that reports the
+    /// failure and reads on (`cfgd source show`) would otherwise render the
+    /// manifest of a head it had just refused. The checkout itself stays on
+    /// disk, `cfgd sync` being the one command that can repair it.
+    ///
+    /// Both read-path refusals settle here, so neither can hold the rule
+    /// differently: the ordinary cached load, and the pin-not-found fallback
+    /// that returns straight out of `load_source` past the verify-then-publish
+    /// block below it.
+    fn judge_cached_head(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        printer: &Printer,
+    ) -> Result<ConfigSourceDocument> {
+        self.parse_manifest(&spec.name, source_dir)
+            .and_then(|manifest| {
+                self.verify_commit_signature(
+                    spec,
+                    source_dir,
+                    &manifest.spec.policy.constraints,
+                    printer,
+                )?;
+                Ok(manifest)
+            })
+            .inspect_err(|_| {
+                self.sources.remove(&spec.name);
+            })
+    }
+
     /// Insert a source from its existing on-disk checkout without re-fetching.
     /// Used when a `pinVersion` no longer resolves but a prior successful load
-    /// left a usable checkout: parse + signature-verify the cached manifest and
-    /// keep it composed at the previously-resolved ref. A corrupt manifest or
-    /// failed signature still surfaces as an error — only the pin-not-found case
-    /// routes here.
-    fn load_from_existing_cache(&mut self, spec: &SourceSpec, source_dir: &Path) -> Result<()> {
-        let manifest = self.parse_manifest(&spec.name, source_dir)?;
-        self.verify_commit_signature(&spec.name, source_dir, &manifest.spec.policy.constraints)?;
+    /// left a usable checkout: judge the cached head through
+    /// [`Self::judge_cached_head`] and keep it composed at the
+    /// previously-resolved ref. A corrupt manifest or failed signature still
+    /// surfaces as an error, un-composing the source with it — only the
+    /// pin-not-found case routes here.
+    fn load_from_existing_cache(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        printer: &Printer,
+    ) -> Result<()> {
+        let manifest = self.judge_cached_head(spec, source_dir, printer)?;
 
         let last_commit = Self::head_commit(source_dir);
+        let head_signed = head_signature_accepted(&spec.name, source_dir);
 
         let cached = CachedSource {
             name: spec.name.clone(),
@@ -404,6 +767,7 @@ impl SourceManager {
             last_commit,
             last_fetched: None,
             resolved_ref: None,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -417,6 +781,11 @@ impl SourceManager {
     /// through so a corrupt cache keeps hitting the parse/signature hard
     /// errors it always has instead of being quietly skipped.
     fn cached_recorded_origin(source_dir: &Path) -> Option<String> {
+        // The verdict derived from this read is replayed to the operator on
+        // every tick that reuses the composition, so the file it rests on has to
+        // be part of what retires that composition. Re-pointing an origin in
+        // place need not move the checkout directory's own stamp.
+        crate::record_config_input(&source_dir.join(".git").join("config"));
         let repo = Repository::open(source_dir).ok()?;
         let remote = repo.find_remote("origin").ok()?;
         remote.url().ok().map(str::to_owned)
@@ -442,17 +811,22 @@ impl SourceManager {
             &spec.origin.branch,
         ]);
 
-        let label = format!("Fetching source '{}'", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        // Silent on success: every caller already says the outcome (`Updated 1
+        // source`, the plan header), and a failure falls through to the
+        // libgit2 arm below, which settles its own line.
+        let label = format!("Fetching source:{}", spec.name);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
 
         if !cli_ok {
-            // Fall back to libgit2 with spinner
-            let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)...", spec.name));
-
+            // Fall back to libgit2. `Repository::open`/`find_remote` are local
+            // handle acquisition, not the fetch the spinner narrates — hoisted
+            // above it so an early `?` here never leaves a running spinner
+            // behind with nothing left to settle it.
             let repo = Repository::open(source_dir).map_err(to_git_err)?;
-
             let mut remote = repo.find_remote("origin").map_err(to_git_err)?;
+
+            let spinner = printer.spinner(format!("Fetching source:{} (libgit2)", spec.name));
 
             let mut fo = FetchOptions::new();
             let mut callbacks = RemoteCallbacks::new();
@@ -534,8 +908,12 @@ impl SourceManager {
             &source_dir.display().to_string(),
         ]);
 
-        let label = format!("Cloning source '{}'", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        // Silent on success, like the fetch above and for the same reason: the
+        // caller's own line already names the source, so a settled clone row
+        // prints the owner twice on two consecutive lines. A failure falls
+        // through to the libgit2 arm below, which settles its own.
+        let label = format!("Cloning source:{}", spec.name);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
             let _ = crate::set_file_permissions(source_dir, 0o700);
@@ -546,7 +924,7 @@ impl SourceManager {
         let _ = std::fs::remove_dir_all(source_dir);
 
         // Fall back to libgit2 with spinner
-        let spinner = printer.spinner(format!("Cloning source '{}' (libgit2)...", spec.name));
+        let spinner = printer.spinner(format!("Cloning source:{} (libgit2)", spec.name));
 
         let mut fo = FetchOptions::new();
         if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
@@ -662,8 +1040,9 @@ impl SourceManager {
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        let label = format!("Cloning source '{}'", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        // Silent on success: the failure arm below carries its own error.
+        let label = format!("Cloning source:{}", spec.name);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         if !matches!(&cli_result, Ok(output) if output.status.success()) {
             return Err(SourceError::FetchFailed {
                 name: spec.name.clone(),
@@ -685,28 +1064,46 @@ impl SourceManager {
     }
 
     /// Verify the HEAD commit of a source repo has a valid GPG or SSH signature.
-    /// Checks `allow_unsigned` on this SourceManager and `require_signed_commits`
-    /// on the constraints before delegating to `verify_head_signature`.
-    pub fn verify_commit_signature(
-        &self,
-        name: &str,
+    ///
+    /// The requirement is [`SourceSpec::requires_signed_commits`]: the
+    /// subscriber's `subscription.requireSignedCommits` ORed with the manifest's
+    /// `constraints.requireSignedCommits`. It takes the SPEC rather than a name
+    /// precisely so the subscriber's half cannot be forgotten here — the
+    /// manifest half arrives from inside the cached clone, which is the one
+    /// thing a planted cache controls. `allow_unsigned` on this SourceManager
+    /// still bypasses both.
+    pub(crate) fn verify_commit_signature(
+        &mut self,
+        spec: &SourceSpec,
         source_dir: &Path,
         constraints: &crate::config::SourceConstraints,
+        printer: &Printer,
     ) -> Result<()> {
-        if !constraints.require_signed_commits {
+        if !spec.requires_signed_commits(constraints.require_signed_commits) {
             return Ok(());
         }
 
+        let name = spec.name.as_str();
         if self.allow_unsigned {
-            tracing::info!(
-                source = %name,
-                "Signature verification skipped for source '{}' (allow-unsigned is set)",
-                name
+            self.bypass_advisory(
+                printer,
+                format!(
+                    "Source '{name}' requires signed commits, but --allow-unsigned is set — composing it WITHOUT verifying its signature"
+                ),
             );
             return Ok(());
         }
 
-        verify_head_signature(name, source_dir)
+        verify_head_signature(name, source_dir)?;
+        // The user asked for signed commits, so the check having RUN is part of
+        // what they asked for. An ordinary status: a read path composes at
+        // `Verbosity::Quiet` and correctly says nothing, and a failure is an
+        // error rather than a line.
+        printer.status_simple(
+            Role::Ok,
+            format!("Source '{name}': HEAD commit signature verified"),
+        );
+        Ok(())
     }
 
     /// Resolve a `pinVersion` value to a concrete git ref against the remote.
@@ -820,14 +1217,21 @@ impl SourceManager {
     }
 
     /// Run a detached-HEAD `git checkout <target>` in the source dir.
-    /// `--end-of-options` precedes the (attacker-influenced) target so a tag
-    /// named e.g. `-x` can never be parsed as a checkout flag.
+    ///
+    /// The (attacker-influenced) target is guarded by
+    /// [`crate::refuse_option_like_revision`] and a TRAILING `--`, never by
+    /// `--end-of-options`, which `git checkout` rejects outright on git 2.43.0
+    /// and older (accepted only from 2.43.7 on).
     fn git_checkout_detached(
         &self,
         spec: &SourceSpec,
         source_dir: &Path,
         target: &str,
     ) -> Result<()> {
+        crate::refuse_option_like_revision(target).map_err(|message| SourceError::GitError {
+            name: spec.name.clone(),
+            message,
+        })?;
         let mut checkout = crate::git_cmd_local();
         checkout.args([
             "-C",
@@ -836,8 +1240,8 @@ impl SourceManager {
             "advice.detachedHead=false",
             "checkout",
             "--detach",
-            "--end-of-options",
             target,
+            "--",
         ]);
         checkout.stdout(std::process::Stdio::piped());
         checkout.stderr(std::process::Stdio::piped());
@@ -860,8 +1264,10 @@ impl SourceManager {
         Ok(())
     }
 
-    /// Get the HEAD commit hash for a repo.
-    fn head_commit(source_dir: &Path) -> Option<String> {
+    /// Get the HEAD commit hash for a repo. `None` when the path is no
+    /// checkout yet, which is how a caller asking BEFORE a fetch learns there
+    /// was nothing to move from.
+    pub fn head_commit(source_dir: &Path) -> Option<String> {
         let repo = Repository::open(source_dir).ok()?;
         let head = repo.head().ok()?;
         head.target().map(|oid| oid.to_string())
@@ -940,7 +1346,7 @@ impl SourceManager {
             .ok_or_else(|| SourceError::NotFound {
                 name: source_name.to_string(),
             })?;
-        Ok(cached.local_path.join("modules"))
+        Ok(crate::declared_modules_dir(&cached.local_path))
     }
 
     /// The module names this source declares as deliverable — the manifest's
@@ -968,21 +1374,14 @@ impl SourceManager {
     }
 
     /// Remove a source from cache.
-    pub fn remove_source(&mut self, name: &str) -> Result<()> {
-        let cached = self
-            .sources
+    pub fn remove_source(&mut self, name: &str, printer: &Printer) -> Result<()> {
+        self.sources
             .remove(name)
             .ok_or_else(|| SourceError::NotFound {
                 name: name.to_string(),
             })?;
 
-        if cached.local_path.exists() {
-            std::fs::remove_dir_all(&cached.local_path).map_err(|e| SourceError::CacheError {
-                message: format!("failed to remove cache for '{}': {}", name, e),
-            })?;
-        }
-
-        Ok(())
+        discard_cached_checkout(&self.cache_dir, name, printer)
     }
 
     /// Compose this manager's already-loaded sources with a local resolved
@@ -1124,6 +1523,94 @@ impl SourceManager {
     }
 }
 
+/// The advisory a contended source-cache acquire announces, so the two callers
+/// that can wait on it cannot describe the same wait two ways.
+fn cache_wait_notice(name: &str) -> String {
+    format!("Source '{name}': waiting for another cfgd process to finish updating the source cache")
+}
+
+/// Remove the cached checkout of `name` under `cache_dir`, holding the
+/// source-cache lock across the removal.
+///
+/// The ONE deletion of a source's checkout, and why it is not an inline
+/// `remove_dir_all` at either caller: unserialized, `cfgd source remove` deletes
+/// the tree a concurrent `cfgd sync` is cloning into, which is the same
+/// interleaving the lock exists to close on the load side. `cfgd source remove`
+/// reaches it directly rather than through
+/// [`SourceManager::remove_source`], because that command never populates the
+/// in-memory `sources` map its `NotFound` is judged against.
+///
+/// A checkout that is already gone is not an error: the caller asked for its
+/// absence, and another process winning the race delivered exactly that.
+pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) -> Result<()> {
+    validate_source_name(name)?;
+    let checkout = cache_dir.join(name);
+    // Judged before the lock so a removal with no cache at all neither creates
+    // the cache root nor leaves a lock file in one.
+    if !checkout.exists() {
+        return Ok(());
+    }
+    let _cache_lock = crate::acquire_source_lock(cache_dir, || {
+        printer.alert(cache_wait_notice(name));
+    })?;
+    match std::fs::remove_dir_all(&checkout) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SourceError::CacheError {
+            message: format!("failed to remove cache for '{name}': {e}"),
+        }
+        .into()),
+    }
+}
+
+/// Put the checkout at `repo_dir` back on `commit` — branch ref, index and
+/// working tree together.
+///
+/// The rollback half of verify-then-publish, shared by the two paths that move
+/// a checkout before its new HEAD can be judged: `SourceManager`'s fetch (see
+/// its `restore_accepted_checkout`) and the daemon's auto-pull leg.
+/// Neither may leave a refused commit checked out — the composition that runs
+/// next reads whatever is on disk — and neither can verify first, the pull and
+/// the fetch both being what makes the commit readable at all.
+///
+/// A HARD reset, so the working tree goes back with the ref: tracked edits
+/// sitting in it are discarded. That costs nothing either caller can protect —
+/// a source cache holds only what cfgd cloned, and on the daemon's arm
+/// `git_pull` has already force-checked-out over the same edits one step
+/// earlier, so by contract neither tree holds work of the operator's. `git
+/// reset --keep` would refuse instead, at the price of leaving the repository
+/// on the very commit this exists to get off.
+///
+/// `Err` carries the reason as prose for the caller to word: the two callers
+/// owe different things afterwards (a refused cache may be discarded outright,
+/// the operator's own repository may only be reported on), so this reports and
+/// never decides.
+pub fn reset_checkout_to(repo_dir: &Path, commit: &str) -> std::result::Result<(), String> {
+    crate::refuse_option_like_revision(commit)?;
+    let output = crate::command_output_with_timeout(
+        crate::git_cmd_local().args([
+            "-C",
+            &repo_dir.display().to_string(), // native-ok: argv for local git invocation on this host
+            "reset",
+            "--hard",
+            "--quiet",
+            commit,
+            "--",
+        ]),
+        crate::COMMAND_TIMEOUT,
+    )
+    .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "git reset failed ({}): {}",
+            crate::exit_status_reason(&output.status),
+            crate::stderr_lossy_trimmed(&output)
+        ));
+    }
+    Ok(())
+}
+
 /// Reject a source name that cannot serve as a cache directory of its own.
 ///
 /// The name is the only thing separating one source's cache from another's, and
@@ -1134,12 +1621,30 @@ fn validate_source_name(name: &str) -> Result<()> {
         name: name.to_string(),
         message: format!("invalid source name: {e}"),
     })?;
+    // A source's checkout is `<cache_dir>/<name>`, and the cache lock is a file
+    // at `<cache_dir>/cache.lock`. A source claiming that name would put a
+    // directory where the lock file goes, so neither could be opened.
+    if name
+        .split(['/', '\\'])
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(crate::SOURCE_CACHE_LOCK_FILENAME))
+    {
+        return Err(SourceError::GitError {
+            name: name.to_string(),
+            message: format!(
+                "invalid source name: '{}' is reserved for the source-cache lock",
+                crate::SOURCE_CACHE_LOCK_FILENAME
+            ),
+        }
+        .into());
+    }
     Ok(())
 }
 
 /// Read and parse a cfgd-source.yaml manifest from a directory.
 fn read_manifest(name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> {
     let manifest_path = source_dir.join(SOURCE_MANIFEST_FILE);
+    crate::record_config_input(&manifest_path);
     if !manifest_path.exists() {
         return Err(SourceError::InvalidManifest {
             name: name.to_string(),
@@ -1192,13 +1697,36 @@ pub fn detect_source_manifest(dir: &Path) -> Result<Option<ConfigSourceDocument>
 /// signature is valid (G) or valid with unknown trust (U). Returns an error for
 /// unsigned, bad, expired, revoked, or unverifiable signatures.
 pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
-    if !crate::command_available("git") {
-        return Err(SourceError::SignatureVerificationFailed {
+    let status = head_signature_code(repo_dir).map_err(|message| {
+        SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "git CLI is required for signature verification but is not available on PATH"
-                .into(),
+            message,
         }
-        .into());
+    })?;
+    classify_signature_status(name, &status)
+}
+
+/// Whether HEAD at `repo_dir` carries a signature cfgd would ACCEPT — the
+/// display half of [`verify_head_signature`], reading the same `%G?` code
+/// through the same classifier, so `source list`'s `Signed` column can never
+/// disagree with what verification would decide about the same checkout.
+///
+/// `None` is "cannot say" (no git on PATH, not a repository, git refused) and
+/// renders `-`, never `no`: a checkout cfgd could not read is a different fact
+/// from a commit that carries no signature.
+pub fn head_signature_accepted(name: &str, repo_dir: &Path) -> Option<bool> {
+    let code = head_signature_code(repo_dir).ok()?;
+    Some(classify_signature_status(name, &code).is_ok())
+}
+
+/// The raw `git log -1 --format=%G?` code for HEAD at `repo_dir`, or the reason
+/// it could not be read. The ONE place that shells out for it, so the enforcing
+/// and the reporting reader run the same command with the same timeout.
+fn head_signature_code(repo_dir: &Path) -> std::result::Result<String, String> {
+    if !crate::command_available("git") {
+        return Err(
+            "git CLI is required for signature verification but is not available on PATH".into(),
+        );
     }
 
     let output = crate::command_output_with_timeout(
@@ -1211,25 +1739,17 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
         ]),
         crate::COMMAND_TIMEOUT,
     )
-    .map_err(|e| SourceError::SignatureVerificationFailed {
-        name: name.to_string(),
-        message: format!("failed to run git: {}", e),
-    })?;
+    .map_err(|e| format!("failed to run git: {}", e))?;
 
     if !output.status.success() {
-        return Err(SourceError::SignatureVerificationFailed {
-            name: name.to_string(),
-            message: format!(
-                "git log failed ({}): {}",
-                crate::exit_status_reason(&output.status),
-                crate::stderr_lossy_trimmed(&output)
-            ),
-        }
-        .into());
+        return Err(format!(
+            "git log failed ({}): {}",
+            crate::exit_status_reason(&output.status),
+            crate::stderr_lossy_trimmed(&output)
+        ));
     }
 
-    let status = crate::stdout_lossy_trimmed(&output);
-    classify_signature_status(name, &status)
+    Ok(crate::stdout_lossy_trimmed(&output))
 }
 
 /// Map a `git log --format=%G?` status code to a `Result`.
@@ -1249,7 +1769,7 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
 pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> {
     match status {
         "G" | "U" => {
-            tracing::info!(
+            tracing::debug!(
                 source = %name,
                 "Source '{}' HEAD commit signature verified (status: {})",
                 name, status
@@ -1258,7 +1778,7 @@ pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> 
         }
         "N" => Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "HEAD commit is not signed — source requires signed commits".into(),
+            message: "HEAD commit is not signed (source requires signed commits)".into(),
         }
         .into()),
         "B" => Err(SourceError::SignatureVerificationFailed {
@@ -1268,7 +1788,7 @@ pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> 
         .into()),
         "E" => Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "signature cannot be checked — ensure the signing key is imported".into(),
+            message: "signature cannot be checked (ensure the signing key is imported)".into(),
         }
         .into()),
         "X" | "Y" => Err(SourceError::SignatureVerificationFailed {
@@ -1564,19 +2084,29 @@ pub fn git_clone_with_fallback(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
-    cmd.args([
-        "clone",
-        "--depth=1",
+    let target_arg = target.display().to_string();
+    let mut args = vec!["clone"];
+    // Depth is a transfer-size guard for remotes, the same split the libgit2
+    // fallback below makes: a local clone has no transfer to bound, and git
+    // says so (`warning: --depth is ignored in local clones`) on a line that
+    // would otherwise stream under the clone row.
+    if !is_local_git_url(url) {
+        args.push("--depth=1");
+    }
+    args.extend([
         "--no-recurse-submodules",
         "--end-of-options",
         url,
-        &target.display().to_string(),
+        target_arg.as_str(),
     ]);
+    cmd.args(args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
+    // Silent on success: the libgit2 arm below settles a failure, and the
+    // caller names the repository it asked for.
     let label = format!("Cloning {}", url);
-    let cli_result = printer.run(&mut cmd, &label);
+    let cli_result = printer.run_silent(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
@@ -1598,7 +2128,7 @@ pub fn git_clone_with_fallback(
     let _ = std::fs::create_dir_all(target);
 
     // Fall back to libgit2 with spinner
-    let spinner = printer.spinner("Cloning (libgit2)...");
+    let spinner = printer.spinner("Cloning (libgit2)");
 
     let mut fetch_opts = git2::FetchOptions::new();
     // libgit2 rejects a shallow fetch over the local transport outright ("shallow

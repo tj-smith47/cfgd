@@ -125,8 +125,8 @@ pub async fn run_webhook_server(
 }
 
 // 1 MiB cap on AdmissionReview request bodies. Typical reviews are a few KiB;
-// the kube-apiserver enforces a ~3 MiB server-side cap, but we bound it
-// tighter at the webhook to shed DoS load before we spend CPU on JSON.
+// the kube-apiserver enforces a ~3 MiB server-side cap, but it is bound
+// tighter at the webhook to shed DoS load before CPU is spent on JSON.
 const WEBHOOK_MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// Build the webhook Router with the same middleware stack the production
@@ -185,7 +185,7 @@ fn handle_validate<S: Validatable + serde::de::DeserializeOwned + 'static>(
 }
 
 // Liveness probe for the webhook pod. Kubernetes liveness semantics are
-// "the process is alive and serving" — if we're accepting TCP here we are.
+// "the process is alive and serving" — accepting TCP here already proves that.
 // Intentionally does not consult `HealthState` (which gates readiness /
 // leader status) because liveness must stay green even when the operator
 // is voluntarily paused. Matches `health::healthz_handler`'s unconditional
@@ -265,6 +265,9 @@ async fn handle_validate_module(
 
 /// Enforce ClusterConfigPolicy rules on a Module: trusted registries and unsigned rejection.
 async fn enforce_module_policy(client: &Client, spec: &ModuleSpec) -> Result<(), String> {
+    // A live read, deliberately: admission must judge the state as it is at
+    // the moment of the request, and a reflector cache is seconds stale — a
+    // policy tightened a moment ago would not yet bar the module it forbids.
     let ccpols: Api<ClusterConfigPolicy> = Api::all(client.clone());
     let policies = ccpols
         .list(&ListParams::default())
@@ -426,7 +429,8 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         debug: Vec::new(),
     };
 
-    // Namespace-scoped ConfigPolicy
+    // Namespace-scoped ConfigPolicy. A live read, deliberately: admission must
+    // judge current state, and a reflector cache is seconds stale.
     if let Ok(policies) = Api::<ConfigPolicy>::namespaced(client.clone(), namespace)
         .list(&ListParams::default())
         .await
@@ -452,6 +456,8 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .ok()
         .and_then(|ns| ns.metadata.labels);
 
+    // Live read for the same reason as the namespaced list above: admission
+    // decides on current state, never on a cached view of it.
     if let Ok(policies) = Api::<ClusterConfigPolicy>::all(client.clone())
         .list(&ListParams::default())
         .await
@@ -575,6 +581,14 @@ fn build_injection_patches(
             }));
 
             for env_var in &spec.env {
+                // A pod is a Linux container: the webhook can answer an `os`
+                // tag and nothing else, so an entry gated to anything but
+                // `linux` is not injected rather than injected regardless.
+                if !env_var.platforms.is_empty()
+                    && !env_var.platforms.iter().any(|tag| tag == "linux")
+                {
+                    continue;
+                }
                 if env_var.append {
                     patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                         path: ptr(&format!("/spec/containers/{i}/env/-")),

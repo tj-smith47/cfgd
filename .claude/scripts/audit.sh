@@ -37,10 +37,19 @@ log_section() { printf "\n--- %s ---\n" "$1"; }
 AWK_LIB='
 BEGIN { RAW_HASHES = -1; IN_STR = 0 }
 function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
-# The code half of one line, with every literal and comment removed, plus the
-# comment half in LAST_COMMENT. Raw-string state carries across calls, so a
-# caller must invoke this exactly ONCE per line and feed the lines of a file in
-# order — twice on one line double-advances the state machine.
+# `n` bytes of a placeholder that is never real Rust syntax (no caller matches
+# `\001` in a bracket count or a token regex), standing in for stripped literal
+# content so `code_only`s output stays the same LENGTH as its input. Every
+# deletion site below pads with this instead of dropping bytes, so an index
+# found by scanning `code` still names the same offset in the raw line — the
+# property `strip_attr_lines` relies on to recover a declaration trailing an
+# attributes closing bracket on the same physical line.
+function placeholder(n,   s) { s = ""; while (n-- > 0) s = s "\001"; return s }
+# The code half of one line, with every literal and comment replaced by
+# `placeholder()` (never deleted — see above) and the comment half in
+# LAST_COMMENT. Raw-string state carries across calls, so a caller must invoke
+# this exactly ONCE per line and feed the lines of a file in order — twice on
+# one line double-advances the state machine.
 function code_only(line,   q, out, i, j, n, c, h, closer, p) {
     LAST_COMMENT = ""
     # Fast path: nothing on this line can open a literal or a comment.
@@ -62,20 +71,25 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 i++
                 if (c == "\"") { IN_STR = 0; break }
             }
-            if (IN_STR) return out
+            if (IN_STR) return out placeholder(n - length(out))
+            out = out placeholder(i - 1 - length(out))
             continue
         }
         if (RAW_HASHES >= 0) {
             closer = "\"" hashes_str(RAW_HASHES)
             p = index(substr(line, i), closer)
-            if (p == 0) return out
+            if (p == 0) return out placeholder(n - length(out))
             i += p - 1 + length(closer)
             RAW_HASHES = -1
+            out = out placeholder(i - 1 - length(out))
             continue
         }
         c = substr(line, i, 1)
         if (c == "/") {
-            if (substr(line, i + 1, 1) == "/") { LAST_COMMENT = substr(line, i); return out }
+            if (substr(line, i + 1, 1) == "/") {
+                LAST_COMMENT = substr(line, i)
+                return out placeholder(n - i + 1)
+            }
             out = out c
             i++
             continue
@@ -86,7 +100,8 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 j = i + RAW_OPEN_LEN
                 closer = "\"" hashes_str(h)
                 p = index(substr(line, j), closer)
-                if (p == 0) { RAW_HASHES = h; return out }
+                if (p == 0) { RAW_HASHES = h; return out placeholder(n - i + 1) }
+                out = out placeholder(j + p - 1 + length(closer) - i)
                 i = j + p - 1 + length(closer)
                 continue
             }
@@ -97,8 +112,16 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
         if (c == q) {
             # A char literal is two or three characters inside the quotes;
             # anything else opening with a quote is a lifetime, which is code.
-            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) { i += 4; continue }
-            if (substr(line, i + 2, 1) == q) { i += 3; continue }
+            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) {
+                out = out placeholder(4)
+                i += 4
+                continue
+            }
+            if (substr(line, i + 2, 1) == q) {
+                out = out placeholder(3)
+                i += 3
+                continue
+            }
             out = out q
             i++
             continue
@@ -111,7 +134,8 @@ function code_only(line,   q, out, i, j, n, c, h, closer, p) {
                 if (c == "\"") break
                 j++
             }
-            if (j > n) { IN_STR = 1; return out }
+            if (j > n) { IN_STR = 1; return out placeholder(n - i + 1) }
+            out = out placeholder(j - i + 1)
             i = j + 1
             continue
         }
@@ -231,10 +255,145 @@ _strip_test_blocks_uncached() {
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
+        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]]*$/) {
+            in_test = 0
         }
         next
     }
     { print filepath ":" NR ":" $0 }
+    ' "$filepath"
+}
+
+# --- Drop the lines inside every `impl <Trait> for <Type>` block ---
+# A method name inside a trait impl is chosen by the TRAIT, not by the author,
+# so it can never be evidence of copy-paste. Reads the `<file>:<line>:<text>`
+# stream `strip_test_blocks_from_file` produces and drops the whole block,
+# header included; the trait's own declaration, every inherent method and every
+# free function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
+# exclusion — it carries no space after `for`. Brace depth is counted through
+# `code_only`, so a brace inside a string or a comment cannot desynchronise the
+# tracker, and a header whose `{` sits on a later line (a `where` clause) is
+# still tracked, because the block is only left once a brace has actually opened.
+drop_trait_impl_lines() {
+    awk "$AWK_LIB"'
+    BEGIN { depth = 0; in_impl = 0 }
+    {
+        line = $0
+        sub(/^[^:]*:[0-9]+:/, "", line)
+        code = code_only(line)
+        if (!in_impl && code ~ /^[[:space:]]*impl[^A-Za-z0-9_].* for /) {
+            in_impl = 1
+            depth = 0
+        }
+        if (!in_impl) { print; next }
+        opens = gsub(/{/, "{", code)
+        was = depth
+        depth += opens - gsub(/}/, "}", code)
+        if (depth <= 0 && (was > 0 || opens > 0)) {
+            in_impl = 0
+            depth = 0
+        }
+    }
+    '
+}
+
+# --- Drop the lines of a multi-line attribute (`#[...]`) ---
+# A wrapped `#[serde(\n    deserialize_with = "…"\n)]` used to survive the DRY
+# string-literal gate: the old filter dropped only a line that itself OPENED
+# with `#[`, so a continuation line's value read as ordinary code and one
+# attribute's literal counted once per call site instead of zero times.
+# Bracket depth is counted through `code_only`, so a value holding `[` or `]`
+# cannot desynchronise the tracker, mirroring `drop_trait_impl_lines` above.
+strip_attr_lines() {
+    awk "$AWK_LIB"'
+    BEGIN { depth = 0; in_attr = 0 }
+    {
+        line = $0
+        sub(/^[^:]*:[0-9]+:/, "", line)
+        code = code_only(line)
+        if (!in_attr && code ~ /^[[:space:]]*#!?\[/) {
+            in_attr = 1
+            depth = 0
+        }
+        if (!in_attr) { print; next }
+        opens = gsub(/[(\[]/, "&", code)
+        was = depth
+        depth += opens - gsub(/[)\]]/, "&", code)
+        if (depth <= 0 && (was > 0 || opens > 0)) {
+            in_attr = 0
+            depth = 0
+            # A declaration trailing the closing bracket on this same line: the
+            # split point found by walking `code` names the same offset in
+            # `line` because `code_only` pads every stripped literal to its
+            # original length instead of deleting it, so `code` and `line`
+            # never drift apart in length even when the line carries a string.
+            # `seen_open` gates the break on depth having gone positive at
+            # least once (carried in via `was`, or opened on this line) —
+            # without it a fully single-line attribute (`was == 0`) broke on
+            # its first, non-bracket character, since `d` starts at 0 and
+            # `d <= 0` alone cannot tell "never opened" from "just closed".
+            d = was
+            seen_open = (was > 0)
+            for (i = 1; i <= length(code); i++) {
+                c1 = substr(code, i, 1)
+                if (c1 == "(" || c1 == "[") { d++; seen_open = 1 }
+                else if (c1 == ")" || c1 == "]") d--
+                if (seen_open && d <= 0) break
+            }
+            tail = substr(line, i + 1)
+            if (tail ~ /[^[:space:]]/) {
+                print substr($0, 1, length($0) - length(line)) tail
+            }
+        }
+    }
+    '
+}
+
+# --- Extract test blocks from a file (the inverse of strip) ---
+# The test-hygiene gates (sleep-ok, raw-capture-ok, path-guard-ok) anchor to
+# TEST code only — a raw sleep or a raw capture-buffer read is a production
+# concern nowhere else. A whole-file test module (the same naming convention
+# `strip_test_blocks_from_file`'s callers exclude) is entirely in scope; an
+# inline `#[cfg(test)] mod tests { … }` block within a production file
+# contributes only its own span, tracked the same brace-depth way the strip
+# does. Cached per file for the run, same as the strip.
+extract_test_blocks_from_file() {
+    local filepath="$1"
+    local cached="$STRIP_CACHE_DIR/${filepath//\//__}.testonly"
+    if [[ -f "$cached" ]]; then
+        cat "$cached"
+        return 0
+    fi
+    _extract_test_blocks_uncached "$filepath" | tee "$cached"
+}
+
+_extract_test_blocks_uncached() {
+    local filepath="$1"
+    case "$filepath" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*)
+            awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
+            return 0
+            ;;
+    esac
+    awk -v filepath="$filepath" "$AWK_LIB"'
+    BEGIN { in_test = 0; test_depth = 0 }
+    { code = code_only($0) }
+    /^[[:space:]]*#\[cfg\(test\)\]/ {
+        in_test = 1
+        test_depth = 0
+        next
+    }
+    in_test {
+        opens = gsub(/{/, "{", code)
+        closes = gsub(/}/, "}", code)
+        test_depth += opens - closes
+        print filepath ":" NR ":" $0
+        if (test_depth <= 0 && opens + closes > 0) {
+            in_test = 0
+            test_depth = 0
+        }
+        next
+    }
     ' "$filepath"
 }
 
@@ -388,6 +547,20 @@ check_pattern error \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
     'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:'
 
+log_section "One Noun Per Concept"
+# A counted package reads `3 packages` on every human surface — the status
+# headline, the module table, an add/remove confirmation. `3 pkgs` is a second
+# noun for one concept, and a reader who learns the surface says "pkgs" then
+# greps for it in `-o json`, which says "packages".
+#
+# Narrow on the COUNTED form on purpose: `pkg` is also a real package manager
+# name (FreeBSD's), so `"pkg"` as a manager literal is correct and must not be
+# caught.
+check_pattern error \
+    "Counted packages read 'package(s)', never the 'pkg(s)' abbreviation" \
+    'pluralize\([^)]*"pkgs?"|plural_noun\([^)]*"pkgs?"|"[^"]*[0-9}] pkgs?\b' \
+    ""
+
 log_section "Console/Indicatif Encapsulation"
 check_pattern error \
     "console/indicatif/syntect only used in output/" \
@@ -395,8 +568,10 @@ check_pattern error \
     'output/'
 
 log_section "User-Facing Advisories (config/module/source domains)"
-# tracing::warn!/error! is invisible without RUST_LOG — an advisory routed
-# there is one the user never sees. This is what happened to
+# tracing::info!/warn!/error! is invisible without RUST_LOG — an advisory routed
+# there is one the user never sees, and `info!` is the least visible of the
+# three: the cfgd binary's own default filter is `warn`, so an info event needs
+# both RUST_LOG and a reader. This is what happened to
 # warn_on_legacy_theme_keys before it was rerouted through
 # CfgdConfig.deprecations + printer.deprecation() (see output-module.md).
 #
@@ -409,7 +584,7 @@ log_section "User-Facing Advisories (config/module/source domains)"
 # parse function calls (check_yaml_anchor_limit, read_manifest, …). Scanning the
 # whole domain covers all of them, and needs no span walk to be defeated by a
 # brace in a string literal or by a body-less trait signature. The domain
-# carries no legitimate tracing::warn!/error! today, so the marker below is the
+# carries no legitimate tracing::info!/warn!/error! today, so the marker below is the
 # whole allow-list; the separate "Config Parsing Boundary" gate above keeps
 # config-struct parsing from migrating out of these directories in the first
 # place.
@@ -429,7 +604,7 @@ while IFS= read -r -d '' rsfile; do
     esac
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
-        code ~ /tracing::(warn|error)!/ &&
+        code ~ /tracing::(info|warn|error)!/ &&
         !is_comment_line($0) &&
         !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
         { prev = $0; prev_comment = comment }
@@ -440,10 +615,109 @@ while IFS= read -r -d '' rsfile; do
 done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
-    log_error "tracing::warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
+    log_error "tracing::info!/warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
     echo "$advisory_violations" | head -20
 else
-    log_ok "No tracing::warn!/error! in the config/module/source domains"
+    log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
+fi
+
+log_section "Duplicate Narration (tracing::info! outside daemon/)"
+# An `info!` is cfgd narrating itself, and every user-facing thing it has to say
+# is already a Printer line. What the tracing channel adds at that level is a
+# second copy of the same sentence, written to the one stream the live region
+# repaints — which strands the last paint of whatever bar is on screen (cfgd
+# module push printed its result three times that way and froze its spinner).
+# The binary's default filter is `warn` for exactly that reason, so an info!
+# outside the daemon is a line nobody sees AND a strand risk when they do.
+#
+# daemon/ is the whole exemption, and not a grandfathered one: there the log IS
+# the output — a service under systemd/launchd prints its ticks to journald
+# through this channel and no other, which is why `cfgd daemon run` keeps `info`
+# as its tracing floor (main.rs::runs_reconcile_loop).
+#
+# Same // tracing-ok: <why> hatch as the domain gate above.
+narration_scope_dirs=(crates/cfgd-core/src crates/cfgd/src)
+require_dirs "duplicate narration scan" "${narration_scope_dirs[@]}" || true
+narration_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */daemon/*) continue ;;
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+    esac
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tracing::info!/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    ')
+    if [[ -n "$file_hits" ]]; then
+        narration_violations="${narration_violations}${file_hits}"$'\n'
+    fi
+done < <(find "${narration_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
+narration_violations=$(echo "$narration_violations" | sed '/^$/d')
+if [[ -n "$narration_violations" ]]; then
+    log_error "tracing::info! outside daemon/ (a second copy of a line the Printer already prints, on the stream the live region repaints — demote to debug!, delete it, or mark // tracing-ok: <why>):"
+    echo "$narration_violations" | head -20
+else
+    log_ok "No tracing::info! outside daemon/"
+fi
+
+log_section "Comment Voice — No Session-Narrative or Self-Citation"
+# critical.md item 8 bans assistant citations ("we", "I", "Claude"),
+# session-narrative markers (Plan/Phase/Task/Step/Wave/Cycle/Session/Round +
+# a number, "Fix round", "§") in comments: a comment renders nowhere a future
+# reader can see who wrote it or which turn produced it, so a first-person,
+# session-relative or numbered-marker word in one is the assistant narrating
+# its own turn rather than documenting the code. Anchored on the COMMENT half
+# of a line via code_only/LAST_COMMENT, never the code half, so an identifier
+# or string literal spelling one of these words is untouched.
+#
+# Test code and build scripts are walked too: their comments render nowhere a
+# future reader can see who wrote them either, so there is no file-skip case
+# here — every *.rs under crates/ is scanned whole, test modules, fixtures and
+# build.rs included.
+#
+# `Claude Code` is a real external product name cfgd documents as a peer of
+# Gemini/Copilot/Codex/Cursor in the multi-provider skill renderer, and is
+# exempted as a compound; a bare `Claude` outside that phrase is still the
+# self-citation the rule bans. A numbered marker matches only a CAPITALIZED
+# label (`Phase 9`, `Step 3`) immediately followed by a number, so an
+# ordinary lowercase word ("phase" as in "gated-off phase") is untouched.
+#
+# A review-finding TAG (`B1`, `W4`, `S24`) is the same narration wearing a
+# different label: it names a row of a review nobody reading the code can open.
+# The tag alone is ambiguous with real identifiers (`F5`, `W3C`), so it flags
+# only beside a word that makes it a citation — "finding", "review", "proved"
+# or "the audit".
+#
+# Escape hatch: `// cite-ok: <why>` on the flagged line itself, for a comment
+# that must quote user-facing text containing one of these words verbatim.
+comment_voice_violations=""
+while IFS= read -r -d '' rsfile; do
+    file_hits=$(awk -v filepath="$rsfile" "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        comment != "" &&
+        (comment ~ /(^|[^A-Za-z])[Ww]e([^A-Za-z]|$)/ ||
+         comment ~ /(^|[^A-Za-z])this (task|session|round)([^A-Za-z]|$)/ ||
+         (comment ~ /(^|[^A-Za-z])Claude([^A-Za-z]|$)/ && comment !~ /Claude Code/) ||
+         comment ~ /(^|[^A-Za-z])(Plan|Phase|Task|Step|Wave|Cycle|Session|Round)[[:space:]]+[0-9]/ ||
+         comment ~ /(^|[^A-Za-z])Fix round([^A-Za-z]|$)/ ||
+         (comment ~ /(^|[^A-Za-z])[BWSF]-?[0-9][0-9]?([^0-9A-Za-z]|$)/ &&
+          comment ~ /(finding|review|proved|the audit)/) ||
+         comment ~ /§/) &&
+        !carries_marker(comment, "cite-ok:") { print filepath ":" NR ":" $0 }
+    ' "$rsfile")
+    if [[ -n "$file_hits" ]]; then
+        comment_voice_violations="${comment_voice_violations}${file_hits}"$'\n'
+    fi
+done < <(find crates -name '*.rs' -print0 2>/dev/null)
+comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
+if [[ -n "$comment_voice_violations" ]]; then
+    log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/a review-finding tag like B1 beside \"finding\"|\"review\"|\"proved\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
+    echo "$comment_voice_violations" | head -20
+else
+    log_ok "No session-narrative or self-citation comments"
 fi
 
 log_section "Controlled Shell Execution"
@@ -507,22 +781,51 @@ build_production_corpus() {
             */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
         esac
         strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
-    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+    done < <(audit_scan_files)
 }
 build_production_corpus
 production_construction_sites() {
     grep -E "::${1}[[:space:]]*[{(]" "$PRODUCTION_CORPUS" \
         | grep -v '#\[error' | grep -v 'enum ' || true
 }
-for errors_file in $(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null); do
+# `-path '*/errors*'` finds the real enum files by convention; a fixture is one
+# named file handed in directly with no such path, so CFGD_AUDIT_PATH widens
+# the search to every fixture — every gate sharing that override runs against
+# whichever fixture the driver is proving right now, this one included. The
+# CONTENT filter (every real errors file derives `thiserror::Error`) is what
+# keeps that widening from also treating an unrelated fixture as an enum
+# definition: a `match` arm written `Ok(output) => …` opens a line the same
+# way an indented variant declaration does, and a fixture proving some OTHER
+# gate's wording (`good_child_process_wording.txt`) reported `Ok`/`Err` as
+# variants nothing constructs until this filter told the two apart.
+errors_file_candidates() {
+    local -a candidates=()
+    local f
+    if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
+        while IFS= read -r -d '' f; do candidates+=("$f"); done \
+            < <(find "$CFGD_AUDIT_PATH" -type f -print0 2>/dev/null)
+    else
+        while IFS= read -r -d '' f; do candidates+=("$f"); done \
+            < <(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' -print0 2>/dev/null)
+    fi
+    [[ ${#candidates[@]} -eq 0 ]] && return 0
+    grep -lF 'thiserror::Error' -- "${candidates[@]}" 2>/dev/null || true
+}
+for errors_file in $(errors_file_candidates); do
+    # Extraction runs over the test-stripped view, same as every other gate:
+    # an enum's own `#[cfg(test)] mod tests` may hold a table pairing a
+    # variant NAME with `Some(...)` (a load-bearing-label verdict, not a
+    # constructor), and `Some` — uppercase first letter, lowercase rest,
+    # followed by `(` — parses as a candidate variant on the raw file.
+    errors_stripped=$(strip_test_blocks_from_file "$errors_file")
     # Extract PascalCase variant names (excluding #[from] variants which are
     # auto-constructed). Digits are part of a variant name — `Sha256Mismatch`
     # matched neither regex below, so a digit-bearing variant could never be
     # reported dead however unreachable it became.
-    variants=$(grep -oP '^\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' "$errors_file" \
-        | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
+    variants=$(echo "$errors_stripped" | grep -oP ':[0-9]+:\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' \
+        | sed -E 's/^[^:]*:[0-9]+://' | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
     # Get list of #[from] variants — #[from] appears on the same line as the variant
-    from_variants=$(grep '#\[from\]' "$errors_file" \
+    from_variants=$(echo "$errors_stripped" | grep '#\[from\]' \
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
@@ -551,15 +854,17 @@ log_section "DRY — Repeated String Literals"
 # each other per output-module.md) — its repeated #[must_use]/role strings are
 # by-design, not copy-paste.
 # Attribute strings (#[schemars(with=...)], #[must_use=...], #[error(...)], …)
-# are Rust-mandated literals that cannot be replaced by a const, so skip them.
+# are Rust-mandated literals that cannot be replaced by a const, so skip them —
+# `strip_attr_lines` drops a wrapped attribute's continuation lines too, not
+# just the line that opens it.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
-        | grep -vE ':[0-9]+:[[:space:]]*#\[' \
+        | strip_attr_lines \
         | grep -oh '"[^"]\{30,\}"' || true
-done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
+done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
@@ -582,12 +887,17 @@ log_section "DRY — Duplicated Function Definitions"
 # one fluent method surface (output-module.md), so a method name shared across
 # those builders is intentional API symmetry, not duplicated logic.
 #
+# `len` and `is_empty` are excluded together: clippy's `len_without_is_empty`
+# requires a type offering one to offer the other, so any collection-shaped
+# type in the workspace defines both, and excusing only half of the pair makes
+# the gate fire on the idiom it forced.
 # ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
-# the name keeps its budget: `is_clean` is deliberately shared by the two backup
-# outcome types (BackupRunRecord, RestoreOutcome) which answer the exit-code
-# question under one name, but dropping only the second site means a THIRD
-# definition still trips the gate. Adding a name to the awk list below instead
-# would blind the check to that name forever.
+# the name keeps its budget: `is_clean` is deliberately shared by four backup
+# outcome types — BackupRunReport, RestoreOutcome and RollbackOutcome are
+# listed below, and BackupRunRecord keeps the budget — which answer the
+# exit-code question under one name, but dropping only some of the sites
+# means the next one still trips the gate. Adding a name to the awk list below
+# instead would blind the check to that name forever.
 # `Owner`'s constructors are named after the kind they mint, which is the whole
 # point of the closed vocabulary — the collisions are with unrelated
 # constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
@@ -604,6 +914,7 @@ log_section "DRY — Duplicated Function Definitions"
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "is_clean crates/cfgd-core/src/backup/mod.rs"
+    "is_clean crates/cfgd-core/src/backup/rollback.rs"
     "profile crates/cfgd-core/src/reconciler/types.rs"
     "module crates/cfgd-core/src/reconciler/types.rs"
     "source crates/cfgd-core/src/reconciler/types.rs"
@@ -614,6 +925,140 @@ ALLOWED_FN_PAIRS=(
     "token crates/cfgd/src/cli/output_types.rs"
     "owner crates/cfgd/src/cli/output_types.rs"
     "actions crates/cfgd/src/cli/output_types.rs"
+    # Four conventions and two delegates, each a name two unrelated things
+    # answer. `X::of(source) -> Self` is the derivation convention (`Tier::of`
+    # keeps the budget); `role` maps an enum onto an output `Role`
+    # (`SkillResultStatus` keeps it); `with_config_dir` is the `#[must_use]`
+    # builder convention (`SopsBackend` keeps it); `report` is `sidecar`'s own
+    # private line printer, not one of `providers`' note sinks (which keep it).
+    # The two delegates CALL the definition they share a name with:
+    # `lanes::registers_family_sources` resolves an action's manager and asks
+    # the trait method, and `cli::apply::refresh_link_deployed_hashes` wraps the
+    # reconciler's in the log-and-continue the two apply paths need.
+    "of crates/cfgd-core/src/reconciler/env_engine.rs"
+    "of crates/cfgd-core/src/modules/surfaces.rs"
+    "of crates/cfgd/src/cli/status.rs"
+    # `LevelWidths::of` IS the `X::of(input) -> Self` convention above, over a
+    # slice of sibling fields rather than a single source; a fourth unrelated
+    # `of`. `Tier::of` still keeps the budget.
+    "of crates/cfgd/src/cli/explain/mod.rs"
+    "role crates/cfgd/src/cli/status.rs"
+    "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
+    "report crates/cfgd-core/src/reconciler/sidecar.rs"
+    "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
+    "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
+    # The names below were blanket-excused by NAME until the trait-impl skip
+    # above landed. The skip covers each trait's IMPLS; what still collides is
+    # the trait's own declaration against an unrelated inherent method, a free
+    # function, or a second trait — so each keeps its budget here instead.
+    # Process entry points, one per binary/server, sharing only the verb.
+    "run crates/cfgd-csi/src/app.rs"
+    "run crates/cfgd-operator/src/controllers/mod.rs"
+    "run crates/cfgd/src/mcp/server/mod.rs"
+    # `mcp::resources::read` reads a resource; these three read a withheld
+    # decision, a registry key, and a tool-annotation preset.
+    "read crates/cfgd-core/src/reconciler/pending.rs"
+    "read crates/cfgd/src/mcp/brontes.rs"
+    "read crates/cfgd/src/system/windows_registry.rs"
+    # `SkillProvider::list` is the trait; these build a JSON-RPC method payload.
+    "list crates/cfgd/src/mcp/prompts.rs"
+    "list crates/cfgd/src/mcp/resources.rs"
+    "list crates/cfgd/src/mcp/tools.rs"
+    # `SecretProvider::resolve` is the trait; these resolve a registry
+    # credential and a directory set.
+    "resolve crates/cfgd-core/src/oci/auth/mod.rs"
+    "resolve crates/cfgd-core/src/util/paths.rs"
+    # `PackageManager::install` is the trait; these install a skill and a
+    # signal handler.
+    "install crates/cfgd-core/src/daemon/mod.rs"
+    "install crates/cfgd-core/src/providers/skill/mod.rs"
+    # `SystemConfigurator::apply` is the trait; these run a reconcile.
+    "apply crates/cfgd-core/src/reconciler/apply.rs"
+    "apply crates/cfgd-core/src/reconciler/run.rs"
+    # A spec's own validation vs a web session token's.
+    "validate crates/cfgd-operator/src/gateway/api/mod.rs"
+    # `SkillProvider::render` renders a skill; `IniDoc::render` serializes a file.
+    "render crates/cfgd-core/src/reconciler/patch.rs"
+    # The three `DaemonHooks` methods keep the budget; these are the cfgd-crate
+    # free functions the workstation hooks delegate to.
+    "plan_packages crates/cfgd/src/packages/mod.rs"
+    "plan_packages_observed crates/cfgd/src/packages/mod.rs"
+    "prune_orphaned_packages crates/cfgd/src/packages/mod.rs"
+    # `PackageManager::name` is the trait; this names a scanned profile entry.
+    "name crates/cfgd-core/src/config/parse.rs"
+    # `cfgd_core::expand_tilde` is the shared helper and keeps the budget; the
+    # `DaemonHooks` method is the hook surface over it.
+    "expand_tilde crates/cfgd-core/src/daemon/mod.rs"
+    # `SystemConfigurator::diff` is the trait; this diffs a file's content.
+    "diff crates/cfgd/src/files/plan.rs"
+    # `Platform::detect` is the one platform detection and keeps the budget;
+    # `SkillProvider::detect` finds an installed skill.
+    "detect crates/cfgd-core/src/providers/skill/mod.rs"
+    # The names below became visible when the extraction widened to generic and
+    # restricted-visibility definitions (`fn name<T>(`, `pub(crate) fn name(`).
+    # Each is a homonym: same word, different question, one keeping the budget.
+    # `util::process`'s reader streams 8 KiB byte chunks and signals EOF on a
+    # channel; the script one reads LINES and stamps each with a shared Instant.
+    "spawn_pipe_reader crates/cfgd-core/src/reconciler/scripts.rs"
+    # `patch.rs` assigns into a `toml_edit::Table` carrying the old value's
+    # decor; this converts a `serde_yaml::Value` into a plain `toml::Table`.
+    "set_toml_value crates/cfgd/src/system/node/format.rs"
+    # `LeaderElector::run` drives a callback under a lease; `app::run` is the
+    # process entry point.
+    "run crates/cfgd-operator/src/leader.rs"
+    # The `#[must_use] fn(mut self, &dyn LaneOutput) -> Self` builder convention
+    # on two unrelated types (`PackageContext` keeps the budget, `PackageExec`).
+    "in_lane crates/cfgd-core/src/reconciler/packages.rs"
+    # `ApplyRun::header` renders the run's kv header; this reads one HTTP header.
+    "header crates/cfgd-core/src/oci/transport.rs"
+    # `ConfigInputRecorder::finish` pops a recording frame; `LiveTree::finish`
+    # commits rows and takes the live region down.
+    "finish crates/cfgd-core/src/reconciler/live_tree.rs"
+    # `Platform::detect` / `Platform::current` are the cataloged host detection
+    # and its memo; the env engine's probe reads shell/rc facts under one `home`
+    # and maps `cfg!` flags onto a 4-variant enum its tests drive per platform.
+    "detect crates/cfgd-core/src/reconciler/env_engine.rs"
+    "current crates/cfgd-core/src/reconciler/env_engine.rs"
+    # `RegistryValues::value` reads one Windows registry value by name;
+    # `FoldedPath::value` keeps the budget as the env engine's own PATH
+    # renderer, which takes a dialect's quoting rather than a name.
+    "value crates/cfgd/src/system/windows_registry.rs"
+    # `pack::resolve_platform` parses an explicit `--platform` override or
+    # falls back to the host's (os, arch) pair for an image manifest;
+    # `push::resolve_platform` keeps the budget as the simpler `Option<&str>`
+    # default applied to the annotation string `current_platform` composes.
+    "resolve_platform crates/cfgd-core/src/oci/pack.rs"
+    # `SkillInstallResult::installed` constructs a skill-install report row;
+    # `ActionRun::installed` keeps the budget as the reconciler's own builder
+    # step recording a package count the executor re-read off the machine.
+    "installed crates/cfgd/src/cli/skill/mod.rs"
+    # `ResourceSchema::docs_url` is a delegate — it CALLS `config::docs_url`,
+    # which keeps the budget as the one URL derivation both this and
+    # `field_docs_url` read.
+    "docs_url crates/cfgd/src/cli/explain/mod.rs"
+    # `RateLimiter::check` admits or rejects a peer's request; `ArtifactVerifier
+    # ::check` keeps the budget as the cosign signature verdict for a
+    # reference, an unrelated question sharing only the verb.
+    "check crates/cfgd-operator/src/gateway/rate_limit.rs"
+    # `ApplyStatus::human_display` keeps the budget as the (word, Role) pair
+    # convention (shared-utils.md, "A Title-Cased status word renders with its
+    # role, everywhere"); `ComplianceStatus::human_display` is the same
+    # convention for a compliance snapshot's verdict, a second sanctioned
+    # vocabulary rather than a duplicate to hunt down.
+    "human_display crates/cfgd-core/src/compliance/mod.rs"
+    # `DiffSummary::any_drift` and `VerifyOutput::any_drift` are the same
+    # convention on two verbs' summary types (shared-utils.md, "each
+    # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
+    # of either exit gate finds the same question, over different fields.
+    "any_drift crates/cfgd/src/cli/verify.rs"
+    # `Theme::arrow`/`Printer::arrow` are the output/-excused pair (the ONE
+    # arrow glyph, shared-utils.md); these two CALL `Printer::arrow` to narrow
+    # the surface a caller outside output/ gets, the same shape the two
+    # delegates above take — `SystemContext::arrow` in place of the banned
+    # `printer()` accessor (output-module.md), `LiveTree::arrow` for a wait
+    # row naming a value change.
+    "arrow crates/cfgd-core/src/providers/mod.rs"
+    "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -625,55 +1070,35 @@ fn_dupes=$(while IFS= read -r -d '' rsfile; do
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
-        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z0-9_]+\(' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)(.*|\2 \1|' \
+        | drop_trait_impl_lines \
+        | grep -E '^\S+:[0-9]+:\s*(pub[^ ]*\s+)?(async\s+)?fn [a-z0-9_]+[(<]' \
+        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)[(<].*|\2 \1|' \
         || true
-done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
+done < <(audit_scan_files) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \
     | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
-        $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
-        $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
-        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && \
-        $2 != "refresh_index" && $2 != "has_index" && $2 != "listed_identity" && \
-        $2 != "plan_packages_observed" && \
-        $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
-        $2 != "scan_source" && $2 != "scan_target" && \
-        $2 != "get" && $2 != "set" && $2 != "delete" && $2 != "list" && $2 != "resolve" && \
-        $2 != "open" && $2 != "init_tables" && $2 != "run" && $2 != "build" && $2 != "test" && \
-        $2 != "validate" && $2 != "main" && $2 != "plan_packages" && $2 != "from_str" && \
-        $2 != "expand_tilde" && $2 != "encrypt_file" && $2 != "edit_file" && \
-        $2 != "decrypt_file" && $2 != "build_registry" && $2 != "as_str" && \
-        $2 != "router" && $2 != "set_device_config" && $2 != "record_drift_event" && \
-        $2 != "list_drift_events" && $2 != "list_fleet_events" && $2 != "read_current_config" && \
-        $2 != "load_profile" && $2 != "plan" && $2 != "plan_files" && \
+        $2 != "new" && $2 != "get" && $2 != "set" && $2 != "delete" && \
+        $2 != "open" && $2 != "init_tables" && $2 != "build" && \
+        $2 != "test" && $2 != "main" && $2 != "as_str" && $2 != "router" && \
+        $2 != "set_device_config" && $2 != "record_drift_event" && \
+        $2 != "list_drift_events" && $2 != "list_fleet_events" && \
+        $2 != "read_current_config" && $2 != "load_profile" && $2 != "plan" && \
         $2 != "list_devices" && $2 != "get_device" && $2 != "enroll" && \
         $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
-        $2 != "from_spec" && $2 != "extend_registry_custom_managers" && \
-        $2 != "available_version" && \
-        $2 != "load_module" && \
-        $2 != "installed_packages_with_versions" && $2 != "success" && \
-        $2 != "version_meets_minimum" && \
-        $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
-        $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
-        $2 != "created_path_dirs" && \
-        $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
-        $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
-        $2 != "cmd_status" && \
+        $2 != "from_spec" && $2 != "load_module" && $2 != "success" && \
+        $2 != "run_migrations" && $2 != "request_challenge" && \
+        $2 != "is_empty" && $2 != "len" && $2 != "error" && \
+        $2 != "enroll_info" && $2 != "parse" && $2 != "cmd_status" && \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \
         $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
         $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "read" && $2 != "write" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
-        $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" && \
-        $2 != "unavailable" && $2 != "set_fail_apply" && \
-        $2 != "status" && $2 != "label" && \
-        $2 != "render" && $2 != "detect" && $2 != "target_path" && $2 != "id" && \
-        $2 != "package_identity" && $2 != "persisted_uninstall" && \
-        $2 != "set_config_dir" && $2 != "content_drift" && \
-        $2 != "build_file_manager" && $2 != "prune_orphaned_packages" && \
+        $2 != "recv_sighup" && $2 != "recv_sigterm" && \
+        $2 != "read_command_output" && $2 != "unavailable" && \
+        $2 != "set_fail_apply" && $2 != "status" && $2 != "label" && \
         $2 != "manager_names" && $2 != "aborted" && $2 != "failed" && \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
@@ -780,10 +1205,23 @@ log_section "Effective-state routing (module↔profile coherence)"
 #   desired_packages_for( / desired_packages_for_spec(  → effective_desired_packages
 #   .merged.system / profile.system  (direct field reads) → effective_system_map
 #   .files.managed                                        → effective_files
+#   file.strategy / .strategy.unwrap_or(  (raw, unresolved) → effective_file_strategies
+# The strategy ban is the same rule one field down: a read path that takes an
+# entry's `Option<FileStrategy>` raw, or applies the profile-wide default itself,
+# is deciding on its own what a strategy-less entry means — and three of them
+# decided differently, so `cfgd diff` and the apply-time conflict sweep
+# disagreed about whether a `Patch` target was even a conflict.
 # Passing &resolved.merged or profile as an ARGUMENT to effective_* is fine and
 # does not match (the bans target the .system FIELD read, not .merged itself).
 # crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
 # of truth and is simply not in the scanned list below.
+# crates/cfgd/src/files/plan.rs is likewise off the list BY DESIGN, not by
+# accident: CfgdFileManager owns profile-file enumeration (its
+# `sorted_managed_specs` / `file_drift_results` have always read
+# `.files.managed`) and is the sanctioned single reader the render paths
+# route through. Module files never pass through it — every read path
+# enumerates them from its own resolved modules — so that routing drops
+# nothing module-contributed.
 # The list is every command whose composition mode is `Report` in
 # output-module.md's table — the read paths — plus the two core engines they
 # share. It is enumerated rather than derived because "is this a read path?" is
@@ -805,7 +1243,7 @@ effective_read_paths=(
     crates/cfgd-core/src/compliance/mod.rs
 )
 require_files "effective-state routing scan" "${effective_read_paths[@]}" || true
-effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed'
+effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed|\bfile\.strategy\b|\.strategy\.unwrap_or\('
 effective_violations=""
 for rsfile in "${effective_read_paths[@]}"; do
     [[ -f "$rsfile" ]] || continue
@@ -885,6 +1323,23 @@ if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(Pr
       --glob '!**/tests/**' 2>/dev/null) && [ -n "$direct" ]; then
   log_error "DIRECT TERMINAL TYPES (console::* / indicatif::*::new) outside output module:"
   echo "$direct"
+fi
+
+# 4b. Unconditional version pricing outside the two surfaces that render a
+#     version per DECLARED package (cfgd doctor, cfgd module show). Every
+#     PLANNING path routes through Reconciler::fill_planned_versions, the
+#     survivor-gated form — an unconditional fill there re-prices packages the
+#     plan elides, one subprocess per declared package per invocation (the
+#     converged-plan multi-second wait). See shared-utils.md's pricing entry.
+if unfenced=$(rg --type-add 'rust:*.txt' --type rust -n 'fill_available_versions\(' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/modules/resolve.rs' \
+      --glob '!crates/cfgd/src/cli/doctor.rs' \
+      --glob '!crates/cfgd/src/cli/module/list_show.rs' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$unfenced" ]; then
+  log_error "UNCONDITIONAL VERSION PRICING (fill_available_versions is for doctor/module-show only — planning paths take Reconciler::fill_planned_versions):"
+  echo "$unfenced"
 fi
 
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
@@ -1033,6 +1488,182 @@ if [[ -n "$raw_spawns" ]]; then
     echo "$raw_spawns" | head -10
 else
     log_ok "No raw spawn_blocking in workspace production code"
+fi
+
+log_section "Sleep-as-synchronization in test code (sleep-ok:)"
+# `thread::sleep`/`tokio::time::sleep` used as a guess at how long some other
+# thread needs is the flaky-timing-assertion shape (a 408.9ms-vs-400ms
+# concurrency failure under a loaded suite). Reach for the observables
+# catalogued in shared-utils.md instead: ConcurrencyWitness, a channel/oneshot
+# handshake, await_queued_path_writer, await_blocking_source_acquire, or a
+# bounded deadline-poll on the thing that actually changed. Escape hatch for
+# a genuinely real-time subject (a token-bucket refill, a deliberate timeout
+# exercise): the call line or the line directly above it, single-line —
+#   // sleep-ok: <why no observable exists>
+# Anchored to TEST CODE ONLY via extract_test_blocks_from_file — a sleep in
+# production is a different concern (and none exist outside a controlled
+# retry/backoff loop already reviewed elsewhere).
+sleep_violations=$(while IFS= read -r -d '' rsfile; do
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /thread::sleep\(|tokio::time::sleep\(/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "sleep-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$sleep_violations" ]]; then
+    log_error "thread::sleep/tokio::time::sleep in test code (flaky timing sync — use the observables catalogued in shared-utils.md: ConcurrencyWitness, a channel/oneshot handshake, await_queued_path_writer, await_blocking_source_acquire, a bounded deadline-poll — or annotate // sleep-ok: <why no observable exists>):"
+    echo "$sleep_violations" | head -20
+else
+    log_ok "No unguarded sleep-as-synchronization in test code"
+fi
+
+log_section "Raw Printer capture-buffer reads in test code (raw-capture-ok:)"
+# A test's Printer::for_test* capture buffer (conventionally named `buf`) is
+# an Arc<Mutex<String>> the printer writes into; reading it any way OTHER than
+# cfgd_core::test_helpers::captured_text(&buf) bypasses its ANSI-stripping and
+# poison-recovery, which is exactly the raw-lock idiom this gate rejects:
+# `<recv>.lock().unwrap()` / `.expect("...")` / `.unwrap_or_else(...)`, where
+# <recv>'s own name contains "buf" (the codebase-wide convention for a
+# Printer capture handle — see shared-utils.md's Test guards section).
+# `.clear()` is a WRITE (resetting the buffer for reuse), not a read, and is
+# not gated. Escape hatch, single-line, on the call line or directly above:
+#   // raw-capture-ok: <asserting ON the escapes>
+# — for a test whose subject IS the raw ANSI bytes (captured_text would strip
+# the very thing being asserted on), or a buffer that is provably not a
+# Printer text capture (e.g. an Arc<Mutex<Vec<u8>>> tracing-log sink, which
+# captured_text does not even type-check against).
+# test_helpers.rs is excluded: it is captured_text's own implementation, the
+# one legitimate raw read the helper itself performs.
+raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */test_helpers.rs) continue ;;
+    esac
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /([A-Za-z_][A-Za-z0-9_.]*)?[Bb]uf[A-Za-z0-9_]*\.lock\(\)\.(unwrap\(\)|unwrap_or_else\(|expect\()/ &&
+        code !~ /\.clear\(\)/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "raw-capture-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$raw_capture_violations" ]]; then
+    log_error "Raw Printer capture-buffer read in test code (use cfgd_core::test_helpers::captured_text(&buf), or annotate // raw-capture-ok: <why>):"
+    echo "$raw_capture_violations" | head -20
+else
+    log_ok "No raw Printer capture-buffer reads in test code"
+fi
+
+log_section "PATH-guarded resolution asserts in test code (path-guard-ok:)"
+# A test asserting a SUCCESSFUL command_path/command_available/require_tool
+# resolution reads the process-global PATH; without path_env_read_guard() (or
+# the mutation guard) a concurrent test emptying PATH to drive a
+# command-not-found branch can land between the read and the assertion and
+# flip a should-pass resolution to a false negative. A test asserting FAILURE
+# needs no guard — an empty PATH cannot turn a miss into a hit.
+#
+# Function-scoped: walks each #[test] fn's body (brace-depth tracked) inside
+# the test-only corpus, and flags it only if a positive-assertion shape
+# appears WITHOUT a guard call anywhere in the same function body. An assertion
+# is tracked from `assert…!(` to its closing paren, so the call it asserts on
+# counts wherever inside it the formatter put it. Escape hatch, anywhere in
+# that same span — on the call line, on the `assert…!(` line, or on a comment
+# line directly above either:
+#   // path-guard-ok: <negative assertion / guard held by harness>
+path_guard_violations=$(while IFS= read -r -d '' rsfile; do
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        function reset_fn() {
+            in_fn = 0; depth = 0; has_positive = 0; has_guard = 0
+            delete positive_lines; positive_lines_n = 0
+            delete positive_marked; in_assert = 0; assert_bal = 0; assert_marked = 0
+        }
+        function flush_fn() {
+            if (in_fn && has_positive && !has_guard) {
+                for (k = 1; k <= positive_lines_n; k++) {
+                    if (!positive_marked[k]) print positive_lines[k]
+                }
+            }
+            reset_fn()
+        }
+        # A resolution call whose SUCCESS is being claimed. The `file:line:`
+        # prefix, the crate path and ALL whitespace come off first, so
+        # `! crate::command_available(` reads as the negative it is and a
+        # parenthesised `(command_available(` still reads as positive.
+        function positive_call(line,   c) {
+            c = line
+            sub(/^[^:]*:[0-9]+:/, "", c)
+            gsub(/cfgd_core::|crate::/, "", c)
+            gsub(/[[:space:]]/, "", c)
+            if (c ~ /(^|[^!])command_available\(/) return 1
+            if (c ~ /(^|[^!])command_path\([^)]*\)\.is_some\(\)/) return 1
+            if (c ~ /(^|[^!])require_tool\([^)]*\)\.is_ok\(\)/) return 1
+            return 0
+        }
+        BEGIN { reset_fn() }
+        {
+            code = code_only($0); comment = LAST_COMMENT
+            is_fn_start = (code ~ /^[^:]*:[0-9]+:[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)
+            if (!in_fn && is_fn_start) {
+                in_fn = 1; depth = 0
+            }
+            if (in_fn) {
+                # Outside an assertion, only an unwrapping resolution claims
+                # success on its own.
+                is_positive = (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
+                    (code ~ /(cfgd_core::|crate::)?require_tool\([^)]*\)\.(expect|unwrap|is_ok)\(/)
+                # An assertion is a SPAN, not a line: rustfmt wraps a long one
+                # over several, and a gate that only ever read the `assert!(`
+                # line reported OK forever for every wrapped shape. Balance the
+                # parens from the macro to its close and judge each line inside.
+                line_marked = 0
+                if (!in_assert) {
+                    if (match(code, /assert(_eq|_ne)?!\(/)) {
+                        rest = substr(code, RSTART)
+                        assert_bal = gsub(/\(/, "(", rest) - gsub(/\)/, ")", rest)
+                        if (positive_call(code)) is_positive = 1
+                        if (assert_bal > 0) {
+                            in_assert = 1
+                            # The marker written where the docs say to write it
+                            # — on the macro line or directly above it — has to
+                            # reach the call line the span later flags.
+                            assert_marked = marker_applies(comment, prev, prev_comment, "path-guard-ok:")
+                            line_marked = assert_marked
+                        }
+                    }
+                } else {
+                    if (positive_call(code)) is_positive = 1
+                    if (carries_marker(comment, "path-guard-ok:")) assert_marked = 1
+                    line_marked = assert_marked
+                    assert_bal += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
+                    # A marker belongs to ONE assertion; the next one in the
+                    # same function argues for itself.
+                    if (assert_bal <= 0) { in_assert = 0; assert_marked = 0 }
+                }
+                if (is_positive) {
+                    positive_lines_n++
+                    positive_lines[positive_lines_n] = $0
+                    positive_marked[positive_lines_n] = line_marked || \
+                        marker_applies(comment, prev, prev_comment, "path-guard-ok:")
+                    has_positive = 1
+                }
+                if (code ~ /path_env_read_guard\(\)|path_env_mutation_guard\(\)/) has_guard = 1
+                opens = gsub(/{/, "{", code)
+                closes = gsub(/}/, "}", code)
+                depth += opens - closes
+                if (depth <= 0 && opens + closes > 0) flush_fn()
+            }
+            prev = $0; prev_comment = comment; prev_code = code
+        }
+        END { flush_fn() }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$path_guard_violations" ]]; then
+    log_error "Test asserts a successful command_path/command_available/require_tool resolution without path_env_read_guard()/path_env_mutation_guard() (races a concurrent test's PATH mutation — see shared-utils.md's ProbePath section, or annotate // path-guard-ok: <why>):"
+    echo "$path_guard_violations" | head -20
+else
+    log_ok "Every positive command_path/command_available/require_tool assertion is PATH-guarded"
 fi
 
 cli_mod="crates/cfgd/src/cli/mod.rs"
@@ -1293,6 +1924,213 @@ if oc=$(rg --type rust -n 'sort_key\(\)|groups(\(\))?[^;]*\.sort' \
   echo "$oc"
 else
   log_ok "Owner::sort_key applied at exactly one site"
+fi
+
+# --- Every demo tape has a Taskfile target ---
+# A tape is recorded through `demo/scripts/record.sh <name>`, and the Taskfile
+# target wrapping it is the only thing that also runs the tape's font gate and
+# the environment the tape assumes (image build, cluster or machine rig, and
+# its teardown). A tape without one is re-recordable only by hand, and the
+# hand-run skips exactly the checks the target exists to enforce — sync.tape
+# shipped that way and sat behind a setup script nobody could reach from
+# `task --list`. `init.tape` is the bare `record.sh` call (the script's
+# default name), so it is matched by its own spelling.
+
+# Every install channel anodizer publishes to has a row in README's
+# Distribution table (and, for the per-user channels, a section in
+# docs/installation.md); a channel anodizer has switched off (`skip: true`)
+# has no row. The Nix publisher shipped for months with no row anywhere,
+# and the Snap row would have outlived its publisher the same way.
+log_section "Install channels (README/installation.md ↔ .anodizer.yaml publishers)"
+
+channel_gap="$(python3 - <<'PY'
+import re, sys, yaml
+
+doc = yaml.safe_load(open(".anodizer.yaml"))
+
+# publisher key in .anodizer.yaml -> (README marker, installation.md marker or None)
+CHANNELS = {
+    "homebrew_casks": ("Homebrew", "### Homebrew"),
+    "aur_source": ("AUR", "### AUR"),
+    "winget": ("winget", "### winget"),
+    "scoop": ("Scoop", "### Scoop"),
+    "chocolatey": ("Chocolatey", "### Chocolatey"),
+    "nix": ("Nix", "### Nix"),
+    "nfpm": ("deb / rpm / apk", "deb / rpm / apk"),
+    "cloudsmiths": ("CloudSmith", None),
+    "krew": ("Krew", None),
+    "docker_digest": ("GHCR", None),
+    "binstall": ("binstall", None),
+    "mcp": ("MCP", None),
+    "snapcrafts": ("Snap", "### Snap"),
+}
+
+def enabled(block):
+    if isinstance(block, list):
+        return any(enabled(b) for b in block)
+    if not isinstance(block, dict):
+        return False
+    if block.get("skip") is True or block.get("disable") is True:
+        return False
+    return block.get("enabled", True) is not False
+
+found = {}
+def walk(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in CHANNELS:
+                found[k] = found.get(k, False) or enabled(v)
+            walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v)
+walk(doc)
+
+readme = open("README.md").read()
+m = re.search(r"^## Distribution\n(.*?)(?=^## )", readme, re.S | re.M)
+table = m.group(1) if m else ""
+install = open("docs/installation.md").read()
+
+gaps = []
+for key, (readme_marker, install_marker) in CHANNELS.items():
+    if key not in found:
+        continue
+    has_row = readme_marker in table
+    if found[key] and not has_row:
+        gaps.append(f"{key}: enabled in .anodizer.yaml but README Distribution table has no '{readme_marker}' row")
+    if not found[key] and has_row:
+        gaps.append(f"{key}: disabled in .anodizer.yaml but README Distribution table still has a '{readme_marker}' row")
+    if install_marker:
+        has_section = install_marker in install
+        if found[key] and not has_section:
+            gaps.append(f"{key}: enabled in .anodizer.yaml but docs/installation.md has no '{install_marker}'")
+        if not found[key] and has_section:
+            gaps.append(f"{key}: disabled in .anodizer.yaml but docs/installation.md still has '{install_marker}'")
+print("\n".join(gaps))
+PY
+)"
+if [ -n "$channel_gap" ]; then
+    log_error "Install channels out of sync with .anodizer.yaml publishers:"
+    printf '%s\n' "$channel_gap"
+else
+    log_ok "README Distribution table and docs/installation.md match the enabled publishers"
+fi
+
+log_section "Demo tapes (one Taskfile target each)"
+
+tape_gap=""
+for tape in demo/*.tape; do
+    [ -e "$tape" ] || continue
+    name="$(basename "$tape" .tape)"
+    if [ "$name" = "init" ]; then
+        pat='^\s*- bash demo/scripts/record\.sh\s*$'
+    else
+        pat="^\s*- bash demo/scripts/record\.sh ${name}\s*$"
+    fi
+    grep -Eq "$pat" Taskfile.yml || tape_gap="${tape_gap}${tape}"$'\n'
+done
+if [ -n "$tape_gap" ]; then
+    log_error "Demo tapes with no Taskfile target running demo/scripts/record.sh <name>:"
+    printf '%s' "$tape_gap"
+else
+    log_ok "Every demo/*.tape is recorded by a Taskfile target"
+fi
+
+# --- Every tape renders in the ONE demo theme ---
+# The GIF set is one product and reads as one only in one preset. A tape has
+# exactly one place it selects the theme: a container-recorded tape's hidden
+# `cfgd init … --theme <preset>` (the container has no config before it), and
+# a host-recorded tape's export line (the kind-cluster demos reach the demo-k8s
+# kubeconfig, and cfgd on the HOST otherwise reads the recording operator's own
+# ~/.config/cfgd, which is how two GIFs once shipped in a preset the rest of the
+# set did not use). Both populations are checked against the same name, so a
+# preset change is one edit here and one per tape, never a split set.
+DEMO_THEME=dracula
+log_section "Demo tapes (every tape pins the demo theme: ${DEMO_THEME})"
+
+theme_gap=""
+for tape in demo/*.tape; do
+    [ -e "$tape" ] || continue
+    if grep -q 'cfgd-debug/demo-k8s' "$tape"; then
+        grep -Eq "^Type \"export .*CFGD_THEME=${DEMO_THEME}( |\")" "$tape" \
+            || theme_gap="${theme_gap}${tape} (host tape: export line must carry CFGD_THEME=${DEMO_THEME})"$'\n'
+    elif grep -q 'cfgd init ' "$tape"; then
+        grep -Eq "^Type \"cfgd init .*--theme ${DEMO_THEME}( |\")" "$tape" \
+            || theme_gap="${theme_gap}${tape} (container tape: cfgd init must carry --theme ${DEMO_THEME})"$'\n'
+    else
+        # A container tape whose machine is pre-staged by a setup script
+        # (sync.tape) inherits that script's init; the script is the tape's
+        # theme selector — either a `--theme` on its init or a `theme:` in the
+        # config it seeds — and is checked in its place.
+        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | head -n1)
+        if [ -z "$setup_script" ] || ! grep -Eq -- "(--theme|^ *theme:) ${DEMO_THEME}( |\"|'|\$)" "demo/scripts/${setup_script}"; then
+            theme_gap="${theme_gap}${tape} (no cfgd init and no setup script selecting the ${DEMO_THEME} theme)"$'\n'
+        fi
+    fi
+done
+if [ -n "$theme_gap" ]; then
+    log_error "Demo tapes that do not pin the ${DEMO_THEME} theme:"
+    printf '%s' "$theme_gap"
+else
+    log_ok "Every demo tape pins the ${DEMO_THEME} theme"
+fi
+
+log_section "Rules catalog entry size (shared-utils.md / output-module.md)"
+
+# Both files' own headers promise "one to three sentences" / "a few sentences"
+# per entry. CAP is the current max entry/row size across both files, rounded
+# up to the next 50 bytes, so the next oversized entry is caught before the
+# catalog drifts back past the density its own header promises.
+CATALOG_ENTRY_CAP=750
+
+require_files "rules catalog size scan" .claude/rules/shared-utils.md .claude/rules/output-module.md || true
+
+# An "entry" is a top-level `- ` bullet plus its continuation lines, up to the
+# next bullet, blank line or heading; a table body row (row 3+ of a `|`-led
+# block, header and separator excluded) is its own entry. Byte length under
+# LC_ALL=C so a multi-byte glyph (—, …) counts its real bytes, not one char.
+catalog_entry_gaps() {
+    local file="$1" check_rows="$2"
+    LC_ALL=C awk -v file="$file" -v cap="$CATALOG_ENTRY_CAP" -v check_rows="$check_rows" '
+    function report(text, len,   head) {
+        head = text
+        gsub(/\n/, " ", head)
+        if (length(head) > 60) head = substr(head, 1, 60)
+        printf "%s: %s... (%d bytes)\n", file, head, len
+    }
+    function flush(   len) {
+        if (entry != "") {
+            len = length(entry)
+            if (len > cap) report(entry, len)
+        }
+        entry = ""
+    }
+    /^- / { flush(); row = 0; entry = $0; next }
+    /^[[:space:]]*$/ || /^#/ { flush(); row = 0; next }
+    check_rows && /^\|/ {
+        flush()
+        row++
+        if (row > 2) {
+            len = length($0)
+            if (len > cap) report($0, len)
+        }
+        next
+    }
+    { row = 0; if (entry != "") entry = entry "\n" $0 }
+    END { flush() }
+    ' "$file"
+}
+
+catalog_gap="$(
+    { catalog_entry_gaps .claude/rules/shared-utils.md 0
+      catalog_entry_gaps .claude/rules/output-module.md 1
+    } 2>&1
+)"
+if [ -n "$catalog_gap" ]; then
+    log_error "Rules catalog entries over ${CATALOG_ENTRY_CAP} bytes (re-trim to the one-to-three-sentence / few-sentence density):"
+    printf '%s\n' "$catalog_gap"
+else
+    log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
 fi
 
 # --- Summary ---

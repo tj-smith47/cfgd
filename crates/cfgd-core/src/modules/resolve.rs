@@ -26,25 +26,47 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 ///
 /// Algorithm:
 /// 0. If `platforms` is non-empty and current platform doesn't match → return None (skipped)
-/// 1. Determine candidate managers: `prefer` list, or `[platform.native_manager()]`
+/// 1. Determine candidate managers: `prefer` list, or — for a bare entry — the
+///    available manager that already HOLDS the package, falling back to
+///    `[platform.native_manager()]` (see `holding_manager`)
 /// 2. For each candidate:
 ///    a. If `"script"` — always available, uses the `script` field as installer
 ///    b. Otherwise: check available + alias resolve + min-version check
 /// 3. First satisfying candidate wins
 /// 4. If none satisfies, return error with details
+///
+/// `installed` is the run's installed-state reader. A bare `- name: npm`
+/// means "npm on this machine", not "npm through apt": with a reader wired,
+/// a manager that is available and already reports the package installed
+/// wins over the platform default, so the entry is satisfied rather than
+/// re-installed as a second copy through the default. `None` (a surface with
+/// no state to read) keeps the platform default. The in-run twin of this rule
+/// is `Reconciler::provisioned`: a tool THIS run's own `Prerequisites` phase
+/// delivered is not yet in any listing when the plan is read, so
+/// `Reconciler::package_survives_elision` elides it from the run's own record
+/// of what it provisioned instead. Resolution answers "already here before
+/// the run", elision answers "landed by the run"; between them every copy
+/// cfgd could know about is counted exactly once.
 pub fn resolve_package(
     entry: &ModulePackageEntry,
     module_name: &str,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
 ) -> Result<Option<ResolvedPackage>> {
     // Platform filter: skip entirely if platforms is non-empty and doesn't match
-    if !platform.matches_any(&entry.platforms) {
+    if !crate::platform::PlatformGated::applies_to(entry, platform) {
         return Ok(None);
     }
 
     let candidates: Vec<String> = if entry.prefer.is_empty() {
-        vec![platform.native_manager().to_string()]
+        let default = platform.native_manager();
+        vec![
+            installed
+                .and_then(|cx| holding_manager(entry, default, managers, cx))
+                .unwrap_or(default)
+                .to_string(),
+        ]
     } else {
         entry.prefer.clone()
     };
@@ -57,7 +79,7 @@ pub fn resolve_package(
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
-        if candidate == "script" {
+        if candidate == crate::SCRIPT_SENTINEL {
             let script = entry
                 .script
                 .as_ref()
@@ -71,12 +93,16 @@ pub fn resolve_package(
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),
                 resolved_name: entry.name.clone(),
-                manager: "script".to_string(),
+                manager: crate::SCRIPT_SENTINEL.to_string(),
+                // `script` only ever reaches a candidate list the author
+                // wrote: it is not any platform's native manager.
+                manager_declared: true,
                 version: None,
                 script: Some(script.clone()),
                 creates: entry.creates.clone(),
                 only_if: entry.only_if.clone(),
                 unless: entry.unless.clone(),
+                min_version: entry.min_version.clone(),
             }));
         }
 
@@ -85,8 +111,11 @@ pub fn resolve_package(
             None => continue,
         };
 
-        let bootstrappable = !mgr.is_available() && mgr.can_bootstrap();
-        if !mgr.is_available() && !bootstrappable {
+        // Asked once: `is_available()` is a PATH probe, and this runs per
+        // candidate manager of every declared package.
+        let available = mgr.is_available();
+        let bootstrappable = !available && mgr.can_bootstrap();
+        if !available && !bootstrappable {
             continue;
         }
 
@@ -95,24 +124,38 @@ pub fn resolve_package(
             .get(candidate)
             .cloned()
             .unwrap_or_else(|| entry.name.clone());
+        // Whoever chose this manager: the author, when the candidate came out
+        // of their own `prefer` list or their `aliases` map names it, and cfgd
+        // otherwise. See `ResolvedPackage::manager_declared`.
+        let manager_declared = !entry.prefer.is_empty() || entry.aliases.contains_key(candidate);
 
         // If the manager isn't installed yet but can be bootstrapped, resolve
-        // optimistically — we can't query versions until it's installed.
+        // optimistically — versions cannot be queried until it's installed.
         if bootstrappable {
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),
                 resolved_name,
                 manager: candidate.clone(),
+                manager_declared,
                 version: None,
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: entry.min_version.clone(),
             }));
         }
 
-        if let Some(ref min_ver) = entry.min_version {
-            match mgr.available_version(&resolved_name) {
+        // A floor the manager cannot read rejects nothing: making every
+        // candidate `continue` on it would delete the package from the plan
+        // over a declaration whose only real problem is that nobody can parse
+        // it. The verify pass owns that report (`VersionFloor::Unreadable`).
+        let floor = entry
+            .min_version
+            .as_deref()
+            .filter(|min| mgr.floor_comparable(min));
+        if let Some(min_ver) = floor {
+            match mgr.available_version_memoized(&resolved_name) {
                 Ok(Some(ver)) => {
                     // Manager-aware: pkg (FreeBSD) versions are not semver, so the
                     // manager compares against its own scheme; everyone else falls
@@ -124,28 +167,34 @@ pub fn resolve_package(
                         canonical_name: entry.name.clone(),
                         resolved_name,
                         manager: candidate.clone(),
+                        manager_declared,
                         version: Some(ver),
                         script: None,
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: entry.min_version.clone(),
                     }));
                 }
                 Ok(None) => continue,
                 Err(_) => continue,
             }
         } else {
-            // No min-version: first available manager wins.
-            let version = mgr.available_version(&resolved_name).ok().flatten();
+            // No min-version: first available manager wins, and nothing about
+            // that choice depends on what the manager currently offers — so the
+            // version query is left to `fill_available_versions`, which the
+            // paths that DISPLAY a version call and the read paths do not.
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),
                 resolved_name,
                 manager: candidate.clone(),
-                version,
+                manager_declared,
+                version: None,
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: entry.min_version.clone(),
             }));
         }
     }
@@ -158,20 +207,131 @@ pub fn resolve_package(
     .into())
 }
 
+/// The available manager that already holds a bare entry's package, when one
+/// does.
+///
+/// The platform default is asked first, so a converged machine pays one
+/// listing and no more; only when the default does not hold the package are
+/// the other available, non-denied managers asked, in name order so two
+/// holders answer the same way on every run. A `prefer` list never reaches
+/// here: an authored order is a statement about WHICH manager, and it is
+/// honoured even when another manager holds the package. A manager that
+/// cannot be enumerated answers "does not hold it", the same fail-open the
+/// planner's own elision takes.
+fn holding_manager<'m>(
+    entry: &ModulePackageEntry,
+    default: &'m str,
+    managers: &HashMap<String, &'m dyn PackageManager>,
+    cx: &crate::providers::PackageContext<'_>,
+) -> Option<&'m str> {
+    let holds = |name: &str| {
+        let mgr = *managers.get(name)?;
+        if entry.deny.iter().any(|d| d == name) || !mgr.is_available() {
+            return None;
+        }
+        let resolved_name = entry
+            .aliases
+            .get(name)
+            .map_or(entry.name.as_str(), String::as_str);
+        cx.installed_for(mgr)
+            .ok()?
+            .contains(&mgr.package_identity(resolved_name))
+            .then_some(mgr.name())
+    };
+    if let Some(found) = holds(default) {
+        return Some(found);
+    }
+    let mut others: Vec<&str> = managers
+        .keys()
+        .map(String::as_str)
+        .filter(|name| *name != default)
+        .collect();
+    others.sort_unstable();
+    others.into_iter().find_map(holds)
+}
+
 /// Resolve all packages in a module spec.
 /// Packages filtered out by platform constraints are silently skipped.
 pub fn resolve_module_packages(
     module: &LoadedModule,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
 ) -> Result<Vec<ResolvedPackage>> {
     let mut resolved = Vec::new();
     for entry in &module.spec.packages {
-        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers)? {
+        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers, installed)? {
             resolved.push(pkg);
         }
     }
     Ok(resolved)
+}
+
+/// Price every resolved package that does not already carry a version, so a
+/// surface that RENDERS one has it.
+///
+/// Resolution itself no longer asks: a package with no `minVersion` is placed on
+/// the first available manager whatever that manager currently offers, so the
+/// query answered nothing about the outcome and was paid by `status`, `diff`,
+/// `verify`, `compliance`, `checkin` and `decide` — none of which show a version
+/// — once per declared package, on every invocation and every daemon tick.
+///
+/// Call it from the paths that consume the version and from no others. Two
+/// surfaces do: `cfgd doctor` and `cfgd module show`, which print a version
+/// per DECLARED package without planning. Every PLANNING path — `cfgd apply`,
+/// `cfgd plan`, the daemon's reconcile tick, both `cfgd init` apply paths,
+/// and `cfgd module create --apply` — routes through
+/// [`crate::reconciler::Reconciler::fill_planned_versions`] instead, the
+/// survivor-gated form of this fill: a package the machine already holds is
+/// elided from the plan, so it renders and stores nothing and its version
+/// query buys nothing, while a package that does get planned is priced
+/// through the same memoized query and renders byte-identically.
+///
+/// The gating reproduces what resolution used to do exactly, so those surfaces
+/// render byte-identically: a package already carrying a version (the
+/// `minVersion` check found one) is left alone, `script` packages have no
+/// manager to ask, and a manager that is not available is not asked — an
+/// unavailable-but-bootstrappable manager resolved optimistically with no
+/// version before this existed and still does.
+pub fn fill_available_versions(
+    packages: &mut [ResolvedPackage],
+    managers: &HashMap<String, &dyn PackageManager>,
+) {
+    for pkg in packages {
+        let Some(mgr) = priceable_manager(pkg, managers) else {
+            continue;
+        };
+        price_package(pkg, mgr);
+    }
+}
+
+/// The manager `pkg` can be priced through, when pricing applies at all:
+/// `None` for a package already carrying a version (the `minVersion` check
+/// found one), a `script` package (no manager to ask), an unregistered
+/// manager, or one that is not available (a bootstrappable manager resolves
+/// optimistically with no version). The ONE askability gate both
+/// [`fill_available_versions`] and
+/// [`crate::reconciler::Reconciler::fill_planned_versions`] read, so the
+/// survivor gate stays their only difference.
+pub(crate) fn priceable_manager<'m>(
+    pkg: &ResolvedPackage,
+    managers: &HashMap<String, &'m dyn PackageManager>,
+) -> Option<&'m dyn PackageManager> {
+    if pkg.version.is_some() || pkg.manager == crate::SCRIPT_SENTINEL {
+        return None;
+    }
+    let mgr = *managers.get(pkg.manager.as_str())?;
+    mgr.is_available().then_some(mgr)
+}
+
+/// Price `pkg` through `mgr`'s memoized offer. A manager that cannot answer
+/// is not a failure — the version is a display detail, and the package still
+/// installs.
+pub(crate) fn price_package(pkg: &mut ResolvedPackage, mgr: &dyn PackageManager) {
+    pkg.version = mgr
+        .available_version_memoized(&pkg.resolved_name)
+        .ok()
+        .flatten();
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +405,15 @@ pub fn resolve_module_files(
                 }
                 .into());
             }
+            // `private` marks the source local-only: on a machine where it
+            // does not exist the entry resolves to nothing, so no downstream
+            // consumer has to know the flag existed. An absent NON-private
+            // source survives resolution on purpose — the plan refuses it
+            // as `FileError::SourceNotFound`, the same refusal the profile
+            // file path makes, instead of quietly deploying nothing.
+            if entry.private && !source.exists() {
+                continue;
+            }
             resolved.push(ResolvedFile {
                 source,
                 target: crate::expand_tilde(Path::new(&entry.target)),
@@ -266,6 +435,11 @@ pub fn resolve_module_files(
 
 /// Resolve a set of modules: load, sort dependencies, resolve packages and files.
 /// Includes both local modules and remote modules from the lockfile.
+///
+/// `installed` is what [`resolve_package`] reads to satisfy a bare entry from
+/// the manager that already holds it; every planning path passes the run's own
+/// context so resolution and the plan's elision read one enumeration.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_modules(
     requested: &[String],
     config_dir: &Path,
@@ -273,6 +447,7 @@ pub fn resolve_modules(
     source_roots: &[SourceModuleRoot],
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
+    installed: Option<&crate::providers::PackageContext<'_>>,
     printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedModule>> {
     let all_modules = load_all_modules(config_dir, cache_base, source_roots, printer)?;
@@ -282,16 +457,24 @@ pub fn resolve_modules(
         .iter()
         .map(|r| resolve_profile_module_name(r).to_string())
         .collect();
+    // tracing-ok: internal resolution-set diagnostic, not user-facing — nothing
+    // else prints the requested module set before dependency order is walked
+    tracing::debug!(names = ?resolved_names, "resolving modules");
 
     let order = resolve_dependency_order(&resolved_names, &all_modules)
         .map_err(|e| enrich_not_found(e, source_roots))?;
+    // Claimed here because this is the one place both lists are in hand: the
+    // set the caller asked for, and the order a `depends:` walk grew out of it.
+    let dep_pulled = |name: &String| !resolved_names.contains(name);
 
     // Determine platform-skipped modules up front so an active module that
     // depends on a skipped one can be rejected as a config error before any
     // package/file resolution runs.
     let skipped: HashSet<&str> = order
         .iter()
-        .filter(|name| !platform.matches_any(&all_modules[*name].spec.platforms))
+        .filter(|name| {
+            !crate::platform::PlatformGated::applies_to(&all_modules[*name].spec, platform)
+        })
         .map(|name| name.as_str())
         .collect();
 
@@ -301,59 +484,77 @@ pub fn resolve_modules(
     })?;
 
     let mut resolved = Vec::new();
-    for name in &order {
-        let module = &all_modules[name];
+    // A module's own resolution is where this walk waits: a git file source
+    // is cloned or fetched here and every manifest is read off disk. Narrated
+    // per module at the one place every command's module walk goes through, so
+    // the wait names what it is waiting on rather than standing silent.
+    printer.narrate("Resolving modules", |sp| -> Result<()> {
+        for name in &order {
+            sp.set_message(format!("Resolving module:{name}"));
+            let module = &all_modules[name];
 
-        // Platform-gated out: emit a placeholder carrying the skip reason and
-        // empty contents. The visible Skip action is produced by plan_modules.
-        // Resolving packages/files here is wasteful and could error on the
-        // other platform's assets, so it is deliberately skipped.
-        if skipped.contains(name.as_str()) {
-            resolved.push(ResolvedModule::skipped(
-                name.clone(),
-                module.dir.clone(),
-                module.spec.depends.clone(),
-                format!(
-                    "platform not matched (requires: {})",
-                    module.spec.platforms.join(", ")
-                ),
-                module.origin.clone(),
-            ));
-            continue;
+            // Platform-gated out: emit a placeholder carrying the skip reason and
+            // empty contents. The visible Skip action is produced by plan_modules.
+            // Resolving packages/files here is wasteful and could error on the
+            // other platform's assets, so it is deliberately skipped.
+            if skipped.contains(name.as_str()) {
+                resolved.push(ResolvedModule::skipped(
+                    name.clone(),
+                    module.dir.clone(),
+                    module.spec.depends.clone(),
+                    dep_pulled(name),
+                    format!(
+                        "platform not matched (requires: {})",
+                        module.spec.platforms.join(", ")
+                    ),
+                    module.origin.clone(),
+                ));
+                continue;
+            }
+
+            let packages = resolve_module_packages(module, platform, managers, installed)?;
+            let files = resolve_module_files(module, cache_base, printer)?;
+
+            let scripts = module.spec.scripts.as_ref();
+            let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
+            let post_apply_scripts = scripts.map(|s| s.post_apply.clone()).unwrap_or_default();
+            let pre_reconcile_scripts =
+                scripts.map(|s| s.pre_reconcile.clone()).unwrap_or_default();
+            let post_reconcile_scripts = scripts
+                .map(|s| s.post_reconcile.clone())
+                .unwrap_or_default();
+            let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
+            let on_drift_scripts = scripts.map(|s| s.on_drift.clone()).unwrap_or_default();
+
+            resolved.push(ResolvedModule {
+                name: name.clone(),
+                packages,
+                files,
+                // Filtered here, beside the package filter above: a gated
+                // entry is not part of this host's desired state, so it
+                // reaches no surface rather than reaching them annotated.
+                env: crate::platform::applicable_here(&module.spec.env, platform)
+                    .cloned()
+                    .collect(),
+                aliases: crate::platform::applicable_here(&module.spec.aliases, platform)
+                    .cloned()
+                    .collect(),
+                system: module.spec.system.clone(),
+                pre_apply_scripts,
+                post_apply_scripts,
+                pre_reconcile_scripts,
+                post_reconcile_scripts,
+                on_change_scripts,
+                on_drift_scripts,
+                depends: module.spec.depends.clone(),
+                dep_pulled: dep_pulled(name),
+                dir: module.dir.clone(),
+                platform_skip_reason: None,
+                origin: module.origin.clone(),
+            });
         }
-
-        let packages = resolve_module_packages(module, platform, managers)?;
-        let files = resolve_module_files(module, cache_base, printer)?;
-
-        let scripts = module.spec.scripts.as_ref();
-        let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
-        let post_apply_scripts = scripts.map(|s| s.post_apply.clone()).unwrap_or_default();
-        let pre_reconcile_scripts = scripts.map(|s| s.pre_reconcile.clone()).unwrap_or_default();
-        let post_reconcile_scripts = scripts
-            .map(|s| s.post_reconcile.clone())
-            .unwrap_or_default();
-        let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
-        let on_drift_scripts = scripts.map(|s| s.on_drift.clone()).unwrap_or_default();
-
-        resolved.push(ResolvedModule {
-            name: name.clone(),
-            packages,
-            files,
-            env: module.spec.env.clone(),
-            aliases: module.spec.aliases.clone(),
-            system: module.spec.system.clone(),
-            pre_apply_scripts,
-            post_apply_scripts,
-            pre_reconcile_scripts,
-            post_reconcile_scripts,
-            on_change_scripts,
-            on_drift_scripts,
-            depends: module.spec.depends.clone(),
-            dir: module.dir.clone(),
-            platform_skip_reason: None,
-            origin: module.origin.clone(),
-        });
-    }
+        Ok(())
+    })?;
 
     Ok(resolved)
 }

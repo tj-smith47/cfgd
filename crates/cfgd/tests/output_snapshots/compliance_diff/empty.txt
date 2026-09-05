@@ -1,5 +1,5 @@
-Compliance Diff #7 → #8
-  Snapshot 1  2026-05-14T10:00:00Z
-  Snapshot 2  2026-05-14T10:00:00Z
+Compliance Snapshot Diff: #7 → #8
+  Base Snapshot    #7 (2026-05-14T10:00:00Z)
+  Target Snapshot  #8 (2026-05-14T10:00:00Z)
 
 ✓ No differences between snapshots

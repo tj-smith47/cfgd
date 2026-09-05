@@ -1,24 +1,36 @@
 {
+  "configPath": "/home/u/.config/cfgd/cfgd.yaml",
   "driftCount": 7,
   "lastReconcile": "2026-05-12T10:00:00Z",
   "lastSync": "2026-05-12T09:55:00Z",
+  "modules": [
+    {
+      "name": "base"
+    },
+    {
+      "name": "dev-tools"
+    }
+  ],
   "pid": 4242,
+  "profile": "work",
+  "reconcileIntervalSecs": 300,
   "running": true,
   "sources": [
     {
-      "driftCount": 0,
-      "lastReconcile": null,
+      "driftCount": null,
+      "lastCommit": null,
       "lastSync": null,
       "name": "local",
       "status": "active"
     },
     {
-      "driftCount": 7,
-      "lastReconcile": null,
+      "driftCount": null,
+      "lastCommit": null,
       "lastSync": "2026-05-12T09:00:00Z",
       "name": "team",
-      "status": "syncing"
+      "status": "error"
     }
   ],
+  "syncIntervalSecs": 900,
   "uptimeSecs": 3600
 }

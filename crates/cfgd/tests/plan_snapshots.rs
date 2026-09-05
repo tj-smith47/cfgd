@@ -13,19 +13,35 @@
 //!     `Owner::sort_key` order inside one phase, with `owner`/`token`.
 //!   - `plan/empty.txt`          — `MSG_NOTHING_TO_DO` branch via an
 //!     empty-profile fixture.
-//!   - `plan/module_only.txt`    — `--module` filter with no profile loaded
-//!     (the module-only fallback kv lines).
+//!   - `plan_module_only_unresolved_module_errors` (no golden — an error
+//!     path) — `--module` naming a module that never resolves now fails the
+//!     whole invocation instead of rendering a "matched no actions" warning
+//!     and exiting 0 (the swallow that used to make that render possible was
+//!     removed).
 //!   - `plan/with_inert_decision.txt` — a decision row belonging to a source
 //!     the config does not subscribe to: it withholds nothing and is named
 //!     nowhere, so the render is byte-identical to the plain plan.
+//!   - `plan/only_zero_match.txt` — `--only` naming a token
+//!     (`packages.brwe`, a typo of `packages.brew`) that matches nothing in
+//!     the plan. Pins the always-visible alert shape (names the token
+//!     verbatim, hints the owner tokens the plan actually held) and that
+//!     `MSG_NOTHING_TO_DO` never renders for this reason.
+//!   - `plan/module_resolution_failure.txt` — a module whose package no
+//!     registered manager can satisfy. Pins the permanent `Role::Fail` line
+//!     `Printer::narrate`'s failure arm settles for the module walk.
+//!   - `plan/module_package_elided.txt` — a module declaring two packages
+//!     under a manager that already reports one installed: only the missing
+//!     one is planned.
 
 mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::output_types::{PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput};
 use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
+use cfgd_core::output::test_capture::strip_spinner_duration;
 use cfgd_core::output::{Doc, Printer};
 use cfgd_core::reconciler::Owner;
 use pretty_assertions::assert_eq;
@@ -54,10 +70,12 @@ fn happy_plan_output() -> PlanOutput {
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
                     manager: None,
+                    detail: None,
                 }],
             )],
         }],
         total_actions: 1,
+        sources: vec![],
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
@@ -82,6 +100,7 @@ fn owner_groups_plan_output() -> PlanOutput {
                         targets: vec!["sl".to_string(), "cowsay".to_string()],
                         origin: None,
                         manager: None,
+                        detail: None,
                     }],
                 ),
                 PlanGroupOutput::new(
@@ -92,11 +111,13 @@ fn owner_groups_plan_output() -> PlanOutput {
                         targets: vec!["neovim".to_string()],
                         origin: Some("team".to_string()),
                         manager: None,
+                        detail: None,
                     }],
                 ),
             ],
         }],
         total_actions: 2,
+        sources: vec![],
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
@@ -216,17 +237,19 @@ fn plan_empty_human() {
 }
 
 #[test]
-fn plan_module_only_human() {
-    // `--module` filter pointed at a config dir without a valid profile —
-    // `cmd_plan` falls into the module-only branch and emits the
-    // "Profile: (module-only)" kv. The module itself is unresolved (no
-    // module repo configured), so `resolve_modules` returns an empty list.
-    // The summary must name the unresolved module rather than claim
-    // "everything is up to date" — a silent no-op would hide the miss.
+fn plan_module_only_unresolved_module_errors() {
+    // `--module` names an isolated run; it is resolved atomically (see
+    // `resolve_desired_state`), so a name that never resolves (no module
+    // repo configured here) now fails the whole invocation with a typed
+    // "module not found" error rather than degrading to an empty plan and a
+    // "matched no actions" warning at exit 0 — the swallow that produced
+    // that render was removed. Nothing prints before the failure: the
+    // module resolution runs before any plan output is emitted.
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
-    // Bare config — no `spec.profile`, no profiles dir. Forces the
-    // `load_config_and_profile` Err branch.
+    // Bare config — no `spec.profile`, no profiles dir. An isolated
+    // `--module` run never resolves a profile at all (see
+    // `load_config_and_profile_module_scoped`), so this is otherwise inert.
     let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
@@ -234,12 +257,51 @@ fn plan_module_only_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = plan_args_module("nettools");
 
+    let err = cmd_plan(&cli, &printer, &args).unwrap_err();
+    drop(printer);
+
+    assert!(
+        err.to_string().contains("module not found: nettools"),
+        "expected a typed module-not-found error naming 'nettools', got: {err}"
+    );
+    assert!(
+        cap.human().is_empty(),
+        "an unresolved --module must fail before any plan output is emitted, got: {}",
+        cap.human()
+    );
+}
+
+#[test]
+fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
+    // `--only` naming a token that matches nothing must never render
+    // `MSG_NOTHING_TO_DO` (that would read as "the
+    // machine is in sync", when really the filter just never matched
+    // anything) — it renders the "No actions in scope" branch instead, plus
+    // an always-visible alert naming the token verbatim and hinting the
+    // owner tokens the plan actually held.
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    let args = cfgd::cli::PlanArgs {
+        only: vec!["packages.brwe".to_string()],
+        ..plan_args()
+    };
+
     cmd_plan(&cli, &printer, &args).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/module_only.txt", &stripped);
+    assert!(
+        !stripped.contains("up to date") && !stripped.contains("nothing to do"),
+        "a zero-match filter token must never render MSG_NOTHING_TO_DO, got:\n{stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/only_zero_match.txt",
+        &stripped
+    );
 }
 
 #[test]
@@ -272,6 +334,109 @@ fn plan_with_a_decision_from_an_unsubscribed_source_human() {
     );
 }
 
+#[test]
+fn plan_module_resolution_failure_human() {
+    // `resolve_modules` narrates its walk through `Printer::narrate`, whose
+    // FAILURE arm settles a permanent `Role::Fail` line at whatever module the
+    // walk was on — a line that survives `Verbosity::Quiet` and a `-o json`
+    // run. It is the one legitimately-permanent line the narration wave added,
+    // and this golden is what pins it: nothing else in the corpus reaches a
+    // failing module walk.
+    //
+    // The module declares a package no registered manager can satisfy
+    // (`prefer:` names a manager that does not exist), so the failure is the
+    // same on every host and reaches no real package manager.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - badmod\n",
+    )
+    .unwrap();
+    let mod_dir = config_dir.path().join("modules").join("badmod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: badmod\nspec:\n  packages:\n    - name: nothing-provides-this\n      prefer:\n        - no-such-manager\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let err =
+        cmd_plan(&cli, &printer, &plan_args()).expect_err("an unresolvable package must fail");
+    render_cli_error(&printer, &err);
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/module_resolution_failure.txt",
+        &stripped
+    );
+}
+
+#[test]
+fn plan_module_package_already_installed_is_elided() {
+    // The rendered pin for the elision: a module declaring two packages under
+    // one manager that already reports one of them installed plans the OTHER
+    // one only. Nothing else in the corpus captures a module package the
+    // runner actually has, so a change that re-listed the whole declared set
+    // would go red in zero snapshot binaries.
+    //
+    // `fakemgr` is a custom manager built from `echo`, which runs on every host
+    // cfgd targets — the fixture describes the same machine everywhere and no
+    // real package manager is reached.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - demo\n  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo ripgrep\n        install: echo install\n        uninstall: echo uninstall\n",
+    )
+    .unwrap();
+    let mod_dir = config_dir.path().join("modules").join("demo");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: demo\nspec:\n  packages:\n    - name: ripgrep\n      prefer:\n        - fakemgr\n    - name: fd\n      prefer:\n        - fakemgr\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert!(
+        !stripped.contains("ripgrep"),
+        "the installed package must not appear in the plan:\n{stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/module_package_elided.txt",
+        &stripped
+    );
+}
+
 // ─────────────────────────────────────────────────────
 // snapshot helpers — local to keep tests/output_snapshots/ self-contained
 // ─────────────────────────────────────────────────────
@@ -292,4 +457,67 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// A run that composed a source names it in the header, so the reader can tell
+/// which of the rows below arrived from a subscription rather than from their
+/// own profile.
+///
+/// Every fact under that header is DECLARED rather than probed, because a
+/// golden holds one render for every machine that runs it. The delivered
+/// profile pins `envScope: Interactive`, which leaves the login and
+/// session surfaces (`~/.profile`, `~/.zshenv`, `environment.d`, the macOS
+/// LaunchAgent, the live-session publish) out of the plan — those are the
+/// rows whose presence is a property of the *platform* — and the host probe
+/// is pinned to a bash-only host with no fish, which is the row set's other
+/// free variable. What is left is byte-identical on Linux, macOS and
+/// FreeBSD. Windows renders a PowerShell surface instead of a POSIX one, so
+/// the golden cannot cover it and the test is Unix-only.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn plan_composed_source_human() {
+    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    // The delivered profile writes env, whose targets hang off `$HOME`; an
+    // unguarded test home is named after the pid and would not be host-stable.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: false,
+        },
+    );
+    let (workspace, config_dir, state_dir) = common::local_source_setup("", |_workspace| {
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: ACME_EDITOR\n      value: vim\n".to_string(),
+        )
+    });
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[
+            (workspace.path(), "<WORKSPACE>"),
+            (state_dir.path(), "<STATE_DIR>"),
+            (home.path(), "<HOME>"),
+        ],
+    );
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/composed_source.txt",
+        &stripped
+    );
 }

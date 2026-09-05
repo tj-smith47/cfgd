@@ -1,6 +1,10 @@
 use crate::config;
 
 /// Parse a `KEY=VALUE` string into an `EnvVar`.
+///
+/// The entry is UNGATED: `--env` writes a declaration that applies everywhere,
+/// and `platforms:` is declared in the YAML. A CLI flag that gated an entry
+/// would have to name the tags in the same token as the value.
 pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String> {
     let (key, value) = input
         .split_once('=')
@@ -9,6 +13,7 @@ pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String>
     Ok(config::EnvVar {
         name: key.to_string(),
         value: value.to_string(),
+        platforms: vec![],
     })
 }
 
@@ -132,6 +137,8 @@ pub fn validate_alias_name(name: &str) -> std::result::Result<(), String> {
 }
 
 /// Parse a `name=command` string into a `ShellAlias`.
+///
+/// Ungated for the same reason [`parse_env_var`]'s entry is.
 pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, String> {
     let (name, command) = input
         .split_once('=')
@@ -140,6 +147,7 @@ pub fn parse_alias(input: &str) -> std::result::Result<config::ShellAlias, Strin
     Ok(config::ShellAlias {
         name: name.to_string(),
         command: command.to_string(),
+        platforms: vec![],
     })
 }
 
@@ -315,11 +323,28 @@ pub fn posix_single_quoted(value: &str) -> String {
 /// real escape from the literal text `\x1b` — and both of those render
 /// identically inert, so the ambiguity costs nothing.
 pub fn escape_control_chars(s: &str) -> String {
+    escape_controls(s, |_| false)
+}
+
+/// [`escape_control_chars`] with `\n` left intact.
+///
+/// The form a slot needs when an embedded newline is legitimate structure it
+/// lays out itself — the status subject renders one as an indented
+/// continuation line, so escaping it would print `\x0a` in the middle of every
+/// multi-sentence caveat. `\t` is NOT exempt: alignment is computed in columns
+/// and a tab jumps to a terminal tab stop the column count cannot predict, so
+/// a tabbed value mis-pads every field after it.
+pub(crate) fn escape_control_chars_except_newline(s: &str) -> String {
+    escape_controls(s, |c| c == '\n')
+}
+
+/// Render every control character `keep` does not exempt as visible `\xNN`.
+fn escape_controls(s: &str, keep: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         // Unicode Cc covers C1 (U+0080..U+009F) as well as C0, which matters:
         // a terminal decoding UTF-8 still acts on U+009B as CSI.
-        if c.is_control() {
+        if c.is_control() && !keep(c) {
             out.push_str(&format!("\\x{:02x}", c as u32));
         } else {
             out.push(c);
@@ -433,6 +458,22 @@ pub fn cmd_double_quoted(value: &str) -> String {
 /// parent's bootstrap, the CLI's stranded-install warning, and the concurrent
 /// `Packages` dispatch, whose lane must be the binary rather than the name or
 /// three `brew` processes run at once.
+///
+/// One action lanes on somebody else's family: a `ManagerAction::Provision`
+/// takes its `via`'s, because the command that runs is the mediator's
+/// (`provision npm via apt` is an `apt-get install`) and two provisions
+/// mediated by one system manager, laned on their own names, hold that
+/// manager's lock against each other.
+///
+/// Never applied where the manager is NAMED rather than serialized: the phase
+/// tree's action subjects, the journal's `resource_id`, every other persisted
+/// or `-o json` string, and the availability sub-gate (`Slot::drains`, which
+/// asks the registry whether a manager needs bootstrapping) all keep the
+/// REGISTERED name — those surfaces have to say the manager the user declared,
+/// and `brew-cask` is not `brew`. The one display exception is the
+/// blocked-action wait bar, which names the LANE on purpose: an action held
+/// back by a running `brew` is waiting on brew, and `waiting on brew-cask`
+/// would name something that is not in the way.
 #[must_use]
 pub fn manager_family(manager: &str) -> &str {
     manager.split('-').next().unwrap_or(manager)
@@ -456,8 +497,47 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// A count and its noun, agreeing: `1 action`, `22 actions`, `0 actions`.
+/// A stored lowercase word raised to the sentence case a human surface renders
+/// it in (`recommended` → `Recommended`, `accepted` → `Accepted`).
 ///
+/// The ONE such lift, because the alternative is `to_uppercase()`: `cfgd decide
+/// accept --all` shouted `✓ ACCEPTED 1 item` at a reader nothing else in the
+/// product shouts at. The stored literal never changes — this is display only.
+pub fn sentence_case(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The ONE rendering of a yes/no fact in a human column, and the reason `-`
+/// means exactly one thing everywhere: NOT KNOWN.
+///
+/// `Some(true)` → `yes`, `Some(false)` → `no`, `None` → `-`. Columns that
+/// spelled a false as `-` (a profile's `Active`, a module's) made an answered
+/// question indistinguishable from an unanswerable one, which is precisely the
+/// distinction `source list`'s `Signed` column exists to draw: a source whose
+/// HEAD commit is unsigned and a source whose checkout cfgd could not read are
+/// different facts with different fixes.
+pub fn yes_no(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => ABSENT,
+    }
+}
+
+/// The ONE token a table cell renders for a fact nothing recorded — what
+/// [`yes_no`] answers for `None`, what [`crate::humanize_until_cell`] answers
+/// for an unscheduled instant, and what every listing spells for a slot it
+/// cannot fill. One spelling is what lets
+/// `Table::without_unfillable_columns` judge a column with a single predicate;
+/// a second absence word (`n/a`, an empty cell) would be a column of nothing
+/// the drop rule cannot see. A PAST instant's absence reads `never` through
+/// [`crate::humanize_age_cell`] and is a fact, not an absence.
+pub const ABSENT: &str = "-";
+
 /// The ONE plural rendering in the workspace, because the alternative shipped
 /// for a year: `22 actions succeeded` is a program telling the reader it did
 /// not bother to look at a number it is printing IN THE SAME SENTENCE. Every
@@ -531,9 +611,206 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
+/// Map a raw boolish env-var value to the canonical `"true"`/`"false"` clap's
+/// `BoolishValueParser` accepts. Case-insensitive: TRUE = {1, y, yes, t, true,
+/// on}, FALSE = {0, n, no, f, false, off}. Returns `None` for anything else,
+/// so a genuinely-invalid value still surfaces as a validation error at
+/// whichever call site parsed it rather than being silently coerced.
+///
+/// Shared by the `cfgd` binary crate's env pre-normalization (rewriting
+/// `CFGD_QUIET=1` to `"true"` before clap parses it) and the `cfgd` library
+/// crate's own manual reads of a boolean env var not bound to a clap field
+/// (`CFGD_USAGE_HINTS`, read by `cli::resolve_hints_enabled`) — the two are
+/// separate crate compilations, so a `cfgd-core` helper is what lets them
+/// agree on one accept-set instead of drifting into two.
+pub fn canonical_bool_str(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "y" | "yes" | "t" | "true" | "on" => Some("true"),
+        "0" | "n" | "no" | "f" | "false" | "off" => Some("false"),
+        _ => None,
+    }
+}
+
+/// The ONE absence vocabulary this workspace renders, so three call sites
+/// naming the same kind of gap never drift into three different spellings.
+/// The choice is about WHAT is absent, not how badly:
+/// - [`Absence::NotInstalled`] — could exist on this machine (a package a
+///   manager reports it does not have)
+/// - [`Absence::Missing`] — the user's own config DECLARED it and it is not
+///   on disk (a file, a resource an apply expected to find)
+/// - [`Absence::NotFound`] — a LOOKUP came back empty (searching a registry,
+///   resolving a name/id that matches nothing)
+///
+/// `Display` renders the bare word so a caller composes it into a longer
+/// sentence (``format!("{} — run `cfgd source update`", Absence::NotFound)``);
+/// reach for [`Absence::as_str`] where a `&'static str` is required directly
+/// (a `.qualifier(...)` or `.detail(...)` call that takes `impl Into<String>`
+/// accepts either).
+///
+/// `as_str`'s three literals are also a WIRE CONTRACT: `cli/diff.rs` writes
+/// `Absence::Missing` into a `-o json` `shape` field a consumer may match on,
+/// and `compliance/mod.rs` writes `Absence::{NotInstalled,Missing}` into a
+/// `ComplianceCheck.detail` that `snapshot_content_hash` digests to decide
+/// whether a machine changed — so a reword here changes both what an
+/// external `-o json` matcher sees and what every daemon in a fleet reports
+/// on its very next tick, for machines that did not actually change.
+/// `absence_literals_are_a_pinned_wire_contract` in this file's test module
+/// pins the three literals byte-for-byte; touching one means updating that
+/// test deliberately, not by accident, and auditing both consumers.
+///
+/// A fourth absence-shaped phrase in the same family but answering a DIFFERENT
+/// question — "not cached", a source cache miss rather than "does this exist" —
+/// stays outside the enum on purpose. Widening it to catch every such phrase
+/// would blur the three questions it exists to keep separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Absence {
+    NotInstalled,
+    Missing,
+    NotFound,
+}
+
+impl Absence {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Absence::NotInstalled => "not installed",
+            Absence::Missing => "missing",
+            Absence::NotFound => "not found",
+        }
+    }
+}
+
+impl std::fmt::Display for Absence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The two `expected` words a package PRESENCE drift row carries, and so the
+/// whole vocabulary distinguishing one from a package VERSION row, whose
+/// `expected` is the declared floor instead.
+///
+/// They are stored operands like [`Absence::as_str`]'s literals, written by
+/// every producer of the row shape and read back by
+/// [`crate::output::drift_terse_cause`] to word the row without re-parsing
+/// either operand — a packaging grammar (`0.10.2_1`, `2:8.2.3995-1ubuntu2`) is
+/// a version its own manager compares and the shared parser cannot.
+pub const PACKAGE_WANT_INSTALLED: &str = "installed";
+/// The removal half of [`PACKAGE_WANT_INSTALLED`]'s pair.
+pub const PACKAGE_WANT_ABSENT: &str = "absent";
+
+/// Whether a package drift row's `expected` word came from the PRESENCE pass
+/// rather than the declared-floor one — the one reading of the pair above.
+///
+/// Two callers ask it for two reasons and must not answer differently: a
+/// surface filing rows by shape (`cli::live_drift::is_presence_package_row`)
+/// would render a package the machine HAS under the presence pass's
+/// `not installed` wording, and [`crate::output::drift_terse_cause`] would
+/// word a missing package as a version mismatch.
+#[must_use]
+pub fn is_package_presence_want(expected: &str) -> bool {
+    matches!(expected, PACKAGE_WANT_INSTALLED | PACKAGE_WANT_ABSENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_bool_str_accepts_truthy_spellings() {
+        for raw in [
+            "1", "y", "yes", "t", "true", "on", "YES", "Yes", "ON", "True",
+        ] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("true"),
+                "{raw:?} should normalize to true"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_accepts_falsey_spellings() {
+        for raw in ["0", "n", "no", "f", "false", "off", "NO", "Off", "FALSE"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("false"),
+                "{raw:?} should normalize to false"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_trims_surrounding_whitespace() {
+        assert_eq!(canonical_bool_str("  1  "), Some("true"));
+        assert_eq!(canonical_bool_str("\toff\n"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_passes_through_canonical_values() {
+        assert_eq!(canonical_bool_str("true"), Some("true"));
+        assert_eq!(canonical_bool_str("false"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_rejects_unrecognized_values() {
+        // Unrecognized values return None so they remain untouched and clap's
+        // bool parser still rejects them, preserving validation.
+        for raw in ["garbage", "", "2", "tru", "yess", "10"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                None,
+                "{raw:?} should not be recognized as boolish"
+            );
+        }
+    }
+
+    #[test]
+    fn absence_wording_carries_no_severity_vocabulary() {
+        // The three arms are chosen by WHAT is absent — a package
+        // (`NotInstalled`), a file (`Missing`), a named lookup (`NotFound`)
+        // — never by how alarming the absence is. Severity is the caller's
+        // `Role`; a status carrying `Role::Warn` and one carrying
+        // `Role::Fail` may both pair with `Absence::NotFound`, so the arm's
+        // own text must never leak a severity word that would make one of
+        // those pairings read as self-escalating.
+        for (arm, text) in [
+            (Absence::NotInstalled, Absence::NotInstalled.as_str()),
+            (Absence::Missing, Absence::Missing.as_str()),
+            (Absence::NotFound, Absence::NotFound.as_str()),
+        ] {
+            let lower = text.to_lowercase();
+            for word in ["error", "fail", "critical", "warn", "urgent"] {
+                assert!(
+                    !lower.contains(word),
+                    "{arm:?} leaks severity vocabulary via {word:?}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absence_display_matches_as_str() {
+        assert_eq!(
+            Absence::NotInstalled.to_string(),
+            Absence::NotInstalled.as_str()
+        );
+        assert_eq!(Absence::Missing.to_string(), Absence::Missing.as_str());
+        assert_eq!(Absence::NotFound.to_string(), Absence::NotFound.as_str());
+    }
+
+    #[test]
+    fn absence_literals_are_a_pinned_wire_contract() {
+        // `diff.rs`'s `-o json` `shape` field and `compliance/mod.rs`'s
+        // hashed snapshot `detail` field both consume `Absence::as_str()`.
+        // A reword here changes an external matcher's answer and flips
+        // every daemon's drift-detection hash fleet-wide — so this pin
+        // exists to make that change deliberate, never an incidental find-
+        // and-replace.
+        assert_eq!(Absence::NotInstalled.as_str(), "not installed");
+        assert_eq!(Absence::Missing.as_str(), "missing");
+        assert_eq!(Absence::NotFound.as_str(), "not found");
+    }
 
     #[test]
     fn a_count_agrees_with_its_noun_in_both_numbers() {

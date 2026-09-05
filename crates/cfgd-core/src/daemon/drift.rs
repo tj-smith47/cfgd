@@ -15,7 +15,7 @@ pub(crate) fn record_file_drift_to(store: &StateStore, path: &Path) -> bool {
     ) {
         Ok(_) => true,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to record drift");
+            tracing::warn!(error = %e, "watch: failed to record drift");
             false
         }
     }
@@ -42,7 +42,7 @@ pub(crate) fn current_drift_count(store: &StateStore) -> Option<u32> {
     match store.unresolved_drift() {
         Ok(events) => Some(events.len() as u32),
         Err(e) => {
-            tracing::warn!(error = %e, "cannot read unresolved drift count");
+            tracing::warn!(error = %e, "daemon: cannot read unresolved drift count");
             None
         }
     }

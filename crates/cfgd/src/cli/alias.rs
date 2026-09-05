@@ -16,7 +16,7 @@ pub fn build_alias_list_doc(entries: &[AliasListEntry]) -> Doc {
     for e in entries {
         t = t.row([e.name.clone(), e.command.clone()]);
     }
-    doc = doc.table(t);
+    doc = doc.table(t.without_unfillable_columns());
 
     doc.with_data(entries)
 }
@@ -80,7 +80,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,

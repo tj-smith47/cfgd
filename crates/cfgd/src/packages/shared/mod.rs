@@ -93,7 +93,7 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
 
 /// Build a base `Command` for a package-manager binary, resolving it to a full
 /// path so a Windows script shim (`.ps1`/`.cmd`) is invoked correctly rather than
-/// dying with "program not found" (see [`windows_pkg_argv`]). On non-Windows this
+/// dying with "program not found" (see `windows_pkg_argv`). On non-Windows this
 /// is just `Command::new(<resolved-or-name>)`.
 fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
     #[cfg(windows)]
@@ -128,13 +128,147 @@ where
     build_pkg_command(name, resolver())
 }
 
-/// Extract caveats/warnings from package manager output.
-pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
-    let combined = format!("{}\n{}", output.stdout, output.stderr);
-    let mut notes = Vec::new();
+/// The leading self-tag a manager stamps on its own advisory lines, stripped
+/// before the line becomes a caveat body.
+///
+/// Every caveat already renders under the `[<manager>]` owner tag
+/// `ActionNote::body` composes, so a body that opens with the manager's own
+/// word says it twice: `⚠ [cargo] warning: be sure to add …`. Matched
+/// case-insensitively and only at the START — a marker in the middle of a
+/// sentence is part of what the manager is saying.
+const CAVEAT_SELF_TAGS: &[&str] = &["warning:", "warn:", "caveat:", "caveats:", "note:"];
 
-    match manager {
-        "brew" | "brew-cask" => {
+/// One advisory line, with the manager's own tag taken off the front.
+fn strip_caveat_self_tag(line: &str) -> &str {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for tag in CAVEAT_SELF_TAGS {
+        if let Some(rest) = lower.strip_prefix(tag) {
+            return trimmed[trimmed.len() - rest.len()..].trim_start();
+        }
+    }
+    trimmed
+}
+
+/// npm's per-line advisory shape: `npm warn <code> <text>`, one line per
+/// physical line of ONE message.
+///
+/// Returns `(code, text)`. npm repeats the prefix and the code on every line it
+/// wraps, so four lines of a single `install-scripts` advisory arrived as four
+/// caveats — one of them the blank spacer line npm puts in the middle, which
+/// rendered as a bare `⚠ [npm] npm warn install-scripts` with nothing after it.
+fn npm_warn_parts(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_end();
+    let rest = trimmed
+        .trim_start()
+        .strip_prefix("npm warn ")
+        .or_else(|| trimmed.trim_start().strip_prefix("npm WARN "))?;
+    let rest = rest.trim_start();
+    match rest.split_once(char::is_whitespace) {
+        Some((code, text)) => Some((code, text)),
+        // The spacer line: the code alone, with nothing said under it.
+        None => Some((rest, "")),
+    }
+}
+
+/// Extract caveats/warnings from package manager output.
+///
+/// Every arm yields BODIES; the tail is what turns one into an [`ActionNote`],
+/// so the "no empty caveat, ever" rule is stated once instead of per manager. A
+/// blank body paints a lone glyph beside an owner tag and tells a reader
+/// nothing — see `no_manager_can_emit_an_empty_caveat`.
+pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
+    let brew = cfgd_core::manager_family(manager) == "brew";
+    extract_caveat_bodies(manager, output)
+        .into_iter()
+        .filter(|body| !body.trim().is_empty())
+        .map(|body| {
+            let body = body.trim_end();
+            // A line a tool itself labelled `warning:` / `WARNING:` / `npm
+            // warn` keeps that severity. Brew's `==> Caveats` is a SECTION,
+            // not a severity — it holds "installed to:" reports beside "run
+            // `brew link`" instructions — so a brew body is read for which.
+            if brew && !brew_caveat_asks_the_reader_to_act(body) {
+                ActionNote::info(manager, body)
+            } else {
+                ActionNote::warn(manager, body)
+            }
+        })
+        .collect()
+}
+
+/// Whether a brew caveat body tells the reader to DO something, rather than
+/// reporting where something went. `⚠` means "act on this"; a "here is where
+/// it went" note is `◉` whatever section of brew's output it was scraped from.
+///
+/// Read off the markers brew's own caveat templates use for an instruction —
+/// second person (`you`, `your`), an imperative opening (`Add`, `Run`,
+/// `Restart`, `Set`, `Source`, `Edit`), a purpose clause (`To start`, `To
+/// use`), a service line (`brew services`), or a shell prompt line — none of
+/// which a bare `"X has been installed to:\n  <path>"` carries. A body this
+/// cannot classify stays a warning: a missed instruction costs the reader a
+/// step they had to take, a missed report costs them a glance.
+fn brew_caveat_asks_the_reader_to_act(body: &str) -> bool {
+    const INSTRUCTION_MARKERS: &[&str] = &[
+        "you ",
+        "you'",
+        "your ",
+        "brew services",
+        "brew link",
+        "to start ",
+        "to use ",
+        "to enable ",
+        "to activate ",
+        "to run ",
+        "to have ",
+        "to load ",
+        "need to",
+        "needs to",
+        "must ",
+        "should ",
+        "please ",
+        "$ ",
+        "echo ",
+        "export ",
+        "source ",
+    ];
+    const IMPERATIVE_OPENERS: &[&str] = &[
+        "add ",
+        "run ",
+        "restart ",
+        "set ",
+        "source ",
+        "edit ",
+        "install ",
+        "open ",
+        "use ",
+        "make sure",
+        "ensure ",
+        "consider ",
+        "see ",
+        "enable ",
+        "put ",
+        "create ",
+    ];
+    let lower = body.to_lowercase();
+    if INSTRUCTION_MARKERS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+    lower.lines().any(|line| {
+        let line = line.trim_start();
+        IMPERATIVE_OPENERS.iter().any(|o| line.starts_with(o))
+    })
+}
+
+fn extract_caveat_bodies(manager: &str, output: &CommandOutput) -> Vec<String> {
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    let mut notes: Vec<String> = Vec::new();
+
+    // By FAMILY, not by name: `brew-tap` prints the same `==> Caveats` block
+    // its formulae and casks do, and matching the two spelled-out names left a
+    // tap's caveat to the generic arm, one line at a time.
+    match (cfgd_core::manager_family(manager), manager) {
+        ("brew", _) => {
             // Homebrew prints "==> Caveats" followed by caveat text until next "==> " or end
             let mut in_caveats = false;
             let mut caveat_lines = Vec::new();
@@ -147,7 +281,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 if in_caveats {
                     if line.starts_with("==> ") {
                         if !caveat_lines.is_empty() {
-                            notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
+                            notes.push(caveat_lines.join("\n").trim().to_string());
                         }
                         in_caveats = false;
                     } else {
@@ -156,22 +290,34 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 }
             }
             if in_caveats && !caveat_lines.is_empty() {
-                notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
+                notes.push(caveat_lines.join("\n").trim().to_string());
             }
         }
-        "npm" | "pnpm" => {
+        (_, "npm" | "pnpm") => {
+            // One caveat per CODE-run, not per line: npm repeats
+            // `npm warn <code>` on every physical line of one message.
+            let mut open: Option<(String, Vec<String>)> = None;
             for line in combined.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                let Some((code, text)) = npm_warn_parts(line) else {
+                    continue;
+                };
+                match &mut open {
+                    Some((current, body)) if current == code => body.push(text.to_string()),
+                    _ => {
+                        if let Some(note) = open.take().map(npm_caveat_body) {
+                            notes.push(note);
+                        }
+                        open = Some((code.to_string(), vec![text.to_string()]));
+                    }
                 }
             }
+            notes.extend(open.map(npm_caveat_body));
         }
-        "pip" | "pipx" => {
+        (_, "pip" | "pipx") => {
             for line in combined.lines() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("WARNING:") {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                if trimmed.to_ascii_uppercase().starts_with("WARNING:") {
+                    notes.push(strip_caveat_self_tag(trimmed).to_string());
                 }
             }
         }
@@ -182,12 +328,35 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 let lower = trimmed.to_lowercase();
                 if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
                 {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                    notes.push(strip_caveat_self_tag(trimmed).to_string());
                 }
             }
         }
     }
     notes
+}
+
+/// `install-scripts: 1 package has …` plus the run's remaining lines, each
+/// indented two columns so the message reads as one advisory. The blank spacer
+/// lines npm wraps with are dropped: they carry nothing, and each one painted
+/// as a caveat of its own — the empty `⚠ [npm]` row beside three real ones.
+///
+/// A run that says nothing but its code keeps the code: the spacers that
+/// carry no text are the ones REPEATING an open code, so a run reduced to
+/// nothing is a line npm printed as `npm warn <text>` with no code at all.
+fn npm_caveat_body((code, lines): (String, Vec<String>)) -> String {
+    let mut body = String::new();
+    for line in lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+        if body.is_empty() {
+            body.push_str(&format!("{code}: {line}"));
+        } else {
+            body.push_str(&format!("\n  {line}"));
+        }
+    }
+    if body.is_empty() {
+        return code;
+    }
+    body
 }
 
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
@@ -297,7 +466,10 @@ pub(super) fn report_abandoned_step(
         manager,
         format!(
             "{method} could not install {manager} ({}); trying the next method",
-            command_failure_reason(output)
+            // The reason sits mid-sentence here, inside parentheses: the one
+            // destination of `command_failure_reason` that needs its bounded
+            // tail on one physical row rather than as continuation lines.
+            collapse_to_subject_line(command_failure_reason(output))
         ),
     );
 }
@@ -305,19 +477,21 @@ pub(super) fn report_abandoned_step(
 /// One line naming why a package command failed: its exit code, plus the stderr
 /// it produced when there is any.
 ///
-/// The `CommandOutput` counterpart of `collapse_to_subject_line`, and the only
-/// place that shape is built. Two callers need it and neither may print a raw
-/// tail of its own: `run_pkg_cmd_live`, whose error IS the caller's status
-/// detail (a downstream branch also matches on its substring — snap's
-/// classic-confinement retry), and a fallback chain that inspects the exit
-/// status itself and reports the step it is about to abandon. Collapsed,
-/// because both destinations are a single status subject/detail and
-/// `Renderer::write_line` debug-asserts on an embedded newline. The exit code
-/// stays in the message so an operator can still tell "unknown failure" from a
-/// tool that exited non-zero saying nothing.
+/// The `CommandOutput` counterpart of `captured_output_detail`, and the ONE
+/// place a package manager's stderr becomes a message. Its destinations are a
+/// status detail (`run_pkg_cmd_live`, whose error IS the caller's detail — a
+/// downstream branch also matches on its substring, snap's classic-confinement
+/// retry) and the tail of a bootstrap-failure sentence, both of which the
+/// renderer lays out as continuation lines; the one destination that needs a
+/// single physical row collapses it itself. Bounded there too: cargo writes its
+/// download progress to stderr, so an uncapped fold put forty `Downloaded
+/// <crate>` lines in one action row. The exit code stays in the message so an
+/// operator can still tell "unknown failure" from a tool that exited non-zero
+/// saying nothing, and the full text survives in the journal and in
+/// `-o json`.
 pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
     let reason = cfgd_core::exit_status_reason(&output.status);
-    let stderr = collapse_to_subject_line(output.stderr.trim());
+    let stderr = cfgd_core::output::captured_output_detail(output.stderr.trim());
     if stderr.is_empty() {
         reason
     } else {
@@ -367,11 +541,20 @@ pub(super) fn pkg_run(
 /// augmented PATH is how brew finds its own tools, and overwriting it would
 /// undo a decision made with more context than this has.
 ///
-/// Every spawn wrapper in this module calls it — `pkg_run`, `run_pkg_cmd*` and
-/// `run_pkg_query` alike. A manager's install path reaches all three (npm's
-/// `install` asks `npm config get prefix` through `run_pkg_query` before it
-/// builds the install command), so augmenting one of them leaves the same
-/// availability/spawn disagreement live one call earlier.
+/// Every spawn of a manager binary under `packages/` calls it — through
+/// `pkg_run`, `run_pkg_cmd*` and `run_pkg_query`, and directly from the two
+/// probes that spawn on their own (`tool_version_from`, `pip_python_version`).
+/// A manager's install path reaches several of them (npm's `install` asks
+/// `npm config get prefix` through `run_pkg_query` before it builds the
+/// install command; every `available_version` prices through `run_pkg_query`;
+/// a provision's settled row reads `tool_version_from`), so augmenting some
+/// and not others leaves the same availability/spawn disagreement live one
+/// call earlier — a brew this run had just bootstrapped answered `is_available`
+/// and then reported no version, because `brew --version` shells out to a
+/// `ruby`/`git` its shim finds through the PATH it inherits. A spawn that is
+/// NOT a manager binary (`stat`, `useradd`) says so with `// own-path-ok:` on
+/// the line or the line above; `every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs`
+/// walks the crate for one that neither routes here nor says why.
 fn hand_child_bootstrapped_path(cmd: &mut Command) {
     let dirs = cfgd_core::bootstrapped_path_dirs();
     if dirs.is_empty()
@@ -432,6 +615,58 @@ pub(super) fn run_pkg_cmd_live(
         }
     }
     Ok(output)
+}
+
+/// Split an install batch into the packages this manager ALREADY holds and the
+/// rest.
+///
+/// A name reaching `install` is one the plan's elision kept, so an already-held
+/// one is there because it sits below a declared `minVersion`. `brew install` /
+/// `pipx install` are no-ops on a package that is present, so installing it
+/// again reports an action that raised nothing and the floor stays unmet on the
+/// next scan. The listing comes from the run's own memo, so this costs no extra
+/// spawn; an unreadable listing falls open — everything is treated as fresh,
+/// exactly as the planner fails open on a manager it cannot query.
+pub(super) fn partition_already_installed(
+    mgr: &dyn cfgd_core::providers::PackageManager,
+    packages: &[String],
+    cx: &PackageContext<'_>,
+) -> (Vec<String>, Vec<String>) {
+    let Ok(held) = cx.installed_for(mgr) else {
+        return (Vec::new(), packages.to_vec());
+    };
+    packages
+        .iter()
+        .cloned()
+        .partition(|p| held.contains(&mgr.package_identity(p)))
+}
+
+/// Raise packages the manager already holds to the version it currently offers,
+/// one invocation per package so a failure for one does not withhold the rest.
+/// `verb_label` is the command as the reader sees it (`brew upgrade --cask`),
+/// and `build_cmd` supplies the matching argv. A manager that cannot raise a
+/// package in place at all never reaches here: `PackageManager::upgrade_verb`
+/// answering `None` turns a below-floor package into a
+/// [`cfgd_core::reconciler::VersionFloor::Unreadable`] check error at PLAN
+/// time, where the floor is known. Every caller therefore spells a verb —
+/// the family's distinct raise, or its install verb where that already
+/// replaces an older copy.
+pub(super) fn upgrade_each<F>(
+    cx: &PackageContext<'_>,
+    manager: &str,
+    packages: &[String],
+    verb_label: &str,
+    build_cmd: F,
+) -> std::result::Result<(), PackageError>
+where
+    F: Fn(&str) -> Command,
+{
+    for pkg in packages {
+        let mut cmd = build_cmd(pkg);
+        let label = format!("{verb_label} {pkg}");
+        run_pkg_cmd_live(cx, manager, &mut cmd, &label, "upgrade")?;
+    }
+    Ok(())
 }
 
 /// Install `packages` as a single batch; if the batch fails, retry each package
@@ -520,7 +755,15 @@ pub(super) fn brew_available() -> bool {
     if command_available("brew") {
         return true;
     }
-    cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
+    // A brew that landed after this process started (a daemon that predates
+    // the bootstrap) is not on the inherited PATH; the known prefixes are.
+    if cfg!(target_os = "linux") {
+        return std::path::Path::new(LINUXBREW_PATH).exists();
+    }
+    cfg!(target_os = "macos")
+        && MACOS_BREW_PREFIXES
+            .iter()
+            .any(|prefix| brew_prefix_holds_brew(std::path::Path::new(prefix)))
 }
 
 /// A system manager a bootstrap cascade can mediate through, as
@@ -603,15 +846,23 @@ pub(super) const fn system_manager_arms(
     }
 }
 
-/// The first arm of `arms` this host can actually run, or `None`.
-fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
+/// The first arm of `arms` the run can actually use, or `None`: one the run
+/// delivers first, else one this host already has.
+///
+/// `delivered` is asked before the host on every arm, so every detector in
+/// this family reads the plan being built the same way; a system manager is
+/// never provisioned today, which makes the first half a no-op for these arms
+/// and keeps it from being a second rule when one is.
+fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
     arms.iter()
-        .find(|(_, tool)| system_tool_available(tool))
+        .find(|(method, tool)| delivered(method) || system_tool_available(tool))
         .map(|(method, _)| *method)
 }
 
 /// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
-/// them is available. The name a `BootstrapPlan` carries as its method.
+/// them is available or delivered. The name a `BootstrapPlan` carries as its
+/// method. `delivered` is the plan-time question — will the run have put this
+/// mediator on the machine — and is asked before the host is probed.
 ///
 /// The answer is BINDING on execution, not a preview of it: the plan line the
 /// user reads names this mediator and the action is serialized on this
@@ -623,8 +874,11 @@ fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
 /// `fallback` must be the caller's OWN bootstrap arm (npm's `nvm`, pipx's
 /// `pip`) — the same string it hands the cascade — because a method naming
 /// neither this cascade nor that arm is a provision nothing can run.
-pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
-    detect_brew_or_system_method(BREW_SYSTEM_ARMS).unwrap_or(fallback)
+pub(super) fn detect_brew_system_method(
+    fallback: &'static str,
+    delivered: &dyn Fn(&str) -> bool,
+) -> &'static str {
+    detect_brew_or_system_method(BREW_SYSTEM_ARMS, delivered).unwrap_or(fallback)
 }
 
 /// The mediator a brew-then-system bootstrap can actually run on this host, or
@@ -634,11 +888,14 @@ pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str 
 /// no bootstrap arm of its own: naming a mediator the host cannot run used to
 /// degrade into a cascade that tried something else, and under a binding plan
 /// it would be a guaranteed failure instead.
-pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'static str> {
-    if brew_available() {
+pub(super) fn detect_brew_or_system_method(
+    arms: &[SystemArm],
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if delivered("brew") || brew_available() {
         return Some("brew");
     }
-    detect_system_arm(arms)
+    detect_system_arm(arms, delivered)
 }
 
 /// Which manager an apt→dnf→zypper cascade can run here, or `None` when none of
@@ -646,14 +903,14 @@ pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'stati
 /// method through it. Binding on execution for the same reason
 /// [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
-pub(super) fn detect_system_method() -> Option<&'static str> {
-    detect_system_arm(SYSTEM_MANAGER_ARMS)
+pub(super) fn detect_system_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    detect_system_arm(SYSTEM_MANAGER_ARMS, delivered)
 }
 
 /// Every mediator a `go` bootstrap can run: brew, then the full system cascade
 /// (`bootstrap_via_system_manager`, which reaches zypper as well).
-pub(super) fn detect_go_bootstrap_method() -> Option<&'static str> {
-    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS)
+pub(super) fn detect_go_bootstrap_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS, delivered)
 }
 
 /// The plan named a mediator that cannot deliver on this host any more.
@@ -756,6 +1013,7 @@ fn pip_python_version(pip_tool: &str) -> Option<String> {
     }
     let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
     cmd.arg("--version");
+    hand_child_bootstrapped_path(&mut cmd);
     let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
     let probed = parse_pip_python_version(&cfgd_core::stdout_lossy_trimmed(&out))?;
     Some(VERSION.get_or_init(|| probed).clone())
@@ -909,6 +1167,7 @@ fn brew_owner() -> Option<String> {
         .args(["-c", "%U", LINUXBREW_PATH])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
         .output()
         .ok()?;
     let owner = cfgd_core::stdout_lossy_trimmed(&output);
@@ -1194,6 +1453,40 @@ pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
         return Command::new(p);
     }
     sudo_cmd(program)
+}
+
+/// The version a manager's own binary reports, for
+/// [`cfgd_core::providers::PackageManager::tool_version`]: `cmd` run to completion, its first
+/// dotted number taken. `None` on a spawn failure, a non-zero exit or a
+/// banner holding no version, so a row that cannot state the fact states
+/// nothing rather than a guess.
+pub(super) fn tool_version_from(cmd: &mut Command) -> Option<String> {
+    hand_child_bootstrapped_path(cmd);
+    let out = cfgd_core::command_output_with_timeout(cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_tool_version(&cfgd_core::stdout_lossy_trimmed(&out))
+}
+
+/// The first dotted number in a `--version` banner, its `v`/`go` prefix and
+/// trailing punctuation dropped: `Homebrew 4.6.3` → `4.6.3`, `go version
+/// go1.24.1 linux/amd64` → `1.24.1`, `v1.8.1911` → `1.8.1911`, `apk-tools
+/// 2.14.4, compiled for x86_64.` → `2.14.4`. A token with no digit after its
+/// letters, or no dot, is a word.
+pub(super) fn parse_tool_version(banner: &str) -> Option<String> {
+    banner
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .map(|token| token.trim_start_matches(|c: char| c.is_ascii_alphabetic()))
+        .find(|token| {
+            token.contains('.')
+                && token.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+        })
+        .map(str::to_string)
 }
 
 /// Parse a "Version: X.Y.Z" line from command output.

@@ -15,17 +15,71 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use kube::Client;
 use kube::client::Body;
+use kube::runtime::reflector::{self, Lookup, Store};
+use kube::runtime::watcher;
 use prometheus_client::registry::Registry;
 use serde::Serialize;
 use tokio::task::JoinHandle;
 use tower_test::mock;
 
-use crate::controllers::ControllerContext;
+use crate::controllers::{
+    ArtifactFactsReader, ArtifactVerifier, ControllerContext, ControllerStores, RegistryBackoff,
+};
 use crate::metrics::Metrics;
+use cfgd_core::oci::SignatureCheck;
+
+/// Build a populated, ready [`Store`] from a fixed set of objects.
+///
+/// Mirrors what a live reflector does on its initial list: `Init`, one
+/// `InitApply` per object, then `InitDone` — which is also what flips the
+/// store to ready. The `Writer` is dropped on return; a store that has already
+/// been marked ready stays ready and keeps its contents.
+pub(crate) fn seeded_store<K>(objects: Vec<K>) -> Store<K>
+where
+    K: Lookup + Clone + 'static,
+    K::DynamicType: Eq + std::hash::Hash + Clone + Default,
+{
+    let (store, mut writer) = reflector::store::<K>();
+    writer.apply_watcher_event(&watcher::Event::Init);
+    for object in objects {
+        writer.apply_watcher_event(&watcher::Event::InitApply(object));
+    }
+    writer.apply_watcher_event(&watcher::Event::InitDone);
+    store
+}
+
+/// A [`Store`] that has never completed an initial list — the shape a reconcile
+/// sees while the operator is still starting up.
+///
+/// The `Writer` comes back with it and the test must hold it for the length of
+/// the assertion: dropping it resolves `wait_until_ready` with `WriterDropped`,
+/// which is a different failure from the one under test (a cache that is simply
+/// not populated yet).
+pub(crate) fn unready_store<K>() -> (Store<K>, reflector::store::Writer<K>)
+where
+    K: Lookup + Clone + 'static,
+    K::DynamicType: Eq + std::hash::Hash + Clone + Default,
+{
+    reflector::store::<K>()
+}
+
+/// Every cache empty and ready — the default for a reconcile whose branch
+/// reads no cross-resource state.
+pub(crate) fn empty_stores() -> ControllerStores {
+    ControllerStores {
+        machine_configs: seeded_store(vec![]),
+        config_policies: seeded_store(vec![]),
+        cluster_config_policies: seeded_store(vec![]),
+        modules: seeded_store(vec![]),
+        drift_alerts: seeded_store(vec![]),
+        namespaces: seeded_store(vec![]),
+    }
+}
 
 /// One expected HTTP call in the reconcile's request sequence.
 ///
@@ -35,8 +89,12 @@ use crate::metrics::Metrics;
 /// with `.returning_*` / `.with_status` / `.expecting_query`.
 pub(crate) struct ExpectedCall {
     method: Method,
-    /// Exact match on the URI path component (no query string, no scheme).
+    /// Exact match on the URI path component (no query string, no scheme),
+    /// unless `path_is_prefix` says the tail is the client's to mint.
     path: String,
+    /// Match `path` as a PREFIX. For a request whose last segment the client
+    /// derives rather than the caller naming it.
+    path_is_prefix: bool,
     /// Optional substring that must appear in the URI's query string.
     /// Useful for `fieldManager=cfgd-operator/status` assertions without
     /// pinning the full encoded query.
@@ -80,10 +138,19 @@ impl ExpectedCall {
         Self {
             method,
             path: path.into(),
+            path_is_prefix: false,
             query_contains: None,
             response_status: StatusCode::OK,
             response_body: b"{}".to_vec(),
         }
+    }
+
+    /// Match the path by PREFIX instead of exactly, for a request whose final
+    /// segment the client mints — kube's recorder names a repeated event
+    /// `<object>.<hash of the event>`, which no fixture can spell.
+    pub fn with_path_prefix(mut self) -> Self {
+        self.path_is_prefix = true;
+        self
     }
 
     /// Pin a substring that must appear in the request's query string.
@@ -96,12 +163,6 @@ impl ExpectedCall {
     pub fn returning_json<T: Serialize>(mut self, value: &T) -> Self {
         self.response_body =
             serde_json::to_vec(value).expect("test fixture must serialize cleanly");
-        self
-    }
-
-    /// Reply with raw bytes (for non-JSON responses or pre-serialized payloads).
-    pub fn returning_raw(mut self, bytes: Vec<u8>) -> Self {
-        self.response_body = bytes;
         self
     }
 
@@ -153,6 +214,10 @@ impl ExpectedCall {
 pub(crate) struct CapturedRequest {
     pub method: Method,
     pub path: String,
+    /// The raw query string, so a test can assert a parameter is ABSENT.
+    /// `ExpectedCall::with_query_contains` only proves presence, which cannot
+    /// state a claim like "this apply must not be forced".
+    pub query: String,
     pub body: Vec<u8>,
 }
 
@@ -203,10 +268,35 @@ pub(crate) fn expect_event_post(namespace: &str) -> ExpectedCall {
     }))
 }
 
+/// The PATCH kube's recorder sends for an event it has ALREADY published in
+/// this process: a repeat is a series increment on the existing object, not a
+/// second event, so a second reconcile publishing the same event is a PATCH to
+/// `.../events/<object>.<hash>` rather than another POST. The name carries a
+/// hash of the event's own content, so the path matches by prefix.
+pub(crate) fn expect_event_series_patch(namespace: &str) -> ExpectedCall {
+    ExpectedCall::patch(format!(
+        "/apis/events.k8s.io/v1/namespaces/{namespace}/events/"
+    ))
+    .with_path_prefix()
+    .returning_json(&serde_json::json!({
+        "apiVersion": "events.k8s.io/v1",
+        "kind": "Event",
+        "metadata": { "name": "test-event", "namespace": namespace },
+    }))
+}
+
+/// What the driver task hands back: the expected calls it matched, plus any
+/// request that arrived after the queue was exhausted.
+struct DriverOutcome {
+    captured: Vec<CapturedRequest>,
+    unexpected: Vec<String>,
+}
+
 /// The test harness. Holds the driver `JoinHandle` and the live `Client` /
 /// `ControllerContext` references the test passes into the reconcile fn.
 pub(crate) struct MockKubeHarness {
-    driver: JoinHandle<HarnessReport>,
+    driver: JoinHandle<DriverOutcome>,
+    stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl MockKubeHarness {
@@ -216,7 +306,57 @@ impl MockKubeHarness {
     /// The `Registry` is returned alongside so the test can inspect emitted
     /// metrics after the reconcile completes.
     pub fn new(expected: Vec<ExpectedCall>) -> (Arc<ControllerContext>, Registry, Self) {
+        Self::with_stores(expected, empty_stores())
+    }
+
+    /// Same as [`MockKubeHarness::new`], but with caches the test has seeded.
+    ///
+    /// Every cross-resource read a reconcile makes now comes from these, so a
+    /// call that still reaches the mock service is a LIST the controller was
+    /// supposed to have stopped making — the queue is the assertion.
+    pub fn with_stores(
+        expected: Vec<ExpectedCall>,
+        stores: ControllerStores,
+    ) -> (Arc<ControllerContext>, Registry, Self) {
+        Self::with_facts(
+            expected,
+            stores,
+            ArtifactFactsReader::fixed(Default::default()),
+        )
+    }
+
+    /// Same as [`MockKubeHarness::with_stores`], but with the artifact-facts
+    /// reader the Module controller consults. The default answers nothing, so
+    /// no test reaches a registry by omission.
+    pub fn with_facts(
+        expected: Vec<ExpectedCall>,
+        stores: ControllerStores,
+        artifact_facts: ArtifactFactsReader,
+    ) -> (Arc<ControllerContext>, Registry, Self) {
+        Self::with_registry_seams(
+            expected,
+            stores,
+            artifact_facts,
+            // Nothing was checked, which is what a test that installs no
+            // verifier has actually established. A test asserting a signature
+            // verdict names the verifier it means.
+            ArtifactVerifier::fixed(SignatureCheck::Undetermined(
+                "no verifier installed in this test".to_string(),
+            )),
+        )
+    }
+
+    /// Same as [`MockKubeHarness::with_facts`], but with the signature
+    /// verifier the Module controller consults as well. The two registry seams
+    /// are the whole surface a reconcile can reach the outside world through.
+    pub fn with_registry_seams(
+        expected: Vec<ExpectedCall>,
+        stores: ControllerStores,
+        artifact_facts: ArtifactFactsReader,
+        artifact_verifier: ArtifactVerifier,
+    ) -> (Arc<ControllerContext>, Registry, Self) {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let (stop, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
 
         let driver = tokio::spawn(async move {
             let mut captured = Vec::with_capacity(expected.len());
@@ -243,15 +383,26 @@ impl MockKubeHarness {
                     actual_method,
                     actual_path,
                 );
-                assert_eq!(
-                    actual_path,
-                    expected_call.path,
-                    "path mismatch on call #{}: expected {} but got {} (method {})",
-                    captured.len() + 1,
-                    expected_call.path,
-                    actual_path,
-                    actual_method,
-                );
+                if expected_call.path_is_prefix {
+                    assert!(
+                        actual_path.starts_with(&expected_call.path),
+                        "path mismatch on call #{}: expected a path under {} but got {} (method {})",
+                        captured.len() + 1,
+                        expected_call.path,
+                        actual_path,
+                        actual_method,
+                    );
+                } else {
+                    assert_eq!(
+                        actual_path,
+                        expected_call.path,
+                        "path mismatch on call #{}: expected {} but got {} (method {})",
+                        captured.len() + 1,
+                        expected_call.path,
+                        actual_path,
+                        actual_method,
+                    );
+                }
                 if let Some(fragment) = &expected_call.query_contains {
                     assert!(
                         actual_query.contains(fragment),
@@ -271,10 +422,10 @@ impl MockKubeHarness {
                     ),
                 };
 
-                let _ = actual_query;
                 captured.push(CapturedRequest {
                     method: actual_method,
                     path: actual_path,
+                    query: actual_query,
                     body: body_bytes,
                 });
 
@@ -286,7 +437,39 @@ impl MockKubeHarness {
                 send.send_response(response);
             }
 
-            HarnessReport { captured }
+            // The handle deliberately outlives the expected queue. Dropping it
+            // here closes the channel, so a further request fails as a
+            // transport error — and every caller that only `warn!`s a failed
+            // patch swallows that, leaving `captured` empty. A test asserting
+            // "this reconcile made no calls" would then be satisfied by a call
+            // it never saw. Answering with the same error while RECORDING the
+            // request keeps the reconcile's behaviour identical and makes the
+            // extra call visible.
+            let mut unexpected: Vec<String> = Vec::new();
+            let mut record_unexpected = |request: Request<Body>, send: mock::SendResponse<_>| {
+                unexpected.push(format!("{} {}", request.method(), request.uri().path()));
+                send.send_error("unexpected request after the harness queue was consumed");
+            };
+            loop {
+                tokio::select! {
+                    // Biased so a request already in the channel is taken
+                    // before the stop signal that raced it.
+                    biased;
+                    request = handle.next_request() => match request {
+                        Some((request, send)) => record_unexpected(request, send),
+                        None => break,
+                    },
+                    _ = &mut stop_rx => break,
+                }
+            }
+            while let Some(Some((request, send))) = handle.next_request().now_or_never() {
+                record_unexpected(request, send);
+            }
+
+            DriverOutcome {
+                captured,
+                unexpected,
+            }
         });
 
         let client = Client::new(mock_service, "default");
@@ -301,23 +484,41 @@ impl MockKubeHarness {
             client,
             recorder,
             metrics,
+            stores,
+            artifact_facts,
+            artifact_verifier,
+            registry_backoff: RegistryBackoff::default(),
         });
 
-        (ctx, registry, Self { driver })
+        (ctx, registry, Self { driver, stop })
     }
 
-    /// Await the driver, asserting all expected calls were consumed in order.
+    /// Await the driver, asserting all expected calls were consumed in order
+    /// and that the reconcile made no further call afterwards.
+    ///
     /// Panics if the driver hasn't finished within `5s` (likely the reconcile
     /// made fewer kube calls than expected).
     pub async fn finish(self) -> HarnessReport {
-        match tokio::time::timeout(Duration::from_secs(5), self.driver).await {
-            Ok(Ok(report)) => report,
+        // Releases the driver from its post-queue watch. Failure means the
+        // driver is already gone, which the join below reports properly.
+        let _ = self.stop.send(());
+        let outcome = match tokio::time::timeout(Duration::from_secs(5), self.driver).await {
+            Ok(Ok(outcome)) => outcome,
             Ok(Err(join_err)) => panic!("harness driver task panicked: {join_err}"),
             Err(_) => panic!(
                 "harness driver did not complete within 5s — \
                  the reconcile likely made fewer kube calls than expected, \
                  or made a call out of order"
             ),
+        };
+        assert!(
+            outcome.unexpected.is_empty(),
+            "the reconcile made {} request(s) beyond its expected queue: {}",
+            outcome.unexpected.len(),
+            outcome.unexpected.join(", "),
+        );
+        HarnessReport {
+            captured: outcome.captured,
         }
     }
 }

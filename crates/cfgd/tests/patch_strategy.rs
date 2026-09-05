@@ -472,12 +472,42 @@ fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
     let out = cap.human();
 
     assert!(
-        out.contains("source 'acme' scripts will run because allowScripts is set"),
+        out.contains("Source 'acme' scripts will run because `allowScripts` is set"),
         "the disclosure must print without -v: {out}"
     );
     assert!(
         out.contains("a postApply script") && out.contains("a patch script for"),
         "the disclosure must name every surface it found: {out}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
+    // `sync` resolves the composed state to name the modules in its header,
+    // and that resolution is the one that raises the disclosure. Only the two
+    // advisories whose remedy IS `cfgd sync` are held back; everything else
+    // the composition has to say still reaches the operator.
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (seed_printer, _seed_cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &seed_printer).expect("the source must sync into the cache");
+    drop(seed_printer);
+
+    let (printer, cap) = Printer::for_test_doc();
+    cfgd::cli::sync::cmd_sync(&cli, &printer).expect("the second sync reads the cache it seeded");
+    drop(printer);
+    let out = cap.human();
+
+    assert!(
+        out.contains("Source 'acme' scripts will run because `allowScripts` is set"),
+        "sync must not swallow the disclosure: {out}"
+    );
+    assert!(
+        !out.contains("has no local cache yet"),
+        "the advisory whose remedy is this very command must stay held back: {out}"
     );
 }
 

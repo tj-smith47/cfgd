@@ -140,6 +140,51 @@ mod tests {
 
     // --- tar+gzip round-trip ---
 
+    /// The exec bit is the whole point of a module's `bin/` directory: a script
+    /// that arrives non-executable is a module that packed correctly and cannot
+    /// be run. Both archive producers are walked, so a second one cannot ship
+    /// dropping the bit the first preserves.
+    #[cfg(unix)]
+    #[test]
+    fn every_archive_producer_carries_the_exec_bit_through_extraction() {
+        use std::os::unix::fs::PermissionsExt;
+
+        type Producer = fn(&Path) -> Result<Vec<u8>, OciError>;
+        let producers: [(&str, Producer); 2] = [
+            ("create_tar_gz", create_tar_gz),
+            ("create_tar_gz_with_diff_id", |dir| {
+                create_tar_gz_with_diff_id(dir).map(|(bytes, _)| bytes)
+            }),
+        ];
+
+        for (name, produce) in producers {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::create_dir(src.path().join("bin")).unwrap();
+            let script = src.path().join("bin/hello.sh");
+            std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let plain = src.path().join("module.yaml");
+            std::fs::write(&plain, "name: test\n").unwrap();
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            let out = tempfile::tempdir().unwrap();
+            extract_tar_gz(&produce(src.path()).unwrap(), out.path()).unwrap();
+
+            let unpacked_mode =
+                |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                unpacked_mode(&out.path().join("bin/hello.sh")),
+                0o755,
+                "{name} must carry an executable script through extraction"
+            );
+            assert_eq!(
+                unpacked_mode(&out.path().join("module.yaml")),
+                0o644,
+                "{name} must not GRANT the exec bit to a plain file"
+            );
+        }
+    }
+
     #[test]
     fn tar_gz_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -195,7 +240,7 @@ mod tests {
     #[test]
     fn extract_tar_gz_prevents_path_traversal_via_dotdot() {
         // Build a tar.gz archive with an entry whose path contains ".."
-        // We must write the raw tar bytes to bypass the tar crate's own
+        // This must write the raw tar bytes to bypass the tar crate's own
         // set_path safety checks (which also reject "..")
         let mut buf = Vec::new();
         {

@@ -93,6 +93,13 @@ fn never_abort() -> &'static crate::AbortFlag {
     FLAG.get_or_init(crate::AbortFlag::new)
 }
 
+/// A tick cache nobody else shares, leaked so a helper-built `ReconcileCtx` can
+/// borrow one without its caller having to own it. Every call mints a fresh
+/// one, so a test never reads a derivation another test produced.
+fn fresh_tick_cache() -> &'static super::tick_cache::TickCache {
+    Box::leak(Box::new(super::tick_cache::TickCache::new()))
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -108,12 +115,14 @@ fn quiet_reconcile_ctx<'a>(
         hooks,
         state_dir_override: Some(state_dir),
         explicit_state_dir: true,
+        cache_dir_override: None,
         printer,
         module_filter: None,
         auto_apply_override: None,
         drift_policy_override: None,
         scope: crate::Scope::User,
         abort: never_abort(),
+        cache: fresh_tick_cache(),
     }
 }
 
@@ -185,7 +194,10 @@ fn module_has_drift_true_for_install_packages_action() {
 fn module_has_drift_true_for_deploy_files_and_run_script_actions() {
     let files_plan = module_drift_plan(module_action(
         "watched",
-        crate::reconciler::ModuleActionKind::DeployFiles { files: vec![] },
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![],
+            declared_total: 0,
+        },
     ));
     assert!(module_has_drift(&files_plan, "watched"));
 
@@ -261,16 +273,15 @@ fn source_status_round_trips() {
     let status = SourceStatus {
         name: "local".to_string(),
         last_sync: Some("2026-01-01T00:00:00Z".to_string()),
-        last_reconcile: None,
-        drift_count: 3,
+        drift_count: Some(3),
         status: "active".to_string(),
+        last_commit: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.name, "local");
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-01-01T00:00:00Z"));
-    assert!(parsed.last_reconcile.is_none());
-    assert_eq!(parsed.drift_count, 3);
+    assert_eq!(parsed.drift_count, Some(3));
     assert_eq!(parsed.status, "active");
     // Verify camelCase renaming
     assert!(json.contains("\"driftCount\":3"));
@@ -358,6 +369,7 @@ fn find_server_url_returns_none_for_git_origin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -393,6 +405,7 @@ fn find_server_url_returns_url_for_server_origin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -477,6 +490,7 @@ fn extract_source_resources_from_merged_profile() {
         env: vec![crate::config::EnvVar {
             name: "EDITOR".into(),
             value: "vim".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -555,6 +569,86 @@ fn process_source_decisions_first_run_records_decisions() {
     );
 }
 
+/// The keep-side twin of the prune, one recorded grammar per line: the prune
+/// removes a withheld resource's action BEFORE the tick's complement-resolve
+/// reads the plan, so the exclusions themselves must name every id a drift
+/// writer mints for the four vocabularies — both producers' spellings per
+/// type — or the very rows a pending decision is about are resolved blind.
+#[test]
+fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
+    let exclusions = DecisionExclusions::from_decision_paths(
+        [
+            "files./tmp/w/app.conf".to_string(),
+            r"files./home/u/od\d.conf".to_string(),
+            "packages.brew.jq".to_string(),
+            "env.EDITOR".to_string(),
+            "system.gsettings".to_string(),
+        ],
+        crate::expand_tilde,
+    );
+    let cases: &[(&str, &str, bool)] = &[
+        // The daemon's file rows carry the exclusion set's own id...
+        ("file", "/tmp/w/app.conf", true),
+        ("file", "/tmp/w/other.conf", false),
+        // ...and the CLI's carry the `display_posix` spelling, folded before
+        // matching so a Unix target with a legal `\` keeps where it pruned.
+        ("file", r"/home/u/od\d.conf", true),
+        // The CLI's module-file rows, matched on the trimmed tail...
+        ("module", "dev/tmp/w/app.conf", true),
+        ("module", "dev/tmp/w/other.conf", false),
+        // A bare module id carries no trace of the withheld file, so the
+        // exclusions answer false and the prune's own `resource_ids` carrier
+        // is what keeps that row.
+        ("module", "dev", false),
+        // ...with the tail folded the way the exclusion set folds, so a Unix
+        // target carrying a legal `\` keeps exactly where it pruned.
+        ("module", r"dev/home/u/od\d.conf", true),
+        // Both package spellings, batches judged member by member, and the
+        // withheld manager's provision/refuse findings with them.
+        ("package", "brew:jq", true),
+        ("package", "brew:rg", false),
+        ("package", "brew:rg,jq", true),
+        ("package", "cargo:jq", false),
+        ("package", "brew", false),
+        ("package", "brew-cask:jq", true),
+        ("package", "provision:brew", true),
+        ("package", "refuse:brew", true),
+        ("package", "provision:brew-cask", true),
+        ("package", "provision:cargo", false),
+        // Both system spellings — the composer's, and the bare id a pruned
+        // Skip mints, which IS the configurator name; a configurator is
+        // withheld whole. A key of its own may carry a colon, and the split
+        // must not read one as the separator.
+        ("system", "gsettings.org.gnome.x key", true),
+        ("system", "windowsRegistry.HKCU:\\Software\\cfgd", false),
+        ("system", "xfconf.k", false),
+        ("system", "gsettings", true),
+        ("system", "xfconf", false),
+        // The env surface is withheld as a unit, every spelling under it.
+        ("env-var", "EDITOR", true),
+        ("alias", "ll", true),
+        ("env", "/home/u/.cfgd.env", true),
+        ("env-rc", "/home/u/.zshrc", true),
+        ("env-session", crate::state::ENV_SESSION_RESOURCE_ID, true),
+        ("a-type-no-grammar-mints", "x", false),
+    ];
+    for (rtype, rid, withheld) in cases {
+        assert_eq!(
+            exclusions.withholds_recorded_row(rtype, rid),
+            *withheld,
+            "wrong keep verdict for {rtype}/{rid}"
+        );
+    }
+    // No env decision → the env surface is not withheld, and its rows resolve
+    // on the plan's own say-so.
+    let no_env = DecisionExclusions::from_decision_paths(
+        ["packages.brew.jq".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(!no_env.withholds_recorded_row("env-var", "EDITOR"));
+    assert!(!no_env.withholds_recorded_row("alias", "ll"));
+}
+
 #[test]
 fn first_observation_of_a_source_reasks_nothing_already_answered() {
     use crate::config::PackagesSpec;
@@ -574,6 +668,7 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -615,31 +710,14 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
 }
 
 #[test]
-fn a_changed_source_reasks_an_item_already_answered() {
+fn a_source_that_moved_does_not_reask_an_item_whose_own_declaration_stands() {
     use crate::config::{CargoSpec, PackagesSpec};
-    // The other half of the first-observation split: once a PREVIOUS
-    // observation disagrees with the delivered set, every answered item is
-    // asked again — `docs/sources.md`: a rejection does not persist across
-    // source versions, so an update mints a fresh decision beside the
-    // resolved one and the fresh answer is the operator's current intent.
+    // A source's delivered SET is not the unit an answer covers. An unrelated
+    // upstream commit moves the source's hash, and the item the operator
+    // already answered still says exactly what it said when they answered it —
+    // so the answer stands and no question is re-asked.
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
-    store
-        .upsert_pending_decision(
-            "acme",
-            "packages.cargo.bat",
-            "recommended",
-            "install",
-            "recommended packages.cargo.bat (from acme)",
-        )
-        .unwrap();
-    store
-        .resolve_decision("packages.cargo.bat", "rejected")
-        .unwrap();
-    store
-        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
-        .unwrap();
-
     let merged = MergedProfile {
         packages: PackagesSpec {
             cargo: Some(CargoSpec {
@@ -650,22 +728,44 @@ fn a_changed_source_reasks_an_item_already_answered() {
         },
         ..Default::default()
     };
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    let fingerprint = delivered
+        .content_hash_for("packages.cargo.bat")
+        .expect("the source delivers the item")
+        .to_string();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+            Some(&fingerprint),
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
     let review = review_source_policy(
         &store,
         "acme",
-        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &delivered,
         &policy,
         &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
-    assert_eq!(
+    assert!(
+        review.to_mint.is_empty(),
+        "the item the operator answered has not changed, whatever else the source did: {:?}",
         review
             .to_mint
             .iter()
             .map(|m| m.resource.as_str())
-            .collect::<Vec<_>>(),
-        vec!["packages.cargo.bat"],
-        "a source that moved re-asks the item its operator already answered"
+            .collect::<Vec<_>>()
     );
 }
 
@@ -816,6 +916,45 @@ fn an_installed_source_package_auto_accepts_instead_of_minting() {
         store.has_decision("acme", "packages.cargo.bat").unwrap(),
         "resolved with provenance, not merely skipped — the row exists \
          (its resolution/summary shape is pinned at the store level)"
+    );
+}
+
+/// Every minted row carries ONE action, and a decision ROW therefore never
+/// renders it: `◉ Recommended packages.cargo.eza` says everything there is to
+/// say, because `install` is the only thing a source decision ever asks.
+///
+/// The moment a second action is minted that stops being true — the row would
+/// have to name which one is being asked about — so this test walks the
+/// recorded action set rather than asserting one row's value, and a second
+/// action fails it here instead of shipping an ambiguous row.
+#[test]
+fn every_minted_decision_asks_the_same_one_action() {
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat", "eza"]);
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+    assert!(!review.to_mint.is_empty(), "the review must mint something");
+    crate::reconciler::mint_decisions(&store, &review);
+
+    // The population every LISTING surface reads — `cfgd decide`, `cfgd
+    // status` and the run header all render rows from here.
+    let listed = store.pending_decisions().unwrap();
+    assert!(!listed.is_empty(), "rows must have landed to be walked");
+    let actions: std::collections::BTreeSet<String> =
+        listed.into_iter().map(|d| d.action).collect();
+    assert_eq!(
+        actions,
+        std::collections::BTreeSet::from([crate::reconciler::DECISION_ACTION_INSTALL.to_string()]),
+        "a decision row omits its action because there is only one; \
+         minting a second means every listing surface must start rendering it"
     );
 }
 
@@ -983,6 +1122,7 @@ fn a_pending_row_auto_accepts_once_its_package_is_installed() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1039,6 +1179,7 @@ fn an_explicit_rejection_is_never_auto_accepted() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1062,19 +1203,22 @@ fn an_explicit_rejection_is_never_auto_accepted() {
 }
 
 #[test]
-fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question() {
-    // `docs/sources.md`: a rejection answers ONE delivered set — when the
-    // source's set changes, the item is a fresh question. Installed state
-    // answers that fresh question exactly as it answers a first-time one (an
-    // installed-despite-rejection package is one the operator put there), so
-    // the composed path is a decision, not an accident: no re-ask, one
-    // auto-accepted resolution.
+fn a_rejection_survives_the_source_delivering_something_else() {
+    // A rejection answers ONE ITEM, not the set the item arrived in. The
+    // source gains an unrelated package, and the rejected one — which the
+    // operator has since installed by hand, for their own reasons — is
+    // neither re-asked nor laundered onto the machine by the newcomer. The
+    // newcomer owes its own question.
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default();
     let old_delivered = tiered_items(
         &cargo_profile(&["bat"]),
         crate::config::LayerPolicy::Recommended,
     );
+    let fingerprint = old_delivered
+        .content_hash_for("packages.cargo.bat")
+        .expect("the source delivers the item")
+        .to_string();
     store
         .upsert_pending_decision(
             "acme",
@@ -1082,6 +1226,7 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            Some(&fingerprint),
         )
         .unwrap();
     store
@@ -1091,8 +1236,8 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
         .set_source_config_hash("acme", &old_delivered.resource_hash())
         .unwrap();
 
-    // The source moves: its delivered set gains an item, voiding the standing
-    // answer for everything it delivers.
+    // The source moves: its delivered set gains an item. The rejected item's
+    // own declaration is untouched.
     let new_delivered = tiered_items(
         &cargo_profile(&["bat", "eza"]),
         crate::config::LayerPolicy::Recommended,
@@ -1100,14 +1245,9 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
     let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
     let review = review_source_policy(&store, "acme", &new_delivered, &policy, &actual).unwrap();
 
-    assert_eq!(
-        review
-            .auto_accepted
-            .iter()
-            .map(|a| a.resource.as_str())
-            .collect::<Vec<_>>(),
-        vec!["packages.cargo.bat"],
-        "the fresh question is answered by installed state, not re-asked"
+    assert!(
+        review.auto_accepted.is_empty(),
+        "an installed-despite-rejection package does not overturn the answer"
     );
     assert_eq!(
         review
@@ -1116,14 +1256,17 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
             .map(|m| m.resource.as_str())
             .collect::<Vec<_>>(),
         vec!["packages.cargo.eza"],
-        "the not-installed newcomer still owes its question"
+        "the newcomer owes its question; the rejected item does not"
     );
 
     crate::reconciler::mint_decisions(&store, &review);
     assert_eq!(
         withheld_paths(&store),
-        HashSet::from(["packages.cargo.eza".to_string()]),
-        "the auto-accepted item is released; only the fresh ask withholds"
+        HashSet::from([
+            "packages.cargo.bat".to_string(),
+            "packages.cargo.eza".to_string(),
+        ]),
+        "the rejection still withholds, beside the fresh ask"
     );
 }
 
@@ -1144,6 +1287,7 @@ fn a_pending_rows_conflict_annotation_is_refreshed_in_place() {
             "recommended",
             "install",
             "recommended packages.cargo.tool@^14 (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1354,6 +1498,7 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
             "recommended",
             "install",
             "bat",
+            None,
         )
         .unwrap();
     store
@@ -1424,7 +1569,7 @@ fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
         let local = local_profile_declaring_file(declared);
         let store = test_state();
         store
-            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc")
+            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc", None)
             .unwrap();
 
         let scope = DecisionScope::new(["acme"], &local_profile(&local));
@@ -1458,7 +1603,14 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
 
     let store = test_state();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -1467,6 +1619,7 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
             "recommended",
             "install",
             "stern",
+            None,
         )
         .unwrap();
     store
@@ -1547,12 +1700,14 @@ async fn tick_against_default_store(config_path: PathBuf) {
                 hooks: &crate::test_helpers::NoopDaemonHooks,
                 state_dir_override: Some(&materialized),
                 explicit_state_dir: false,
+                cache_dir_override: None,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
                 drift_policy_override: None,
                 scope: crate::Scope::User,
                 abort: never_abort(),
+                cache: fresh_tick_cache(),
             },
         );
     })
@@ -1571,7 +1726,14 @@ async fn a_daemon_on_a_foreign_config_leaves_the_default_stores_rows_alone() {
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
     store
-        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "s",
+            None,
+        )
         .unwrap();
 
     tick_against_default_store(inert_config_under(staging.path())).await;
@@ -1640,7 +1802,14 @@ async fn a_service_daemon_naming_the_default_config_still_sweeps_dead_decision_r
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
     store
-        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "s",
+            None,
+        )
         .unwrap();
 
     // The same file the bare default would resolve, passed the way a generated
@@ -1756,11 +1925,13 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: "cargo".to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
@@ -1803,11 +1974,13 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let module = |name: &str, resolved: Vec<crate::modules::ResolvedPackage>| {
         Action::Module(ModuleAction {
@@ -1891,7 +2064,10 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
             packages_phase_of(vec![
                 Action::Module(ModuleAction {
                     module_name: "docs".to_string(),
-                    kind: ModuleActionKind::DeployFiles { files: Vec::new() },
+                    kind: ModuleActionKind::DeployFiles {
+                        files: Vec::new(),
+                        declared_total: 0,
+                    },
                     origin: None,
                 }),
                 install_of("cargo", &["ripgrep"]),
@@ -1944,7 +2120,12 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
         warnings: Vec::new(),
     };
 
-    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let withheld = crate::reconciler::withhold_from_plan(
+        &mut plan,
+        &exclusions,
+        &crate::providers::ProviderRegistry::new(),
+    )
+    .actions;
 
     let nodes: Vec<String> = plan
         .phases
@@ -1985,11 +2166,13 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
                 canonical_name: "bat".into(),
                 resolved_name: "bat".into(),
                 manager: "cargo".into(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
         },
         origin: Some("acme".into()),
@@ -2088,11 +2271,16 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
     };
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
-        kind: crate::reconciler::ModuleActionKind::DeployFiles {
-            files: vec![
+        kind: {
+            let files = vec![
                 resolved_file(home.path().join(".zshrc")),
                 resolved_file(home.path().join(".bashrc")),
-            ],
+            ];
+            let declared_total = files.len();
+            crate::reconciler::ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: Some("acme".to_string()),
     });
@@ -2108,7 +2296,7 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
         .actions()
         .filter_map(|action| match action {
             crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
-                kind: crate::reconciler::ModuleActionKind::DeployFiles { files },
+                kind: crate::reconciler::ModuleActionKind::DeployFiles { files, .. },
                 ..
             }) => Some(files.iter().map(|f| f.target.clone()).collect::<Vec<_>>()),
             _ => None,
@@ -2133,8 +2321,8 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
     );
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
-        kind: crate::reconciler::ModuleActionKind::DeployFiles {
-            files: vec![crate::modules::ResolvedFile {
+        kind: {
+            let files = vec![crate::modules::ResolvedFile {
                 source: PathBuf::from("/src/file"),
                 target: home.path().join(".zshrc"),
                 is_git_source: false,
@@ -2142,7 +2330,12 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
                 encryption: None,
                 permissions: None,
                 patch: None,
-            }],
+            }];
+            let declared_total = files.len();
+            crate::reconciler::ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: Some("acme".to_string()),
     });
@@ -2174,6 +2367,8 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
             content: "export EDITOR=vim".into(),
+            vars: 0,
+            aliases: 0,
         }))
     );
     assert!(
@@ -2196,6 +2391,8 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         !unrelated.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
             content: String::new(),
+            vars: 0,
+            aliases: 0,
         }))
     );
 }
@@ -2478,15 +2675,13 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             name.to_string(),
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
-        registry
-            .system_configurators
-            .push(Box::new(MockSystemConfigurator::new(name).with_drift(
-                vec![SystemDrift {
-                    key: format!("{name}-setting"),
-                    expected: "10".into(),
-                    actual: "60".into(),
-                }],
-            )));
+        registry.add_system_configurator(Box::new(MockSystemConfigurator::new(name).with_drift(
+            vec![SystemDrift {
+                key: format!("{name}-setting"),
+                expected: "10".into(),
+                actual: "60".into(),
+            }],
+        )));
     }
 
     let printer = crate::test_helpers::test_printer();
@@ -2502,6 +2697,7 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             &["local".to_string()],
             &printer,
             &store,
+            None,
         )
         .unwrap()
     };
@@ -2705,6 +2901,15 @@ fn daemon_state_to_response_propagates_fields() {
     state.last_sync = Some("2026-03-30T12:01:00Z".to_string());
     state.drift_count = 5;
     state.update_available = Some("2.0.0".to_string());
+    state.modules =
+        crate::output::HeaderModule::of_resolved(&[crate::modules::ResolvedModule::skipped(
+            "gated".to_string(),
+            std::path::PathBuf::from("/modules/gated"),
+            Vec::new(),
+            false,
+            "platform not matched".to_string(),
+            None,
+        )]);
 
     let response = state.to_response();
     assert!(response.running);
@@ -2717,6 +2922,14 @@ fn daemon_state_to_response_propagates_fields() {
     assert_eq!(response.update_available.as_deref(), Some("2.0.0"));
     assert_eq!(response.sources.len(), 1);
     assert_eq!(response.sources[0].name, "local");
+    // The `Modules` header row `daemon status` renders is read off the response,
+    // so the loop's resolved list has to survive the state → response hop.
+    assert_eq!(response.modules.len(), 1);
+    assert_eq!(response.modules[0].name, "gated");
+    assert_eq!(
+        response.modules[0].platform_skip_reason.as_deref(),
+        Some("platform not matched")
+    );
 }
 
 // --- DaemonStatusResponse with module_reconcile and update_available ---
@@ -2748,6 +2961,12 @@ fn daemon_status_response_with_modules_round_trips() {
                 last_reconcile: None,
             },
         ],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -2775,6 +2994,12 @@ fn daemon_status_response_skips_empty_module_reconcile() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -2869,11 +3094,14 @@ fn action_resource_info_manager_provision() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".into(),
         via: "homebrew installer".into(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
     let (rtype, rid) = action_resource_info(&action);
-    assert_eq!(rtype, "manager");
+    // The drift-row type is "package": one stored identity per provision
+    // finding, shared with the CLI live check's `manager_action_drift` rows.
+    assert_eq!(rtype, "package");
     assert_eq!(rid, "provision:brew");
 }
 
@@ -2942,6 +3170,7 @@ fn action_resource_info_secret_resolve() {
         provider: "1password".into(),
         reference: "op://vault/item/field".into(),
         target: PathBuf::from("/tmp/secret"),
+        template: None,
         origin: "local".into(),
     });
     let (rtype, rid) = action_resource_info(&action);
@@ -2957,6 +3186,7 @@ fn action_resource_info_secret_resolve_env() {
         provider: "vault".into(),
         reference: "secret/data/app".into(),
         envs: vec!["API_KEY".into(), "DB_PASS".into()],
+        template: None,
         origin: "local".into(),
     });
     let (rtype, rid) = action_resource_info(&action);
@@ -2991,7 +3221,7 @@ fn action_resource_info_system_set_value() {
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "system");
-    assert_eq!(rid, "sysctl:vm.swappiness");
+    assert_eq!(rid, "sysctl.vm.swappiness");
 }
 
 #[test]
@@ -3044,6 +3274,8 @@ fn action_resource_info_env_write() {
     let action = Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "export FOO=bar".into(),
+        vars: 0,
+        aliases: 0,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "env");
@@ -3280,6 +3512,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -3312,6 +3545,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -3729,7 +3963,12 @@ fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning()
         )])],
         warnings: Vec::new(),
     };
-    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let pruned = crate::reconciler::withhold_from_plan(
+        &mut plan,
+        &exclusions,
+        &crate::providers::ProviderRegistry::new(),
+    )
+    .actions;
     assert_eq!(pruned, 0, "the batch survives with one fewer entry");
     assert_eq!(
         installed_batches(&plan.phases[0]),
@@ -3916,6 +4155,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -4062,39 +4302,107 @@ fn daemon_state_with_multiple_sources() {
     state.sources.push(SourceStatus {
         name: "acme-corp".to_string(),
         last_sync: Some("2026-03-30T10:00:00Z".to_string()),
-        last_reconcile: None,
-        drift_count: 2,
+        drift_count: Some(2),
         status: "active".to_string(),
+        last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "team-tools".to_string(),
         last_sync: None,
-        last_reconcile: Some("2026-03-30T11:00:00Z".to_string()),
-        drift_count: 0,
+        drift_count: Some(0),
         status: "error".to_string(),
+        last_commit: None,
     });
 
     let response = state.to_response();
     assert_eq!(response.sources.len(), 3); // local + acme-corp + team-tools
     assert_eq!(response.sources[1].name, "acme-corp");
-    assert_eq!(response.sources[1].drift_count, 2);
+    assert_eq!(response.sources[1].drift_count, Some(2));
     assert_eq!(response.sources[2].name, "team-tools");
     assert_eq!(response.sources[2].status, "error");
 }
 
+/// A per-source row states facts about ITS source. A machine-wide fact reached
+/// one by POSITION — `st.sources.first_mut()` — and four sites wrote the whole
+/// machine's outstanding drift count, plus the profile-wide reconcile stamp,
+/// onto whichever source happened to be first in the vec; `daemon status` then
+/// printed one number twice and its `Sources` table credited the machine's
+/// drift to one arbitrary row.
+///
+/// A write that legitimately targets one source finds it BY NAME (the `local`
+/// layer's commit seeding does), so nothing production needs the positional
+/// reach. A future one that does says why with a `// positional-source-ok:`
+/// marker on the line or the line above.
+#[test]
+fn no_daemon_state_write_reaches_a_source_row_by_position() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the daemon module is checked out")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() >= 5,
+        "the walk no longer reaches the daemon module — it found {} files",
+        files.len()
+    );
+    // A positional reach that can WRITE: the borrow, and the indexed
+    // assignment. A positional READ in an assertion is not this bug.
+    let positional_write = |line: &str| {
+        line.contains("sources.first_mut()")
+            || line.contains("sources.get_mut(")
+            || (line.contains("sources[") && line.contains("] ="))
+            || (line.contains("sources[")
+                && line.split("sources[").nth(1).is_some_and(|tail| {
+                    tail.split_once(']')
+                        .is_some_and(|(_, rest)| rest.starts_with('.') && rest.contains(" = "))
+                }))
+    };
+    let mut offenders = Vec::new();
+    for path in &files {
+        let Ok(body) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !positional_write(line) {
+                continue;
+            }
+            let hatched = line.contains("// positional-source-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// positional-source-ok:"));
+            if !hatched {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a source row is reached by NAME, never by position — a machine-wide \
+         fact written into `sources[0]` claims the whole machine belongs to \
+         one arbitrary source:\n{}",
+        offenders.join("\n")
+    );
+}
+
 // --- DaemonState: drift counting ---
 
+/// The machine-wide count reaches the response's own field and NOTHING else:
+/// a per-source row it were copied onto would claim the whole machine's drift
+/// belongs to whichever source happens to sit first in the vec.
 #[test]
-fn daemon_state_drift_increments_propagate_to_response() {
+fn daemon_state_drift_count_stays_machine_wide() {
     let mut state = DaemonState::new();
     state.drift_count = 10;
-    if let Some(source) = state.sources.first_mut() {
-        source.drift_count = 7;
-    }
 
     let response = state.to_response();
     assert_eq!(response.drift_count, 10);
-    assert_eq!(response.sources[0].drift_count, 7);
+    assert!(
+        response.sources.iter().all(|s| s.drift_count.is_none()),
+        "a machine-wide count must not be attributed to a source row"
+    );
 }
 
 // --- DaemonState: module_last_reconcile tracking ---
@@ -4142,6 +4450,12 @@ fn daemon_status_response_update_available_present() {
         sources: vec![],
         update_available: Some("3.0.0".to_string()),
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4269,6 +4583,7 @@ fn withheld_decisions_with_decisions() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -4278,6 +4593,7 @@ fn withheld_decisions_with_decisions() {
             "recommended",
             "install",
             "recommended env.EDITOR (from acme)",
+            None,
         )
         .unwrap();
 
@@ -4298,10 +4614,12 @@ fn extract_source_resources_aliases_not_tracked() {
             ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             },
             ShellAlias {
                 name: "gp".into(),
                 command: "git push".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -4367,10 +4685,12 @@ fn extract_source_resources_full_profile() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "vim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "GOPATH".into(),
                 value: "/home/user/go".into(),
+                platforms: vec![],
             },
         ],
         system,
@@ -4524,14 +4844,13 @@ fn source_status_defaults() {
     let status = SourceStatus {
         name: "test".to_string(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: None,
         status: "active".to_string(),
+        last_commit: None,
     };
 
     assert!(status.last_sync.is_none());
-    assert!(status.last_reconcile.is_none());
-    assert_eq!(status.drift_count, 0);
+    assert!(status.drift_count.is_none());
 }
 
 // --- SourceStatus: all fields populated ---
@@ -4541,20 +4860,16 @@ fn source_status_all_fields_populated() {
     let status = SourceStatus {
         name: "corp-source".to_string(),
         last_sync: Some("2026-03-30T10:00:00Z".to_string()),
-        last_reconcile: Some("2026-03-30T10:05:00Z".to_string()),
-        drift_count: 15,
+        drift_count: Some(15),
         status: "error".to_string(),
+        last_commit: None,
     };
 
     let json = serde_json::to_string(&status).unwrap();
     let parsed: SourceStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.name, "corp-source");
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-03-30T10:00:00Z"));
-    assert_eq!(
-        parsed.last_reconcile.as_deref(),
-        Some("2026-03-30T10:05:00Z")
-    );
-    assert_eq!(parsed.drift_count, 15);
+    assert_eq!(parsed.drift_count, Some(15));
     assert_eq!(parsed.status, "error");
 }
 
@@ -4674,6 +4989,12 @@ fn daemon_status_response_camel_case_uptime() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4813,14 +5134,17 @@ fn extract_source_resources_multiple_env_vars() {
             EnvVar {
                 name: "PATH".into(),
                 value: "/usr/local/bin:$PATH".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "GOPATH".into(),
                 value: "/home/user/go".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -4861,7 +5185,7 @@ fn extract_source_resources_multiple_system_keys() {
 #[test]
 fn daemon_state_uptime_increases() {
     let state = DaemonState::new();
-    // Small sleep to ensure non-zero uptime
+    // sleep-ok: uptime is wall-clock elapsed time itself; the sleep IS the subject
     std::thread::sleep(Duration::from_millis(10));
     let response = state.to_response();
     // Uptime should be at least 0 (could be 0 if resolution is 1s)
@@ -5098,13 +5422,13 @@ fn git_pull_no_remote_returns_up_to_date() {
         .push(&["refs/heads/master:refs/heads/master"], None)
         .unwrap();
 
-    // Now pull — should be up-to-date since we just pushed
+    // Now pull — should be up-to-date after just pushing
     let result = git_pull(&work_dir);
     assert!(result.is_ok(), "git_pull failed: {:?}", result);
-    assert!(!result.unwrap(), "expected no changes");
+    assert!(result.unwrap().is_none(), "expected no changes");
 }
 
-// --- git_pull: repo with new remote commits returns Ok(true) ---
+// --- git_pull: repo with new remote commits reports the ref movement ---
 
 #[test]
 fn git_pull_with_remote_changes_returns_true() {
@@ -5172,9 +5496,25 @@ fn git_pull_with_remote_changes_returns_true() {
     }
 
     // Now git_pull in work_dir should detect changes
+    let before = git2::Repository::open(&work_dir)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let pushed = pusher.head().unwrap().target().unwrap().to_string();
     let result = git_pull(&work_dir);
     assert!(result.is_ok(), "git_pull failed: {:?}", result);
-    assert!(result.unwrap(), "expected changes from remote");
+    let movement = result.unwrap().expect("expected changes from remote");
+    assert_eq!(
+        movement,
+        RefMovement {
+            from: before,
+            to: pushed
+        },
+        "the reported movement must be the commit the branch left and the one it landed on"
+    );
 
     // Verify the new file exists after pull
     assert!(
@@ -5296,9 +5636,10 @@ fn git_pull_non_repo_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let result = git_pull(tmp.path());
     let err = result.unwrap_err();
-    assert!(
-        err.contains("open repo"),
-        "expected 'open repo' error, got: {err}"
+    assert_eq!(
+        err.kind,
+        PullFailureKind::OpenRepo,
+        "expected an open-repo refusal, got: {err}"
     );
 }
 
@@ -5353,9 +5694,10 @@ fn git_pull_falls_back_to_libgit2_and_reports_fetch_error_for_dead_remote() {
     drop(repo);
 
     let err = git_pull(&work_dir).unwrap_err();
-    assert!(
-        err.starts_with("fetch: "),
-        "libgit2 fallback must surface a 'fetch: ...' error for the dead remote, got: {err}"
+    assert_eq!(
+        err.kind,
+        PullFailureKind::Fetch,
+        "libgit2 fallback must surface a fetch refusal for the dead remote, got: {err}"
     );
 }
 
@@ -5476,9 +5818,9 @@ async fn handle_sync_updates_per_source_status() {
         st.sources.push(SourceStatus {
             name: "acme".to_string(),
             last_sync: None,
-            last_reconcile: None,
-            drift_count: 0,
+            drift_count: Some(0),
             status: "active".to_string(),
+            last_commit: None,
         });
     }
 
@@ -5571,6 +5913,19 @@ async fn handle_sync_auto_pull_with_remote_changes() {
         work_dir.join("NEWFILE").exists(),
         "pulled file should exist after sync"
     );
+    // The row's commit is the one the pull landed on — the same id the log
+    // line named — so `daemon status` can answer without a `git log`.
+    let landed = git2::Repository::open(&work_dir)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let st = state.lock().await;
+    let local = st.sources.iter().find(|s| s.name == "local").unwrap();
+    assert_eq!(local.last_commit.as_deref(), Some(landed.as_str()));
+    assert!(local.last_sync.is_some());
 }
 
 // --- handle_sync: auto_push with local changes ---
@@ -5712,9 +6067,10 @@ fn git_pull_diverged_returns_error() {
     let result = git_pull(&work_dir);
     assert!(result.is_err(), "diverged branch should return error");
     let err_msg = result.unwrap_err();
-    assert!(
-        err_msg.contains("diverged") || err_msg.contains("fast-forward"),
-        "error should mention divergence: {}",
+    assert_eq!(
+        err_msg.kind,
+        PullFailureKind::Diverged,
+        "error should name divergence: {}",
         err_msg
     );
 }
@@ -6004,6 +6360,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -6062,6 +6419,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             ai: None,
             compliance: None,
             update: None,
+            usage_hints: None,
         },
         deprecations: Vec::new(),
     };
@@ -6563,7 +6921,7 @@ fn daemon_status_response_full_deserialization() {
     assert_eq!(parsed.last_sync.as_deref(), Some("2026-04-01T00:01:00Z"));
     assert_eq!(parsed.drift_count, 42);
     assert_eq!(parsed.sources.len(), 1);
-    assert_eq!(parsed.sources[0].drift_count, 10);
+    assert_eq!(parsed.sources[0].drift_count, Some(10));
     assert_eq!(parsed.update_available.as_deref(), Some("4.0.0"));
     assert_eq!(parsed.module_reconcile.len(), 1);
     assert_eq!(parsed.module_reconcile[0].name, "sec");
@@ -6628,16 +6986,16 @@ fn daemon_state_to_response_preserves_source_order() {
     state.sources.push(SourceStatus {
         name: "z-source".into(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: Some(0),
         status: "active".into(),
+        last_commit: None,
     });
     state.sources.push(SourceStatus {
         name: "a-source".into(),
         last_sync: None,
-        last_reconcile: None,
-        drift_count: 0,
+        drift_count: Some(0),
         status: "active".into(),
+        last_commit: None,
     });
 
     let response = state.to_response();
@@ -6732,16 +7090,52 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
     );
 }
 
-// --- git_pull_sync: delegates to git_pull ---
-
-#[test]
-fn git_pull_sync_non_repo_returns_error() {
+/// The daemon's own sync leg reads the same verdict the two CLI verbs do. It
+/// runs on a timer, so classifying a plain directory as a failure put
+/// `sync: pull failed` on the journal on every tick, forever, for a config
+/// directory the user never put under version control.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sync_tick_over_a_plain_directory_logs_no_pull_failure() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let result = git_pull_sync(tmp.path());
-    let err = result.unwrap_err();
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+
+    let logs = capture_run_logs_async(async {
+        for _ in 0..3 {
+            handle_sync(tmp.path(), true, false, "local", &state, false, false).await;
+        }
+    })
+    .await;
+
     assert!(
-        err.contains("open repo"),
-        "expected 'open repo' error, got: {err}"
+        !logs.contains("pull failed"),
+        "a directory under no version control is not a failed pull, got: {logs}"
+    );
+}
+
+// --- git_pull_sync: classifies, then delegates to git_pull ---
+
+/// A directory under no version control has nothing to pull, which is a
+/// verdict rather than a failure — both verbs that pull read it from here, so
+/// neither can call it an error.
+#[test]
+fn git_pull_sync_over_a_non_repo_is_not_a_failure() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    assert_eq!(git_pull_sync(tmp.path()), PullOutcome::NotARepository);
+}
+
+/// libgit2 appends `; class=…; code=…` to every message it raises; a person
+/// reading a row wants the sentence in front of it.
+#[test]
+fn pull_failure_summary_drops_the_libgit2_tail() {
+    assert_eq!(
+        pull_failure_summary(
+            "find remote: remote 'origin' does not exist; class=Config (7); code=NotFound (-3)"
+        ),
+        "find remote: remote 'origin' does not exist"
+    );
+    assert_eq!(
+        pull_failure_summary("cannot fast-forward — remote has diverged"),
+        "cannot fast-forward — remote has diverged"
     );
 }
 
@@ -6778,9 +7172,7 @@ fn git_pull_sync_clean_repo_no_changes() {
             .unwrap();
     }
 
-    let result = git_pull_sync(&work_dir);
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "should be up to date");
+    assert_eq!(git_pull_sync(&work_dir), PullOutcome::UpToDate);
 }
 
 // --- Notifier: all methods construct without panic ---
@@ -6823,16 +7215,16 @@ fn daemon_status_response_roundtrip_symmetry() {
             SourceStatus {
                 name: "local".into(),
                 last_sync: Some("2026-04-01T12:01:00Z".into()),
-                last_reconcile: Some("2026-04-01T12:00:00Z".into()),
-                drift_count: 50,
+                drift_count: Some(50),
                 status: "active".into(),
+                last_commit: None,
             },
             SourceStatus {
                 name: "corp".into(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 50,
+                drift_count: Some(50),
                 status: "error".into(),
+                last_commit: None,
             },
         ],
         update_available: Some("5.0.0".into()),
@@ -6843,6 +7235,12 @@ fn daemon_status_response_roundtrip_symmetry() {
             drift_policy: "Auto".into(),
             last_reconcile: Some("2026-04-01T12:00:00Z".into()),
         }],
+        reconcile_interval_secs: Some(300),
+        sync_interval_secs: Some(900),
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&original).unwrap();
@@ -6860,6 +7258,8 @@ fn daemon_status_response_roundtrip_symmetry() {
         roundtripped.module_reconcile.len(),
         original.module_reconcile.len()
     );
+    assert_eq!(roundtripped.reconcile_interval_secs, Some(300));
+    assert_eq!(roundtripped.sync_interval_secs, Some(900));
     assert_eq!(roundtripped.update_available, original.update_available);
 }
 
@@ -6870,17 +7270,19 @@ fn source_status_camel_case_serialization() {
     let status = SourceStatus {
         name: "test".into(),
         last_sync: Some("ts".into()),
-        last_reconcile: Some("tr".into()),
-        drift_count: 1,
+        drift_count: Some(1),
         status: "active".into(),
+        last_commit: None,
     };
     let json = serde_json::to_string(&status).unwrap();
     assert!(json.contains("\"lastSync\""));
-    assert!(json.contains("\"lastReconcile\""));
     assert!(json.contains("\"driftCount\""));
     assert!(!json.contains("\"last_sync\""));
-    assert!(!json.contains("\"last_reconcile\""));
     assert!(!json.contains("\"drift_count\""));
+    assert!(
+        !json.contains("Reconcile"),
+        "a source row carries no reconcile stamp of its own: {json}"
+    );
 }
 
 // --- compute_config_hash: uses only packages for hash ---
@@ -6905,6 +7307,7 @@ fn compute_config_hash_ignores_non_package_fields() {
             env: vec![EnvVar {
                 name: "FOO".into(),
                 value: "bar".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -6923,6 +7326,7 @@ fn compute_config_hash_ignores_non_package_fields() {
             env: vec![EnvVar {
                 name: "BAZ".into(),
                 value: "qux".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -7286,7 +7690,7 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     .expect("install_service ok");
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
-    // target_os and we just want both arms exercised.
+    // target_os and both arms just need exercising.
     crate::daemon::service::uninstall_service(&test_printer(), crate::Scope::User)
         .expect("uninstall_service ok");
 }
@@ -7555,7 +7959,7 @@ fn handle_reconcile_with_no_config_file() {
             &printer,
         ),
     );
-    // If we got here without panic, the function handled the missing config gracefully.
+    // Reaching here without panic means the function handled the missing config gracefully.
     // Verify the state wasn't updated (no reconciliation occurred).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -7895,6 +8299,72 @@ fn build_sync_tasks_includes_source_when_dir_exists() {
     assert!(!source_task.auto_push);
     assert!(source_task.auto_apply);
     assert_eq!(source_task.interval, Duration::from_secs(120));
+    assert!(source_task.require_signed_commits);
+}
+
+#[test]
+fn build_sync_tasks_honours_the_subscribers_signature_demand_over_the_manifest() {
+    // The manifest lives inside the cache, so a planted cache can answer `false`
+    // here. The subscription flag is read from the user's own config.
+    let parsed = ParsedDaemonConfig {
+        reconcile_interval: Duration::from_secs(60),
+        sync_interval: Duration::from_secs(300),
+        auto_pull: false,
+        auto_push: false,
+        on_change_reconcile: false,
+        notify_on_drift: false,
+        notify_method: NotifyMethod::Stdout,
+        webhook_url: None,
+        auto_apply: false,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("sources");
+    std::fs::create_dir_all(cache_dir.join("team-config")).unwrap();
+
+    let sources = vec![config::SourceSpec {
+        name: "team-config".to_string(),
+        origin: config::OriginSpec {
+            origin_type: config::OriginType::Git,
+            url: "https://github.com/team/config.git".to_string(),
+            branch: "main".to_string(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: config::SubscriptionSpec {
+            require_signed_commits: true,
+            ..Default::default()
+        },
+        sync: config::SourceSyncSpec {
+            interval: "120s".to_string(),
+            auto_apply: true,
+            pin_version: None,
+            required: false,
+        },
+    }];
+
+    let tasks = build_sync_tasks(
+        tmp.path(),
+        &parsed,
+        &sources,
+        false,
+        &cache_dir,
+        |_| Some(false), // manifest says signatures are not required
+    );
+    let source_task = tasks
+        .iter()
+        .find(|t| t.source_name == "team-config")
+        .unwrap();
+    assert!(
+        source_task.require_signed_commits,
+        "subscriber demand must survive a manifest that says false"
+    );
+
+    // A missing manifest cannot clear it either.
+    let tasks = build_sync_tasks(tmp.path(), &parsed, &sources, false, &cache_dir, |_| None);
+    let source_task = tasks
+        .iter()
+        .find(|t| t.source_name == "team-config")
+        .unwrap();
     assert!(source_task.require_signed_commits);
 }
 
@@ -8245,6 +8715,234 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     assert_eq!(guard.drift_count, 0);
 }
 
+/// Every `if let Err` in the reconcile tick throws its `Ok` half away. Doing
+/// that to a COUNT costs the log the only fact separating two ticks:
+/// `refresh_link_deployed_hashes` returns how many recorded hashes a pull
+/// moved, and discarding it left the tick that carried a sync byte-identical
+/// to an idle one. The rest are `Ok(())` or a row id, which say nothing a
+/// reader wants — this table is where a new one is classified, so the next
+/// count-returning call cannot slip in as an error-only arm.
+#[test]
+fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
+    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    // callee → why its `Ok` half carries nothing a reader of the log wants.
+    let classified = [
+        ("watcher.watch", "Ok(())"),
+        ("store.resolve_all_drift", "Ok(())"),
+        (
+            "store.in_transaction",
+            "Ok(()) — the drift-snapshot batch commit",
+        ),
+        ("store.record_drift", "a row id, not a count"),
+        ("store.resolve_drift_not_in", "Ok(())"),
+        ("store.remove_managed_resource", "Ok(())"),
+        ("crate::state::clear_pending_server_config", "Ok(())"),
+        (
+            "reconciler.refresh_link_deployed_hashes",
+            "a count of rows this tick's own apply just wrote — a backfill, not news",
+        ),
+    ];
+    let lines: Vec<&str> = body.lines().collect();
+    let mut seen = 0usize;
+    let mut unclassified = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        if !line.contains("if let Err(") {
+            continue;
+        }
+        seen += 1;
+        // The callee is on this line after the `=`, or on the next one when
+        // rustfmt broke the arm.
+        let tail = line.split_once("= ").map(|(_, t)| t).unwrap_or("");
+        let tail = if tail.trim().is_empty() {
+            lines.get(n + 1).copied().unwrap_or("")
+        } else {
+            tail
+        };
+        if !classified.iter().any(|(callee, _)| tail.contains(callee)) {
+            unclassified.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        seen >= 6,
+        "the walk no longer reaches the tick's error-only arms — it found {seen}"
+    );
+    assert!(
+        unclassified.is_empty(),
+        "an error-only arm throws its `Ok` half away: classify the new one here, \
+         and if it returns a COUNT, report it instead:\n{}",
+        unclassified.join("\n")
+    );
+}
+
+/// The beat a `sync` demo turns on: an edit made on another machine arrives
+/// through a symlink, so the tick that carried it plans nothing and used to
+/// close on the same `nothing to do` as the four idle ticks above it. The
+/// refresh count is the only fact separating the two states, and the tick
+/// discarded it with an `if let Err`.
+///
+/// The row is seeded with the hash a real apply records — never NULL, which
+/// every tick backfills and so would pass this on a machine nobody touched.
+/// The clause must depend on the bytes MOVING: the first tick, over the
+/// recorded bytes, says nothing (it stores the per-file breakdown the row
+/// lacked, silently); only the tick that sees the pull does — and it counts
+/// the ONE file the pull moved, not the three the row covers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // The row an apply left behind, settled on the bytes it deployed — what
+    // the pull is about to move.
+    let target = tmp.path().join("deployed.conf");
+    let resource_id = crate::to_posix_string(&target);
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
+    store
+        .upsert_managed_resource(
+            "file",
+            &resource_id,
+            "local",
+            Some(&crate::sha256_hex(b"as the apply deployed it")),
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    struct LinkHooks {
+        target: PathBuf,
+        content: Arc<Mutex<&'static [u8]>>,
+    }
+    impl DaemonHooks for LinkHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_files_with_manager(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<crate::daemon::PlannedFiles> {
+            let fm = crate::test_helpers::MockFileManager::new();
+            let content = *self.content.blocking_lock();
+            let target = crate::to_posix_string(&self.target);
+            // One row standing for a whole tree: the sentence counts the
+            // files that MOVED, never the row and never its coverage.
+            let file_hashes = vec![
+                format!("{target}/a.lua:{}", crate::sha256_hex(b"a")),
+                format!("{target}/b.lua:{}", crate::sha256_hex(b"b")),
+                format!("{target}/c.lua:{}", crate::sha256_hex(content)),
+            ];
+            fm.set_link_deployed(vec![crate::providers::LinkDeployedRow {
+                target: self.target.clone(),
+                hash: crate::sha256_hex(content),
+                file_hashes,
+            }]);
+            Ok((vec![], Some(Box::new(fm))))
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let content: Arc<Mutex<&'static [u8]>> =
+        Arc::new(Mutex::new(b"as the apply deployed it".as_slice()));
+    let hooks = Arc::new(LinkHooks {
+        target,
+        content: Arc::clone(&content),
+    });
+    let tick = |st: Arc<Mutex<DaemonState>>,
+                not: Arc<Notifier>,
+                hooks: Arc<LinkHooks>,
+                sd: PathBuf,
+                cp: PathBuf| {
+        tokio::task::spawn_blocking(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &*hooks, &sd, &printer),
+            );
+        })
+    };
+
+    // An idle tick over the recorded bytes: nothing moved, nothing to say.
+    tick(
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+        Arc::clone(&hooks),
+        state_dir.clone(),
+        config_path.clone(),
+    )
+    .await
+    .unwrap();
+    let idle = daemon_log();
+    assert!(
+        idle.contains("reconcile: complete — nothing to do") && !idle.contains("deployed file"),
+        "a tick over the bytes the apply recorded has no refresh to report: {idle}"
+    );
+
+    // The pull lands another machine's edit through the link.
+    *content.lock().await = b"landed by the pull";
+    tick(
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+        Arc::clone(&hooks),
+        state_dir.clone(),
+        config_path.clone(),
+    )
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains(
+            "reconcile: complete — nothing to do, 1 deployed file changed upstream, already live through its link"
+        ),
+        "the tick that carried the sync must not read like an idle one: {logs}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     // A previously-recorded drift row that no longer diverges must be resolved
@@ -8322,9 +9020,6 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     {
         let mut st = state.lock().await;
         st.drift_count = 1;
-        if let Some(source) = st.sources.first_mut() {
-            source.drift_count = 1;
-        }
     }
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
@@ -8358,6 +9053,291 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     );
 }
 
+/// A module this host is gated out of is information, not divergence: the tick
+/// counts no drift for it, closes on the converged sentence, and leaves no
+/// `module`/`<name>:skip` tracking row behind.
+///
+/// The bug this ends: the plan carries the Skip on EVERY tick, so counting it
+/// reported `drift detected in 1 resource` forever, woke the auto-apply branch
+/// every interval, and flipped the module Drifted → Synced → Drifted while the
+/// apply converged nothing. The policy is `Auto` here precisely so a regression
+/// runs the apply and writes the phantom row this asserts is absent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_row() {
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - gated\n",
+    )
+    .unwrap();
+
+    // The tag is chosen against the host so the module is gated wherever the
+    // suite runs, rather than only off macOS.
+    let elsewhere = if cfg!(target_os = "macos") {
+        "linux"
+    } else {
+        "macos"
+    };
+    let module_dir = tmp.path().join("modules").join("gated");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gated\nspec:\n  platforms: [{elsewhere}]\n  packages:\n    - name: rectangle\n"
+        ),
+    )
+    .unwrap();
+
+    struct GatedHooks;
+    impl DaemonHooks for GatedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &GatedHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("reconcile: complete — nothing to do"),
+        "a tick whose only planned action is a module skip converged nothing \
+         and must close on the converged arm: {logs}"
+    );
+    assert!(
+        !logs.contains("drift detected in"),
+        "a platform gate is information, not divergence: {logs}"
+    );
+
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        store.unresolved_drift().unwrap().is_empty(),
+        "the tick records no drift row for a module it never probed"
+    );
+    let tracked: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !tracked
+            .iter()
+            .any(|(rtype, rid)| rtype == "module" && rid.ends_with(":skip")),
+        "a skipped module is no resource this host manages: {tracked:?}"
+    );
+    assert_eq!(
+        state.lock().await.drift_count,
+        0,
+        "a platform-gated module leaves the in-memory drift count at 0"
+    );
+}
+
+/// A module whose FILE work the tick refused keeps the per-file rows recorded
+/// for it: cfgd declined to read those targets, so nothing this tick did says
+/// they converged.
+///
+/// The bug this ends: the complement-resolve kept a module's rows only for a
+/// host decline, so once the refusal became its own kind a tick that emitted no
+/// `DeployFiles` at all healed every standing row under the module — reporting
+/// files converged that cfgd explicitly refused to write. The refusal itself is
+/// counted, unlike the decline: it is work the reader must act on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
+async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
+    use crate::PathDisplayExt;
+
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - enc\n",
+    )
+    .unwrap();
+
+    // A declared file whose source demands encryption and carries none: the
+    // plan refuses this module's deploy and emits no `DeployFiles` at all.
+    let module_dir = tmp.path().join("modules").join("enc");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(module_dir.join("id_rsa"), "plaintext key\n").unwrap();
+    let target = tmp.path().join("deployed").join("id_rsa");
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: enc\nspec:\n  files:\n    - source: id_rsa\n      target: {}\n      strategy: Copy\n      encryption:\n        backend: sops\n        mode: Always\n",
+            target.display_posix()
+        ),
+    )
+    .unwrap();
+
+    // The row a previous tick recorded, back when the file was deployable.
+    let row_id = crate::reconciler::module_file_resource_id("enc", &target.display_posix());
+    {
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        store
+            .record_drift(
+                "module",
+                &row_id,
+                Some("deployed"),
+                Some("missing"),
+                "daemon",
+            )
+            .unwrap();
+    }
+
+    struct RefusedHooks;
+    impl DaemonHooks for RefusedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &RefusedHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("drift detected in"),
+        "the refusal is work the reader must act on, so the tick's sentence \
+         names it: {logs}"
+    );
+
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    let standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        standing.contains(&("module".to_string(), row_id.clone())),
+        "a per-file row under a module whose files were never probed stands: \
+         {standing:?}"
+    );
+    let tracked: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !tracked.iter().any(|(_, rid)| rid.starts_with("enc")),
+        "the refusal put nothing on the machine to track: {tracked:?}"
+    );
+    assert!(
+        !target.exists(),
+        "and wrote no file: the deploy is what it refused"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_with_profile_override() {
     // Test that profile_override is used instead of config's profile field.
@@ -8365,7 +9345,7 @@ async fn handle_reconcile_with_profile_override() {
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    // Config with profile "other" but we override to "default"
+    // Config with profile "other" but overridden to "default"
     let config_path = tmp.path().join("config.yaml");
     std::fs::write(
             &config_path,
@@ -8508,11 +9488,11 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
 
     let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
-    // Should have drift events for all actions:
-    // 1 file create + 2 package install actions = 3 drift events
+    // One row per file the plan writes and one per package it installs:
+    // 1 file create + (2 + 1) packages = 4 drift rows.
     assert_eq!(
         drift_events.len(),
-        3,
+        4,
         "should have drift events for all actions; got: {:?}",
         drift_events
     );
@@ -8702,12 +9682,14 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
                 explicit_state_dir: true,
+                cache_dir_override: None,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
                 drift_policy_override: None,
                 scope: crate::Scope::User,
                 abort: &ab,
+                cache: fresh_tick_cache(),
             },
         );
     })
@@ -8796,7 +9778,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_runs_on_drift_scripts() {
     // Profile with `scripts.onDrift` populated → on-drift script loop runs.
-    // The script writes a marker file we can assert on.
+    // The script writes a marker file the test can assert on.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
@@ -8884,6 +9866,114 @@ async fn handle_reconcile_runs_on_drift_scripts() {
         marker.exists(),
         "onDrift script should have created marker file at {}",
         marker.display()
+    );
+}
+
+/// A NotifyOnly tick's closing sentence counts every row its own tree printed.
+///
+/// The tree renders every phase but `Modules`, pre-skipped rows included, while
+/// the drift count deliberately excludes both a module skipped whole and a row
+/// the host already declined. A sentence stating only the drifted number names
+/// fewer rows than the reader just saw. The fixture carries one of each: a
+/// platform-gated module (annotated in the header, drawn nowhere) and a session
+/// publish no manager can perform (drawn, and not drift). Both counts are
+/// asserted against the tree's actual row count, never against literals.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_notify_only_tick_counts_every_row_its_tree_printed() {
+    let _seam =
+        crate::test_helpers::EnvVarGuard::set(crate::SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n  modules:\n    - gated\n    - nvim\n",
+    )
+    .unwrap();
+
+    // Gated wherever the suite runs, so the skip is a fact of the fixture.
+    let elsewhere = if cfg!(target_os = "macos") {
+        "linux"
+    } else {
+        "macos"
+    };
+    let gated_dir = tmp.path().join("modules").join("gated");
+    std::fs::create_dir_all(&gated_dir).unwrap();
+    std::fs::write(
+        gated_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gated\nspec:\n  platforms: [{elsewhere}]\n  packages:\n    - name: rectangle\n"
+        ),
+    )
+    .unwrap();
+    let mod_dir = tmp.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let out = harness::captured_text(&buf);
+    // An action row is what sits two levels in, under an owner group: a phase
+    // row is at the margin and an owner group one level in.
+    let rows = out
+        .lines()
+        .filter(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+        .count();
+    assert!(
+        rows >= 2,
+        "the fixture draws a declined row beside real work:\n{out}"
+    );
+    let verdict = out
+        .lines()
+        .find(|l| l.contains("Drift detected"))
+        .unwrap_or_else(|| panic!("a notify-only tick closes on a verdict:\n{out}"));
+    let counted: usize = verdict
+        .split_whitespace()
+        .filter_map(|w| w.parse::<usize>().ok())
+        .sum();
+    assert!(
+        verdict.contains("skipped"),
+        "a tree holding a declined row names it in its sentence: {verdict:?}\n{out}"
+    );
+    let tree = &out[out.find("Phase:").unwrap_or(0)..];
+    assert!(
+        !tree.contains("gated"),
+        "a module skipped whole is drawn nowhere in the tree that sentence counts:\n{out}"
+    );
+    assert_eq!(
+        counted, rows,
+        "every row the tree printed is counted by some clause: {verdict:?}\n{out}"
     );
 }
 
@@ -9002,7 +10092,7 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
         "a notify-only tick still shows WHAT drifted:\n{out}"
     );
     assert!(
-        out.contains("Drift detected — 1 action; policy is notify-only, nothing applied"),
+        out.contains("Drift detected — 1 action drifted; policy is notify-only, nothing applied"),
         "a non-applying tick closes on a verdict:\n{out}"
     );
     assert!(
@@ -9096,10 +10186,16 @@ impl PackageManager for RecordingInstallManager {
     fn name(&self) -> &str {
         "cargo"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
@@ -9163,6 +10259,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
         // The decision keeps the DECLARED spelling of the target; the planner
@@ -9173,6 +10270,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             "recommended",
             "install",
             "recommended files.~/withheld.txt (from acme)",
+            None,
         )
         .unwrap();
     }
@@ -9208,7 +10306,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     impl DaemonHooks for DecisionHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers.push(Box::new(RecordingInstallManager {
+            reg.add_package_manager(Box::new(RecordingInstallManager {
                 installed: Arc::clone(&self.installed),
             }));
             reg
@@ -9440,7 +10538,7 @@ async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
     impl DaemonHooks for MintDeniedHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers.push(Box::new(RecordingInstallManager {
+            reg.add_package_manager(Box::new(RecordingInstallManager {
                 installed: Arc::clone(&self.installed),
             }));
             reg
@@ -9582,6 +10680,7 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
             "recommended",
             "install",
             "recommended env.TEAM_TOKEN (from acme)",
+            None,
         )
         .unwrap();
     }
@@ -9677,10 +10776,16 @@ impl PackageManager for RecordingUninstallManager {
     fn name(&self) -> &str {
         "cargo"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
@@ -9759,14 +10864,13 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
     impl DaemonHooks for PruneHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    // bat is still on the system; ripgrep too (desired, kept).
-                    installed: ["bat".to_string(), "ripgrep".to_string()]
-                        .into_iter()
-                        .collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                // bat is still on the system; ripgrep too (desired, kept).
+                installed: ["bat".to_string(), "ripgrep".to_string()]
+                    .into_iter()
+                    .collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -9902,12 +11006,11 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
     impl DaemonHooks for GcHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    // Only bat is on the system — phantom is gone.
-                    installed: ["bat".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                // Only bat is on the system — phantom is gone.
+                installed: ["bat".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -9980,7 +11083,7 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
 async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() {
     // NotifyOnly policy + notify_on_drift=true + drift → notifier.notify
     // called for "drift detected". Stdout notifier just logs, but the call
-    // path is what we want to exercise (it's a distinct branch from the
+    // path is the one under test here (a distinct branch from the
     // notify_on_drift=false NotifyOnly case already covered).
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
@@ -10055,7 +11158,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     .await
     .unwrap();
 
-    // Drift event recorded. notify ran (stdout notifier just traces; we assert
+    // Drift event recorded. notify ran (stdout notifier just traces; asserting
     // the call path was reached by checking the drift bookkeeping side-effects).
     let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
@@ -10635,6 +11738,12 @@ fn daemon_status_response_camel_case_keys() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -10835,6 +11944,157 @@ fn build_webhook_payload_accepts_empty_strings() {
 // helpers directly.
 // ===========================================================================
 
+/// Process-global capture of the daemon's log stream, cleared per reader.
+///
+/// A running daemon's lifecycle lines are tracing events — the log IS its
+/// output — and it emits them from tokio worker threads, which the thread-local
+/// [`capture_run_logs`] below does not reach. `set_global_default` may be
+/// called once per process, so the capture is installed once and shared;
+/// [`reset_daemon_log`] clears it and every reader holds
+/// `#[serial_test::serial(daemon_log)]`, so no two of them read each other's
+/// lines.
+static DAEMON_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[derive(Clone, Copy)]
+struct DaemonLogWriter;
+
+impl std::io::Write for DaemonLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        DAEMON_LOG
+            .lock()
+            .expect("lock")
+            .push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for DaemonLogWriter {
+    type Writer = Self;
+    fn make_writer(&self) -> Self::Writer {
+        *self
+    }
+}
+
+/// Install the global capture if it is not already installed, and empty it.
+fn reset_daemon_log() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            .with_writer(DaemonLogWriter)
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        // Another test binary component may have claimed the slot; the capture
+        // is best-effort and its readers assert on what they find.
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+    DAEMON_LOG.lock().expect("lock").clear();
+}
+
+/// Everything the daemon has logged since the last [`reset_daemon_log`].
+fn daemon_log() -> String {
+    DAEMON_LOG.lock().expect("lock").clone()
+}
+
+/// The ceiling every [`wait_for_daemon_log`] caller passes.
+///
+/// The poll itself resolves in single-digit milliseconds once the daemon
+/// actually logs the line, so a generous ceiling costs nothing on the happy
+/// path — it only matters as a backstop against a genuine hang. A flat 5s
+/// ceiling here once made `run_daemon_with_processes_sighup_tick_and_reloads_intervals`
+/// spuriously fail under a full parallel `cargo test` run: the sighup tick's
+/// tokio task simply had not been scheduled onto a worker thread within 5
+/// wall-clock seconds under CPU contention, though it always landed well
+/// under this ceiling. 30s mirrors `harness::LOOP_EXIT_BUDGET`, the daemon
+/// loop's own shutdown-join ceiling.
+const DAEMON_LOG_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Poll the global daemon log until it contains `needle`, or panic once
+/// `timeout` elapses. The readiness observable a `run_daemon_with` test
+/// synchronizes on before driving an action that would otherwise race the
+/// daemon's own setup. Callers pass [`DAEMON_LOG_WAIT_CEILING`], never a
+/// tight guess — the loop below already checks the real condition every 5ms,
+/// so the timeout is a hang backstop, not an expected latency budget.
+async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let snapshot = daemon_log();
+        if snapshot.contains(needle) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out after {timeout:?} waiting for the daemon log to contain \
+             {needle:?}; got: {snapshot}"
+        );
+        // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// Thread-local log capture: only events emitted on THIS thread inside `f`
+/// are seen. Sound because `run_scheduled_backups` is blocking and logs on
+/// the calling thread.
+fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+    let (subscriber, buf) = log_capture();
+    tracing::subscriber::with_default(subscriber, f);
+    captured_logs(&buf)
+}
+
+/// The same capture over a future. `with_default` binds a thread-local, which
+/// an awaited future can leave behind the moment the runtime moves it to
+/// another worker; `with_subscriber` binds the dispatcher around every poll,
+/// wherever that poll happens.
+async fn capture_run_logs_async<F: std::future::Future<Output = ()>>(fut: F) -> String {
+    use tracing::instrument::WithSubscriber;
+    let (subscriber, buf) = log_capture();
+    fut.with_subscriber(subscriber).await;
+    captured_logs(&buf)
+}
+
+type LogBuf = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
+fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
+    #[derive(Clone)]
+    struct LogCapture(LogBuf);
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = LogCapture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+        .with_writer(LogCapture(buf.clone()))
+        .with_max_level(tracing::Level::INFO)
+        // Styled field names would put escape sequences between `holder`
+        // and its value, so an assertion on the pair could not match.
+        .with_ansi(false)
+        .finish();
+    (subscriber, buf)
+}
+
+fn captured_logs(buf: &LogBuf) -> String {
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
+    let bytes = buf.lock().expect("lock").clone();
+    String::from_utf8(bytes).expect("utf8 logs")
+}
+
 mod harness {
     use super::*;
     use std::path::Path;
@@ -10872,6 +12132,7 @@ mod harness {
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(NoopHooks),
             notifier,
@@ -10883,6 +12144,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -10917,33 +12179,6 @@ mod harness {
                 shutdown_tx,
             },
         )
-    }
-
-    /// Poll the shared printer buffer until it contains `needle`, or panic once
-    /// `timeout` elapses. Lets a `run_daemon_with` test synchronize on a daemon
-    /// lifecycle banner (e.g. "Daemon running") that is written from the spawned
-    /// daemon task before driving an action that would otherwise race the
-    /// daemon's own setup.
-    async fn wait_for_buffer_contains(
-        buf: &Arc<std::sync::Mutex<String>>,
-        needle: &str,
-        timeout: StdDuration,
-    ) {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if buf.lock().unwrap().contains(needle) {
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "timed out after {:?} waiting for buffer to contain {:?}; got: {}",
-                    timeout,
-                    needle,
-                    buf.lock().unwrap()
-                );
-            }
-            tokio::time::sleep(StdDuration::from_millis(5)).await;
-        }
     }
 
     #[allow(dead_code)]
@@ -11006,20 +12241,31 @@ mod harness {
         (ctx, buf)
     }
 
-    /// One SIGHUP reload against `config_path`, returning the captured output
-    /// and the reconcile/sync intervals it left behind (both start at 300s).
-    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> (String, u64, u64) {
+    /// One SIGHUP reload against `config_path`: what it LOGGED, what it
+    /// PRINTED, and the reconcile/sync intervals it left behind (both start at
+    /// 300s). Two channels because the reload reports itself on the daemon's
+    /// journal while a config deprecation still reaches the terminal.
+    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> SighupRun {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(tmp, config_path);
         let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = captured_text(&buf);
-        (
-            captured,
-            reconcile_secs.load(Ordering::Relaxed),
-            sync_secs.load(Ordering::Relaxed),
-        )
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
+        });
+        SighupRun {
+            logged,
+            printed: crate::test_helpers::captured_text(&buf),
+            reconcile_secs: reconcile_secs.load(Ordering::Relaxed),
+            sync_secs: sync_secs.load(Ordering::Relaxed),
+        }
+    }
+
+    struct SighupRun {
+        logged: String,
+        printed: String,
+        reconcile_secs: u64,
+        sync_secs: u64,
     }
 
     #[test]
@@ -11027,15 +12273,15 @@ mod harness {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("bad.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("Config reload failed"),
+            run.logged.contains("daemon: config reload failed"),
             "expected reload-failed warning in: {}",
-            captured
+            run.logged
         );
         // Atomics untouched on failure
-        assert_eq!(reconcile_secs, 300);
-        assert_eq!(sync_secs, 300);
+        assert_eq!(run.reconcile_secs, 300);
+        assert_eq!(run.sync_secs, 300);
     }
 
     #[test]
@@ -11047,14 +12293,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n    sync:\n      interval: 2m\n",
         )
         .unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("Timer intervals reloaded"),
+            run.logged.contains("daemon: timer intervals reloaded"),
             "expected reload success in: {}",
-            captured
+            run.logged
         );
-        assert_eq!(reconcile_secs, 90);
-        assert_eq!(sync_secs, 120);
+        assert_eq!(run.reconcile_secs, 90);
+        assert_eq!(run.sync_secs, 120);
     }
 
     #[test]
@@ -11066,16 +12312,17 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n",
         )
         .unwrap();
-        let (captured, _, _) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("timer intervals and backup schedules only"),
+            run.logged
+                .contains("timer intervals and backup schedules only"),
             "SIGHUP start message must state scope: {}",
-            captured
+            run.logged
         );
         assert!(
-            captured.contains("other field changes require restart"),
+            run.logged.contains("other field changes require restart"),
             "SIGHUP completion line must mention restart for other fields: {}",
-            captured
+            run.logged
         );
     }
 
@@ -11088,14 +12335,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
         )
         .unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("no timer changes detected"),
+            run.logged.contains("no timer changes detected"),
             "expected no-changes message in: {}",
-            captured
+            run.logged
         );
-        assert_eq!(reconcile_secs, 300);
-        assert_eq!(sync_secs, 300);
+        assert_eq!(run.reconcile_secs, 300);
+        assert_eq!(run.sync_secs, 300);
     }
 
     #[test]
@@ -11120,10 +12367,12 @@ spec:
 ",
         )
         .unwrap();
-        let (captured, _reconcile_secs, _sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
-            "expected SIGHUP reload to drain the theme deprecation notice; got: {captured:?}"
+            run.printed
+                .contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected SIGHUP reload to drain the theme deprecation notice; got: {:?}",
+            run.printed
         );
     }
 
@@ -11131,7 +12380,7 @@ spec:
 
     #[test]
     fn build_initial_source_status_empty_when_no_sources() {
-        let rows = runner::build_initial_source_status(&[]);
+        let rows = runner::build_initial_source_status(&[], Path::new("/nonexistent"));
         assert!(rows.is_empty());
     }
 
@@ -11140,19 +12389,134 @@ spec:
         let cfg = parse_cfgd_config(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  sources:\n    - name: alpha\n      origin:\n        type: Git\n        url: https://example.com/a.git\n    - name: beta\n      origin:\n        type: Git\n        url: https://example.com/b.git\n",
         );
-        let rows = runner::build_initial_source_status(&cfg.spec.sources);
+        let rows =
+            runner::build_initial_source_status(&cfg.spec.sources, Path::new("/nonexistent"));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "alpha");
         assert_eq!(rows[1].name, "beta");
         for r in &rows {
             assert_eq!(r.status, "active");
-            assert_eq!(r.drift_count, 0);
+            assert!(
+                r.drift_count.is_none(),
+                "a seeded row has no drift of its own to report"
+            );
             assert!(r.last_sync.is_none());
-            assert!(r.last_reconcile.is_none());
+            assert!(r.last_commit.is_none(), "nothing fetched, nothing to be at");
         }
     }
 
     // ----- handle_file_change_tick tests -----
+
+    /// A watch event is named the way the file is named in the repository the
+    /// reader edits. The absolute path of a cache checkout names the same file
+    /// in a directory nobody opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_watch_event_names_the_file_relative_to_the_config_dir() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let path = tmp.path().join("modules/nvim/files/lua/config/options.lua");
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut Default::default(),
+            StdDuration::from_millis(500),
+            path,
+        )
+        .await
+        .unwrap();
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("watch: config changed modules/nvim/files/lua/config/options.lua"),
+            "got: {logs}"
+        );
+    }
+
+    /// The `local` source's clone IS the config directory, so a pull rewrites
+    /// files under the watch and notify reports every one of them. Those events
+    /// describe the pull `sync: pulled` already reported; repeating them turns
+    /// one line into a screenful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_watch_event_a_pull_explains_stays_off_the_info_stream() {
+        // A relative name no other test emits: `daemon_log` is a process-global
+        // capture and `serial(daemon_log)` excludes only the tests that READ
+        // it, so a sibling in the unnamed group logging the same relative path
+        // satisfied this needle and failed the assertion for work this test
+        // never did.
+        const REL: &str = "modules/nvim/pull-echo-only.lua";
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let mut echoes = runner::PullEchoes::default();
+        echoes.note_pull(tmp.path());
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut echoes,
+            StdDuration::from_millis(500),
+            tmp.path().join(REL),
+        )
+        .await
+        .unwrap();
+
+        let logs = daemon_log();
+        assert!(
+            !logs.contains(&format!("watch: config changed {REL}")),
+            "a pull's own rewrite is folded into the pull: {logs}"
+        );
+    }
+
+    /// One pull, one reconcile. The pull that rewrote the file already runs its
+    /// own reconcile over what it pulled, so the watcher event it causes must
+    /// not schedule a second one — the echo that keeps the LINE off the log
+    /// keeps the TICK off the loop, or the daemon reconciles twice for one
+    /// change with the second run explained nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_pull_that_rewrites_a_watched_file_yields_one_reconcile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, true, false, None);
+        ctx.config_path = write_happy_path_config(&tmp);
+        let watched = tmp.path().join("modules/nvim/init.lua");
+
+        let mut echoes = runner::PullEchoes::default();
+        echoes.note_pull(tmp.path());
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut echoes,
+            StdDuration::from_millis(500),
+            watched.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            state.lock().await.last_reconcile.is_none(),
+            "the pull owns the reconcile for what it pulled"
+        );
+
+        // The same event with no pull behind it IS a reason to reconcile, so
+        // the suppression above is the echo rather than the fixture.
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut runner::PullEchoes::default(),
+            StdDuration::from_millis(500),
+            watched,
+        )
+        .await
+        .unwrap();
+        assert!(
+            state.lock().await.last_reconcile.is_some(),
+            "an edit nobody pulled still reconciles"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn file_change_tick_records_path_in_debounce_map() {
@@ -11164,6 +12528,7 @@ spec:
         let res = runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(500),
             path.clone(),
         )
@@ -11182,13 +12547,25 @@ spec:
         // 60s debounce window — large enough that any plausible parallel-test
         // scheduling jitter still keeps both calls inside the window.
         let debounce = StdDuration::from_secs(60);
-        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
-            .await
-            .unwrap();
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            &mut Default::default(),
+            debounce,
+            path.clone(),
+        )
+        .await
+        .unwrap();
         let first_ts = *last_change.get(&path).unwrap();
-        runner::handle_file_change_tick(&ctx, &mut last_change, debounce, path.clone())
-            .await
-            .unwrap();
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            &mut Default::default(),
+            debounce,
+            path.clone(),
+        )
+        .await
+        .unwrap();
         let second_ts = *last_change.get(&path).unwrap();
         assert_eq!(
             first_ts, second_ts,
@@ -11204,11 +12581,12 @@ spec:
         let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
         let path = PathBuf::from("/tmp/observed-3.txt");
         // on_change_reconcile=true sends handle_reconcile through spawn_blocking.
-        // With a nonexistent config_path the handler returns early — we only
-        // care that the branch ran without panicking.
+        // With a nonexistent config_path the handler returns early — the only
+        // requirement is that the branch ran without panicking.
         let res = runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0), // disable debounce
             path,
         )
@@ -11233,6 +12611,7 @@ spec:
         runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0),
             source_path,
         )
@@ -11252,6 +12631,7 @@ spec:
         runner::handle_file_change_tick(
             &ctx,
             &mut last_change,
+            &mut Default::default(),
             StdDuration::from_millis(0),
             managed.clone(),
         )
@@ -11347,6 +12727,843 @@ spec:
         assert!(st.module_last_reconcile.contains_key("my-module"));
     }
 
+    /// The tick's keep predicate, one row shape per line: a recorded row the
+    /// plan re-finds under another producer's spelling stands, one the plan
+    /// proves healed resolves, and one the tick cannot judge at all stands.
+    /// The daemon's own spellings answer `false` — their standing rows are in
+    /// the current set by identity before the predicate is consulted.
+    ///
+    /// The module and system actions come from a real `Reconciler::plan` over
+    /// declared inputs: a module file plans as `ModuleActionKind::DeployFiles`
+    /// and a gated module as `Skip`, so a hand-built action here would pin
+    /// the predicate to a shape the planner never emits. The install,
+    /// provision and env-file actions stay hand-built — they are planner
+    /// inputs or single-constructor shapes the plan carries verbatim.
+    #[test]
+    fn tick_cannot_refind_judges_each_grammar_from_the_recorded_rows_side() {
+        use super::reconcile::tick_cannot_refind;
+        use crate::providers::{PackageAction, ProviderRegistry, SystemDrift};
+        use crate::reconciler::module_row_owner;
+        use crate::reconciler::{
+            Action, EnvAction, ManagerAction, ModuleActionKind, ReconcileContext, Reconciler,
+            SystemAction,
+        };
+        use crate::test_helpers::{
+            MockSystemConfigurator, make_empty_resolved, make_resolved_module, test_state,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("dev.conf");
+        std::fs::write(&source, "conf").unwrap();
+        let mut dev = make_resolved_module("dev");
+        dev.packages.clear();
+        dev.files = vec![crate::modules::ResolvedFile {
+            source,
+            target: std::path::PathBuf::from("/home/u/.conf"),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        }];
+        // A Unix filename may legally carry `\`: the recorded id keeps it
+        // byte-for-byte (`display_posix` folds on Windows only), so the join
+        // must probe the producer's spelling, not an unconditional fold.
+        #[cfg(unix)]
+        {
+            let bs_source = dir.path().join("od.conf");
+            std::fs::write(&bs_source, "conf").unwrap();
+            dev.files.push(crate::modules::ResolvedFile {
+                source: bs_source,
+                target: std::path::PathBuf::from(r"/home/u/od\d.conf"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            });
+        }
+        let mut gated = make_resolved_module("gated");
+        gated.packages.clear();
+        gated.platform_skip_reason = Some("linux only".to_string());
+
+        let mut resolved = make_empty_resolved();
+        resolved
+            .merged
+            .system
+            .insert("gsettings".to_string(), serde_yaml::from_str("{}").unwrap());
+        resolved.merged.system.insert(
+            "systemdUnits".to_string(),
+            serde_yaml::from_str("[{name: x.service, enabled: true}]").unwrap(),
+        );
+
+        let store = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_system_configurator(Box::new(
+            MockSystemConfigurator::new("gsettings").with_drift(vec![SystemDrift {
+                key: "org.gnome.x key".to_string(),
+                expected: "1".to_string(),
+                actual: "0".to_string(),
+            }]),
+        ));
+        registry.add_system_configurator(Box::new(
+            MockSystemConfigurator::new("systemdUnits").unavailable(),
+        ));
+        let reconciler = Reconciler::new(&registry, &store);
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![dev, gated],
+                ReconcileContext::Reconcile,
+            )
+            .unwrap();
+        let mut planned: Vec<&Action> = plan.phases.iter().flat_map(|p| p.actions()).collect();
+
+        // Guard the fixture before consulting the predicate: the plan really
+        // holds the four planner-emitted shapes the table joins against, so a
+        // planner change that stops emitting one fails HERE, not as a
+        // mysteriously inverted verdict below.
+        assert!(
+            planned.iter().any(|a| matches!(a, Action::Module(ma)
+                if ma.module_name == "dev"
+                    && matches!(ma.kind, ModuleActionKind::DeployFiles { .. }))),
+            "fixture must plan a DeployFiles for module dev"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a, Action::Module(ma)
+                if ma.module_name == "gated"
+                    && matches!(ma.kind, ModuleActionKind::Skip { .. }))),
+            "fixture must plan a Skip for the gated module"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a,
+                Action::System(SystemAction::SetValue { configurator, .. })
+                    if configurator == "gsettings")),
+            "fixture must plan a SetValue for the drifted configurator"
+        );
+        assert!(
+            planned.iter().any(|a| matches!(a,
+                Action::System(SystemAction::Skip { configurator, .. })
+                    if configurator == "systemdUnits")),
+            "fixture must plan a Skip for the unavailable configurator"
+        );
+
+        let install = Action::Package(PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["jq".to_string(), "rg".to_string()],
+            origin: "profile".to_string(),
+        });
+        let provision = Action::Manager(ManagerAction::Provision {
+            manager: "pip".to_string(),
+            via: "apt".to_string(),
+            declared: None,
+            batched: vec!["npm".to_string()],
+            depends_on: vec![],
+        });
+        let env = Action::Env(EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        planned.push(&install);
+        planned.push(&provision);
+        planned.push(&env);
+        let none: Vec<&Action> = vec![];
+
+        let cases: &[(&str, &str, bool, bool)] = &[
+            // (type, id, kept under `planned`, kept under an empty plan)
+            // The tick MINTS this row itself, so the complement never reaches
+            // it; the predicate speaks only for rows the tick did not record.
+            ("package", "brew:jq", false, false),
+            ("package", "brew:absent", false, false),
+            ("package", "brew:jq,rg", false, false),
+            ("package", "brew", false, false),
+            ("package", "provision:npm", true, false),
+            ("package", "provision:pip", true, false),
+            ("package", "refuse:ghost", false, false),
+            // A planned redeploy MINTS the row of every file it writes, so
+            // that row rides `current_drift`, not this predicate...
+            ("module", "dev/home/u/.conf", false, false),
+            // ...and the tick vouches nothing for a file no longer declared.
+            ("module", "dev/home/u/.other", false, false),
+            // A module the plan carries only as a Skip was never probed, so
+            // every row under it is kept whatever its id's grammar.
+            ("module", "gated/etc/app.conf", true, false),
+            ("module", "gated", true, false),
+            ("module", "dev", false, false),
+            ("env-var", "EDITOR", true, false),
+            ("alias", "ll", true, false),
+            ("system", "gsettings.org.gnome.x key", true, false),
+            ("system", "gsettings.other key", false, false),
+            // An unavailable configurator's whole namespace is unprobed...
+            ("system", "systemdUnits.x.service enabled", true, false),
+            // ...but only ITS namespace: prefix exactness, dot included.
+            ("system", "systemdUnitsX.key", false, false),
+            ("system", "gsettings:org.gnome.x key", false, false),
+            ("file", "/home/u/.conf", false, false),
+            ("a-type-no-grammar-mints", "x", true, true),
+        ];
+        for (rtype, rid, with_plan, without_plan) in cases {
+            assert_eq!(
+                tick_cannot_refind(rtype, rid, &planned, false),
+                *with_plan,
+                "wrong verdict for {rtype}/{rid} against the plan"
+            );
+            assert_eq!(
+                tick_cannot_refind(rtype, rid, &none, false),
+                *without_plan,
+                "wrong verdict for {rtype}/{rid} against a clean tick"
+            );
+        }
+
+        // The module arm reads the OWNER off the id and nothing else: the
+        // tail is a filename, and a `\` is a legal one on POSIX. Both
+        // spellings belong to the Skip module, so both are kept — the row a
+        // deploy re-finds is settled on the MINT side, where one composer
+        // writes the recorded id and the current-set id alike.
+        assert!(
+            tick_cannot_refind("module", r"gated/etc/od\d.conf", &planned, false),
+            "a backslash-bearing file id under the Skip module is kept"
+        );
+        assert!(
+            tick_cannot_refind("module", "gated/etc/od/d.conf", &planned, false),
+            "and so is its folded spelling"
+        );
+        assert_eq!(module_row_owner(r"gated/etc/od\d.conf"), "gated");
+        assert_eq!(module_row_owner("dev:script"), "dev");
+        assert_eq!(module_row_owner("solo"), "solo");
+    }
+
+    /// `narrow_to_module` drops the env group unconditionally — it is
+    /// machine-wide, owned by no module — so a SCOPED tick's `planned` never
+    /// carries a `WriteEnvFile` action whether or not the real file needs
+    /// one. Reading that absence as "converged" (the unscoped rule above)
+    /// would heal every `env-var`/`alias` row a module's chain owns on every
+    /// scoped tick, blind: `scoped` must force `true` regardless of what
+    /// `planned` carries, env action included, since a narrowed plan carrying
+    /// one is a fixture artifact this predicate cannot tell apart from a
+    /// coincidence.
+    #[test]
+    fn tick_cannot_refind_keeps_env_rows_standing_for_a_scoped_tick_whatever_planned_carries() {
+        use super::reconcile::tick_cannot_refind;
+        use crate::reconciler::{Action, EnvAction};
+
+        let env = Action::Env(EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        let with_env: Vec<&Action> = vec![&env];
+        let none: Vec<&Action> = vec![];
+
+        for rtype in ["env-var", "alias"] {
+            assert!(
+                tick_cannot_refind(rtype, "EDITOR", &none, true),
+                "a scoped tick's narrowed plan never carries an env action \
+                 at all, so it must keep a {rtype} row standing rather than \
+                 reading the absence as convergence"
+            );
+            assert!(
+                tick_cannot_refind(rtype, "EDITOR", &with_env, true),
+                "scoped must keep a {rtype} row standing even if `planned` \
+                 happens to carry an env action"
+            );
+        }
+
+        // The unscoped rule is unchanged: no action present still reads as
+        // converged (healed) when the tick was never narrowed.
+        assert!(!tick_cannot_refind("env-var", "EDITOR", &none, false));
+        assert!(tick_cannot_refind("env-var", "EDITOR", &with_env, false));
+    }
+
+    /// A clean profile-wide tick is ground truth only for what it PROBED: the
+    /// CLI's per-package row heals (a converged machine re-found it clean),
+    /// while a row of a type no grammar this tick knows can mint stands — and
+    /// the in-memory count follows the store instead of assuming 0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_clean_tick_heals_only_the_rows_it_can_refind() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            store
+                .record_drift(
+                    "package",
+                    "brew:ghost-tool",
+                    Some("installed"),
+                    Some("missing"),
+                    "local",
+                )
+                .unwrap();
+            store
+                .record_drift("future-scanner", "some-fact", None, None, "local")
+                .unwrap();
+        }
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        assert_eq!(
+            standing,
+            vec![("future-scanner", "some-fact")],
+            "the per-package row healed, the foreign-typed row stands"
+        );
+        let st = state.lock().await;
+        assert_eq!(
+            st.drift_count, 1,
+            "the count follows the store, not a hardcoded clean-tick 0"
+        );
+    }
+
+    /// A per-module tick's narrowed plan carries no env action — the env
+    /// group is machine-wide, owned by no module — so it cannot re-check an
+    /// `env-var` row its module owns, and the row STANDS after the tick. The
+    /// same store under a profile-wide tick whose plan carries the
+    /// `WriteEnvFile` converges the file (auto-apply) and heals the row.
+    /// Driven through the real tick over a real config tree, so the
+    /// `kept_rows` wiring (scope, exclusions, re-find) is what is pinned,
+    /// not the predicate alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scoped_tick_keeps_an_owned_env_row_a_full_tick_heals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  modules:\n    - envmod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("envmod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        StateStore::open_in_dir(&state_dir)
+            .unwrap()
+            .record_drift(
+                "env-var",
+                "EDITOR",
+                Some("EDITOR=vim"),
+                Some("missing or changed"),
+                "local",
+            )
+            .unwrap();
+
+        let tick = |module_filter: Option<&'static str>| {
+            let cp = config_path.clone();
+            let sd = state_dir.clone();
+            crate::spawn_blocking_with_test_home(move || {
+                let state = Arc::new(Mutex::new(DaemonState::new()));
+                let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+                let printer = test_printer();
+                handle_reconcile(
+                    &cp,
+                    None,
+                    ReconcileCtx {
+                        state: &state,
+                        notifier: &notifier,
+                        notify_on_drift: false,
+                        hooks: &NoopHooks,
+                        state_dir_override: Some(&sd),
+                        explicit_state_dir: true,
+                        cache_dir_override: None,
+                        printer: &printer,
+                        module_filter,
+                        auto_apply_override: Some(true),
+                        drift_policy_override: Some(config::DriftPolicy::Auto),
+                        scope: crate::Scope::User,
+                        abort: never_abort(),
+                        cache: fresh_tick_cache(),
+                    },
+                );
+            })
+        };
+        let standing = || -> Vec<(String, String)> {
+            StateStore::open_in_dir(&state_dir)
+                .unwrap()
+                .unresolved_drift()
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.resource_type, e.resource_id))
+                .collect()
+        };
+
+        tick(Some("envmod")).await.unwrap();
+        assert_eq!(
+            standing(),
+            vec![("env-var".to_string(), "EDITOR".to_string())],
+            "a per-module tick never re-checks the env file, so the module's own env row stands"
+        );
+
+        tick(None).await.unwrap();
+        assert!(
+            standing().is_empty(),
+            "the profile-wide tick converged the env file and healed the row, got: {:?}",
+            standing()
+        );
+    }
+
+    /// A per-module tick probes one module, so it may heal only rows it can
+    /// attribute to that module by identity — its own module-file rows —
+    /// never another module's, the machine-wide surfaces, or per-package
+    /// rows nothing attributes to a module.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_per_module_tick_never_heals_rows_outside_its_module() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for (rtype, rid) in [
+                ("module", "ghost-mod/etc/app.conf"),
+                ("module", "other-mod/etc/other.conf"),
+                ("file", "/etc/hosts"),
+                ("package", "brew:jq"),
+            ] {
+                store
+                    .record_drift(rtype, rid, None, Some("drift detected"), "local")
+                    .unwrap();
+            }
+        }
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "ghost-mod".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![
+                ("file", "/etc/hosts"),
+                ("module", "other-mod/etc/other.conf"),
+                ("package", "brew:jq"),
+            ],
+            "only the ticked module's own re-checked row may heal"
+        );
+    }
+
+    /// A recorded module-file row — the `<module>/<target>` spelling every
+    /// producer mints — survives the tick that PLANS its redeploy: the tick
+    /// RE-RECORDS that exact row off the `DeployFiles` action, so the machine
+    /// still shows the finding until the deploy actually runs. A row for a
+    /// file the module no longer declares is in no action's row set and
+    /// resolves in the same tick — one composer on both sides, end to end
+    /// through a real tick over a real config tree.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_that_plans_a_redeploy_keeps_the_planned_files_recorded_row() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("dev");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        // The target does not exist, so the tick plans the redeploy.
+        let target = tmp.path().join("deploy").join("app.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        // The declared file's row in the CLI's spelling, and a sibling row
+        // for a file the module does not declare.
+        let declared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&target).trim_start_matches('/')
+        );
+        let undeclared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(tmp.path().join("deploy").join("gone.conf"))
+                .trim_start_matches('/')
+        );
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for rid in [&declared_id, &undeclared_id] {
+                store
+                    .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
+                    .unwrap();
+            }
+        }
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![("module", declared_id.as_str())],
+            "the tick re-records the planned file's row and nothing else, so \
+             the undeclared file's row resolves and no bare module id is minted"
+        );
+    }
+
+    /// A resource awaiting a source decision leaves the plan BEFORE the
+    /// complement-resolve reads it (`withhold_from_plan` runs first), so its
+    /// recorded row is one the exclusions themselves must keep: the tick
+    /// deliberately did not judge it. The sibling the decision does not name
+    /// rides the plan join as usual, and a row for a file the module never
+    /// declared resolves in the same tick — which is also the proof the tick
+    /// really ran rather than skipping fail-closed.
+    ///
+    /// The `solo` module exercises the EMPTIED action: its only file is
+    /// withheld, so the prune drops the whole module action and every row it
+    /// spoke for vanishes from the plan at once — rows the tick therefore
+    /// re-records nowhere, kept only by the prune's own `resource_ids`
+    /// carrier. The closing Auto tick is the discriminator that the prune
+    /// still withholds at all: were it to stop, the auto-apply would write
+    /// the withheld targets and this test's keep assertions would stay green
+    /// for the wrong reason.
+    ///
+    /// Serial: `spec.sources` makes the tick resolve the source cache through
+    /// `default_cache_dir_for`, which reads the process-global
+    /// `CFGD_CACHE_DIR` BEFORE the test-home override — several sibling tests
+    /// set that env under the unnamed serial lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_tick_keeps_the_rows_of_a_resource_awaiting_a_source_decision() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.invalid/acme.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - dev\n    - solo\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("dev");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "withheld\n").unwrap();
+        std::fs::write(module_dir.join("extra.conf"), "planned\n").unwrap();
+        // None of the targets exist, so every file would plan a redeploy; the
+        // decisions withhold two of them from that plan.
+        let withheld_target = tmp.path().join("deploy").join("app.conf");
+        let planned_target = tmp.path().join("deploy").join("extra.conf");
+        let solo_target = tmp.path().join("deploy").join("solo.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n    - source: extra.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&withheld_target),
+                crate::to_posix_string(&planned_target)
+            ),
+        )
+        .unwrap();
+        let solo_dir = tmp.path().join("modules").join("solo");
+        std::fs::create_dir_all(&solo_dir).unwrap();
+        std::fs::write(solo_dir.join("solo.conf"), "aggregate\n").unwrap();
+        std::fs::write(
+            solo_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: solo\nspec:\n  files:\n    - source: solo.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&solo_target)
+            ),
+        )
+        .unwrap();
+
+        let withheld_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&withheld_target).trim_start_matches('/')
+        );
+        let planned_id = format!(
+            "dev/{}",
+            crate::to_posix_string(&planned_target).trim_start_matches('/')
+        );
+        let undeclared_id = format!(
+            "dev/{}",
+            crate::to_posix_string(tmp.path().join("deploy").join("gone.conf"))
+                .trim_start_matches('/')
+        );
+        let solo_id = format!(
+            "solo/{}",
+            crate::to_posix_string(&solo_target).trim_start_matches('/')
+        );
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            for rid in [&withheld_id, &planned_id, &undeclared_id] {
+                store
+                    .record_drift("module", rid, Some("deployed"), Some("missing"), "local")
+                    .unwrap();
+            }
+            // `solo`'s one file: the prune empties the module's whole action,
+            // so no surviving action speaks for this row and only the prune's
+            // carrier can keep it.
+            store
+                .record_drift("module", &solo_id, None, Some("drift detected"), "local")
+                .unwrap();
+            for target in [&withheld_target, &solo_target] {
+                store
+                    .upsert_pending_decision(
+                        "acme",
+                        &format!("files.{}", crate::to_posix_string(target)),
+                        "recommended",
+                        "install",
+                        "recommended file (from acme)",
+                        None,
+                    )
+                    .unwrap();
+            }
+        }
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        assert_eq!(
+            standing,
+            vec![
+                ("module", withheld_id.as_str()),
+                ("module", planned_id.as_str()),
+                ("module", solo_id.as_str()),
+            ],
+            "the withheld file's row survives on the exclusions' say-so, the \
+             planned sibling's because the tick re-records it, the emptied \
+             module's on the prune's carrier, and the undeclared file's row \
+             resolves — proof the tick ran"
+        );
+        drop(store);
+
+        // The discriminator: a second tick that auto-applies. If the prune
+        // stopped withholding, the keep assertions above would still pass —
+        // rows the plan re-records look identical to rows the exclusions
+        // kept — but this apply would write the withheld targets. The policy
+        // goes into the config itself: a `__default__` tick reads
+        // `spec.daemon.reconcile.driftPolicy`, never the task's own fields,
+        // and the rewrite also moves the config fingerprint so the tick
+        // cache cannot hand back the first resolution.
+        std::fs::write(
+            &ctx.config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  daemon:\n    reconcile:\n      driftPolicy: Auto\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.invalid/acme.git\n",
+        )
+        .unwrap();
+        let mut auto_tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut auto_tasks)
+            .await
+            .unwrap();
+        assert!(
+            planned_target.exists(),
+            "the undecided sibling deploys — proof the Auto tick applied"
+        );
+        assert!(
+            !withheld_target.exists() && !solo_target.exists(),
+            "the targets awaiting a decision stay unwritten through an \
+             auto-applying tick"
+        );
+
+        // The apply that deploys a module's files resolves the per-file rows
+        // of every file that module DECLARES, which is one row wider than the
+        // pruned action wrote. The withheld file is in the declared set and
+        // out of the action, so only the exclusions the tick hands the
+        // reconciler keep its row open.
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let standing: Vec<String> = store
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.resource_id)
+            .collect();
+        assert!(
+            standing.contains(&withheld_id),
+            "the withheld file's row survives the apply that deployed its \
+             declared siblings: {standing:?}"
+        );
+        assert!(
+            !standing.contains(&planned_id),
+            "the deployed sibling's row is resolved by the apply that wrote \
+             it: {standing:?}"
+        );
+    }
+
+    /// A per-module tick refreshes the subscriptions the status wire carries.
+    ///
+    /// They are the CONFIG's, not the resolution's, so the arm that resolved a
+    /// subset still read the config that names them — and after a SIGHUP that
+    /// rewrites `spec.sources`, a daemon ticking per-module would otherwise
+    /// keep answering `daemon status` with the old ones until the next
+    /// profile-wide tick.
+    ///
+    /// Serial: `spec.sources` makes the tick resolve the source cache through
+    /// `default_cache_dir_for`, which reads the process-global `CFGD_CACHE_DIR`
+    /// BEFORE the test-home override — several sibling tests set that env under
+    /// the unnamed serial lock, and reading a foreign cache mid-mutation fails
+    /// composition (a torn manifest), skipping the tick fail-closed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_per_module_tick_refreshes_the_subscriptions_the_config_declares() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "my-module".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        // A tick that bails early leaves `composed_sources` empty with its
+        // reason only on the journal, so the capture is what turns a bare
+        // `[] != ["team"]` into a diagnosable failure.
+        let logs = super::capture_run_logs_async(async {
+            runner::handle_reconcile_tick(&ctx, &mut tasks)
+                .await
+                .unwrap();
+        })
+        .await;
+
+        let st = state.lock().await;
+        let named: Vec<&str> = st
+            .composed_sources
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            named,
+            vec!["team"],
+            "the arm that resolved one module still read the config that \
+             declares the subscriptions; tick logs: {logs}"
+        );
+        assert!(
+            st.profile.is_none() && st.modules.is_empty(),
+            "…while the resolution's own facts stay the profile-wide tick's to \
+             write: a subset says nothing about the profile"
+        );
+    }
+
     // ----- handle_sync_tick tests -----
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11355,7 +13572,9 @@ spec:
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
         let mut tasks: Vec<SyncTask> = Vec::new();
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         let st = state.lock().await;
         assert!(st.last_sync.is_none());
     }
@@ -11377,8 +13596,122 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert_eq!(tasks[0].last_synced, Some(recent));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sync_that_pulled_changes_retires_the_held_derivation() {
+        // The sync tick rewrites the source checkout the reconcile branch reads
+        // from. Nothing under the config directory moved, so the watcher never
+        // fires and the input fingerprints still stand — the invalidation has
+        // to come from the tick that did the rewriting.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work_dir = pulled_source_checkout(tmp.path());
+
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "held").unwrap();
+
+        let derivations = std::cell::Cell::new(0);
+        let ask = || {
+            let _ = ctx.tick_cache.config_derivation(&config_path, None, || {
+                derivations.set(derivations.get() + 1);
+                crate::record_config_input(&config_path);
+                Ok::<_, ()>(crate::daemon::tick_cache::test_derived_config(
+                    "held",
+                    Vec::new(),
+                ))
+            });
+        };
+
+        ask();
+        ask();
+        assert_eq!(derivations.get(), 1, "an unchanged config is derived once");
+
+        let mut tasks = vec![SyncTask {
+            source_name: "team".to_string(),
+            repo_path: work_dir.clone(),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(0),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
+        assert!(
+            work_dir.join("NEWFILE").exists(),
+            "the fixture must really have pulled something"
+        );
+
+        ask();
+        assert_eq!(
+            derivations.get(),
+            2,
+            "the tick that rewrote the checkout must retire the derivation"
+        );
+    }
+
+    /// A work tree whose `origin` carries one commit the work tree does not, so
+    /// a `handle_sync` with `auto_pull` really transfers something.
+    fn pulled_source_checkout(root: &Path) -> PathBuf {
+        let bare_dir = root.join("bare.git");
+        let work_dir = root.join("work");
+        let pusher_dir = root.join("pusher");
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        commit_file(&repo, &work_dir, "README", "v1\n", "initial");
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        commit_file(&pusher, &pusher_dir, "NEWFILE", "synced\n", "add newfile");
+        pusher
+            .find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+
+        work_dir
+    }
+
+    fn commit_file(
+        repo: &git2::Repository,
+        work_dir: &Path,
+        name: &str,
+        body: &str,
+        message: &str,
+    ) {
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join(name), body).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        let parents = match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+            Some(parent) => vec![parent],
+            None => Vec::new(),
+        };
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+            .unwrap();
     }
 
     // ----- handle_compliance_tick tests -----
@@ -11421,7 +13754,9 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn loop_processes_sighup_then_shuts_down() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         // Write a config that updates intervals.
@@ -11431,7 +13766,7 @@ spec:
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 77s\n",
         )
         .unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = config_path;
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
@@ -11448,8 +13783,8 @@ spec:
         ));
         // Fire a SIGHUP-equivalent tick.
         senders.sighup_tx.send(()).await.unwrap();
-        // Give the loop a moment to process before shutdown.
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        // Wait for the reload to actually land instead of guessing a duration.
+        wait_for_daemon_log("daemon: timer intervals reloaded", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
@@ -11457,11 +13792,11 @@ spec:
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
-        let captured = captured_text(&buf);
+        let logged = daemon_log();
         assert!(
-            captured.contains("Timer intervals reloaded"),
+            logged.contains("daemon: timer intervals reloaded"),
             "expected reload message in: {}",
-            captured
+            logged
         );
     }
 
@@ -11485,6 +13820,7 @@ spec:
         for _ in 0..3 {
             senders.reconcile_tx.send(()).await.unwrap();
         }
+        // sleep-ok: no reconcile_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11516,6 +13852,7 @@ spec:
         ));
         senders.sync_tx.send(()).await.unwrap();
         senders.sync_tx.send(()).await.unwrap();
+        // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11545,6 +13882,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: compliance disabled means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11557,7 +13895,7 @@ spec:
     // (loop dispatch of file-change events is covered by
     // `handle_file_change_tick_*` direct-helper tests; a parallel loop test
     // running under `cargo llvm-cov` flaked on the StateStore opening inside
-    // record_file_drift, so we exercise the branch by calling the helper
+    // record_file_drift, so the branch is exercised by calling the helper
     // directly rather than through run_daemon_loop's select!.)
 
     // ----- Per-tick failure isolation -----
@@ -11679,6 +14017,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingPlanFilesHooks { ran: ran_tx }),
             notifier,
@@ -11690,6 +14029,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11765,6 +14105,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingRegistryHooks),
             notifier,
@@ -11776,6 +14117,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -11792,6 +14134,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: proving the panicking handler didn't tear the loop down needs no forward signal — the assertion is that shutdown still completes cleanly
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11806,7 +14149,7 @@ spec:
     async fn select_loop_continues_after_sync_tick_error() {
         // A sync tick whose repo_path does not exist exercises the sync
         // handler's error path (git2 returns Err from `Repository::open`).
-        // After the failing tick we fire a reconcile tick that panics, then
+        // After the failing tick, a reconcile tick that panics fires, then
         // a no-op sync tick, then shutdown — proving the loop keeps
         // servicing both error and panic flavors of failure.
         let tmp = tempfile::TempDir::new().unwrap();
@@ -11860,7 +14203,7 @@ spec:
         // which reads/writes a small JSON cache under HOME (guarded to the
         // tempdir). With no network reachable the upgrade module errors
         // gracefully and the tick must not abort the loop. After the tick
-        // we fire a panicking reconcile to confirm the loop's
+        // a panicking reconcile fires to confirm the loop's
         // continue-on-error behavior is engaged, then shutdown.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -12017,6 +14360,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -12028,6 +14372,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -12075,7 +14420,7 @@ spec:
     async fn per_module_reconcile_respects_drift_policy_notify_only() {
         // Per-module patch with drift_policy=NotifyOnly + a tick that
         // doesn't produce drift (empty profile). The reconciler is invoked
-        // but apply is NOT (the NotifyOnly branch). We assert the per-module
+        // but apply is NOT (the NotifyOnly branch). Asserts the per-module
         // entry shows up in state and that profile-wide drift_count is 0.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -12093,6 +14438,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -12104,6 +14450,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -12154,6 +14501,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -12165,6 +14513,7 @@ spec:
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             explicit_state_dir: true,
+            cache_dir_override: None,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -12199,14 +14548,14 @@ spec:
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interval_pump_clamps_zero_to_one_second() {
         // A 0-second interval would spin tight — the pump must clamp to >=1s.
-        // We don't actually wait a full second; instead, we trip the abort path.
+        // Does not actually wait a full second; instead, trips the abort path.
         let secs = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_interval_pump(secs, tx);
-        // Give the runtime a chance to schedule the pump task.
+        // sleep-ok: give the runtime a chance to schedule the pump task; no observable exists for "the pump task has been polled once"
         tokio::time::sleep(StdDuration::from_millis(10)).await;
         handle.abort();
-        // No assertion on rx — we only verify the pump didn't spin or panic before
+        // No assertion on rx — only verifies the pump didn't spin or panic before
         // abort. If the clamp were missing this test would hang the runtime.
         let _ = rx.try_recv();
     }
@@ -12369,7 +14718,7 @@ spec:
     // non-git directory, all git calls fail gracefully and the handler
     // still returns false (no changes). The orchestration around it — the
     // last_synced bump, the state.last_sync update via block_on — is what
-    // we cover here.
+    // this covers.
 
     /// Create a bare upstream repo + a working clone of it. Returns the
     /// (bare_path, work_path) pair. The clone starts with a single commit
@@ -12423,7 +14772,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
         let st = state.lock().await;
         assert!(st.last_sync.is_some());
@@ -12448,7 +14799,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
     }
 
@@ -12471,8 +14824,252 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some());
+    }
+
+    // ----- sync.autoApply: the post-sync reconcile -----
+
+    /// A working clone whose upstream carries ONE commit the clone has not
+    /// seen, so the tick's pull really moves and `handle_sync` reports a
+    /// change. `make_bare_and_clone` alone leaves the clone up to date, which
+    /// short-circuits every branch below it.
+    fn clone_with_pending_upstream_commit(tmp: &tempfile::TempDir) -> PathBuf {
+        let (_bare, work) = make_bare_and_clone(tmp);
+        let src = tmp.path().join("src");
+        let src_repo = git2::Repository::open(&src).unwrap();
+        std::fs::write(src.join("SECOND.md"), "second").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("SECOND.md")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        let mut remote = src_repo.find_remote("origin").unwrap();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        work
+    }
+
+    /// A config whose daemon block names no `driftPolicy`, so the reconcile
+    /// default (NotifyOnly) applies — the value a post-sync tick has to
+    /// override for `sync.autoApply` to mean anything.
+    const NOTIFY_ONLY_DEFAULT_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n";
+
+    /// Write `NOTIFY_ONLY_DEFAULT_CONFIG` plus an empty `default` profile under
+    /// `tmp`, returning the config path.
+    fn write_sync_apply_fixture(tmp: &tempfile::TempDir, config: &str) -> PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, config).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn sync_task_with_auto_apply(repo_path: PathBuf, auto_apply: bool) -> SyncTask {
+        SyncTask {
+            source_name: "local".to_string(),
+            repo_path,
+            auto_pull: true,
+            auto_push: false,
+            auto_apply,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_with_auto_apply_applies_under_the_notify_only_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(&tmp, NOTIFY_ONLY_DEFAULT_CONFIG);
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let target = tmp.path().join("dst.txt");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DriftingFileHooks {
+            source,
+            target: target.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, true)];
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
+
+        assert!(
+            target.exists(),
+            "a changed source with sync.autoApply must reconcile and apply on the same tick, \
+             even though the reconcile default is notify-only"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_without_auto_apply_does_not_apply() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(&tmp, NOTIFY_ONLY_DEFAULT_CONFIG);
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let target = tmp.path().join("dst.txt");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DriftingFileHooks {
+            source,
+            target: target.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, false)];
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
+
+        assert!(
+            !target.exists(),
+            "sync.autoApply off keeps the refresh a recording — nothing may be written"
+        );
+    }
+
+    /// Two file actions from one subscribed source, one of them awaiting a
+    /// decision. The forced-`Auto` tick must still respect the withhold.
+    struct DecidedAndWithheldFileHooks {
+        source: PathBuf,
+        kept: PathBuf,
+        withheld: PathBuf,
+    }
+
+    impl DaemonHooks for DecidedAndWithheldFileHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.kept.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.withheld.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+            ])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn sync_tick_auto_apply_still_withholds_an_undecided_item() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let _cache =
+            crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(
+            &tmp,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+        );
+
+        // make_test_ctx points the tick's state dir at `tmp` itself.
+        {
+            let seed = StateStore::open_in_dir(tmp.path()).unwrap();
+            seed.upsert_pending_decision(
+                "acme",
+                "files.~/withheld.txt",
+                "recommended",
+                "install",
+                "recommended files.~/withheld.txt (from acme)",
+                None,
+            )
+            .unwrap();
+        }
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let kept = tmp.path().join("kept.txt");
+        let withheld = crate::expand_tilde(Path::new("~/withheld.txt"));
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DecidedAndWithheldFileHooks {
+            source,
+            kept: kept.clone(),
+            withheld: withheld.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, true)];
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
+
+        assert!(
+            kept.exists(),
+            "a resource with no pending decision still applies on the forced tick"
+        );
+        assert!(
+            !withheld.exists(),
+            "forcing the drift policy must not bypass the source-decision gate"
+        );
     }
 
     // ----- handle_reconcile with files+packages in profile -----
@@ -12513,6 +15110,96 @@ spec:
         assert!(st.last_reconcile.is_some());
     }
 
+    /// The tick puts the modules IT resolved on the status wire, so
+    /// `cfgd daemon status` names what `cfgd status` and a run header name.
+    ///
+    /// Driven through the real tick rather than a hand-set field: a profile
+    /// whose declared list is one module reaches the wire as two once
+    /// `depends` is expanded, and the module this host gates off reaches it
+    /// carrying the reason the header row prints in its skipped annotation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reconcile_tick_puts_the_profiles_resolved_modules_on_the_status_wire() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n",
+        )
+        .unwrap();
+        let module = |name: &str, body: &str| {
+            let dir = tmp.path().join("modules").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{body}"
+                ),
+            )
+            .unwrap();
+        };
+        module("core", "  packages: []\n");
+        module("editor", "  depends:\n    - core\n  packages: []\n");
+        let elsewhere = if cfg!(windows) { "linux" } else { "windows" };
+        module(
+            "off-host",
+            &format!("  platforms:\n    - {elsewhere}\n  packages: []\n"),
+        );
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let st = state.lock().await;
+        let named: Vec<&str> = st.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            named,
+            vec!["core", "off-host", "editor"],
+            "the tick must carry the modules it resolved, `depends` expanded \
+             and in the order it resolved them"
+        );
+        let skipped: Vec<&str> = st
+            .modules
+            .iter()
+            .filter(|m| m.platform_skip_reason.is_some())
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            skipped,
+            vec!["off-host"],
+            "the gated module must reach the wire carrying its skip reason"
+        );
+        // The scheduled backup fire has no composition of its own and reports
+        // under this snapshot, so the profile it compares a due unit against
+        // and the sources it names both have to be here.
+        assert_eq!(
+            st.profile.as_deref(),
+            Some("default"),
+            "the tick must record the profile it resolved"
+        );
+        assert!(
+            st.composed_sources.is_empty(),
+            "a profile composed from the local layer alone subscribes to no \
+             source, so the fire has none to name: {:?}",
+            st.composed_sources
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_tick_advances_last_synced_for_due_task() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -12532,7 +15219,9 @@ spec:
             require_signed_commits: false,
             allow_unsigned: true,
         }];
-        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        runner::handle_sync_tick(&ctx, &mut tasks, &mut Default::default())
+            .await
+            .unwrap();
         assert!(tasks[0].last_synced.is_some(), "last_synced should advance");
         let st = state.lock().await;
         assert!(st.last_sync.is_some(), "state.last_sync should be set");
@@ -12552,6 +15241,7 @@ spec:
             &NoopHooks,
             crate::Scope::User,
             &Printer::for_test().0,
+            None,
             None,
         )
     }
@@ -12637,10 +15327,11 @@ spec: {}
             crate::Scope::User,
             &printer,
             None,
+            None,
         )
         .expect("setup with a deprecated theme key still succeeds");
 
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
             "expected startup to drain the theme deprecation notice; got: {captured:?}"
@@ -12668,6 +15359,158 @@ spec: {}
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
+    }
+
+    #[test]
+    fn build_pre_loop_setup_resolves_the_source_cache_under_the_callers_cache_dir_override() {
+        // Regression: `build_pre_loop_setup` used to resolve its source cache
+        // from `default_cache_dir_for(scope)` unconditionally, ignoring any
+        // `--cache-dir` the caller passed in. `build_sync_tasks` only adds a
+        // source's sync task when `source_cache_dir.join(name)` exists on
+        // disk, so an ignored override silently dropped every source sync
+        // task — the daemon never synced or reconciled a source whose cached
+        // checkout lived under the named cache dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-config\n      origin:\n        type: Git\n        url: https://example.test/team-config.git\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        // The source's cached checkout lives ONLY under the caller-named
+        // cache dir; the scope default (unset here) stays empty, so a task
+        // only appears if the override actually reached the resolution.
+        let named_cache_dir = tmp.path().join("named-cache");
+        std::fs::create_dir_all(named_cache_dir.join("sources").join("team-config")).unwrap();
+
+        let setup = build_pre_loop_setup(
+            &config_path,
+            None,
+            &NoopHooks,
+            crate::Scope::User,
+            &Printer::for_test().0,
+            None,
+            Some(&named_cache_dir),
+        )
+        .expect("setup with a cache-dir override");
+
+        assert_eq!(
+            setup.sync_tasks.len(),
+            2,
+            "the source's sync task must be picked up from the NAMED cache dir, \
+             not the ignored scope default: {:?}",
+            setup
+                .sync_tasks
+                .iter()
+                .map(|t| &t.source_name)
+                .collect::<Vec<_>>()
+        );
+        let source_task = setup
+            .sync_tasks
+            .iter()
+            .find(|t| t.source_name == "team-config")
+            .expect("team-config sync task must be present");
+        assert_eq!(
+            source_task.repo_path,
+            named_cache_dir.join("sources").join("team-config"),
+            "the source's repo_path must resolve under the caller's --cache-dir, not the default"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_daemon_modules_resolves_the_module_cache_under_the_callers_cache_dir_override() {
+        // The module-cache sibling of the pin above: `resolve_daemon_modules`
+        // resolves a git-sourced module file through `crate::resolve_cache_dir`
+        // exactly like `build_pre_loop_setup` resolves a source's checkout. A
+        // module whose file lives at a git URL must be fetched under the
+        // CALLER's `--cache-dir`, never the ignored scope default.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+
+        // A real local git repo standing in for the module's file source —
+        // `file://` transport only, no network involved.
+        let fixture_repo = tmp.path().join("fixture-repo");
+        std::fs::create_dir_all(&fixture_repo).unwrap();
+        let repo = git2::Repository::init(&fixture_repo).unwrap();
+        std::fs::write(fixture_repo.join("app.conf"), "from the fixture repo\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("app.conf")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let repo_url = crate::test_helpers::file_url(&fixture_repo);
+
+        let config_dir = tmp.path().join("config");
+        let module_dir = config_dir.join("modules").join("gitmod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: gitmod\nspec:\n  files:\n    - source: {repo_url}\n      target: /does-not-matter/app.conf\n      strategy: Copy\n"
+            ),
+        )
+        .unwrap();
+
+        let resolved = ResolvedProfile {
+            layers: vec![],
+            merged: MergedProfile {
+                modules: vec!["gitmod".into()],
+                ..Default::default()
+            },
+        };
+
+        // The scope default (unset here, under the test-home guard) stays
+        // empty; the module's file is only reachable from the NAMED cache dir.
+        let named_cache_dir = tmp.path().join("named-cache");
+
+        let registry = ProviderRegistry::new();
+        let resolved_modules = resolve_daemon_modules(
+            &registry,
+            &resolved,
+            &config_dir,
+            &[],
+            None,
+            &Printer::for_test().0,
+            crate::Scope::User,
+            Some(&named_cache_dir),
+        );
+
+        assert_eq!(resolved_modules.len(), 1, "gitmod must resolve");
+        let gitmod = &resolved_modules[0];
+        assert!(
+            gitmod.platform_skip_reason.is_none(),
+            "gitmod must not be platform-gated: {:?}",
+            gitmod.platform_skip_reason
+        );
+        assert_eq!(
+            gitmod.files.len(),
+            1,
+            "gitmod's one git-sourced file must resolve"
+        );
+        let resolved_file = &gitmod.files[0];
+        assert!(
+            resolved_file.source.starts_with(&named_cache_dir),
+            "the module's git-sourced file must be fetched under the caller's \
+             --cache-dir ({named_cache_dir:?}), not the ignored scope default: {:?}",
+            resolved_file.source
+        );
+        assert!(
+            resolved_file.source.join("app.conf").exists(),
+            "the fetched checkout must contain the file the fixture repo committed"
+        );
     }
 
     #[test]
@@ -12857,6 +15700,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -12895,6 +15739,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -12939,6 +15784,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -12983,6 +15829,7 @@ spec: {}
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            None,
             crate::Scope::User,
             &crate::test_helpers::test_printer(),
         );
@@ -13248,10 +16095,9 @@ spec: {}
     #[test]
     #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
-        // The daemon used to only emit a `tracing::warn!` when state-dir
-        // resolution failed, leaving the
-        // /drift endpoint silently disabled. The variant exposes a banner
-        // message so the startup banner can surface it.
+        // Resolution failing leaves the /drift endpoint disabled, and the
+        // variant hands the sentence back so the caller states it once on the
+        // daemon's own stream — a sentence, not a second copy of one.
         //
         // Same deterministic-failure setup as the fallback test: unset every
         // tier above the home-based resolution and install no test-home
@@ -13265,7 +16111,7 @@ spec: {}
         let (st, warning) = super::super::init_daemon_state_with_warning(None, crate::Scope::User);
         let msg = warning.expect("resolve failure must surface an operator-facing warning");
         assert!(
-            msg.contains("Drift endpoint disabled"),
+            msg.contains("drift endpoint disabled"),
             "warning should be operator-facing; got {msg:?}"
         );
         assert!(
@@ -13456,7 +16302,7 @@ spec: {}
             webhook_url: None,
         };
         let lines = super::super::format_interval_lines(&parsed, None, 0, None);
-        assert_eq!(lines, vec!["reconcile=300s".to_string()]);
+        assert_eq!(lines, vec!["reconcile every 300s".to_string()]);
     }
 
     #[test]
@@ -13476,8 +16322,8 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=60s".to_string(),
-                "sync=120s (pull=true, push=false)".to_string(),
+                "reconcile every 60s".to_string(),
+                "sync every 120s (pull only)".to_string(),
             ]
         );
     }
@@ -13503,24 +16349,50 @@ spec: {}
         );
         assert_eq!(
             lines,
-            vec!["reconcile=30s".to_string(), "compliance=900s".to_string()]
+            vec![
+                "reconcile every 30s".to_string(),
+                "compliance every 900s".to_string()
+            ]
         );
     }
 
     // ----- print_startup_banner tests -----
 
+    /// The banner is a log event, not a printed block: it names the health
+    /// endpoint and the cadences on the same stream every later tick writes to.
+    /// The one thing that stays a `Printer` line is the Ctrl+C hint, and a
+    /// capture printer has no interactive stdin, so it must not appear here.
     #[test]
-    fn print_startup_banner_emits_health_intervals_and_run_hint() {
+    fn print_startup_banner_logs_health_and_cadences() {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        super::super::print_startup_banner(
-            &printer,
-            &["reconcile=30s".to_string(), "compliance=900s".to_string()],
-            "/tmp/cfgd-banner-test.sock",
+        let logs = capture_run_logs(|| {
+            super::super::print_startup_banner(
+                &printer,
+                &[
+                    "reconcile every 30s".to_string(),
+                    "compliance every 900s".to_string(),
+                ],
+                "/tmp/cfgd-banner-test.sock",
+                "9.9.0",
+            );
+        });
+        assert!(
+            logs.contains("daemon: starting cfgd 9.9.0"),
+            "the banner is the only line on the stream naming the build: {logs}"
         );
-        let out = captured_text(&buf);
-        assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
-        assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
-        assert!(out.contains("Daemon running"));
+        assert!(
+            logs.contains("daemon: health endpoint at /tmp/cfgd-banner-test.sock"),
+            "got: {logs}"
+        );
+        assert!(
+            logs.contains("daemon: running — reconcile every 30s, compliance every 900s"),
+            "got: {logs}"
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("Ctrl+C"),
+            "the hint names a key nobody can press without a terminal: {out}"
+        );
     }
 
     // ----- run_startup_checkin_blocking tests -----
@@ -13741,6 +16613,76 @@ spec: {}
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_nested_edit_under_a_directory_target_reaches_the_watcher_channel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Managed target is a directory TREE: the edit lands a level below
+        // its immediate children, which a NonRecursive watch never reports.
+        let tree = tmp.path().join("nvim-lua");
+        let nested_dir = tree.join("plugins");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let nested_file = nested_dir.join("dashboard.lua");
+        std::fs::write(&nested_file, b"return {}").unwrap();
+        // Config dir is elsewhere so the recursive config-dir watch cannot be
+        // the one that delivers the event.
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let (tx, mut rx) = mpsc::channel::<PathBuf>(8);
+
+        let _watcher = super::super::reconcile::setup_file_watcher(
+            tx,
+            std::slice::from_ref(&tree),
+            &config_dir,
+        )
+        .unwrap();
+        std::fs::write(&nested_file, b"return { name = 'Taylor' }").unwrap();
+
+        // The timeout is a deadlock escape, never a timing assertion: the
+        // event either arrives or the watch mode regressed to NonRecursive.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(path) = rx.recv().await {
+                if path.ends_with("dashboard.lua") {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(
+            got,
+            Ok(true),
+            "nested edit under a directory target should surface a watch event"
+        );
+    }
+
+    #[test]
+    fn git_internal_paths_are_dropped_and_content_paths_kept() {
+        use super::super::reconcile::is_git_internal;
+        // A synced config dir is a git checkout under a recursive watch: the
+        // daemon's own fetch rewrites these, and forwarding them re-triggers
+        // reconcile every sync tick.
+        assert!(is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.git/FETCH_HEAD"
+        )));
+        assert!(is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.git/refs/remotes/origin/main"
+        )));
+        // A `.git` gitlink FILE (worktree/submodule) is bookkeeping too.
+        assert!(is_git_internal(Path::new("/home/u/.config/cfgd/.git")));
+        // Content beside the checkout stays watched, including names that
+        // merely contain the substring.
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/cfgd.yaml"
+        )));
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/modules/nvim/files/init.lua"
+        )));
+        assert!(!is_git_internal(Path::new("/home/u/.gitconfig")));
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.gitignore"
+        )));
+    }
+
     // ----- run_daemon_with end-to-end tests -----
     //
     // These drive `run_daemon_with` against externally-supplied triggers so
@@ -13755,6 +16697,7 @@ spec: {}
         super::super::DaemonRunOverrides {
             ipc_path: Some(tmp.path().join("daemon-test.sock")),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -13763,7 +16706,9 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_external_triggers_shuts_down_cleanly() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -13782,8 +16727,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Give the loop a tick to enter the select! arm
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        // Wait for the startup banner instead of guessing when the loop has
+        // entered its select! arm.
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         // Send shutdown
         senders.shutdown_tx.send(()).unwrap();
 
@@ -13797,17 +16743,17 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         // Banner emitted by print_startup_banner
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
+        let logs = daemon_log();
         assert!(
-            out.contains("Daemon running"),
-            "banner should announce running state, got: {}",
-            out
+            logs.contains("daemon: running"),
+            "the banner should announce the running state, got: {logs}"
         );
         assert!(
-            out.contains("Daemon stopped"),
-            "shutdown should print stopped message, got: {}",
-            out
+            logs.contains("daemon: stopped"),
+            "shutdown should log the stopped state, got: {logs}"
         );
+        let _ = out;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -13834,11 +16780,17 @@ spec: {}
         // from setup.reconcile_tasks with a 300s interval; first tick
         // always fires because last_reconciled is None).
         senders.reconcile_tx.send(()).await.unwrap();
-        // Allow handle_reconcile to land before we shut down.
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Poll for the reconcile's own side effect (a state.db file) rather
+        // than guessing how long handle_reconcile takes to land.
+        let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        while !store.exists() && std::time::Instant::now() < deadline {
+            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -13847,7 +16799,6 @@ spec: {}
         // (handle_reconcile opens the store via state_dir_override). Both the
         // override and the production-default paths resolve the same canonical
         // filename, so no sibling `cfgd.db` is ever created.
-        let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
         assert!(
             store.exists(),
             "expected {} under {}",
@@ -13881,10 +16832,11 @@ spec: {}
         ));
 
         senders.sync_tx.send(()).await.unwrap();
+        // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(60)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -13892,13 +16844,15 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_processes_sighup_tick_and_reloads_intervals() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         // Start with the happy-path config (no daemon spec).
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -13913,7 +16867,7 @@ spec: {}
         ));
 
         // Wait until the daemon has finished its pre-loop setup — signalled by
-        // the "Daemon running" banner — before rewriting the config. Setup
+        // the "daemon: running" banner — before rewriting the config. Setup
         // calls `config::load_config(config_path)` (build_pre_loop_setup); on
         // Windows a `std::fs::write` that truncates the same file *while* that
         // read is in flight raises a sharing violation (os error 32), which
@@ -13922,7 +16876,7 @@ spec: {}
         // POSIX tolerates the concurrent read/truncate, so the race only ever
         // bit Windows CI. Sequencing the rewrite after setup removes the race
         // on every platform.
-        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
 
         // Rewrite the config to introduce daemon reconcile interval.
         std::fs::write(
@@ -13931,21 +16885,21 @@ spec: {}
         )
         .unwrap();
         senders.sighup_tx.send(()).await.unwrap();
-        // Give the daemon enough headroom to process the SIGHUP and emit
-        // the reload chatter. 80ms is fine for native runs but tight under
-        // llvm-cov instrumentation, which slowed this test enough to lose
-        // the printer-buffer race in the coverage build.
-        tokio::time::sleep(StdDuration::from_millis(200)).await;
+        // Wait for the reload chatter instead of guessing a duration — a
+        // fixed 200ms was already bumped once after this test lost the
+        // printer-buffer race under llvm-cov instrumentation.
+        wait_for_daemon_log("daemon: reloading configuration", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
-        let out = captured_text(&buf);
+        let out = daemon_log();
         assert!(
-            out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
+            out.contains("daemon: reloading configuration")
+                || out.contains("daemon: timer intervals reloaded"),
             "expected sighup reload chatter, got: {}",
             out
         );
@@ -13955,7 +16909,7 @@ spec: {}
     async fn run_daemon_with_processes_file_change_tick_via_external_trigger() {
         // A file-change tick goes through the dispatch arm in run_daemon_loop
         // and lands in handle_file_change_tick → debounce::record_change.
-        // The daemon should keep running until we send shutdown.
+        // The daemon should keep running until shutdown is sent.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -13978,10 +16932,11 @@ spec: {}
         // a managed_paths entry — the handler tolerates unknown paths and
         // simply records into the debounce map.
         senders.file_tx.send(config_path.clone()).await.unwrap();
+        // sleep-ok: an unmanaged path prints nothing when debounced — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -14012,10 +16967,11 @@ spec: {}
         ));
 
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: without a compliance config the tick writes and prints nothing — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -14040,6 +16996,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: false,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14059,6 +17016,7 @@ spec: {}
         // being perfectly healthy.
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
+            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         assert!(
@@ -14068,7 +17026,7 @@ spec: {}
         );
 
         senders.shutdown_tx.send(()).unwrap();
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
@@ -14098,6 +17056,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14143,8 +17102,8 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=60s".to_string(),
-                "sync=180s (pull=false, push=true)".to_string(),
+                "reconcile every 60s".to_string(),
+                "sync every 180s (push only)".to_string(),
             ]
         );
     }
@@ -14171,9 +17130,9 @@ spec: {}
         assert_eq!(
             lines,
             vec![
-                "reconcile=45s".to_string(),
-                "sync=90s (pull=true, push=true)".to_string(),
-                "compliance=600s".to_string(),
+                "reconcile every 45s".to_string(),
+                "sync every 90s (pull and push)".to_string(),
+                "compliance every 600s".to_string(),
             ]
         );
     }
@@ -14227,9 +17186,7 @@ spec: {}
         // concurrent test could observe / consume the signal.
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
-        // Give tokio the SIGHUP signal subscription a chance to wire up before
-        // we raise the signal. Without this the kill arrives before the
-        // listener exists and is dropped.
+        // sleep-ok: gives tokio's SIGHUP subscription a chance to wire up before the signal is raised — no observable exists for OS signal-handler registration
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         // SAFETY: libc::kill against own PID is well-defined.
         unsafe {
@@ -14246,10 +17203,8 @@ spec: {}
     #[serial_test::serial]
     async fn wait_for_shutdown_returns_on_sigterm() {
         // Driving the shutdown wait directly: register, raise SIGTERM at our
-        // own PID, and verify the wait returns AND the printer captured the
-        // SIGTERM message.
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        let printer = Arc::new(printer);
+        // own PID, and verify the wait returns the POSIX code that names the
+        // signal it woke on.
         // Registration is synchronous, so the signal cannot arrive before the
         // handler exists — no sleep is needed to make this deterministic, and
         // the delivery the assertions rely on is a latched pending
@@ -14259,18 +17214,16 @@ spec: {}
         unsafe {
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
-        let handle = tokio::spawn(signals.wait(Arc::clone(&printer)));
+        let handle = tokio::spawn(signals.wait());
         let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
         assert!(
             joined.is_ok(),
             "wait_for_shutdown must return after SIGTERM"
         );
-        joined.unwrap().expect("task join");
-        let out = captured_text(&buf);
-        assert!(
-            out.contains("Received SIGTERM"),
-            "shutdown printer should announce SIGTERM, got: {}",
-            out
+        assert_eq!(
+            joined.unwrap().expect("task join"),
+            143,
+            "SIGTERM is 128 + 15, and the code is what in-flight work reads"
         );
     }
 
@@ -14300,9 +17253,9 @@ spec: {}
         state.sources.push(super::super::SourceStatus {
             name: "remote".to_string(),
             last_sync: None,
-            last_reconcile: None,
-            drift_count: 2,
+            drift_count: Some(2),
             status: "active".to_string(),
+            last_commit: None,
         });
         let resp = state.to_response();
         assert!(resp.running);
@@ -14311,7 +17264,7 @@ spec: {}
         assert_eq!(resp.last_sync.as_deref(), Some("2026-05-25T00:05:00Z"));
         assert_eq!(resp.drift_count, 7);
         assert_eq!(resp.update_available.as_deref(), Some("0.5.0"));
-        // Default ctor adds a "local" source; we pushed one more.
+        // Default ctor adds a "local" source; this test pushed one more.
         assert_eq!(resp.sources.len(), 2);
         assert_eq!(resp.sources[0].name, "local");
         assert_eq!(resp.sources[1].name, "remote");
@@ -14323,7 +17276,7 @@ spec: {}
     // ----- Notifier::notify_webhook with a real (mock) HTTP endpoint -----
     //
     // notify_webhook spawns a tokio::task::spawn_blocking, so this test
-    // sleeps briefly after .notify() to let the POST land. We assert via the
+    // sleeps briefly after .notify() to let the POST land. Asserts via the
     // mockito expectation count rather than inspecting tracing output.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -14351,6 +17304,7 @@ spec: {}
                 satisfied = true;
                 break;
             }
+            // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
         assert!(
@@ -14365,7 +17319,7 @@ spec: {}
     // The other run_daemon_with tests in this module install
     // `external_triggers: Some(...)`. This one leaves it None so the function
     // takes the `else` branch and spawns real interval pumps, the SIGHUP pump
-    // (Unix), and the shutdown listener. We bound the test with an outer
+    // (Unix), and the shutdown listener. The test is bounded with an outer
     // tokio::time::timeout so it terminates deterministically even though no
     // shutdown signal is sent — the assertion is that the function progressed
     // past the trigger-setup block and ran the loop until forcibly aborted.
@@ -14373,7 +17327,9 @@ spec: {}
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn run_daemon_with_production_triggers_progresses_past_setup_then_shutsdown_on_sigterm() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -14385,6 +17341,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: None,
@@ -14405,22 +17362,8 @@ spec: {}
         // synchronously before the banner is printed, so a banner in the
         // buffer means the signal raised below is delivered to the daemon
         // rather than to the default disposition that would kill this test
-        // process. Polled to a deadline rather than slept for a fixed span —
-        // a machine running the whole suite in parallel misses a fixed budget
-        // while being perfectly healthy.
-        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
-        let mut banner = false;
-        while std::time::Instant::now() < deadline {
-            if buf.lock().unwrap().contains("Daemon running") {
-                banner = true;
-                break;
-            }
-            tokio::time::sleep(StdDuration::from_millis(25)).await;
-        }
-        assert!(
-            banner,
-            "production-trigger path must emit the startup banner before shutdown"
-        );
+        // process.
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
 
         // SIGTERM drives the production wait_for_shutdown task which sends on
         // the shutdown oneshot, exiting the loop cleanly.
@@ -14429,15 +17372,15 @@ spec: {}
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down on SIGTERM")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Daemon stopped"),
+            daemon_log().contains("daemon: stopped"),
             "cleanup path must run, got: {}",
             out
         );
@@ -14553,7 +17496,7 @@ spec: {}
         let store_path = tmp.path().join("state.db");
         // Open & seed in a scoped block so the connection drops before the
         // handler opens its own connection — SQLite WAL handles concurrent
-        // readers but we keep the test deterministic.
+        // readers, but the scoped drop keeps the test deterministic.
         {
             let store = crate::state::StateStore::open(&store_path).unwrap();
             store
@@ -14605,30 +17548,19 @@ spec: {}
         );
     }
 
-    // ----- Loop-surface snapshot floor -----
+    // ----- Loop-surface floor -----
     //
-    // These tests capture only what the daemon's own Printer writes:
-    // startup banner, SIGHUP reload chatter, shutdown messages. Per-action
-    // reconcile output is emitted by `daemon::reconcile` through separate
-    // short-lived printers and is invisible to the buffer below.
-
-    use crate::output::test_capture::assert_snapshot_at;
-
-    fn snapshot_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
-    }
-
-    fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
-        crate::normalize_for_snapshot(raw, &[(ipc_path, "<IPC_PATH>")])
-    }
-
-    fn assert_snapshot(name: &str, actual: &str) {
-        assert_snapshot_at(&snapshot_dir(), name, actual);
-    }
+    // The reconcile loop has no terminal to report to: a service under
+    // systemd/launchd is read through its journal, so every sentence the loop
+    // says goes to `tracing` and its `Printer` stays silent. These two tests
+    // hold both halves — nothing on the printer, the run's own account in the
+    // journal.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    async fn snapshot_clean_reconcile_cycle() {
+    #[serial_test::serial(daemon_log)]
+    async fn the_reconcile_loop_reports_through_the_journal_and_never_the_printer() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -14641,6 +17573,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14655,8 +17588,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.reconcile_tx.send(()).await.unwrap();
+        // sleep-ok: a clean reconcile tick logs nothing of its own — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14670,19 +17604,29 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
-        assert_snapshot("clean_reconcile_cycle.txt", &actual);
+        let printed = crate::test_helpers::captured_text(&buf);
+        assert!(
+            printed.trim().is_empty(),
+            "the reconcile loop reports through the journal, never the printer: {printed}"
+        );
+        let logged = daemon_log();
+        for needle in ["daemon: starting", "daemon: running", "daemon: stopped"] {
+            assert!(
+                logged.contains(needle),
+                "the journal is the loop's account of itself, missing {needle:?}: {logged}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    async fn snapshot_drift_event() {
+    #[serial_test::serial(daemon_log)]
+    async fn a_drift_tick_leaves_the_printer_silent_and_names_the_change_in_the_journal() {
+        reset_daemon_log();
         // A file-change tick walks handle_file_change_tick → drift recording →
-        // notifier path. The notifier writes via tracing/stdout, not through the
-        // loop's Printer, so this snapshot is shape-identical to the clean cycle.
-        // Its value is regression coverage that the drift path doesn't write to
-        // the loop's surface and that the daemon survives the drift codepath and
-        // shuts down cleanly.
+        // notifier path. The notifier reports through tracing like the rest of
+        // the loop, so the drift path must leave the printer as silent as a
+        // clean cycle does while still naming the file it saw change.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -14695,6 +17639,7 @@ spec: {}
         let overrides = super::super::DaemonRunOverrides {
             ipc_path: Some(ipc_path.clone()),
             state_dir_override: Some(tmp.path().to_path_buf()),
+            cache_dir_override: None,
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
@@ -14709,20 +17654,32 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.file_tx.send(config_path).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        wait_for_daemon_log("watch: ", DAEMON_LOG_WAIT_CEILING).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, daemon)
             .await
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
-        assert_snapshot("drift_event.txt", &actual);
+        let printed = crate::test_helpers::captured_text(&buf);
+        assert!(
+            printed.trim().is_empty(),
+            "the drift path reports through the journal, never the printer: {printed}"
+        );
+        let logged = daemon_log();
+        assert!(
+            logged.contains("watch: "),
+            "the journal names the file change that drove the tick: {logged}"
+        );
+        assert!(
+            logged.contains("daemon: stopped"),
+            "the daemon must still shut down cleanly through the drift path: {logged}"
+        );
     }
 }
 
@@ -14740,8 +17697,8 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
     let store = test_state();
     // The plural-vs-singular branch (lines 730-742 in reconcile.rs) fires
     // inside `notifier.notify(...)` rendering when new_pending_count > 1.
-    // We can't inspect the formatted body directly via Stdout notifier, but
-    // we CAN pin the precondition: a single call must register all three
+    // Cannot inspect the formatted body directly via Stdout notifier, but
+    // the precondition can be pinned: a single call must register all three
     // items as pending in the store, all of which then withhold. That's the
     // shape that would trigger the plural message in the notifier body.
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
@@ -14793,6 +17750,7 @@ fn withheld_decisions_returns_decision_resources_as_set() {
             "recommended",
             "install",
             "recommended packages.cargo.bat",
+            None,
         )
         .unwrap();
     store
@@ -14802,6 +17760,7 @@ fn withheld_decisions_returns_decision_resources_as_set() {
             "locked",
             "install",
             "locked files.security/rules.yaml",
+            None,
         )
         .unwrap();
 
@@ -15001,7 +17960,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     // Profile lists a module that DOES exist on disk; load_all_modules and
     // resolve_dependency_order both succeed, the Ok arm at reconcile.rs:282-283
     // fires, and the resulting Vec<ResolvedModule> flows into reconciler.plan
-    // (covered by sibling tests; here we only assert the reconcile completes).
+    // (covered by sibling tests; only asserts here that the reconcile completes).
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -15042,7 +18001,12 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     );
 }
 
+// Serial: `spec.sources` makes the reconcile resolve the source cache through
+// `default_cache_dir_for`, which reads the process-global `CFGD_CACHE_DIR`
+// before any test override — a sibling test setting it under the unnamed
+// serial lock would hand this tick a foreign cache mid-mutation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolves_removed() {
     // Drives reconcile.rs:200-243 — the `auto_apply && !sources.is_empty()`
     // branch. Pre-stages two sources in the config + a state-store row for
@@ -15080,6 +18044,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
                 "recommended",
                 "install",
                 "install bat",
+                None,
             )
             .unwrap();
     }
@@ -15223,11 +18188,10 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     impl DaemonHooks for PrunePkgHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    installed: ["source-pkg".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                installed: ["source-pkg".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -15439,11 +18403,10 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     impl DaemonHooks for PrunePkgHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    installed: ["source-pkg".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                installed: ["source-pkg".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -15771,7 +18734,7 @@ mod ipc_socket_security {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        // run_health_server creates the parent dir with 0700 itself; we point
+        // run_health_server creates the parent dir with 0700 itself; pointing
         // at a nested path so the create-and-chmod arms both fire.
         let sock_path = tmp.path().join("runtime").join("cfgd.sock");
 
@@ -15787,6 +18750,7 @@ mod ipc_socket_security {
             if sock_path.exists() {
                 break;
             }
+            // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -15965,6 +18929,12 @@ mod query_daemon_status_paths {
                     sources: vec![],
                     update_available: None,
                     module_reconcile: vec![],
+                    reconcile_interval_secs: None,
+                    sync_interval_secs: None,
+                    config_path: None,
+                    profile: None,
+                    modules: vec![],
+                    profile_inherits: vec![],
                 })
                 .unwrap();
                 let _ = write!(
@@ -16162,6 +19132,10 @@ mod handle_sync_signature_paths {
                 .unwrap();
         }
 
+        // The commit the last accepted pull left checked out.
+        let accepted = crate::sources::SourceManager::head_commit(&work_dir)
+            .expect("the work repo has a HEAD to fall back to");
+
         let state = Arc::new(Mutex::new(DaemonState::new()));
         // require_signed_commits=true, allow_unsigned=false
         let changed = handle_sync(&work_dir, true, false, "local", &state, true, false).await;
@@ -16169,6 +19143,20 @@ mod handle_sync_signature_paths {
         assert!(
             !changed,
             "unsigned-commit pull with require_signed must return false"
+        );
+        // The pull moved the checkout before anything could judge what it
+        // landed on, so refusing it has to put the accepted commit back: the
+        // reconcile that follows reads whatever is on disk, and a tick that
+        // returned `false` over a checkout still sitting on the refused commit
+        // would compose it on this tick and on every later one.
+        assert_eq!(
+            crate::sources::SourceManager::head_commit(&work_dir).as_deref(),
+            Some(accepted.as_str()),
+            "a refused signature rolls the checkout back to the last accepted commit"
+        );
+        assert!(
+            !work_dir.join("NEWFILE").exists(),
+            "and the refused commit's content goes with it"
         );
         // Even though the verification failed, last_sync should NOT be
         // updated because the early return short-circuits before the
@@ -16288,6 +19276,83 @@ mod handle_reconcile_extra_branches {
 
     use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
+    /// An auto-applying tick displaces the user's own file exactly as
+    /// `cfgd apply` does — by copying it aside first. The conflict pass used to
+    /// live in the CLI alone, so the same machine got two different answers
+    /// depending on which process reached the file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn an_auto_applying_tick_copies_an_unmanaged_target_aside() {
+        let (tmp, config_path, state_dir) = write_min_fixture(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("app.conf");
+        std::fs::write(&target, "years of hand edits\n").unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        crate::spawn_blocking_with_test_home(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                ReconcileCtx {
+                    state: &state,
+                    notifier: &notifier,
+                    notify_on_drift: false,
+                    hooks: &NoopHooks,
+                    state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
+                    cache_dir_override: None,
+                    printer: &printer,
+                    module_filter: None,
+                    auto_apply_override: Some(true),
+                    drift_policy_override: Some(config::DriftPolicy::Auto),
+                    scope: crate::Scope::User,
+                    abort: never_abort(),
+                    cache: fresh_tick_cache(),
+                },
+            );
+        })
+        .await
+        .unwrap();
+
+        let sidecar = crate::reconciler::cfgd_backup_path(&target, "");
+        assert!(
+            sidecar.exists(),
+            "the tick must copy the user's file aside before displacing it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).unwrap(),
+            "years of hand edits\n",
+            "and the copy holds what the user had"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "from the module\n",
+            "while the target now holds the module's content"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn handle_reconcile_per_module_filter_updates_module_last_reconcile() {
         // module_filter=Some(_) path: the per-module branch records only into
@@ -16315,12 +19380,14 @@ mod handle_reconcile_extra_branches {
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
                     explicit_state_dir: true,
+                    cache_dir_override: None,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
                     drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
                     scope: crate::Scope::User,
                     abort: never_abort(),
+                    cache: fresh_tick_cache(),
                 },
             );
         })
@@ -16570,10 +19637,12 @@ mod tests_run_daemon_wrapper {
         let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
+        let cache = PathBuf::from("/srv/cfgd-cache");
         let over = cli_run_overrides(
             DaemonDirOverrides {
                 runtime_dir: Some(runtime.clone()),
                 state_dir: Some(state.clone()),
+                cache_dir: Some(cache.clone()),
             },
             crate::Scope::User,
         );
@@ -16581,6 +19650,11 @@ mod tests_run_daemon_wrapper {
             over.state_dir_override.as_deref(),
             Some(state.as_path()),
             "--state-dir must reach the loop, or the daemon's drift events, backups, and apply lock land where the CLI never looks"
+        );
+        assert_eq!(
+            over.cache_dir_override.as_deref(),
+            Some(cache.as_path()),
+            "--cache-dir must reach the loop, or the daemon composes sources from the default cache while every other verb reads the caller-named one"
         );
         let ipc = over.ipc_path.expect("runtime dir resolves an ipc path");
         // The endpoint's SHAPE is the one thing that genuinely differs by OS: a
@@ -16611,6 +19685,10 @@ mod tests_run_daemon_wrapper {
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
+        );
+        assert!(
+            over.cache_dir_override.is_none(),
+            "no flag → fall through to CFGD_CACHE_DIR / the scope default"
         );
     }
 
@@ -16646,7 +19724,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{captured_text, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
@@ -16909,7 +19987,7 @@ mod backup_timers {
                 "    - name: kept\n      source: {posix}\n      schedule: 1h\n    - name: dropped\n      source: {posix}\n      schedule: 1h\n"
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
@@ -16926,7 +20004,9 @@ mod backup_timers {
                 "    - name: kept\n      source: {posix}\n      schedule: 15m\n    - name: added\n      source: {posix}\n      schedule: 1h\n"
             ),
         );
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
         let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
         assert_eq!(names, vec!["kept", "added"]);
         assert_ne!(
@@ -16935,10 +20015,9 @@ mod backup_timers {
             "a changed schedule re-arms the timer"
         );
 
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
-            "reload must report the timer-set delta: {captured}"
+            logged.contains("backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
+            "reload must report the timer-set delta: {logged}"
         );
     }
 
@@ -17115,6 +20194,7 @@ mod backup_timers {
                 Instant::now() < deadline,
                 "the loop's backup timer never fired"
             );
+            // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
 
@@ -17273,6 +20353,7 @@ mod backup_timers {
             &printer,
             crate::Scope::User,
             Some(&state_dir),
+            None,
             now,
         )
         .expect("a valid profile resolves");
@@ -17308,6 +20389,7 @@ mod backup_timers {
                 None,
                 &printer,
                 crate::Scope::User,
+                None,
                 None,
                 Instant::now(),
             )
@@ -17427,7 +20509,9 @@ mod backup_timers {
             "spec:\n  backups:\n   - name: [unclosed\n",
         )
         .unwrap();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert_eq!(
             set.len(),
@@ -17439,14 +20523,13 @@ mod backup_timers {
             kept, armed,
             "the pending deadlines must survive the failure"
         );
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules NOT reloaded"),
-            "the operator must be told the reload was refused: {captured}"
+            logged.contains("backup schedules NOT reloaded"),
+            "the operator must be told the reload was refused: {logged}"
         );
         assert!(
-            !captured.contains("2 removed"),
-            "a refused reload must never report the running set as removed: {captured}"
+            !logged.contains("2 removed"),
+            "a refused reload must never report the running set as removed: {logged}"
         );
     }
 
@@ -17456,7 +20539,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = write_config_with_backups(
             &tmp,
             &format!(
@@ -17476,7 +20559,10 @@ mod backup_timers {
         );
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(
             set.len(),
@@ -17484,10 +20570,9 @@ mod backup_timers {
             "a healed config must restore the timers without a restart or a SIGHUP"
         );
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules restored: 1 scheduled"),
-            "the recovery must be visible: {captured}"
+            logged.contains("backup schedules restored: 1 scheduled"),
+            "the recovery must be visible: {logged}"
         );
     }
 
@@ -17498,7 +20583,7 @@ mod backup_timers {
         // just an empty, healthy config — the zero case gets its own wording.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = write_config_with_backups(&tmp, "");
 
         let mut set = BackupTimers::new(
@@ -17510,18 +20595,20 @@ mod backup_timers {
         );
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(set.len(), 0);
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains("Backup schedule resolved: no units configured"),
-            "the zero case must not say 'restored': {captured}"
+            logged.contains("backup schedule resolved: no units configured"),
+            "the zero case must not say 'restored': {logged}"
         );
         assert!(
-            !captured.contains("restored: 0 scheduled"),
-            "the odd zero-count phrasing must be gone: {captured}"
+            !logged.contains("restored: 0 scheduled"),
+            "the odd zero-count phrasing must be gone: {logged}"
         );
     }
 
@@ -17610,7 +20697,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         let (broken_config, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
@@ -17623,7 +20710,10 @@ mod backup_timers {
         let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(set.len(), 1, "the local set must be adopted");
         assert_eq!(
@@ -17632,20 +20722,17 @@ mod backup_timers {
             "adopting a partial set must not clear the degraded state"
         );
 
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains(
-                "Backup schedules restored: 1 scheduled (source composition unavailable)"
+            logged.contains(
+                "backup schedules restored: 1 scheduled (source composition unavailable)"
             ),
-            "the line must name what is still missing: {captured}"
+            "the line must name what is still missing: {logged}"
         );
+        // The level carries what the glyph used to: a partial set is a WARN on
+        // the journal, so an operator grepping for warnings finds it.
         assert!(
-            !captured.contains("✓ Backup schedules restored"),
-            "an unqualified all-clear tick would report a healthy set that is not: {captured}"
-        );
-        assert!(
-            captured.contains("⚠ Backup schedules restored"),
-            "a partial set is a warning, not an Ok: {captured}"
+            logged.contains("WARN") && !logged.contains("INFO"),
+            "a partial set is a warning, not an all-clear: {logged}"
         );
     }
 
@@ -17666,32 +20753,32 @@ mod backup_timers {
                 crate::to_posix_string(&source)
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
         let mut set = BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert_eq!(set.len(), 1);
         assert_eq!(
             set.degraded_reason(),
             Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
         );
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains(
-                "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
+            logged.contains(
+                "backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
             ),
-            "the reload line must name what is still missing: {captured}"
+            "the reload line must name what is still missing: {logged}"
         );
+        // The level carries what the glyph used to.
         assert!(
-            !captured.contains("✓ Backup schedules reloaded"),
-            "an unqualified all-clear would tell the operator their edit landed in full: {captured}"
-        );
-        assert!(
-            captured.contains("⚠ Backup schedules reloaded"),
-            "a partial reload is a warning, not an Ok: {captured}"
+            logged
+                .lines()
+                .any(|l| l.contains("WARN") && l.contains("backup schedules reloaded")),
+            "a partial reload is a warning, not an all-clear: {logged}"
         );
     }
 
@@ -17710,22 +20797,26 @@ mod backup_timers {
                 crate::to_posix_string(&source)
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
         let mut set = BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
         assert!(
-            captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
-            "got: {captured}"
+            logged.lines().any(|l| {
+                l.contains("INFO")
+                    && l.contains("backup schedules reloaded: 1 added, 0 removed, 0 rescheduled")
+            }),
+            "got: {logged}"
         );
         assert!(
-            !captured.contains("unavailable") && !captured.contains("unresolved"),
-            "a clean reload must carry no qualifier: {captured}"
+            !logged.contains("unavailable") && !logged.contains("unresolved"),
+            "a clean reload must carry no qualifier: {logged}"
         );
     }
 
@@ -17843,9 +20934,9 @@ mod backup_timers {
             webhook_url: None,
         };
         let clean = crate::daemon::format_interval_lines(&parsed, None, 2, None);
-        assert!(clean.iter().any(|l| l == "backups=2 scheduled"));
+        assert!(clean.iter().any(|l| l == "2 scheduled backups"));
 
-        // "backups=2 scheduled" alone is a lie when a source's third one is
+        // "2 scheduled backups" alone is a lie when a source's third one is
         // missing from the set — and the two degraded causes need different
         // remedies, so the banner names which one it hit.
         let sources = crate::daemon::format_interval_lines(
@@ -17857,7 +20948,7 @@ mod backup_timers {
         assert!(
             sources
                 .iter()
-                .any(|l| l == "backups=2 scheduled (source composition unavailable)"),
+                .any(|l| l == "2 scheduled backups (source composition unavailable)"),
             "got: {sources:?}"
         );
 
@@ -17870,7 +20961,7 @@ mod backup_timers {
         assert!(
             profile
                 .iter()
-                .any(|l| l == "backups=0 scheduled (profile unresolved)"),
+                .any(|l| l == "0 scheduled backups (profile unresolved)"),
             "a profile that would not resolve must not be reported as a source \
              problem, got: {profile:?}"
         );
@@ -17884,7 +20975,7 @@ mod backup_timers {
         assert!(
             unreadable_config
                 .iter()
-                .any(|l| l == "backups=0 scheduled (config unreadable)"),
+                .any(|l| l == "0 scheduled backups (config unreadable)"),
             "a top-level config that would not parse must render its own label, \
              not borrow the profile-unresolved or source-composition wording, \
              got: {unreadable_config:?}"
@@ -17898,15 +20989,27 @@ mod backup_timers {
     /// exactly the grammar — icons, subjects, alignment, group headings.
     fn backups_block(human: &str) -> String {
         let plain = crate::output::strip_ansi(human);
+        // From the first owner heading, dedented to it: `cfgd apply` renders
+        // the group under a `Phase: Backups` row and a plan-less run renders
+        // it at the run's own depth, and the DEPTH is the one thing the
+        // surfaces are allowed to differ on.
+        let indent = plain
+            .lines()
+            .find(|line| line.trim_start().starts_with("backup:"))
+            .map_or(0, |line| line.len() - line.trim_start().len());
         let block: Vec<&str> = plain
             .lines()
-            .skip_while(|line| line.trim() != "Backups")
+            .skip_while(|line| !line.trim_start().starts_with("backup:"))
             // The rollup opens the run's closing block and names the surface
             // that dispatched it (`Apply complete` / `Backup complete`), which
             // is the one line the group's grammar is deliberately not compared
             // on. Every line of the group itself is an icon + subject; only a
             // rollup counts actions.
             .take_while(|line| !line.contains("action"))
+            .map(|line| {
+                let lead = line.len() - line.trim_start().len();
+                &line[lead.min(indent)..]
+            })
             .map(str::trim_end)
             .collect();
         let mut out = block.join("\n");
@@ -17921,7 +21024,7 @@ mod backup_timers {
             }
             out.replace_range(start..end, "<STAMP>");
         }
-        strip_durations(&out)
+        crate::normalize_snapshot_durations(&out)
     }
 
     /// Byte offset of the first `YYYYmmddTHHMMSSZ` stamp in `s`, if any. Byte
@@ -17937,33 +21040,6 @@ mod backup_timers {
         })
     }
 
-    /// Replace every `(1.2s)` with `(<DUR>)`.
-    fn strip_durations(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while let Some(open) = rest.find('(') {
-            let Some(close) = rest[open..].find(')') else {
-                break;
-            };
-            let inner = &rest[open + 1..open + close];
-            out.push_str(&rest[..open]);
-            if inner.ends_with('s')
-                && inner[..inner.len() - 1]
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.')
-            {
-                out.push_str("(<DUR>)");
-            } else {
-                out.push('(');
-                out.push_str(inner);
-                out.push(')');
-            }
-            rest = &rest[open + close + 1..];
-        }
-        out.push_str(rest);
-        out
-    }
-
     /// A backup spec's whole rendered group must not depend on which surface
     /// dispatched it: `cfgd backup run`, `cfgd apply`'s pending backups and the
     /// daemon's scheduled fire all render through `backup::run_backup_group`,
@@ -17977,7 +21053,7 @@ mod backup_timers {
             tmp: &Path,
             label: &str,
             run: impl FnOnce(&Path, &StateStore, &Printer),
-        ) -> String {
+        ) -> (String, String) {
             let home = tmp.join(label);
             let state_dir = home.join("state");
             std::fs::create_dir_all(&state_dir).unwrap();
@@ -17985,8 +21061,8 @@ mod backup_timers {
             let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
             crate::with_test_home(&home, || run(&state_dir, &store, &printer));
             drop(printer);
-            let human = captured_text(&buf);
-            backups_block(&human)
+            let human = crate::test_helpers::captured_text(&buf);
+            (backups_block(&human), human)
         }
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -18001,8 +21077,12 @@ mod backup_timers {
             title,
             config_path: None,
             profile: Some("workstation"),
+            sources: &[],
             modules: &[],
+            profile_inherits: &[],
             trigger: None,
+            subject: None,
+            unit_source: None,
         };
 
         // `cfgd backup run`
@@ -18050,11 +21130,15 @@ mod backup_timers {
                 &config_path,
                 &config_dir,
                 state_dir,
+                &crate::daemon::backup::ResolvedConfiguration::default(),
                 printer,
                 &abort,
             );
         });
 
+        let (by_hand, by_hand_raw) = by_hand;
+        let (during_apply, during_apply_raw) = during_apply;
+        let (scheduled, scheduled_raw) = scheduled;
         assert!(
             by_hand.contains("backup:db") && by_hand.contains("snapshot data.db.<STAMP>"),
             "the group must render at all before it can be compared: {by_hand:?}"
@@ -18067,41 +21151,98 @@ mod backup_timers {
             by_hand, scheduled,
             "a scheduled fire renders a different group than `cfgd backup run`"
         );
+        // The phase row is the one line the surfaces differ on, by design: it
+        // sits beside real phases inside `cfgd apply` and restates the title
+        // on a run that has no other phase.
+        assert!(
+            during_apply_raw.contains("Phase: Backups"),
+            "inside an apply the backups phase keeps its row: {during_apply_raw}"
+        );
+        for (label, raw) in [
+            ("backup run", &by_hand_raw),
+            ("scheduled fire", &scheduled_raw),
+        ] {
+            assert!(
+                !raw.contains("Phase:"),
+                "{label} is its own only phase and prints no phase row: {raw}"
+            );
+        }
     }
 
-    /// Thread-local log capture: only events emitted on THIS thread inside `f`
-    /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
-    /// the calling thread.
-    fn capture_run_logs<F: FnOnce()>(f: F) -> String {
-        #[derive(Clone)]
-        struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for LogCapture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("lock").extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
-            type Writer = LogCapture;
-            fn make_writer(&'a self) -> Self::Writer {
-                self.clone()
-            }
+    /// A scheduled fire names the subscriptions the config declares whichever
+    /// profile it is about, and only its OWN profile's resolved modules.
+    ///
+    /// The two halves are not one fact: `Sources` is read off `spec.sources[]`
+    /// (seeded at startup, re-stated by every tick), so it describes the
+    /// machine's configuration whether or not the last tick resolved this due
+    /// set's profile — while the module set IS that resolution, and crediting
+    /// one profile's modules to another's units is what the profile gate
+    /// exists to prevent. Withheld together, an unattended run under a second
+    /// profile said nothing at all about where its configuration came from.
+    #[test]
+    fn a_scheduled_fire_over_another_profile_still_names_the_declared_sources() {
+        fn fire(label: &str, due_profile: &str) -> String {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let home = tmp.path().join(label);
+            let state_dir = home.join("state");
+            std::fs::create_dir_all(&state_dir).unwrap();
+            let source = tmp.path().join("data.db");
+            std::fs::write(&source, b"payload").unwrap();
+            let resolved = crate::daemon::backup::ResolvedConfiguration {
+                profile: Some("workstation".to_string()),
+                sources: vec![crate::reconciler::ComposedSource {
+                    name: "team-config".to_string(),
+                    profile: Some("team".to_string()),
+                }],
+                modules: vec![crate::output::HeaderModule {
+                    dep_pulled: false,
+                    name: "nvim".to_string(),
+                    platform_skip_reason: None,
+                }],
+                profile_inherits: vec![],
+            };
+            let due = vec![(due_profile.to_string(), spec("db", &source, Some("1h")))];
+            let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+            let abort = crate::AbortFlag::default();
+            crate::with_test_home(&home, || {
+                crate::daemon::backup::run_scheduled_backups(
+                    &due,
+                    &tmp.path().join("cfgd.yaml"),
+                    tmp.path(),
+                    &state_dir,
+                    &resolved,
+                    &printer,
+                    &abort,
+                );
+            });
+            drop(printer);
+            crate::test_helpers::captured_text(&buf)
         }
 
-        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(LogCapture(buf.clone()))
-            .with_max_level(tracing::Level::INFO)
-            // Styled field names would put escape sequences between `holder`
-            // and its value, so an assertion on the pair could not match.
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = buf.lock().expect("lock").clone();
-        String::from_utf8(bytes).expect("utf8 logs")
+        let matched = fire("matched", "workstation");
+        assert!(
+            matched.contains("Profile") && matched.contains("workstation"),
+            "a fire under the resolved profile names it: {matched}"
+        );
+        assert!(
+            matched.contains("Sources") && matched.contains("team-config"),
+            "a fire under the resolved profile names the composed sources: {matched}"
+        );
+        assert!(
+            matched.contains("Modules") && matched.contains("nvim"),
+            "a fire under the resolved profile names the resolved modules: {matched}"
+        );
+
+        let other = fire("other", "server");
+        assert!(
+            other.contains("Sources") && other.contains("team-config"),
+            "the subscriptions are the config's, so a fire under another profile \
+             still names them: {other}"
+        );
+        assert!(
+            !other.contains("Modules"),
+            "a fire under another profile must not name this one\'s modules: {other}"
+        );
     }
 
     /// A unit skipped for a held lock must say so in the journal — the only
@@ -18130,6 +21271,7 @@ mod backup_timers {
             &config_path,
             &config_dir,
             &state_dir,
+            &crate::daemon::backup::ResolvedConfiguration::default(),
             &printer,
             &abort,
         );
@@ -18149,6 +21291,7 @@ mod backup_timers {
                 &config_path,
                 &config_dir,
                 &state_dir,
+                &crate::daemon::backup::ResolvedConfiguration::default(),
                 &printer,
                 &abort,
             );
@@ -18159,7 +21302,7 @@ mod backup_timers {
             "a refused unit must be logged as refused: {logs}"
         );
         assert!(
-            logs.contains("holder="),
+            logs.contains("already running under"),
             "the refusal must name who holds the lock: {logs}"
         );
         assert!(
@@ -18184,7 +21327,883 @@ mod backup_timers {
                 apply_id: 1,
                 aborted: None,
                 planned_total: 0,
+                caveats: Vec::new(),
             })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tick cache — what a tick costs on the ticks after the first
+// ---------------------------------------------------------------------------
+
+/// A package manager that counts how many times it was asked what it has
+/// installed. The observable behind the "one enumeration, however many ticks"
+/// claim — a count, never a duration — and shared, because a
+/// `Box<dyn PackageManager>` in a registry cannot be read back for it.
+struct EnumerationCountingManager {
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl PackageManager for EnumerationCountingManager {
+    fn name(&self) -> &str {
+        "cargo"
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(HashSet::new())
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        false
+    }
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// Hooks that count what a tick DERIVES.
+///
+/// `build_registry` runs once per config derivation and nowhere else — the
+/// parse, the profile resolution and the source composition sit in the same
+/// closure — so its count is the derivation count. `plan_packages` asks each
+/// available manager what it has installed, which is what every real hook does
+/// and what makes the enumeration count meaningful.
+struct TickCountingHooks {
+    derivations: Arc<std::sync::atomic::AtomicUsize>,
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
+    /// Ticks that got PAST the derivation. A tick whose derivation failed
+    /// early returns before this, and without it a tick that bailed and a
+    /// tick that ran but said nothing are the same observation.
+    planned: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DaemonHooks for TickCountingHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        self.derivations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut reg = ProviderRegistry::new();
+        reg.add_package_manager(Box::new(EnumerationCountingManager {
+            enumerations: Arc::clone(&self.enumerations),
+        }));
+        reg
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        self.planned
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        managers: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
+        cx: &PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        for manager in managers {
+            cx.installed_for(*manager)?;
+        }
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+/// Drive one reconcile tick against a shared tick cache, the way the daemon
+/// loop does: on a blocking thread, with the test home carried across.
+async fn drive_cached_tick(
+    config_path: &Path,
+    state_dir: &Path,
+    hooks: Arc<dyn DaemonHooks>,
+    cache: Arc<super::tick_cache::TickCache>,
+    state: Arc<Mutex<DaemonState>>,
+    notifier: Arc<Notifier>,
+) {
+    drive_cached_tick_printing(
+        config_path,
+        state_dir,
+        hooks,
+        cache,
+        state,
+        notifier,
+        Arc::new(test_printer()),
+    )
+    .await
+}
+
+/// The same, against a printer the caller keeps — for a claim about what a tick
+/// SAYS rather than about what it derives.
+async fn drive_cached_tick_printing(
+    config_path: &Path,
+    state_dir: &Path,
+    hooks: Arc<dyn DaemonHooks>,
+    cache: Arc<super::tick_cache::TickCache>,
+    state: Arc<Mutex<DaemonState>>,
+    notifier: Arc<Notifier>,
+    printer: Arc<Printer>,
+) {
+    let cp = config_path.to_path_buf();
+    let sd = state_dir.to_path_buf();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer: &Printer = &printer;
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &state,
+                notifier: &notifier,
+                notify_on_drift: false,
+                hooks: &*hooks,
+                state_dir_override: Some(&sd),
+                explicit_state_dir: true,
+                cache_dir_override: None,
+                printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: never_abort(),
+                cache: &cache,
+            },
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// Run `measure` until it completes inside a window in which nothing moved the
+/// process-wide `command_resolution_generation()`.
+///
+/// The async twin of `test_helpers::measured_in_a_stable_generation`, which
+/// cannot await: a tick is dispatched through `spawn_blocking`. Any test in this
+/// binary that installs a package or runs a lifecycle script invalidates every
+/// memo in the process, and the enumeration claim below is exactly a memo-hit
+/// claim, so without this it is unmeasurable rather than merely fragile. The
+/// closure must be re-runnable — mint the counters and the cache INSIDE it.
+async fn measured_in_a_stable_generation_async<F, Fut, T>(mut measure: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    for _ in 0..16 {
+        let before = crate::command_resolution_generation();
+        let measured = measure().await;
+        if crate::command_resolution_generation() == before {
+            return measured;
+        }
+    }
+    panic!(
+        "the resolution generation never held still across a measurement — \
+         something in this binary is invalidating it continuously"
+    );
+}
+
+/// Write the config + profile pair every tick-cache test below reconciles.
+fn write_tick_cache_config(root: &Path) -> PathBuf {
+    let config_path = root.join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = root.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    config_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
+    // Before the tick cache every tick re-read the config, re-resolved the
+    // profile, rebuilt the registry and re-asked every manager what it had
+    // installed — on a 5s daemon, twelve times a minute, for a config nobody
+    // had touched.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_tick_cache_config(tmp.path());
+
+    let (derivations, enumerations) = measured_in_a_stable_generation_async(|| async {
+        let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let enumerations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+            derivations: Arc::clone(&derivations),
+            enumerations: Arc::clone(&enumerations),
+            planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let cache = Arc::new(super::tick_cache::TickCache::new());
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        for _ in 0..3 {
+            drive_cached_tick(
+                &config_path,
+                &state_dir,
+                Arc::clone(&hooks),
+                Arc::clone(&cache),
+                Arc::clone(&state),
+                Arc::clone(&notifier),
+            )
+            .await;
+        }
+        (
+            derivations.load(std::sync::atomic::Ordering::SeqCst),
+            enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    })
+    .await;
+
+    assert_eq!(derivations, 1, "three ticks must derive the config once");
+    assert_eq!(enumerations, 1, "three ticks must enumerate cargo once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_touched_profile_re_derives_exactly_once() {
+    // The gate is on what the derivation READ, and the profile is one of those
+    // reads even though the file the daemon was pointed at never moved.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_tick_cache_config(tmp.path());
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(derivations.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // A different LENGTH, so the fingerprint moves whatever the filesystem's
+    // timestamp granularity is.
+    std::fs::write(
+        tmp.path().join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the changed profile must re-derive exactly once, not once per tick"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_touched_cached_source_profile_re_derives() {
+    // The composed inputs are inputs too. A source's cached profile lives
+    // outside the config directory entirely, and a gate that watched only the
+    // files the daemon was pointed at would reconcile against a source manifest
+    // that had already changed underneath it.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // `default_cache_dir_for` short-circuits on this env var on every platform;
+    // the reconcile runs on a blocking worker where the thread-local test home
+    // does not reach.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "test-src",
+        "  env:\n    - name: TEAM\n      value: one\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unchanged source composition must be derived once"
+    );
+
+    // The source published a new value — a longer file, so the fingerprint moves
+    // whatever the filesystem's timestamp granularity is.
+    std::fs::write(
+        cache_root
+            .join("sources")
+            .join("test-src")
+            .join("profiles")
+            .join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  env:\n    - name: TEAM\n      value: two-and-then-some\n",
+    )
+    .unwrap();
+
+    drive_cached_tick(
+        &config_path,
+        &state_dir,
+        Arc::clone(&hooks),
+        Arc::clone(&cache),
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+    )
+    .await;
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "a changed cached source profile must re-derive"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_never_synced_source_is_warned_about_on_every_tick() {
+    // The operator-visible half of holding a composition across ticks: the
+    // source is skipped, cfgd keeps reconciling without it, and nothing about
+    // that resolves itself. A warning that appears once and then stops reads as
+    // a warning that got fixed.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // The reconcile runs on a blocking worker the thread-local test home does
+    // not reach, and this env var short-circuits the cache-dir resolution on
+    // every platform. The directory is deliberately never created — that is the
+    // condition under test.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let planned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::clone(&planned),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    let printer = Arc::new(printer);
+
+    // Asserted per tick rather than only in total, so a shortfall names the
+    // tick that produced it instead of leaving a count to be reasoned back to a
+    // cause.
+    for tick in 1..=3 {
+        drive_cached_tick_printing(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+            Arc::clone(&printer),
+        )
+        .await;
+        let so_far = crate::test_helpers::captured_text(&buf)
+            .matches("has no local cache yet")
+            .count();
+        assert_eq!(
+            planned.load(std::sync::atomic::Ordering::SeqCst),
+            tick,
+            "tick {tick} never reached planning — its derivation bailed, so the \
+             advisory count below would say nothing about the restatement"
+        );
+        assert_eq!(
+            so_far, tick,
+            "tick {tick} owed the operator the skip advisory and did not say it"
+        );
+    }
+
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the composition must have been derived once — a re-derivation would \
+         print the advisory itself and prove nothing about the restatement"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_re_pointed_source_origin_re_derives() {
+    // The origin-mismatch verdict is read out of the checkout's own git config,
+    // and it is REPLAYED to the operator on every reusing tick — so the file it
+    // rests on has to be one of the inputs that can retire the composition.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "test-src",
+        "  env:\n    - name: TEAM\n      value: one\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unchanged checkout must be composed once"
+    );
+
+    // The checkout is re-pointed in place, which need not touch anything else
+    // under it.
+    let git_config = cache_root
+        .join("sources")
+        .join("test-src")
+        .join(".git")
+        .join("config");
+    let repointed = format!(
+        "{}\n[remote \"origin\"]\n\turl = https://example.test/somewhere-else-entirely.git\n",
+        std::fs::read_to_string(&git_config).unwrap()
+    );
+    std::fs::write(&git_config, repointed).unwrap();
+
+    drive_cached_tick(
+        &config_path,
+        &state_dir,
+        Arc::clone(&hooks),
+        Arc::clone(&cache),
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+    )
+    .await;
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "a re-pointed origin must re-compose"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The daemon's log dialect: `HH:MM:SS  INFO <subsystem>: <sentence>`.
+//
+// `output::tests::fences::every_daemon_info_event_names_its_subsystem` holds
+// the SHAPE of every event in the crate. These hold the WORDING of the handful
+// a person actually reads a running daemon by, driven through the real handlers
+// rather than asserted against a format string.
+// ---------------------------------------------------------------------------
+
+mod log_dialect {
+    use super::*;
+    use crate::test_helpers::NoopDaemonHooks as NoopHooks;
+
+    fn min_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        (tmp, config_path, state_dir)
+    }
+
+    async fn run_tick(config_path: &Path, state_dir: &Path, module_filter: Option<&'static str>) {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let sd = state_dir.to_path_buf();
+        let cp = config_path.to_path_buf();
+        crate::spawn_blocking_with_test_home(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                ReconcileCtx {
+                    state: &state,
+                    notifier: &notifier,
+                    notify_on_drift: false,
+                    hooks: &NoopHooks,
+                    state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
+                    cache_dir_override: None,
+                    printer: &printer,
+                    module_filter,
+                    auto_apply_override: Some(true),
+                    drift_policy_override: Some(config::DriftPolicy::Auto),
+                    scope: crate::Scope::User,
+                    abort: never_abort(),
+                    cache: fresh_tick_cache(),
+                },
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A tick that ran and found nothing still says so. Four heartbeats and no
+    /// completion is what a reader of the old log got, and it cannot be told
+    /// apart from a tick that hung — so the completion is the announcement and
+    /// the start went to `debug!`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn a_tick_with_nothing_to_do_logs_its_completion() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        run_tick(&config_path, &state_dir, None).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — nothing to do"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("running reconciliation check"),
+            "the start heartbeat is a debug detail, not an event: {logs}"
+        );
+    }
+
+    /// The counts on the log line are the counts on the rollup, because both
+    /// read `reconciler::outcome_counts` off the same tally. A hand-built
+    /// `succeeded`/`failed` pair counted a skip as a success, which is how the
+    /// two surfaces came to describe one tick differently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn an_applying_tick_logs_the_counts_its_rollup_shows() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("app.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        run_tick(&config_path, &state_dir, None).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — 1 action succeeded"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("auto-apply complete"),
+            "the apply's outcome is the tick's completion line, said once: {logs}"
+        );
+    }
+
+    /// A per-module tick names its module: both cadences write to one log, and
+    /// a bare completion cannot say which of them converged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn a_per_module_tick_names_the_module_it_converged() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        run_tick(&config_path, &state_dir, Some("nvim")).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains("reconcile: complete — module nvim: nothing to do"),
+            "got: {logs}"
+        );
+    }
+
+    /// `sync: pulled new changes from remote from=9777c7d to=95f300a` names no
+    /// source, stops mid-thought and then repeats itself in a second grammar.
+    /// The sentence carries the source and both ends of the move.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_pull_names_the_source_and_both_ends_of_the_move() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+        let from = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEWFILE"), "synced\n").unwrap();
+        let to = {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEWFILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            let id = pusher
+                .commit(Some("HEAD"), &sig, &sig, "add newfile", &tree, &[&parent])
+                .unwrap();
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+            id
+        };
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        assert!(handle_sync(&work_dir, true, false, "local", &state, false, false).await);
+
+        let expected = format!(
+            "sync: pulled source local {} → {}",
+            crate::short_commit(&from.to_string()),
+            crate::short_commit(&to.to_string())
+        );
+        let logs = daemon_log();
+        assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
+        assert!(
+            !logs.contains("from="),
+            "the operands belong in the sentence, not in a field tail: {logs}"
+        );
+    }
+}
+
+/// The noun of a counted clause names the unit the count is IN. The tick's
+/// `deployed file` clause once counted `managed_resources` ROWS, and a
+/// module's row is one aggregate over every file its entries deploy, so
+/// `1 deployed file refreshed` stood for a six-entry tree. Every `pluralize`
+/// in the tick is classified here by the binding it counts; a new clause
+/// fails until its binding and noun are paired.
+///
+/// And every clause the tick folds onto `reconcile: complete — …` describes
+/// the MACHINE, never cfgd's bookkeeping about it: `nothing to do, N deployed
+/// files refreshed` named a record update as work and contradicted the verdict
+/// beside it. A clause literal carrying a bookkeeping verb fails here.
+#[test]
+fn every_counted_clause_names_the_unit_it_counts() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
+    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    // binding → the nouns it is honestly counted in.
+    let classified: &[(&str, &[&str])] = &[
+        ("effective_total", &["action", "resource"]),
+        ("succeeded", &["action"]),
+        ("moved", &["deployed file"]),
+    ];
+    let re = regex::Regex::new(r#"pluralize\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"([^"]+)"\s*\)"#)
+        .unwrap();
+    let mut seen = 0usize;
+    let mut wrong = Vec::new();
+    for cap in re.captures_iter(&body) {
+        seen += 1;
+        let (binding, noun) = (&cap[1], &cap[2]);
+        let ok = classified
+            .iter()
+            .any(|(b, nouns)| *b == binding && nouns.contains(&noun));
+        if !ok {
+            wrong.push(format!("pluralize({binding}, \"{noun}\")"));
+        }
+    }
+    assert!(
+        seen >= 7,
+        "the walk no longer reaches the tick's counted clauses — it found {seen}"
+    );
+    assert!(
+        wrong.is_empty(),
+        "a counted clause names a unit its binding is not in — classify the pair here, \
+         or count the unit the noun names:\n{}",
+        wrong.join("\n")
+    );
+
+    // The folded clauses: every `format!("{sentence}, …")` literal.
+    let clause = regex::Regex::new(r#""\{sentence\}, ([^"]+)""#).unwrap();
+    let bookkeeping = ["refreshed", "recorded", "backfilled", "hash", "row"];
+    let mut clauses = 0usize;
+    let mut record_worded = Vec::new();
+    for cap in clause.captures_iter(&body) {
+        clauses += 1;
+        if bookkeeping.iter().any(|verb| cap[1].contains(verb)) {
+            record_worded.push(cap[1].to_string());
+        }
+    }
+    assert!(
+        clauses >= 2,
+        "the walk no longer reaches the folded clauses — it found {clauses}"
+    );
+    assert!(
+        record_worded.is_empty(),
+        "a completion clause names cfgd's bookkeeping rather than the machine's state — \
+         word it from what the reader can see on the machine:\n{}",
+        record_worded.join("\n")
+    );
 }

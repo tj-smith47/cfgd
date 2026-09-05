@@ -1,1 +1,3 @@
-✓ source:team-config — priority updated: 100 -> 500
+✓ source:team-config — priority updated: 100 → 500
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

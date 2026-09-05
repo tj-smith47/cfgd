@@ -103,16 +103,19 @@ if assert_fail; then
     pass_test "BK10"
 else fail_test "BK10"; fi
 
-begin_test "BK11: restore --yes puts the newest snapshot back and takes a safety backup"
+begin_test "BK11: restore --yes puts the newest snapshot back and leaves a sidecar safety copy"
 echo "clobbered-live-data" > "$BK_SRC"
+SNAP_COUNT_BEFORE=$(ls "$SNAP_DIR" | wc -l)
 run $BC backup restore notes --yes
-# Retention prunes right after the safety snapshot lands, so the count stays
-# flat; the safety backup's evidence is the clobbered content surviving as
-# the newest snapshot.
-NEWEST=$(ls -t "$SNAP_DIR" | head -1)
-if assert_ok && [ "$(cat "$BK_SRC")" = "generation-three" ] && grep -q "clobbered-live-data" "$SNAP_DIR/$NEWEST"; then
+# The displaced contents go beside the source as the <source>.cfgd-backup
+# sidecar, never into the unit's snapshot history — so the snapshot set the
+# operator restores FROM does not grow when they restore.
+SNAP_COUNT_AFTER=$(ls "$SNAP_DIR" | wc -l)
+if assert_ok && [ "$(cat "$BK_SRC")" = "generation-three" ] \
+    && grep -q "clobbered-live-data" "$BK_SRC.cfgd-backup" \
+    && [ "$SNAP_COUNT_AFTER" -eq "$SNAP_COUNT_BEFORE" ]; then
     pass_test "BK11"
-else fail_test "BK11" "content=$(cat "$BK_SRC"), newest=$NEWEST"; fi
+else fail_test "BK11" "content=$(cat "$BK_SRC"), sidecar=$(cat "$BK_SRC.cfgd-backup" 2>/dev/null), snapshots=$SNAP_COUNT_BEFORE->$SNAP_COUNT_AFTER"; fi
 
 begin_test "BK12: restore hooks ran with CFGD_OPERATION=restore"
 if grep -q "pre restore" "$BK_MARKER" && grep -q "post restore" "$BK_MARKER"; then
@@ -166,5 +169,34 @@ run --config "$AP_DIR/cfg/cfgd.yaml" --state-dir "$AP_DIR/state" --no-color appl
 if assert_ok && [ ! -d "$AP_DIR/state/backups/appdb" ]; then
     pass_test "BK16"
 else fail_test "BK16"; fi
+
+begin_test "BK17: bare backup rollback lists what has a copy to put back"
+run $BC backup rollback
+if assert_ok && assert_contains "$OUTPUT" "notes" && assert_contains "$OUTPUT" "cfgd-backup"; then
+    pass_test "BK17"
+else fail_test "BK17"; fi
+
+begin_test "BK18: rollback --yes puts the sidecar copy back over the source"
+# Read both sides first: the rollback swaps them, and BK19 asserts the swap
+# back, so the expectations come from the machine rather than from a literal
+# an earlier cell happened to write.
+RB_COPY=$(cat "$BK_SRC.cfgd-backup")
+RB_DISPLACED=$(cat "$BK_SRC")
+SNAP_COUNT_BEFORE=$(ls "$SNAP_DIR" | wc -l)
+# Both cells assert a swap, so equal fixture values would let a rollback that
+# moved nothing pass either one.
+run $BC backup rollback notes --yes
+if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
+    && [ "$(cat "$BK_SRC")" = "$RB_COPY" ] \
+    && [ "$(ls "$SNAP_DIR" | wc -l)" -eq "$SNAP_COUNT_BEFORE" ]; then
+    pass_test "BK18"
+else fail_test "BK18" "content=$(cat "$BK_SRC"), expected=$RB_COPY, displaced=$RB_DISPLACED"; fi
+
+begin_test "BK19: a second rollback undoes the first"
+run $BC backup rollback notes --yes
+if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
+    && [ "$(cat "$BK_SRC")" = "$RB_DISPLACED" ]; then
+    pass_test "BK19"
+else fail_test "BK19" "content=$(cat "$BK_SRC"), expected=$RB_DISPLACED, copy=$RB_COPY"; fi
 
 print_summary "Backup"

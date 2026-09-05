@@ -69,7 +69,7 @@ pub(super) fn set_toml_value(table: &mut toml::Table, key: &str, value: &serde_y
         if !entry.is_table() {
             *entry = toml::Value::Table(toml::Table::new());
         }
-        // Safe: we just set it to a Table two lines above if it wasn't one
+        // Safe: it was just set to a Table two lines above if it wasn't one
         current = match entry.as_table_mut() {
             Some(t) => t,
             None => return, // unreachable after the assignment above

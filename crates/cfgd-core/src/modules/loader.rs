@@ -1,7 +1,7 @@
 //! Module loading and dependency resolution.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::PathDisplayExt;
 use crate::config::parse_module;
@@ -19,6 +19,7 @@ const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 /// Read a `module.yaml` after enforcing [`MAX_MODULE_SIZE`].
 fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
+    crate::record_config_input(module_yaml);
     if let Ok(meta) = std::fs::metadata(module_yaml)
         && meta.len() > MAX_MODULE_SIZE
     {
@@ -41,10 +42,21 @@ fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
     })
 }
 
+/// The declared `modules/` directory under a config root — a config dir, a
+/// source checkout or a generated repo alike. Distinct from the module CACHE
+/// (`module_cache_root`), which holds materialized git sources.
+pub fn declared_modules_dir(root: &Path) -> PathBuf {
+    root.join("modules")
+}
+
 /// Load all modules from the `modules/` directory under the given config dir.
 /// Returns a map of module name → LoadedModule.
 pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> {
-    let modules_dir = config_dir.join("modules");
+    let modules_dir = declared_modules_dir(config_dir);
+    // The LISTING is the input here, not any one manifest: a module directory
+    // appearing or disappearing changes what this returns, and a directory's
+    // own stamp is what reports that.
+    crate::record_config_input(&modules_dir);
     if !modules_dir.is_dir() {
         return Ok(HashMap::new());
     }
@@ -80,6 +92,8 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
 
         let doc = parse_module(&contents)?;
 
+        validate_module_name(&name)?;
+
         if doc.metadata.name != name {
             return Err(ModuleError::InvalidSpec {
                 name: name.clone(),
@@ -106,9 +120,42 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
     Ok(modules)
 }
 
+/// Refuse a module name that cannot be the owner half of a drift row.
+///
+/// A module name is the OWNER half of every `module` drift row
+/// (`<name>/<target>`, `<name>:script`), and it is joined onto a directory to
+/// find the body: a name carrying either separator attributes its own rows to
+/// a shorter name that owns none of them, and reaches outside the directory it
+/// was offered under. [`crate::validate_plain_name`] answers everything a
+/// created name must satisfy — no empty or `.`/`..` segment, no drive or root
+/// prefix, no `:`, which Windows reads as a drive or data-stream separator —
+/// and this adds the one question a module name asks on top of it: a name is a
+/// SINGLE segment, so a separator of any kind is refused rather than read as a
+/// path. Every name that becomes a key of the module map answers here, whether
+/// it came from a directory listing, a module body's own `metadata.name`, a
+/// lockfile entry or a source manifest's `spec.provides.modules`.
+pub fn validate_module_name(name: &str) -> Result<()> {
+    let refuse = |message: String| {
+        Err(crate::errors::CfgdError::from(ModuleError::InvalidSpec {
+            name: name.to_string(),
+            message,
+        }))
+    };
+    if let Err(why) = crate::validate_plain_name(name) {
+        return refuse(format!("module name is not usable: {why}"));
+    }
+    if name.contains(['/', '\\']) {
+        return refuse(
+            "module name must be a single path segment, with no '/' or '\\'".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Load a single module from a given directory.
 pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
     let module_yaml = module_dir.join("module.yaml");
+    crate::record_config_input(&module_yaml);
     if !module_yaml.exists() {
         let name = module_dir
             .file_name()
@@ -124,6 +171,7 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
     let contents = read_module_yaml_capped(&module_yaml)?;
     let doc = parse_module(&contents)?;
     let name = doc.metadata.name.clone();
+    validate_module_name(&name)?;
 
     Ok(LoadedModule {
         name,
@@ -148,7 +196,7 @@ pub fn resolve_dependency_order(
     const MAX_MODULES: usize = 500;
     const MAX_DEPENDENCY_DEPTH: usize = 50;
 
-    // Collect the full set of modules we need (requested + transitive deps)
+    // Collect the full set of modules needed (requested + transitive deps)
     let mut needed: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, usize)> = requested.iter().map(|r| (r.clone(), 0)).collect();
 

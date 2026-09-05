@@ -39,14 +39,17 @@ spec:
       description: Workspace containing the cfgd configuration repository
   results:
     - name: plan
-      description: The cfgd plan output (JSON when output-format is json)
+      description: >-
+        The cfgd output (JSON when output-format is json). Tekton caps results
+        at 4KB, so output larger than that arrives as its final 4KB; the step
+        log always carries the full output.
   steps:
     - name: cfgd-apply
       image: ubuntu:22.04
       workingDir: $(workspaces.source.path)/$(params.config-dir)
       script: |
         #!/bin/bash
-        set -eu
+        set -euo pipefail
 
         # Install cfgd
         apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
@@ -68,7 +71,21 @@ spec:
           OUTPUT_FLAG="--output $(params.output-format)"
         fi
 
-        cfgd apply --yes $DRY_RUN $OUTPUT_FLAG $(params.args) | tee /tmp/cfgd-output.txt
+        # The default config path is ~/.config/cfgd/cfgd.yaml; the task must point
+        # at the workspace checkout explicitly or apply silently reads the
+        # step container's HOME. pipefail (set above) keeps a failed apply from
+        # being masked by tee's exit code.
+        # The exit code is captured rather than allowed to end the step here:
+        # under `set -e` a failed apply would skip the result write below, so
+        # downstream tasks would get no result precisely when they most need
+        # one. The step still fails — with the apply's own code — after writing.
+        set +e
+        cfgd apply --yes --no-color --config ./cfgd.yaml $DRY_RUN $OUTPUT_FLAG $(params.args) | tee /tmp/cfgd-output.txt
+        CODE=${PIPESTATUS[0]}
+        set -e
 
-        # Write result for downstream tasks
-        cat /tmp/cfgd-output.txt > $(results.plan.path)
+        # Tekton caps a result at 4KB; ship the tail so the verdict survives
+        # truncation, and point at the step log for the full output.
+        tail -c 4000 /tmp/cfgd-output.txt > $(results.plan.path)
+
+        exit "$CODE"

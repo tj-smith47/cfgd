@@ -14,6 +14,12 @@ pub fn cmd_module_export(
     }
 }
 
+/// The package family a DevContainer feature installs through. A feature runs
+/// inside a Debian-based image, and this one name resolves BOTH the per-package
+/// alias lookup and the install script, so the export cannot look packages up
+/// under one manager and install them with another.
+const DEVCONTAINER_MANAGER: &str = "apt";
+
 pub(super) fn export_devcontainer(
     cli: &Cli,
     printer: &Printer,
@@ -54,17 +60,20 @@ pub(super) fn export_devcontainer(
     install_lines.push(format!("echo \"Installing cfgd module: {}\"", name));
     install_lines.push(String::new());
 
-    // Package install commands — use apt as DevContainer default
-    let apt_packages: Vec<&str> = module
+    // Package install commands. A DevContainer feature runs in a Debian-based
+    // image, so `apt` is the family both the alias lookup and the install
+    // script resolve against — ONE binding, so the two cannot name different
+    // managers.
+    let apt_packages: Vec<String> = module
         .spec
         .packages
         .iter()
         .filter_map(|p| {
             // Use apt alias if available, otherwise use canonical name
-            if let Some(apt_name) = p.aliases.get("apt") {
-                Some(apt_name.as_str())
+            if let Some(apt_name) = p.aliases.get(DEVCONTAINER_MANAGER) {
+                Some(apt_name.clone())
             } else if p.platforms.is_empty() || p.platforms.iter().any(|pl| pl == "linux") {
-                Some(p.name.as_str())
+                Some(p.name.clone())
             } else {
                 None
             }
@@ -72,11 +81,18 @@ pub(super) fn export_devcontainer(
         .collect();
 
     if !apt_packages.is_empty() {
-        install_lines.push("apt-get update".to_string());
-        install_lines.push(format!(
-            "apt-get install -y --no-install-recommends {}",
-            apt_packages.join(" ")
-        ));
+        // Composed from the family's own `install_cmd` / `update_cmd`, never
+        // written out here: an export that resolves a different package set
+        // than `cfgd apply` does from the same `module.yaml` is exactly the
+        // divergence this command exists to prevent.
+        let script = crate::packages::manager_install_script(DEVCONTAINER_MANAGER, &apt_packages)
+            .ok_or_else(|| {
+            anyhow::anyhow!("no install command declared for manager '{DEVCONTAINER_MANAGER}'")
+        })?;
+        if let Some(update) = script.update {
+            install_lines.push(update);
+        }
+        install_lines.push(script.install);
         install_lines.push("rm -rf /var/lib/apt/lists/*".to_string());
         install_lines.push(String::new());
     }

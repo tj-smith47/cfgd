@@ -4,7 +4,7 @@ The `system:` section in profiles routes each key to a registered system configu
 
 `cfgd plan` and `cfgd apply` distinguish two kinds of unapplied keys:
 
-- A **known configurator that isn't available** on the current platform (e.g. `systemdUnits` on macOS) is skipped neutrally — this is expected, not a problem.
+- A **known configurator that isn't available** on the current platform (e.g. `systemdUnits` on macOS) is skipped neutrally: this is expected, not a problem.
 - An **unknown key with no matching configurator** (typically a typo, e.g. `gti` for `git`) surfaces as a warning: `unknown system key 'gti' — no such configurator (ignored)`. The key is ignored, but the warning makes the typo easy to catch.
 
 Each configurator follows the same pattern: read what the system has now, compare against what you want, and apply the difference.
@@ -47,7 +47,7 @@ system:
 
 ### `launchAgents` (macOS only)
 
-Manages [LaunchAgent](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) plist files in `~/Library/LaunchAgents` — macOS's way of running background services for your user session.
+Manages [LaunchAgent](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) plist files in `~/Library/LaunchAgents`: macOS's way of running background services for your user session.
 
 ```yaml
 system:
@@ -60,7 +60,7 @@ system:
 
 ### `systemdUnits` (Linux only)
 
-Manages [systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html) user unit files — Linux's service manager. Handles unit file placement, enabling, and starting.
+Manages [systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html) user unit files (systemd is Linux's service manager): unit file placement, enabling, and starting.
 
 ```yaml
 system:
@@ -129,7 +129,7 @@ system:
 > **`spec.system.environment` vs `spec.env`.** These differ by *scope of affected users*, not by
 > which shells. Use `spec.system.environment` (here) for variables that should apply to **every**
 > user on the machine (requires privilege). Use [`spec.env`](spec/profile.md#specenv) for the
-> **current user** only — it reaches every user context by default (see
+> **current user** only: it reaches every user context by default (see
 > [`spec.envScope`](spec/profile.md#specenvscope)) without needing root. Both share one
 > live-session refresh and launchd-plist engine internally, so their behavior stays consistent.
 
@@ -223,7 +223,7 @@ Key fingerprints are visible via `cfgd status`, making them easy to reference in
 
 Manages global git configuration. Each key maps directly to `git config --global <key> <value>`. Keys not declared by cfgd are not modified.
 
-Keys may be written either as flat dotted strings or as nested YAML mappings — cfgd flattens nested maps to git's dotted form, so both styles (and any mix of them) are equivalent. Nesting groups related keys under a common section:
+Keys may be written either as flat dotted strings or as nested YAML mappings: cfgd flattens nested maps to git's dotted form, so both styles (and any mix of them) are equivalent. Nesting groups related keys under a common section:
 
 ```yaml
 system:
@@ -235,13 +235,13 @@ system:
     commit.gpgSign: true
     gpg.format: ssh
     init.defaultBranch: main
-    # nested form — flattened to push.autoSetupRemote / push.default
+    # nested form: flattened to push.autoSetupRemote / push.default
     push:
       autoSetupRemote: true
       default: simple
 ```
 
-Leaf values must be scalars git can store (string, number, boolean). A non-scalar leaf (an empty list or a `null` value) has no `git config` representation and is skipped with a warning naming the key; it is not written. An empty nested map (`push: {}`) is simply a no-op — it contributes no keys and produces no warning.
+Leaf values must be scalars git can store (string, number, boolean). A non-scalar leaf (an empty list or a `null` value) has no `git config` representation and is skipped with a warning naming the key; it is not written. An empty nested map (`push: {}`) is a no-op: it contributes no keys and produces no warning.
 
 Drift is detected when any managed key has a value that differs from the declared value. cfgd reads current values via `git config --global --get <key>` and applies only the keys that differ.
 
@@ -251,7 +251,7 @@ These are typically used when cfgd runs as a [DaemonSet](https://kubernetes.io/d
 
 ### `sysctl`
 
-Manages [kernel parameters](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/index.html) — settings that control networking, memory, and filesystem behavior at the OS level. Persists to `/etc/sysctl.d/99-cfgd.conf`.
+Manages [kernel parameters](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/index.html): settings that control networking, memory, and filesystem behavior at the OS level. Persists to `/etc/sysctl.d/99-cfgd.conf`.
 
 ```yaml
 system:
@@ -263,7 +263,7 @@ system:
 
 ### `kernelModules`
 
-Loads [kernel modules](https://wiki.archlinux.org/title/Kernel_module) — pluggable pieces of the Linux kernel that add support for networking features, filesystems, or hardware. Persists to `/etc/modules-load.d/cfgd.conf`.
+Loads [kernel modules](https://wiki.archlinux.org/title/Kernel_module): pluggable pieces of the Linux kernel that add support for networking features, filesystems, or hardware. Persists to `/etc/modules-load.d/cfgd.conf`.
 
 ```yaml
 system:
@@ -272,7 +272,7 @@ system:
 
 ### `containerd`
 
-Manages [containerd](https://containerd.io/) configuration — the container runtime that Kubernetes uses to run containers. Restarts containerd after changes.
+Manages [containerd](https://containerd.io/) configuration, the container runtime that Kubernetes uses to run containers. Restarts containerd after changes.
 
 ```yaml
 system:
@@ -284,7 +284,7 @@ system:
 
 ### `kubelet`
 
-Manages [kubelet](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/) configuration — the Kubernetes agent that runs on each node. Restarts kubelet after changes.
+Manages [kubelet](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/) configuration, the Kubernetes agent that runs on each node. Restarts kubelet after changes.
 
 ```yaml
 system:
@@ -296,14 +296,52 @@ system:
 
 ### `apparmor`
 
-Installs and loads [AppArmor](https://apparmor.net/) profiles — a Linux security framework that restricts what programs can do (file access, network, capabilities).
+Installs and loads [AppArmor](https://apparmor.net/) profiles: a Linux security framework that restricts what programs can do (file access, network, capabilities).
+
+```yaml
+system:
+  apparmor:
+    profiles:
+      - name: cfgd-containerd-default
+        path: /etc/apparmor.d/cfgd-containerd-default
+        content: |
+          #include <tunables/global>
+          profile cfgd-containerd-default flags=(attach_disconnected) {
+            #include <abstractions/base>
+            file,
+            network,
+            capability,
+          }
+```
 
 ### `seccomp`
 
-Installs [seccomp](https://kubernetes.io/docs/tutorials/security/seccomp/) JSON profiles — Linux syscall filters that restrict which kernel calls a container can make.
+Installs [seccomp](https://kubernetes.io/docs/tutorials/security/seccomp/) JSON profiles: Linux syscall filters that restrict which kernel calls a container can make.
+
+```yaml
+system:
+  seccomp:
+    profilesDir: /etc/cfgd/seccomp    # default
+    profiles:
+      - name: default-audit
+        file: default-audit.json
+        content: |
+          { "defaultAction": "SCMP_ACT_LOG" }
+```
 
 ### `certificates`
 
 Manages [X.509](https://en.wikipedia.org/wiki/X.509) certificate files (TLS/SSL certs) and enforces secure file permissions.
+
+```yaml
+system:
+  certificates:
+    caCertDir: /etc/kubernetes/pki
+    certificates:
+      - name: kubelet-client
+        certPath: /etc/kubernetes/pki/kubelet-client.crt
+        keyPath: /etc/kubernetes/pki/kubelet-client.key
+        mode: "0600"
+```
 
 See the [CLI reference](cli-reference.md) for `cfgd profile update --system` and `cfgd profile create --system` commands.

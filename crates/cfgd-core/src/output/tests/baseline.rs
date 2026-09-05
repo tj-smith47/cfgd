@@ -46,6 +46,7 @@ golden_doc!(baseline, table_two_cols_two_rows, |p, cap| {
 
 golden_doc!(baseline, progress_hidden_in_test, |p, cap| {
     // Spinner is hidden when not a TTY (in tests). Golden captures the
-    // spinner-Drop's Info Status fallback.
+    // spinner-Drop safety net: an abandoned spinner settles as Skipped,
+    // visually distinct from both a completed and a failed one.
     let _sp = p.spinner("would-be-running");
 });

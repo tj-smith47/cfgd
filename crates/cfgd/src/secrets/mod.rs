@@ -1,11 +1,12 @@
 // Secrets management — SOPS integration, age fallback, external providers
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 
 use cfgd_core::errors::{Result, SecretError};
-use cfgd_core::providers::{SecretBackend, SecretProvider, parse_secret_reference};
+use cfgd_core::providers::{SecretBackend, SecretCache, SecretProvider, parse_secret_reference};
 use cfgd_core::{default_config_dir, expand_tilde};
 
 mod age;
@@ -97,6 +98,10 @@ pub(super) fn extract_age_recipient(content: &str) -> Option<String> {
 /// Resolve `${secret:ref}` placeholders in a string using available secret providers.
 /// Returns the string with all secret references resolved.
 ///
+/// `cache` is the caller's per-run resolution memo: a reference repeated in one
+/// template, and a reference shared by several templates of the same run, cost
+/// one spawn of the backend between them.
+///
 /// Note: The returned `String` contains embedded secret material that will NOT be
 /// zeroized on drop. This is intentional — the result is a mixed-content template
 /// (e.g. `"password=s3cr3t"`) destined for file writes, not a pure secret.
@@ -105,6 +110,7 @@ pub fn resolve_secret_refs(
     providers: &[&dyn SecretProvider],
     backend: Option<&dyn SecretBackend>,
     config_dir: &Path,
+    cache: &SecretCache,
 ) -> Result<String> {
     let mut result = input.to_string();
     let mut search_from = 0;
@@ -118,7 +124,7 @@ pub fn resolve_secret_refs(
         };
 
         let ref_str = &result[start + 9..end]; // skip "${secret:"
-        let resolved = resolve_single_ref(ref_str, providers, backend, config_dir)?;
+        let resolved = resolve_single_ref(ref_str, providers, backend, config_dir, cache)?;
         let plaintext = resolved.expose_secret();
 
         result.replace_range(start..=end, plaintext);
@@ -133,11 +139,16 @@ fn resolve_single_ref(
     providers: &[&dyn SecretProvider],
     backend: Option<&dyn SecretBackend>,
     config_dir: &Path,
-) -> Result<SecretString> {
+    cache: &SecretCache,
+) -> Result<Arc<SecretString>> {
     // Check if it's a provider reference
     if let Some((provider_name, ref_path)) = parse_secret_reference(reference) {
         for provider in providers {
             if provider.name() == provider_name {
+                // The availability probe is a PATH walk, memoized by
+                // `command_path` — the repeat cost of asking it per
+                // reference is one hash lookup, so it stays where it is and the
+                // error it raises keeps naming the reference that hit it.
                 if !provider.is_available() {
                     return Err(SecretError::ProviderNotAvailable {
                         provider: provider_name.to_string(),
@@ -145,7 +156,7 @@ fn resolve_single_ref(
                     }
                     .into());
                 }
-                return provider.resolve(ref_path);
+                return cache.resolve_with(provider_name, ref_path, || provider.resolve(ref_path));
             }
         }
         return Err(SecretError::ProviderNotAvailable {
@@ -166,7 +177,11 @@ fn resolve_single_ref(
             })?;
 
         if path.exists() {
-            return be.decrypt_file(&path);
+            // Keyed on the RESOLVED path, as the reconciler's `Decrypt` arm is:
+            // two references spelling one file differently are one decryption.
+            return cache.resolve_with(be.name(), &cfgd_core::to_posix_string(&path), || {
+                be.decrypt_file(&path)
+            });
         }
     }
 

@@ -401,7 +401,7 @@ fn dispatch_scan_system_settings() -> ToolCallResult {
 }
 
 fn dispatch_detect_platform() -> ToolCallResult {
-    let platform = Platform::detect();
+    let platform = Platform::current();
     let value = serde_json::json!({
         "os": format!("{:?}", platform.os),
         "distro": format!("{:?}", platform.distro),

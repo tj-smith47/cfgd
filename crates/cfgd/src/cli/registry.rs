@@ -39,8 +39,17 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         config_dir: &std::path::Path,
         resolved: &ResolvedProfile,
     ) -> cfgd_core::errors::Result<Vec<FileAction>> {
+        Ok(self.plan_files_with_manager(config_dir, resolved)?.0)
+    }
+
+    fn plan_files_with_manager(
+        &self,
+        config_dir: &std::path::Path,
+        resolved: &ResolvedProfile,
+    ) -> cfgd_core::errors::Result<cfgd_core::daemon::PlannedFiles> {
         let fm = build_compliance_file_manager(config_dir, resolved, None)?;
-        fm.plan(&resolved.merged)
+        let actions = fm.plan(&resolved.merged)?;
+        Ok((actions, Some(Box::new(fm))))
     }
 
     fn plan_packages(
@@ -78,9 +87,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         registry: &mut ProviderRegistry,
         packages: &cfgd_core::config::PackagesSpec,
     ) {
-        registry
-            .package_managers
-            .extend(crate::packages::custom_managers(&packages.custom));
+        registry.extend_package_managers(crate::packages::custom_managers(&packages.custom));
     }
 
     fn build_file_manager(
@@ -120,15 +127,15 @@ pub(in crate::cli) fn build_registry_with_profile(
 /// Shared by the compliance/checkin CLI callers and the daemon's compliance hook
 /// so every surface content-checks identically.
 ///
-/// Loads `config_dir.join("cfgd.yaml")` — the literal default filename, NOT
-/// whatever `--config` named. `already_drained` is `Some((printer, cli.config))`
-/// from a CLI caller that already ran `load_config_and_profile(cli, printer)` on
-/// `cli.config` earlier in the same invocation: when the two paths coincide (the
-/// common case — `--config` unset or pointed at the default `cfgd.yaml`), this
-/// load is a re-parse of an already-drained file and draining it again would
-/// double-print. When they differ (a `--config` naming a non-default filename),
-/// this load reads a genuinely different file whose deprecations nothing else in
-/// the invocation would ever surface, so it drains here instead. The daemon's
+/// Reads `config_dir.join("cfgd.yaml")` — the literal default filename, NOT
+/// whatever `--config` named. `run` is the CLI caller's [`RunContext`]: when the
+/// two paths coincide (the common case — `--config` unset or pointed at the
+/// default `cfgd.yaml`) the run has already parsed that exact file, so this
+/// takes the parse it already holds instead of reading the same bytes a third
+/// time, and its deprecations were surfaced once by whoever loaded it. When they
+/// differ (a `--config` naming a non-default filename), this reads a genuinely
+/// different file whose deprecations nothing else in the invocation would ever
+/// surface, so it parses and drains here instead. The daemon's
 /// `WorkstationDaemonHooks::plan_files`/`build_file_manager` call sites pass
 /// `None` — they run on every reconcile tick, and draining there would repeat
 /// the same notice every interval for the life of the daemon process (the same
@@ -136,18 +143,25 @@ pub(in crate::cli) fn build_registry_with_profile(
 pub(in crate::cli) fn build_compliance_file_manager(
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
-    already_drained: Option<(&Printer, &std::path::Path)>,
+    run: Option<&super::RunContext<'_>>,
 ) -> cfgd_core::errors::Result<CfgdFileManager> {
     let mut fm = CfgdFileManager::new(config_dir, resolved)?;
     let compliance_config_path = config_dir.join("cfgd.yaml");
-    let mut cfg = config::load_config(&compliance_config_path)?;
-    if let Some((printer, cli_config_path)) = already_drained
-        && compliance_config_path != cli_config_path
-    {
-        cfg.drain_deprecations(printer);
-    }
+    let mut owned;
+    let cfg: &CfgdConfig = match run {
+        Some(run) if compliance_config_path == run.cli().config => run.config()?,
+        Some(run) => {
+            owned = config::load_config(&compliance_config_path)?;
+            owned.drain_deprecations(run.printer());
+            &owned
+        }
+        None => {
+            owned = config::load_config(&compliance_config_path)?;
+            &owned
+        }
+    };
     fm.set_global_strategy(cfg.spec.file_strategy);
-    let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
+    let (backend_name, age_key_path) = secret_backend_from_config(Some(cfg));
     let backend = secrets::build_secret_backend(&backend_name, age_key_path, Some(config_dir));
     let providers = secrets::build_secret_providers();
     fm.set_secret_providers(Some(backend), providers);
@@ -163,107 +177,66 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     packages: Option<&cfgd_core::config::PackagesSpec>,
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    registry.package_managers = package_managers_for_registry();
+    registry.set_package_managers(package_managers_for_registry());
 
     // Register system configurators based on OS
     use crate::system::*;
 
     // ShellConfigurator: `chsh` on Unix, Windows Terminal settings.json on Windows
     if cfg!(unix) || cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(ShellConfigurator));
+        registry.add_system_configurator(Box::new(ShellConfigurator));
     }
 
     if cfg!(target_os = "macos") {
-        registry
-            .system_configurators
-            .push(Box::new(MacosDefaultsConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(LaunchAgentConfigurator));
+        registry.add_system_configurator(Box::new(MacosDefaultsConfigurator));
+        registry.add_system_configurator(Box::new(LaunchAgentConfigurator));
     }
 
     if cfg!(target_os = "linux") {
-        registry
-            .system_configurators
-            .push(Box::new(SystemdUnitConfigurator::default()));
+        registry.add_system_configurator(Box::new(SystemdUnitConfigurator::default()));
         // Linux desktop configurators — each checks CLI availability at runtime via is_available()
-        registry
-            .system_configurators
-            .push(Box::new(GsettingsConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KdeConfigConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(XfconfConfigurator));
+        registry.add_system_configurator(Box::new(GsettingsConfigurator));
+        registry.add_system_configurator(Box::new(KdeConfigConfigurator));
+        registry.add_system_configurator(Box::new(XfconfConfigurator));
     }
 
     // Environment configurator is available on Unix and Windows
     if cfg!(unix) || cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(EnvironmentConfigurator));
+        registry.add_system_configurator(Box::new(EnvironmentConfigurator));
     }
 
     // Windows registry configurator
     if cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(WindowsRegistryConfigurator));
+        registry.add_system_configurator(Box::new(WindowsRegistryConfigurator));
     }
 
     // Windows service configurator
     if cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(WindowsServiceConfigurator));
+        registry.add_system_configurator(Box::new(WindowsServiceConfigurator));
     }
 
-    // SSH key configurator — available unconditionally (ssh-keygen on all platforms)
-    registry
-        .system_configurators
-        .push(Box::new(SshKeysConfigurator));
-
-    // GPG key configurator — available on any platform where gpg is installed
-    if cfgd_core::command_available("gpg") {
-        registry
-            .system_configurators
-            .push(Box::new(GpgKeysConfigurator));
-    }
-
-    // Git configurator — cross-platform, gated on git being available at runtime
-    if cfgd_core::command_available("git") {
-        registry
-            .system_configurators
-            .push(Box::new(GitConfigurator));
-    }
+    // The three cross-platform tool-backed configurators, registered
+    // unconditionally: `is_available()` is the one answer to "can this host run
+    // it" and every consumer filters through `available_system_configurators`.
+    // A probe here answers a different question in the same breath, so a host
+    // missing the tool got `plan`'s "no configurator registered" — which is
+    // false — instead of "not available on this host". `gpgKeys` also reads
+    // `CFGD_GPG_BIN` in its own `is_available`, so the probe dropped it before
+    // its seam was ever consulted.
+    registry.add_system_configurator(Box::new(SshKeysConfigurator));
+    registry.add_system_configurator(Box::new(GpgKeysConfigurator));
+    registry.add_system_configurator(Box::new(GitConfigurator));
 
     // Node/infrastructure system configurators (Linux-only, gated at compile time)
     #[cfg(unix)]
     {
-        registry
-            .system_configurators
-            .push(Box::new(SysctlConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KernelModuleConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(ContainerdConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KubeletConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(AppArmorConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(SeccompConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(CertificateConfigurator));
+        registry.add_system_configurator(Box::new(SysctlConfigurator));
+        registry.add_system_configurator(Box::new(KernelModuleConfigurator));
+        registry.add_system_configurator(Box::new(ContainerdConfigurator));
+        registry.add_system_configurator(Box::new(KubeletConfigurator));
+        registry.add_system_configurator(Box::new(AppArmorConfigurator));
+        registry.add_system_configurator(Box::new(SeccompConfigurator));
+        registry.add_system_configurator(Box::new(CertificateConfigurator));
     }
 
     // Register secret backend and providers
@@ -282,9 +255,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
 
     // Extend with custom package managers from profile packages spec
     if let Some(spec) = packages {
-        registry
-            .package_managers
-            .extend(packages::custom_managers(&spec.custom));
+        registry.extend_package_managers(packages::custom_managers(&spec.custom));
     }
 
     registry
@@ -293,7 +264,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
 /// The package-manager set installed into every freshly-built registry.
 ///
 /// Production always returns the real built-in managers. In test builds a
-/// thread-local seam ([`PackageManagerFactoryGuard`]) can substitute a
+/// thread-local seam (`PackageManagerFactoryGuard`) can substitute a
 /// deterministic set so package-resolution tests stay hermetic regardless of
 /// which native manager the host has installed — e.g. `winget` is absent on
 /// non-interactive Windows CI hosts, which otherwise makes bare-name module
@@ -343,7 +314,37 @@ impl PackageManagerFactoryGuard {
     pub(in crate::cli) fn hermetic_native() -> Self {
         Self::install(hermetic_managers)
     }
+
+    /// The same set, except the fake native manager also QUOTES a version for
+    /// every package it is asked about ([`FAKE_NATIVE_VERSION`]).
+    ///
+    /// For a test whose subject is the `(version)` suffix a rendered — and
+    /// persisted — install action carries, which is only there when the command
+    /// filled its resolved modules before planning.
+    pub(in crate::cli) fn hermetic_native_quoting_versions() -> Self {
+        Self::install(hermetic_managers_quoting_versions)
+    }
+
+    /// The hermetic set, plus a fake `brew` that is available and already
+    /// reports [`HELD_BY_BREW`] installed while the native fake reports
+    /// nothing: the machine a bare module entry naming that tool must be
+    /// satisfied on without an install.
+    pub(in crate::cli) fn hermetic_native_beside_a_brew_holding_a_tool() -> Self {
+        Self::install(hermetic_managers_beside_a_holder)
+    }
 }
+
+/// The package the fake `brew` of
+/// [`PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool`]
+/// reports installed. A name no other test shares.
+#[cfg(test)]
+pub(in crate::cli) const HELD_BY_BREW: &str = "qp5-held-tool";
+
+/// The version [`PackageManagerFactoryGuard::hermetic_native_quoting_versions`]
+/// makes the fake native manager offer. In the 9.9.x sentinel range, so it can
+/// never collide with a real release stream.
+#[cfg(test)]
+pub(in crate::cli) const FAKE_NATIVE_VERSION: &str = "9.9.1";
 
 #[cfg(test)]
 impl Drop for PackageManagerFactoryGuard {
@@ -354,6 +355,33 @@ impl Drop for PackageManagerFactoryGuard {
 
 #[cfg(test)]
 fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with(None)
+}
+
+#[cfg(test)]
+fn hermetic_managers_quoting_versions() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with(Some(FAKE_NATIVE_VERSION))
+}
+
+#[cfg(test)]
+fn hermetic_managers_beside_a_holder() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    let mut managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
+        hermetic_managers_with(None)
+            .into_iter()
+            .filter(|m| m.name() != "brew")
+            .collect();
+    managers.push(Box::new(FakeNativeManager {
+        name: "brew".to_string(),
+        version: None,
+        installed: &[HELD_BY_BREW],
+    }));
+    managers
+}
+
+#[cfg(test)]
+fn hermetic_managers_with(
+    version: Option<&'static str>,
+) -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
     let native = cfgd_core::platform::Platform::detect()
         .native_manager()
         .to_string();
@@ -362,7 +390,11 @@ fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
             .into_iter()
             .filter(|m| m.name() != native)
             .collect();
-    managers.push(Box::new(FakeNativeManager { name: native }));
+    managers.push(Box::new(FakeNativeManager {
+        name: native,
+        version,
+        installed: &[],
+    }));
     managers
 }
 
@@ -373,6 +405,12 @@ fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
 #[cfg(test)]
 struct FakeNativeManager {
     name: String,
+    /// What it answers `available_version` with, for the tests whose subject is
+    /// the version a rendered action carries.
+    version: Option<&'static str>,
+    /// What it reports installed, for the tests whose subject is a bare entry
+    /// another manager already holds.
+    installed: &'static [&'static str],
 }
 
 #[cfg(test)]
@@ -380,10 +418,16 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
     fn name(&self) -> &str {
         &self.name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(
@@ -396,7 +440,7 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
-        Ok(std::collections::HashSet::new())
+        Ok(self.installed.iter().map(|p| p.to_string()).collect())
     }
     fn install(
         &self,
@@ -423,7 +467,7 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
-        Ok(None)
+        Ok(self.version.map(str::to_string))
     }
 }
 
@@ -435,7 +479,7 @@ pub(in crate::cli) fn cfgd_installed_packages(
     Ok(state
         .managed_package_ids()?
         .into_iter()
-        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .map(|(mgr, pkg)| cfgd_core::state::package_resource_id(&mgr, &pkg))
         .collect())
 }
 
@@ -529,7 +573,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -551,7 +598,7 @@ mod tests {
             let _guard = PackageManagerFactoryGuard::hermetic_native();
             let registry = build_registry_with_config(None);
             let native_mgr = registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|m| m.name() == native)
                 .expect("hermetic set must carry a manager named as the native manager");
@@ -562,7 +609,7 @@ mod tests {
             // Exactly one manager owns the native name — the fake replaced the real one.
             assert_eq!(
                 registry
-                    .package_managers
+                    .package_managers()
                     .iter()
                     .filter(|m| m.name() == native)
                     .count(),
@@ -574,7 +621,10 @@ mod tests {
         // Dropping the guard restores the real manager set for this thread.
         let restored = build_registry_with_config(None);
         assert!(
-            restored.package_managers.iter().any(|m| m.name() == native),
+            restored
+                .package_managers()
+                .iter()
+                .any(|m| m.name() == native),
             "real set still exposes the native manager by name after guard drop"
         );
     }
@@ -628,7 +678,7 @@ mod tests {
     fn build_registry_registers_package_managers_and_secret_backend() {
         let registry = build_registry_with_config(None);
         assert!(
-            !registry.package_managers.is_empty(),
+            !registry.package_managers().is_empty(),
             "registry must register at least one package manager"
         );
         let backend = registry
@@ -669,8 +719,8 @@ mod tests {
         let a = build_registry();
         let b = build_registry_with_config(None);
         assert_eq!(
-            a.package_managers.len(),
-            b.package_managers.len(),
+            a.package_managers().len(),
+            b.package_managers().len(),
             "zero-arg build_registry must match build_registry_with_config(None)"
         );
         assert_eq!(

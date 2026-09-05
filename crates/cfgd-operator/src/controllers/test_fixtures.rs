@@ -57,7 +57,7 @@ pub(super) fn drift_alert(
                 namespace: None,
             },
             drift_details: vec![DriftDetail {
-                field: "packages.foo".to_string(),
+                field: "sysctl.vm.swappiness".to_string(),
                 expected: "1.0".to_string(),
                 actual: "1.1".to_string(),
             }],
@@ -88,7 +88,17 @@ pub(super) fn machine_config_status_with_drift_detected() -> MachineConfigStatus
     }
 }
 
+/// A ConfigPolicy the operator has already registered, i.e. carrying its
+/// cleanup finalizer. A policy WITHOUT it is a policy on its first reconcile,
+/// which is a distinct branch and gets its own fixture below.
 pub(super) fn config_policy(name: &str, namespace: &str) -> ConfigPolicy {
+    let mut policy = new_config_policy(name, namespace);
+    policy.metadata.finalizers = Some(vec![super::CONFIG_POLICY_FINALIZER.to_string()]);
+    policy
+}
+
+/// A ConfigPolicy as the user creates it: no finalizer yet.
+pub(super) fn new_config_policy(name: &str, namespace: &str) -> ConfigPolicy {
     ConfigPolicy {
         metadata: meta(name, Some(namespace)),
         spec: ConfigPolicySpec::default(),
@@ -96,7 +106,20 @@ pub(super) fn config_policy(name: &str, namespace: &str) -> ConfigPolicy {
     }
 }
 
+/// A ClusterConfigPolicy the operator has already registered, i.e. carrying its
+/// cleanup finalizer. A policy WITHOUT it is a policy on its first reconcile,
+/// which is a distinct branch and gets its own fixture below.
 pub(super) fn cluster_config_policy_with_spec(
+    name: &str,
+    spec: ClusterConfigPolicySpec,
+) -> ClusterConfigPolicy {
+    let mut policy = new_cluster_config_policy_with_spec(name, spec);
+    policy.metadata.finalizers = Some(vec![super::CLUSTER_CONFIG_POLICY_FINALIZER.to_string()]);
+    policy
+}
+
+/// A ClusterConfigPolicy as the user creates it: no finalizer yet.
+pub(super) fn new_cluster_config_policy_with_spec(
     name: &str,
     spec: ClusterConfigPolicySpec,
 ) -> ClusterConfigPolicy {

@@ -1,6 +1,6 @@
 # File Safety
 
-cfgd is designed to be a safe, trustworthy tool for managing machine configuration. This document covers the safety mechanisms that protect your files.
+This document covers the mechanisms that protect your files during apply, reconcile, and rollback.
 
 ## Atomic Writes
 
@@ -25,8 +25,8 @@ Before overwriting any file during `cfgd apply`, the original content is capture
 Backups are retained for the last 10 applies and automatically pruned after each successful apply.
 
 These backups are automatic, cover only files cfgd itself is about to write, and exist to power
-`cfgd rollback`. To snapshot arbitrary files or directories on a schedule — an application
-database, a photo library — declare them in `spec.backups[]`; see
+`cfgd rollback`. To snapshot arbitrary files or directories on a schedule (an application
+database, a photo library), declare them in `spec.backups[]`; see
 [Declarative Backups](backups.md).
 
 ## Unmanaged-File Adoption
@@ -41,28 +41,27 @@ That sidecar is a **copy, never a move**:
 
 - The original stays at the target until the managed write rename-replaces it,
   so at every instant the content is readable at the sidecar, at the target, or
-  at both — a crash mid-apply cannot leave it at neither
+  at both; a crash mid-apply cannot leave it at neither
 - The copied bytes are re-read and hashed before the copy is accepted; a short
   write is an error, not a sidecar quietly holding less than it claims
 - The copy carries the original's permission bits
 - A symlinked target is copied as a symlink, so the link is preserved rather
   than flattened into its destination
 - The copy carries the original's setuid, setgid and sticky bits as well as its
-  permission bits — a sidecar is the file it preserves, and a special bit
-  dropped in the copy cannot be restored from it
+  permission bits: a special bit dropped in the copy could not be restored from it
 - An existing `<target>.cfgd-backup` holding *different* content is never
   clobbered: the newer copy lands at `<target>.cfgd-backup.<timestamp>`, so the
   sidecar `cfgd profile update` and module removal offer to restore is always
   the content that predates cfgd
 - The timestamp has one-second resolution, so it is a hint at a free name rather
   than a guarantee of one. Every candidate path is checked before it is written,
-  and a taken one moves to `<target>.cfgd-backup.<timestamp>-1`, `-2`, … — two
+  and a taken one moves to `<target>.cfgd-backup.<timestamp>-1`, `-2`, and so on. Two
   adoptions of the same target inside one second land beside each other, never
   on top of each other. The same check covers a directory target, where an
   occupied sidecar would otherwise be *merged into* rather than replaced
 
 A target that already holds exactly the bytes cfgd would write is not adopted at
-all — no prompt, no sidecar, no rewrite, and the run does not report a change it
+all: no prompt, no sidecar, no rewrite, and the run does not report a change it
 did not make.
 
 ### Durability of a sidecar
@@ -77,21 +76,20 @@ Two different failures, two different guarantees:
 Neither platform's guarantee depends on the *target* surviving: the original is
 still at the target throughout, because the sidecar is a copy.
 
-### The daemon does not run this pass
+### What the daemon does with a conflict
 
-`--on-conflict` is a `cfgd apply` / `cfgd init --apply` flag, and the adoption
-pass that reads it lives in the CLI. **The daemon's auto-apply reconcile loop
-does not run it**: a daemon tick that finds an unmanaged file at a managed
-target overwrites it, without a prompt, a sidecar copy, or a way to configure
-otherwise.
+`--on-conflict` is a `cfgd apply` / `cfgd init --apply` flag, but the pass that
+reads it is not the CLI's. The classification and the sweep live in the
+reconciler, and **the daemon's auto-apply reconcile loop runs the same pass** —
+under the `backup` policy, since a daemon has nobody to prompt. A tick that
+finds an unmanaged file at a managed target copies it to `<target>.cfgd-backup`
+before displacing it, with the same guarantees the table above describes.
 
-What still protects that write is the transaction journal below — the daemon's
+The transaction journal below still backs that write as well: the daemon's
 applies record `file_backups` rows exactly as a CLI apply does, so
-`cfgd rollback <apply-id>` restores the overwritten content. What is missing is
-the *pre-write sidecar* and the *policy*: a daemon cannot prompt, so a
-config-driven policy is the only shape available to it, and none is defined yet.
-Until one is, a machine whose targets may hold files cfgd never wrote should be
-adopted once with `cfgd apply` before the daemon's auto-apply is enabled.
+`cfgd rollback <apply-id>` restores the overwritten content. What the daemon
+does not have is the *policy choice* — `overwrite`, `skip` and `fail` are
+reachable only from a command line.
 
 ## Transaction Journal
 
@@ -107,43 +105,47 @@ This enables rollback of partially failed applies.
 ## Rollback
 
 `cfgd rollback <apply-id>` restores files to the state that existed immediately
-after the target apply — whether to recover a partially failed apply or to undo
+after the target apply, whether to recover a partially failed apply or to undo
 a later one:
 
 - Backed-up content is restored via atomic write (an empty managed file is
   restored as empty, not removed)
-- Files created by a later apply — absent when the target apply completed — are removed
-- Package installs and system changes require manual review (listed in output, most recent
-  first — the order actions *finished*, which is what "undo the last thing" means once the
-  `Packages` phase runs its managers concurrently)
+- Files created by a later apply (absent when the target apply completed) are removed
+- Package installs and system changes require manual review, listed in output most recent
+  first: the order actions *finished*, which is what "undo the last thing" means once the
+  `Packages` phase runs its managers concurrently
 
 Rollback is available for any apply that has backups in the state store.
 
 ## Apply Locking
 
-cfgd takes an exclusive whole-file lock to prevent concurrent applies — `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
+cfgd takes an exclusive whole-file lock to prevent concurrent applies: `flock()` on Unix, `LockFileEx` on Windows. Only one `cfgd apply` can run at a time.
 
-- The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform — see `configuration.md`)
+- The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform, see `configuration.md`)
 - The daemon skips reconciliation ticks if the lock is held by a CLI apply
 - The lock is released automatically when the process exits
 - The holder records its PID in the lock file, and a refused apply names it: `apply lock held by another process: pid 12345`
 
-**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, the OS releases it automatically when the file handle closes. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
+**Resolving a stuck lock**: A crash does not leave a stuck lock. The OS releases the lock the moment the crashed process's file handle closes. The leftover file is unlocked, and the next acquire reuses it. If the file names a PID that is no longer running, that record is stale and harmless: the next holder overwrites it. In that no-holder case you may delete the file, but check first. Kill the PID shown if it is still alive, or retry the acquire. A refused acquire means a live holder exists, whatever the PID record says.
 
 The message reads `unknown pid` when the file holds no complete PID record, and cfgd would rather say it does not know than name a process it is not sure about. Two things produce it:
 
 - A holder that is not cfgd (`flock(1)`, say) never writes a record at all.
-- **Version skew across an upgrade.** cfgd started writing a terminator after the PID; a daemon still running from before `cfgd upgrade` writes the older, terminator-less record, which a newer contender will not read as a PID. The holder is a perfectly legitimate cfgd process — restarting the daemon (`systemctl --user restart cfgd`, or whatever supervises it) puts the two on the same format again.
+- **Version skew across an upgrade.** cfgd started writing a terminator after the PID. A daemon still running from before `cfgd upgrade` writes the older, terminator-less record, which a newer contender will not read as a PID. The holder is a perfectly legitimate cfgd process.
 
-Deleting the lock file is the same remedy in either case.
+Both `unknown pid` cases have a live holder. Find it and stop it: kill the non-cfgd holder (`fuser` or `lsof` on the lock file will name it), or restart the skewed daemon (`systemctl --user restart cfgd`, or whatever supervises it) to put the two on the same record format.
 
-**The PID is advisory; the refusal is not.** "Lock held" is decided by the OS and is always correct. The PID is read from the file separately, and a holder that crashed without clearing its record leaves it in place until the next holder overwrites it — so a contender arriving in the syscall-narrow window between that acquire and that write can name the *previous* holder. Treat the PID as a starting point for `ps`, not as proof.
+**Never delete a lock file while its holder is alive.** The holder keeps its lock on the deleted file. The next acquire creates a fresh file at the same path and locks that one instead. Both processes then run at once. This split is the one sequence cfgd's own lock safety checks cannot catch, because each holder's lock is valid on its own file.
+
+**NFS caveat**: flock-based locking is not sound on NFS-backed state or cache directories. Linux emulates `flock()` over NFS with POSIX locks, and closing any descriptor for the file drops the lock. Keep the state dir and source cache on a local filesystem.
+
+**The PID is advisory; the refusal is not.** "Lock held" is decided by the OS and is always correct. The PID is read from the file separately, and a holder that crashed without clearing its record leaves it in place until the next holder overwrites it, so a contender arriving in the syscall-narrow window between that acquire and that write can name the *previous* holder. Treat the PID as a starting point for `ps`, not as proof.
 
 ## Graceful Interruption (SIGINT / SIGTERM)
 
 `cfgd apply` handles `SIGINT` (Ctrl-C) and `SIGTERM` as a **cooperative abort** rather than an abrupt kill:
 
-- **File and package actions** finish before the abort is honoured — atomic file writes complete, and every package install already in flight completes before the reconciler stops. The abort is checked before anything new is dispatched, never mid-write, so the concurrent `Prerequisites` and `Packages` phases drain their running lanes rather than dropping them.
+- **File and package actions** finish before the abort is honoured: atomic file writes complete, and every package install already in flight completes before the reconciler stops. The abort is checked before anything new is dispatched, never mid-write, so the concurrent `Prerequisites` and `Packages` phases drain their running lanes rather than dropping them.
 - **Script actions** (`preApply`, `postApply`, module scripts) are killed immediately: cfgd sends `SIGKILL` to the script's process group so the process exits within milliseconds instead of waiting for the full script timeout. Script authors should write idempotent scripts so a kill-and-rerun leaves the system in a clean state.
 - The reconciler stops **before** starting the next action after any killed/completed abort and unwinds normally.
 - The apply lock is released via its normal RAII drop (the guard drops as `cfgd apply` returns, *before* the process exits), so a subsequent `cfgd apply` runs immediately (no stuck lock).
@@ -170,8 +172,9 @@ Phase: Packages
   profile:abortdemo
     ✓ slowbox install epsilon (6.0s)
 
-⚠ apply aborted by signal — 2 of 3 actions applied; no partial writes, rerun to converge
-⊙ 1 action not attempted (6.0s)
+⚠ apply aborted by signal — 2 of 3 actions applied; no partial writes
+→ Run `cfgd apply` again to converge
+◉ 1 action not attempted (6.0s wall)
 $ echo $?
 130
 ```
@@ -192,8 +195,8 @@ $ cfgd apply --yes -o json   # same run, interrupted the same way
 
 A signal reaches the child process too, so an install that was in flight can die with
 the run rather than merely stopping before it. That action is a failure, and both
-surfaces say so — the closing line gains `, 1 failed` and the payload's `failed` count
-rises — so `total - applied` is never read as "never started".
+surfaces say so (the closing line gains `, 1 failed` and the payload's `failed` count
+rises), so `total - applied` is never read as "never started".
 
 Already-applied actions are real and recorded; rerun `cfgd apply` to converge the rest. On Windows, cooperative abort is not available and Ctrl-C falls back to the OS default disposition.
 
@@ -201,7 +204,7 @@ Already-applied actions are real and recorded; rerun `cfgd apply` to converge th
 
 cfgd validates all file paths to prevent directory traversal and symlink attacks:
 
-- **Source path validation**: relative source paths are checked to ensure they don't escape the config directory via `../`
+- **Source path validation**: relative source paths are checked to ensure they do not escape the config directory via `../`
 - **Traversal rejection**: paths containing `..` components are rejected before canonicalization
 - **Symlink skip in source scan**: symlinks in source directories are skipped during scanning to prevent symlink attacks and infinite loops
 - **TOCTOU mitigation**: source content is hashed during planning and verified at apply time; if the source changed between plan and apply, the action is aborted
@@ -217,9 +220,9 @@ spec:
       driftPolicy: NotifyOnly  # Auto | NotifyOnly | Prompt
 ```
 
-- **NotifyOnly** (default): detects drift, sends notification, records events, but does NOT automatically apply. User must run `cfgd apply` manually.
+- **NotifyOnly** (default): detects drift, sends notification, records events, but does NOT automatically apply. Run `cfgd apply` manually.
 - **Auto**: applies drift corrections automatically (you must opt in)
-- **Prompt**: future interactive approval mechanism
+- **Prompt**: accepted, but the daemon has no terminal to prompt at, so it behaves as `NotifyOnly` there
 
 ## Module Removal Cleanup
 

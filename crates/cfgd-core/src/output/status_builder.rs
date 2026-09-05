@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::Role;
 use super::component::StatusLabel;
-use super::renderer::{Renderer, StatusFields, Writer, finalize_subject};
+use super::renderer::{Elapsed, Renderer, StatusFields, Writer, finalize_subject};
 use super::theme::ThemedStyle;
 
 /// Builder for one Status line. Commits on Drop.
@@ -26,8 +26,9 @@ pub struct StatusBuilder<'p> {
     pub(crate) role: Role,
     pub(crate) subject: String,
     pub(crate) detail: Option<String>,
-    pub(crate) duration: Option<Duration>,
+    pub(crate) duration: Option<Elapsed>,
     pub(crate) target: Option<PathBuf>,
+    pub(crate) qualifier: Option<String>,
     pub(crate) label: Option<StatusLabel>,
     pub(crate) marker: Option<StatusLabel>,
     pub(crate) subject_style: Option<ThemedStyle>,
@@ -55,6 +56,7 @@ impl<'p> StatusBuilder<'p> {
             detail: None,
             duration: None,
             target: None,
+            qualifier: None,
             label: None,
             marker: None,
             subject_style: None,
@@ -98,8 +100,40 @@ impl<'p> StatusBuilder<'p> {
         self
     }
 
+    /// A planned-vs-actual mismatch's detail slot: `want: <expected>, have:
+    /// <actual>`, composed through [`super::drift_detail`] so the spelling
+    /// can never drift between this and `doc::StatusFields::drift`. Always
+    /// the detail slot, never baked into the subject — the subject is what
+    /// the padding column and the marker/label composition key off, and a
+    /// drift-report subject that embeds its own mismatch text is invisible
+    /// to both.
+    pub fn drift(self, expected: impl std::fmt::Display, actual: impl std::fmt::Display) -> Self {
+        self.detail(super::drift_detail(expected, actual))
+    }
+
+    /// A subject qualifier (`curl: missing`): subject keeps
+    /// its role-slot styling untouched, the colon is always `Role::Warn`, the
+    /// qualifier text is always `theme.muted`. Composed through
+    /// `super::renderer::finalize_subject` at Drop, landing ahead of
+    /// `label` in the same at-end-of-subject slot. Not a builder-chained
+    /// `StatusLabel` like `label`/`marker`: the styling is fixed, never a
+    /// per-call role choice.
+    pub fn qualifier(mut self, text: impl Into<String>) -> Self {
+        self.qualifier = Some(text.into());
+        self
+    }
+
+    /// This row's own span.
     pub fn duration(mut self, d: Duration) -> Self {
-        self.duration = Some(d);
+        self.duration = Some(Elapsed::row(d));
+        self
+    }
+
+    /// A run's wall-clock total — renders ` (278.2s wall)`, so a reader adding
+    /// up the rows above it is told why concurrent lanes sum to more. For the
+    /// closing rollup only; a row is never wall time.
+    pub fn wall_duration(mut self, d: Duration) -> Self {
+        self.duration = Some(Elapsed::wall(d));
         self
     }
 
@@ -147,6 +181,7 @@ impl Drop for StatusBuilder<'_> {
             &self.renderer.theme,
             &self.subject,
             self.marker.as_ref(),
+            self.qualifier.as_deref(),
             self.label.as_ref(),
         );
         let detail = self.detail.as_deref();
@@ -162,6 +197,7 @@ impl Drop for StatusBuilder<'_> {
                 target,
                 subject_style: self.subject_style.clone(),
                 detail_style: self.detail_style.clone(),
+                verdict: None,
             },
         );
     }
@@ -209,7 +245,7 @@ mod tests {
         let (r, buf) = build();
         let sink = sink_for(&buf);
         StatusBuilder::new(r, sink, 0, Role::Ok, "done"); // drops here
-        let s = strip_ansi(&buf.lock().unwrap());
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("✓ done"), "got: {s:?}");
     }
 
@@ -221,9 +257,54 @@ mod tests {
             .detail("permission denied")
             .duration(std::time::Duration::from_millis(2500));
         drop(b);
-        let s = strip_ansi(&buf.lock().unwrap());
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("✗ /tmp/foo — permission denied"), "got: {s:?}");
         assert!(s.contains("(2.5s)"), "got: {s:?}");
+    }
+
+    /// `StatusBuilder::drift` lands in the detail slot (after the em-dash),
+    /// never baked into the subject — proves the composed detail is exactly
+    /// [`super::super::drift_detail`]'s output, not a re-derived spelling.
+    #[test]
+    fn drift_composes_want_have_in_the_detail_slot() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "sysctl.net.ipv4.ip_forward")
+            .drift("1", "0");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(
+            s.contains("sysctl.net.ipv4.ip_forward — want: 1, have: 0"),
+            "got: {s:?}"
+        );
+    }
+
+    /// `StatusBuilder::qualifier` composes the `subject: qualifier` shape in
+    /// the subject slot itself — visible before the label, unlike `.drift()`,
+    /// which lands in the detail slot after the em-dash.
+    #[test]
+    fn qualifier_composes_subject_colon_qualifier() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "curl").qualifier("missing");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(s.contains("curl: missing"), "got: {s:?}");
+    }
+
+    /// A qualifier lands ahead of a label — both are trailing at-end-of-
+    /// subject segments, and the qualifier reads as part of what the subject
+    /// IS about while the label is a separate trailing annotation.
+    #[test]
+    fn qualifier_lands_before_label() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "curl")
+            .qualifier("missing")
+            .label(Role::Secondary, "[team-config]");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(s.contains("curl: missing [team-config]"), "got: {s:?}");
     }
 
     /// API-contract test for `StatusBuilder::label`. The label is appended at
@@ -237,7 +318,8 @@ mod tests {
         let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
             .label(Role::Secondary, "[meta]");
         drop(b);
-        let raw = buf.lock().unwrap().clone();
+        // raw-capture-ok: the reset-boundary contract below is checked against the raw SGR bytes — captured_text would strip the escapes this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let s = strip_ansi(&raw);
         assert!(
             s.contains("⚠ subject text [meta]"),
@@ -337,6 +419,7 @@ mod tests {
             } else {
                 b.detail("unchanged")
             });
+            // raw-capture-ok: the split-half byte-identity check below compares raw SGR runs — captured_text would strip the escapes this test exists to check
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
 

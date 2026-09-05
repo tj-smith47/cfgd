@@ -6,7 +6,7 @@
     "name": "base",
     "packages": 3,
     "source": "local",
-    "status": "applied"
+    "status": "installed"
   },
   {
     "active": true,

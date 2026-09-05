@@ -125,7 +125,7 @@ else
     spawn_daemon "$DAEMON_LOG" || true
     DAEMON_PID="$SPAWNED_PID"
     if [ -S "$CFGD_DAEMON_IPC_PATH" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
-        && grep -qF "Health:" "$DAEMON_LOG"; then
+        && grep -qF "daemon: health endpoint at" "$DAEMON_LOG"; then
         pass_test "DM05"
     else
         fail_test "DM05" "spawn or readiness failed (pid=$DAEMON_PID); log tail:"
@@ -141,7 +141,7 @@ elif [ -z "$DAEMON_PID" ]; then
     skip_test "DM06" "DM05 did not produce a live daemon"
 else
     run $C daemon status
-    if assert_ok && assert_contains "$OUTPUT" "Daemon is running"; then
+    if assert_ok && assert_contains "$OUTPUT" "Daemon running"; then
         pass_test "DM06"
     else
         fail_test "DM06"
@@ -158,7 +158,7 @@ else
     sleep 0.5
     SIGHUP_OK=""
     for _ in $(seq 1 25); do
-        if grep -qF "Reloading configuration (SIGHUP)" "$DAEMON_LOG"; then
+        if grep -qF "daemon: reloading configuration (SIGHUP)" "$DAEMON_LOG"; then
             SIGHUP_OK=1
             break
         fi
@@ -186,7 +186,7 @@ else
     elif [ "$REAPED_RC" -ne 0 ]; then
         fail_test "DM08" "first daemon exited with rc=$REAPED_RC (expected 0)"
         DM08_OK=0
-    elif ! grep -qF "Received SIGTERM" "$DAEMON_LOG"; then
+    elif ! grep -qF "daemon: received SIGTERM" "$DAEMON_LOG"; then
         fail_test "DM08" "first daemon log missing SIGTERM line"
         DM08_OK=0
     fi
@@ -196,7 +196,7 @@ else
         spawn_daemon "$DAEMON_LOG2" || true
         DAEMON_PID2="$SPAWNED_PID"
         if [ ! -S "$CFGD_DAEMON_IPC_PATH" ] || ! kill -0 "$DAEMON_PID2" 2>/dev/null \
-            || ! grep -qF "Health:" "$DAEMON_LOG2"; then
+            || ! grep -qF "daemon: health endpoint at" "$DAEMON_LOG2"; then
             fail_test "DM08" "respawn failed; cycle2 log tail:"
             tail -20 "$DAEMON_LOG2" 2>/dev/null | sed 's/^/    /' || true
             DM08_OK=0

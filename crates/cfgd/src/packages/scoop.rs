@@ -7,8 +7,9 @@ use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, home_relative_dir, parse_version_field, resolve_tool_with_fallbacks,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    canonical_ci_pkg_name, home_relative_dir, install_batch_then_per_package, parse_version_field,
+    partition_already_installed, resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct ScoopManager;
@@ -60,7 +61,7 @@ pub(super) fn parse_scoop_export(output: &str) -> HashSet<String> {
 /// Installed apps WITH versions for `installed_packages_with_versions`. Unlike
 /// [`parse_scoop_export`] this preserves the REGISTERED app-name case for display
 /// (the scan/status surface) and carries `scoop export`'s reported `Version`.
-fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
+pub(super) fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
         return Vec::new();
     };
@@ -74,7 +75,7 @@ fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
                     let version = app
                         .get("Version")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
+                        .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
                     Some(PackageInfo {
                         name: name.to_string(),
                         version: version.to_string(),
@@ -90,11 +91,19 @@ impl PackageManager for ScoopManager {
         "scoop"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("update")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(scoop_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         cfgd_core::command_available("scoop")
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
     }
 
@@ -105,6 +114,7 @@ impl PackageManager for ScoopManager {
             .collect()
     }
 
+    // bootstrap-arm-ok: get.scoop.sh is scoop's only route
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
             cx,
@@ -159,15 +169,20 @@ impl PackageManager for ScoopManager {
     }
 
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        for pkg in packages {
-            run_pkg_cmd_live(
-                cx,
-                "scoop",
-                scoop_cmd().args(["install", pkg]),
-                &format!("Installing {}", pkg),
-                "install",
-            )?;
-        }
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        // `scoop install <app>...` takes many apps in one invocation
+        // (scoop-install.ps1 iterates its $apps array); `scoop install` no-ops
+        // on an app already held, so raising it takes `scoop update`.
+        install_batch_then_per_package(cx, "scoop", &fresh, |pkgs| {
+            let mut cmd = scoop_cmd();
+            cmd.arg("install").args(pkgs);
+            cmd
+        })?;
+        upgrade_each(cx, "scoop", &held, "scoop update", |pkg| {
+            let mut cmd = scoop_cmd();
+            cmd.arg("update").arg(pkg);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -218,6 +233,7 @@ impl PackageManager for ScoopManager {
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 
@@ -351,9 +367,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake scoop binary on PATH. scoop_cmd()
-    // resolves the tool through command_path (no CFGD_SCOOP_BIN seam), so PATH
-    // manipulation routes the invocation through our shim.
+    // PackageManager trait impls via a fake scoop binary. scoop_cmd() honors the
+    // CFGD_SCOOP_BIN seam first (tool_cmd_with_resolver), so a ToolShim carries
+    // argv logging for spawn-count claims; the PATH-shim tests predate the seam
+    // and stay on PATH manipulation.
     // ---------------------------------------------------------------------------
 
     #[cfg(unix)]
@@ -433,14 +450,67 @@ mod tests {
 
         #[test]
         #[serial]
-        fn scoop_install_invokes_per_package() {
-            let (_bin, _path) = install_scoop_shim(0, "", "");
+        fn scoop_install_batches_all_packages_into_one_spawn() {
+            let s = cfgd_core::test_helpers::ToolShim::install("CFGD_SCOOP_BIN", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
             ScoopManager
-                .install(&["git".into(), "ripgrep".into()], &cx)
+                .install(&["git".into(), "ripgrep".into(), "fd".into()], &cx)
                 .expect("install Ok");
+            // Filter to the lines naming this test's own subject: the seam is
+            // a process-global env var, so an unfiltered count also measures
+            // whatever a parallel test spawned through the same shim.
+            let lines = s.argv_lines_naming("ripgrep");
+            assert_eq!(
+                lines.len(),
+                1,
+                "three apps must produce ONE spawn: {}",
+                s.argv_log()
+            );
+            assert!(
+                lines[0].contains("install git ripgrep fd"),
+                "the one spawn must carry every app: {}",
+                lines[0]
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_install_batch_failure_falls_back_to_per_package_attribution() {
+            let s = cfgd_core::test_helpers::ToolShim::install_failing_on(
+                "CFGD_SCOOP_BIN",
+                "nope",
+                "Couldn't find manifest for 'nope'",
+            );
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let err = ScoopManager
+                .install(&["git".into(), "nope".into()], &cx)
+                .expect_err("the bad app must fail after the retry");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("nope") && msg.contains("Couldn't find manifest"),
+                "the error must name the failed app and its cause: {msg}"
+            );
+            assert!(
+                !msg.contains("git ("),
+                "the valid app must not be attributed a failure: {msg}"
+            );
+            // One batch spawn naming both, then one retry per app.
+            assert_eq!(
+                s.argv_lines_naming("git").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
+            );
+            assert_eq!(
+                s.argv_lines_naming("nope").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
+            );
         }
 
         #[test]
@@ -532,6 +602,30 @@ mod tests {
             let cx = test_package_context(&p, &st);
             let pkgs = ScoopManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.is_empty());
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_install_raises_a_held_app_via_scoop_update_not_install() {
+            // The export listing already carries `git`, so `install` partitions
+            // it into `held` and raises it through `scoop update git` instead
+            // of re-running `scoop install git`, which would no-op.
+            let stdout = r#"{"apps":[{"Name":"git","Version":"2.44.0"}]}"#;
+            let (_bin, _path, log) =
+                cfgd_core::test_helpers::install_named_path_shim_logged("scoop", 0, stdout, "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ScoopManager.install(&["git".into()], &cx).expect("Ok");
+            let argv = log.argv_log();
+            assert!(
+                argv.contains("update git"),
+                "held app must be raised via `scoop update <app>`: {argv}"
+            );
+            assert!(
+                !argv.contains("install git"),
+                "held app must not be re-run through `scoop install`: {argv}"
+            );
         }
 
         #[test]

@@ -1,0 +1,6 @@
+Push Module
+  Directory  <DIR>
+  Artifact   <REGISTRY>/test/module:v1
+  ✓ Pushed module — sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (linux/amd64)
+  → Register it as a Module pointing at the cluster's registry address (or pass --apply next time):
+    $ kubectl apply -f <module-resource>.yaml

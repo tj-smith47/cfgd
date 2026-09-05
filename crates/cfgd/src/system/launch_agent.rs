@@ -645,7 +645,7 @@ mod tests {
     // ---------------------------------------------------------------------------
     // apply — drives the per-agent loop with a redirected HOME and a fake
     // launchctl on PATH (load exits 0 → no warning; load exits non-zero →
-    // warning printed). The on-disk plist write is what we assert directly.
+    // warning printed). The on-disk plist write is what this asserts directly.
     // ---------------------------------------------------------------------------
 
     /// Install a fake launchctl shim that exits with the given code. Returns
@@ -746,7 +746,7 @@ mod tests {
         )]);
         la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
             .unwrap();
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Writing launch agent"),
             "printer should announce plist write, got: {captured}"
@@ -783,7 +783,7 @@ mod tests {
                 .join("Library/LaunchAgents/com.cfgd.load.fail.plist")
                 .exists()
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("launchctl load failed"),
             "warning should surface launchctl failure, got: {captured}"

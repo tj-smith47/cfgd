@@ -3,16 +3,50 @@ use rusqlite::params;
 use super::*;
 
 /// Every column an `ALTER TABLE … ADD COLUMN` migration introduces, keyed by
-/// the index of the migration that adds it.
+/// that migration's index in [`MIGRATIONS`].
 ///
 /// SQLite has no idempotent `ADD COLUMN`: replaying one raises
 /// `duplicate column name`, which aborts and rolls back the whole migration
 /// batch. So a fixture reproducing an older database has to reproduce its
 /// SCHEMA too, not just its `schema_version` row.
+///
+/// The index is the runner's own key — it replays every migration whose index
+/// is at or above the recorded version — so a column is dropped under exactly
+/// the condition its migration will run again.
 const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
-    (3, "apply_journal", "script_output"),
+    (2, "apply_journal", "script_output"),
+    (4, "managed_resources", "uninstall_cmd"),
+    (6, "drift_events", "resolved_at"),
+    (7, "file_backups", "existed"),
     (14, "apply_journal", "completion_index"),
+    (16, "backup_runs", "kind"),
+    (17, "pending_decisions", "content_hash"),
+    (18, "config_sources", "last_commit_signed"),
+    (19, "managed_resources", "file_hashes"),
 ];
+
+/// Every `ADD COLUMN` migration must be listed in [`ADDED_COLUMNS`].
+///
+/// The list is what lets a fixture present an older database, and a migration
+/// missing from it does not fail its own test — it fails every OTHER rewind
+/// test, replaying its `ADD COLUMN` onto a column that is already there. The
+/// walk reads the real migration array, so the next one added is checked
+/// without anyone remembering this list exists.
+#[test]
+fn every_add_column_migration_is_registered_for_rewinding() {
+    let unregistered: Vec<usize> = MIGRATIONS
+        .iter()
+        .enumerate()
+        .filter(|(_, sql)| sql.to_uppercase().contains("ADD COLUMN"))
+        .filter(|(i, _)| !ADDED_COLUMNS.iter().any(|(at, _, _)| at == i))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "migrations {unregistered:?} add a column that no ADDED_COLUMNS row un-adds, \
+         so every rewind fixture will replay it onto a column that already exists"
+    );
+}
 
 /// Present `store` as the database it was at `version`, so reopening replays
 /// every migration from `version` on exactly as a real upgrade would.
@@ -119,6 +153,95 @@ fn record_and_retrieve_drift() {
 }
 
 #[test]
+fn last_scan_at_is_none_before_the_first_scan() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.last_scan_at().unwrap(), None);
+}
+
+#[test]
+fn record_scan_upserts_the_single_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    // Seeded with a value no clock will ever produce, so the assertions below
+    // turn on whether the UPSERT replaced it — two back-to-back
+    // `record_scan()` calls could not: `utc_now_iso8601` is second-resolution,
+    // so they usually stamp the same string and every comparison between them
+    // holds whether or not the second write landed at all.
+    store
+        .conn
+        .execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, '2000-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+    let stamped = store
+        .record_scan()
+        .expect("the upsert must report its stamp");
+    assert_ne!(stamped, "2000-01-01T00:00:00Z");
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some(stamped.as_str()),
+        "the scan did not replace the row already holding id = 1"
+    );
+
+    let rows: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM last_scan", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "last_scan holds exactly one machine-wide row");
+}
+
+#[test]
+fn freezing_the_scan_stamp_refuses_the_write_and_keeps_the_row_readable() {
+    let store = StateStore::open_in_memory().unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2000-01-01T00:00:00Z").unwrap();
+
+    assert_eq!(store.record_scan(), None, "a frozen row accepted a write");
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some("2000-01-01T00:00:00Z"),
+        "the read a caller makes before it scans must still answer"
+    );
+}
+
+/// A seam a fixture may reach twice — a store frozen during setup and
+/// re-pinned by the body — must not fail the second call, and must answer
+/// with the stamp the second call named.
+#[test]
+fn refreezing_the_scan_stamp_repins_it_rather_than_failing() {
+    let store = StateStore::open_in_memory().unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2000-01-01T00:00:00Z").unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2001-02-03T04:05:06Z").unwrap();
+
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some("2001-02-03T04:05:06Z"),
+        "the second freeze must own the pinned stamp"
+    );
+    assert_eq!(
+        store.record_scan(),
+        None,
+        "re-freezing must leave the refusal in place"
+    );
+}
+
+#[test]
+fn record_scan_reports_no_stamp_when_the_write_is_refused() {
+    let store = StateStore::open_in_memory().unwrap();
+    // Removing the table is the one refusal reachable without a second
+    // process holding the file, and it drives the same swallowed-error arm a
+    // locked or corrupt store would: the run must not fail, and the caller
+    // must be told the stamp it would have rendered was never persisted.
+    store.conn.execute("DROP TABLE last_scan", []).unwrap();
+
+    assert_eq!(
+        store.record_scan(),
+        None,
+        "a refused write reported a timestamp no row holds"
+    );
+}
+
+#[test]
 fn resolve_drift_links_to_apply() {
     let store = StateStore::open_in_memory().unwrap();
     store
@@ -152,6 +275,51 @@ fn record_drift_upserts_same_resource() {
     );
     assert_eq!(events[0].resource_type, "file");
     assert_eq!(events[0].resource_id, "/etc/hosts");
+}
+
+/// A re-affirming producer that knows less than the one before it leaves the
+/// stored operands alone.
+///
+/// The CLI live check words a missing package `installed` / `not installed`;
+/// the daemon tick re-affirms the SAME row off its plan and knows only that
+/// the package is planned, so it passes `None` for both. Blanking the pair
+/// there erased the words `status` renders, and the row then read as a version
+/// mismatch on a package that was simply absent. `Some` still re-words a
+/// stored operand — only `None` is a non-statement.
+#[test]
+fn record_drift_keeps_stored_operands_a_reaffirming_producer_does_not_restate() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift(
+            "package",
+            "brew:jq",
+            Some("installed"),
+            Some("not installed"),
+            "local",
+        )
+        .unwrap();
+    store
+        .record_drift("package", "brew:jq", None, None, "daemon")
+        .unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 1, "the re-affirmation upserts the one row");
+    assert_eq!(
+        (events[0].expected.as_deref(), events[0].actual.as_deref()),
+        (Some("installed"), Some("not installed")),
+        "a `None` operand leaves the stored one alone"
+    );
+    assert_eq!(events[0].source, "daemon", "the source still moves");
+
+    store
+        .record_drift("package", "brew:jq", Some("1.7"), Some("1.6"), "local")
+        .unwrap();
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(
+        (events[0].expected.as_deref(), events[0].actual.as_deref()),
+        (Some("1.7"), Some("1.6")),
+        "a `Some` operand still re-words the stored one"
+    );
 }
 
 #[test]
@@ -207,6 +375,119 @@ fn resolve_drift_not_in_matches_on_full_tuple_not_id_alone() {
     assert_eq!(events.len(), 1, "only the matching tuple survives");
     assert_eq!(events[0].resource_type, "file");
     assert_eq!(events[0].resource_id, "/etc/x");
+}
+
+/// A key set past the staging chunk is still ONE call and ONE answer, in both
+/// membership directions and inside the caller's transaction, as the daemon
+/// tick calls it.
+///
+/// The size is past SQLite's 32766-parameter ceiling on purpose — two
+/// parameters per key — because that is the failure the staging table exists
+/// to remove: a set this big bound into one inline `VALUES` list errors the
+/// whole tick out. The complement half is what a per-chunk `NOT IN` would get
+/// wrong, so both directions are driven.
+#[test]
+fn a_key_set_past_the_chunk_resolves_in_one_call_under_one_transaction() {
+    const KEYS: usize = 20_000;
+    let keys: Vec<(String, String)> = (0..KEYS)
+        .map(|n| ("file".to_string(), format!("/etc/f{n}")))
+        .collect();
+
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .in_transaction(|| {
+            for (rtype, rid) in &keys {
+                store.record_drift(rtype, rid, None, Some("x"), "local")?;
+            }
+            store.record_drift("file", "/etc/outsider", None, Some("x"), "local")
+        })
+        .unwrap();
+    assert_eq!(store.unresolved_drift().unwrap().len(), KEYS + 1);
+
+    store
+        .in_transaction(|| store.resolve_drift_in(&keys))
+        .unwrap();
+    let left = store.unresolved_drift().unwrap();
+    assert_eq!(left.len(), 1, "every named key resolved in the one call");
+    assert_eq!(left[0].resource_id, "/etc/outsider");
+
+    // The complement direction: a chunked staging table must still answer as
+    // ONE set, never once per chunk — a per-chunk `NOT IN` resolves every row
+    // the other chunks name.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .in_transaction(|| {
+            for (rtype, rid) in &keys {
+                store.record_drift(rtype, rid, None, Some("x"), "local")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let still_drifting = &keys[..KEYS - 1];
+    store
+        .in_transaction(|| store.resolve_drift_not_in(still_drifting))
+        .unwrap();
+    let left = store.unresolved_drift().unwrap();
+    assert_eq!(
+        left.len(),
+        KEYS - 1,
+        "only the row outside the set resolved"
+    );
+}
+
+#[test]
+fn resolve_drift_in_resolves_only_the_named_keys() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift(
+            "module",
+            "nvim/.config/nvim/init.lua",
+            None,
+            Some("x"),
+            "local",
+        )
+        .unwrap();
+    store
+        .record_drift("module", "other/.zshrc", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/etc/hosts", None, Some("x"), "local")
+        .unwrap();
+
+    // A module-scoped scan re-checked nvim's file and found it clean; it can
+    // vouch for nothing else, so only the named key resolves.
+    let healed = vec![(
+        "module".to_string(),
+        "nvim/.config/nvim/init.lua".to_string(),
+    )];
+    store.resolve_drift_in(&healed).unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 2, "only the named key resolves");
+    assert!(
+        events
+            .iter()
+            .all(|e| e.resource_id != "nvim/.config/nvim/init.lua"),
+        "the healed row must be resolved"
+    );
+}
+
+#[test]
+fn resolve_drift_in_with_no_keys_resolves_nothing() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/a", None, Some("x"), "local")
+        .unwrap();
+
+    // The scoped counterpart of `resolve_drift_not_in` inverts the empty-set
+    // meaning: a scan that verified nothing clean proves nothing healed.
+    store.resolve_drift_in(&[]).unwrap();
+
+    assert_eq!(
+        store.unresolved_drift().unwrap().len(),
+        1,
+        "an empty healed set must resolve nothing"
+    );
 }
 
 #[test]
@@ -266,6 +547,104 @@ fn upsert_managed_resource() {
     let resources = store.managed_resources().unwrap();
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].last_hash.as_deref(), Some("hash2"));
+}
+
+#[test]
+fn refresh_managed_resource_hash_writes_only_when_the_hash_moved() {
+    use super::HashRefresh;
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("file", "/home/.zshrc", "acme", Some("hash1"), None)
+        .unwrap();
+
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2", "/home/.zshrc:hash2")
+            .unwrap(),
+        HashRefresh::Moved {
+            previous_files: None
+        },
+        "a hash that moved is written; the row had no breakdown to hand back"
+    );
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2", "/home/.zshrc:hash2")
+            .unwrap(),
+        HashRefresh::Unchanged,
+        "a hash that already agrees costs no write"
+    );
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash3", "/home/.zshrc:hash3")
+            .unwrap(),
+        HashRefresh::Moved {
+            previous_files: Some("/home/.zshrc:hash2".to_string())
+        },
+        "the next move hands back the breakdown the row kept"
+    );
+
+    let resources = store.managed_resources().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].last_hash.as_deref(), Some("hash3"));
+    assert_eq!(
+        resources[0].source, "acme",
+        "the refresh touches the hash and nothing else"
+    );
+
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.vimrc", "hash3", "/home/.vimrc:hash3")
+            .unwrap(),
+        HashRefresh::Unchanged,
+        "a resource with no row is left alone, never minted"
+    );
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+#[test]
+fn a_row_with_no_breakdown_is_backfilled_once_and_silently() {
+    use super::HashRefresh;
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .unwrap();
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash1", "/home/.zshrc:hash1")
+            .unwrap(),
+        HashRefresh::Backfilled,
+        "the hash agrees but the breakdown was missing: stored, not news"
+    );
+    assert_eq!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash1", "/home/.zshrc:hash1")
+            .unwrap(),
+        HashRefresh::Unchanged
+    );
+}
+
+/// The package tracking row's id grammar has one producer and one reader,
+/// kept as inverses: what [`package_resource_id`] mints,
+/// [`split_package_resource_id`] reads back exactly. A reader guessing the
+/// separator for itself (the `<mgr>:<pkg>` DRIFT grammar, say) is what let a
+/// profile-declared package render as an unowned finding — this pin fails the
+/// moment either side's spelling moves without the other.
+#[test]
+fn the_package_resource_id_and_its_split_are_inverses() {
+    let id = package_resource_id("brew", "fd");
+    assert_eq!(id, "brew/fd", "the recorded grammar is <manager>/<package>");
+    assert_eq!(split_package_resource_id(&id), Some(("brew", "fd")));
+    // The FIRST `/` is the boundary, so a package name carrying `/` keeps its tail.
+    let scoped = package_resource_id("npm", "@types/node");
+    assert_eq!(
+        split_package_resource_id(&scoped),
+        Some(("npm", "@types/node"))
+    );
+    // The drift grammar and a half-empty id both refuse to parse as a tracking
+    // row rather than yielding a pair claiming a manager the id never named.
+    assert_eq!(split_package_resource_id("brew:fd"), None);
+    assert_eq!(split_package_resource_id("/fd"), None);
+    assert_eq!(split_package_resource_id("brew/"), None);
 }
 
 #[test]
@@ -496,6 +875,31 @@ fn open_file_based_store() {
     assert_eq!(last.profile, "test");
 }
 
+/// Every `HomeDirectoryUnresolved` names the directory it could not place.
+///
+/// The variant carries a `role` because the two subsystems that can hit it —
+/// the state store and the cache — fail for the same reason on hosts where
+/// only one of them is even in play, and "no home directory found" alone
+/// leaves the reader with nothing to act on. The role is a `&'static str`, so
+/// only a pin can keep it in the sentence: a `#[error]` rewritten to drop the
+/// interpolation still compiles.
+#[test]
+fn every_home_directory_unresolved_names_the_directory_it_could_not_place() {
+    for role in ["state", "cache"] {
+        let rendered =
+            crate::errors::CfgdError::State(StateError::HomeDirectoryUnresolved { role })
+                .to_string();
+        assert!(
+            rendered.contains(role),
+            "the sentence must name the {role} directory: {rendered}"
+        );
+        assert!(
+            rendered.contains("no home directory found"),
+            "the sentence must say why: {rendered}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
@@ -547,14 +951,15 @@ fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
 fn upsert_and_list_config_sources() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "git@github.com:acme/config.git",
-            "master",
-            Some("abc123"),
-            Some("2.1.0"),
-            Some("~2"),
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "git@github.com:acme/config.git",
+            origin_branch: "master",
+            last_commit: Some("abc123"),
+            source_version: Some("2.1.0"),
+            pinned_version: Some("~2"),
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let sources = store.config_sources().unwrap();
@@ -570,7 +975,15 @@ fn upsert_and_list_config_sources() {
 fn config_source_by_name() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let found = store.config_source_by_name("acme").unwrap();
@@ -585,7 +998,15 @@ fn config_source_by_name() {
 fn remove_config_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     store.remove_config_source("acme").unwrap();
@@ -597,7 +1018,15 @@ fn remove_config_source() {
 fn update_config_source_status() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     store
@@ -605,6 +1034,42 @@ fn update_config_source_status() {
         .unwrap();
     let source = store.config_source_by_name("acme").unwrap().unwrap();
     assert_eq!(source.status, "inactive");
+}
+
+#[test]
+fn a_later_successful_upsert_clears_a_recorded_fetch_failure() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
+        .unwrap();
+    store
+        .update_config_source_status("acme", crate::state::SOURCE_STATUS_ERROR)
+        .unwrap();
+
+    // Only a successful fetch reaches the upsert, so the row must stop
+    // claiming the source is broken.
+    store
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: Some("abc123"),
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
+        .unwrap();
+
+    let source = store.config_source_by_name("acme").unwrap().unwrap();
+    assert_eq!(source.status, crate::state::SOURCE_STATUS_ACTIVE);
 }
 
 #[test]
@@ -669,17 +1134,26 @@ fn managed_resources_by_source() {
 fn upsert_config_source_updates_on_conflict() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url1", "main", Some("commit1"), Some("1.0.0"), None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url1",
+            origin_branch: "main",
+            last_commit: Some("commit1"),
+            source_version: Some("1.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "url2",
-            "dev",
-            Some("commit2"),
-            Some("2.0.0"),
-            Some("~2"),
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url2",
+            origin_branch: "dev",
+            last_commit: Some("commit2"),
+            source_version: Some("2.0.0"),
+            pinned_version: Some("~2"),
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let sources = store.config_sources().unwrap();
@@ -706,7 +1180,14 @@ fn withheld_resources(store: &StateStore) -> Vec<String> {
 fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -715,10 +1196,18 @@ fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
             "recommended",
             "install",
             "st",
+            None,
         )
         .unwrap();
     store
-        .upsert_pending_decision("acme", "files.~/.zshrc", "recommended", "install", "rc")
+        .upsert_pending_decision(
+            "acme",
+            "files.~/.zshrc",
+            "recommended",
+            "install",
+            "rc",
+            None,
+        )
         .unwrap();
     store
         .resolve_decision("packages.brew.stern", "rejected")
@@ -748,13 +1237,27 @@ fn accepting_a_resource_that_was_once_rejected_releases_it() {
     // decision would be silently overruled by the stale rejection.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "v1",
+            None,
+        )
         .unwrap();
     store
         .resolve_decision("packages.brew.k9s", "rejected")
         .unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v2")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "v2",
+            None,
+        )
         .unwrap();
     assert_eq!(
         withheld_resources(&store),
@@ -781,6 +1284,7 @@ fn record_auto_accepted_resolves_the_open_row_with_auto_provenance() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -853,10 +1357,94 @@ fn record_auto_accepted_with_no_open_row_inserts_once() {
 }
 
 #[test]
+fn a_decisions_content_hash_round_trips_through_the_upsert() {
+    // The migrated column, end to end: a row records the fingerprint of what
+    // it asked about, an update carries the new one, and a row written without
+    // a fingerprint answers "not fingerprinted" rather than "unchanged".
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "env.EDITOR",
+            "recommended",
+            "install",
+            "v1",
+            Some("h1"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.pending_decisions().unwrap()[0]
+            .content_hash
+            .as_deref(),
+        Some("h1"),
+        "the row every listing surface reads carries it"
+    );
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.EDITOR")
+            .unwrap(),
+        Some(Some("h1".to_string()))
+    );
+
+    store
+        .upsert_pending_decision(
+            "acme",
+            "env.EDITOR",
+            "recommended",
+            "install",
+            "v2",
+            Some("h2"),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.EDITOR")
+            .unwrap(),
+        Some(Some("h2".to_string())),
+        "an updated row asks about the item's current version"
+    );
+
+    store
+        .upsert_pending_decision("acme", "env.PAGER", "recommended", "install", "v1", None)
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.PAGER")
+            .unwrap(),
+        Some(None),
+        "a row with no fingerprint is not a row that agrees"
+    );
+    store
+        .set_decision_content_hash("acme", "env.PAGER", "h3")
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.PAGER")
+            .unwrap(),
+        Some(Some("h3".to_string())),
+        "the backfill stamps the row in place"
+    );
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.NEVER_ASKED")
+            .unwrap(),
+        None,
+        "no row at all is a different answer from a row with no hash"
+    );
+}
+
+#[test]
 fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -865,6 +1453,7 @@ fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
             "recommended",
             "install",
             "bat",
+            None,
         )
         .unwrap();
 
@@ -891,6 +1480,7 @@ fn upsert_and_list_pending_decisions() {
             "recommended",
             "install",
             "install k9s (recommended by acme)",
+            None,
         )
         .unwrap();
     assert!(id > 0);
@@ -914,6 +1504,7 @@ fn upsert_pending_decision_updates_existing() {
             "recommended",
             "install",
             "original summary",
+            None,
         )
         .unwrap();
     store
@@ -923,6 +1514,7 @@ fn upsert_pending_decision_updates_existing() {
             "recommended",
             "update",
             "updated summary",
+            None,
         )
         .unwrap();
 
@@ -936,7 +1528,14 @@ fn upsert_pending_decision_updates_existing() {
 fn resolve_decision_by_resource() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
 
     let resolved = store
@@ -961,7 +1560,14 @@ fn resolve_decision_nonexistent_returns_false() {
 fn resolve_decisions_for_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -970,10 +1576,18 @@ fn resolve_decisions_for_source() {
             "recommended",
             "install",
             "stern",
+            None,
         )
         .unwrap();
     store
-        .upsert_pending_decision("other", "packages.brew.bat", "optional", "install", "bat")
+        .upsert_pending_decision(
+            "other",
+            "packages.brew.bat",
+            "optional",
+            "install",
+            "bat",
+            None,
+        )
         .unwrap();
 
     let count = store
@@ -990,10 +1604,10 @@ fn resolve_decisions_for_source() {
 fn resolve_all_decisions() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("a", "r1", "recommended", "install", "s1")
+        .upsert_pending_decision("a", "r1", "recommended", "install", "s1", None)
         .unwrap();
     store
-        .upsert_pending_decision("b", "r2", "optional", "install", "s2")
+        .upsert_pending_decision("b", "r2", "optional", "install", "s2", None)
         .unwrap();
 
     let count = store.resolve_all_decisions("accepted").unwrap();
@@ -1007,10 +1621,10 @@ fn resolve_all_decisions() {
 fn pending_decisions_for_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "r1", "recommended", "install", "s1")
+        .upsert_pending_decision("acme", "r1", "recommended", "install", "s1", None)
         .unwrap();
     store
-        .upsert_pending_decision("other", "r2", "optional", "install", "s2")
+        .upsert_pending_decision("other", "r2", "optional", "install", "s2", None)
         .unwrap();
 
     let acme = store.pending_decisions_for_source("acme").unwrap();
@@ -1256,10 +1870,30 @@ fn module_file_manifest_crud() {
     assert_eq!(files[0].content_hash, "newhash");
     assert_eq!(files[0].strategy, "Symlink");
 
+    // The path lookup answers without naming the owning module: a
+    // classification asking "did cfgd put this here" has the path and nothing
+    // else.
+    assert!(
+        store
+            .is_module_deployed_file("/home/user/.config/nvim/lazy.lua")
+            .unwrap()
+    );
+    assert!(
+        !store
+            .is_module_deployed_file("/home/user/.config/nvim/never.lua")
+            .unwrap()
+    );
+
     // Delete all
     store.delete_module_files("nvim").unwrap();
     let files = store.module_deployed_files("nvim").unwrap();
     assert!(files.is_empty());
+    assert!(
+        !store
+            .is_module_deployed_file("/home/user/.config/nvim/init.lua")
+            .unwrap(),
+        "a removed module's files stop being cfgd's"
+    );
 }
 
 #[test]
@@ -1600,6 +2234,34 @@ fn module_state_upsert_updates_on_conflict() {
 }
 
 #[test]
+fn module_state_upsert_with_none_preserves_last_applied() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let apply1 = store
+        .record_apply("default", "h1", ApplyStatus::Success, None)
+        .unwrap();
+    store
+        .upsert_module_state(
+            "nvim",
+            Some(apply1),
+            "pkg-hash",
+            "file-hash",
+            None,
+            "installed",
+        )
+        .unwrap();
+
+    // A converged-module record carries no fresh apply id; it must not erase
+    // the timestamp a prior real apply recorded.
+    store
+        .upsert_module_state("nvim", None, "pkg-hash", "file-hash", None, "installed")
+        .unwrap();
+
+    let rec = store.module_state_by_name("nvim").unwrap().unwrap();
+    assert_eq!(rec.last_applied, Some(apply1));
+}
+
+#[test]
 fn module_state_remove() {
     let store = StateStore::open_in_memory().unwrap();
 
@@ -1630,14 +2292,15 @@ fn record_source_apply_links_to_source() {
 
     // Create a source first
     store
-        .upsert_config_source(
-            "acme",
-            "https://github.com/acme/config.git",
-            "main",
-            None,
-            None,
-            None,
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "https://github.com/acme/config.git",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     // Record an apply
@@ -1691,14 +2354,15 @@ fn remove_config_source_after_apply_cascades_source_applies() {
     // state inconsistent.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "https://example.invalid/acme",
-            "master",
-            Some("abc123"),
-            Some("1.0.0"),
-            None,
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "https://example.invalid/acme",
+            origin_branch: "master",
+            last_commit: Some("abc123"),
+            source_version: Some("1.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
     let apply_id = store
         .record_apply("default", "plan-hash-1", ApplyStatus::Success, None)
@@ -1874,26 +2538,60 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
 
     // A fresh apply re-derives the rows under the corrected id — and two
     // modules no longer contend for the same UNIQUE(resource_type, resource_id).
+    // The two skipped modules beside them record nothing at all: nothing under
+    // a module gated off this host was probed, so the run manages nothing for
+    // it.
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = crate::test_helpers::make_empty_resolved();
+    let modules: Vec<crate::modules::ResolvedModule> = ["nvim", "zsh"]
+        .into_iter()
+        .map(|name| {
+            let mut m = crate::test_helpers::make_resolved_module(name);
+            m.packages = vec![];
+            m.files = vec![];
+            m.dir = dir.path().to_path_buf();
+            m
+        })
+        .collect();
+    let owner = crate::reconciler::Owner::profile("test");
     let plan = Plan {
-        phases: vec![Phase::from_actions(
-            PhaseName::Modules,
-            &crate::reconciler::Owner::profile("test"),
-            ["nvim", "zsh"]
-                .into_iter()
-                .map(|name| {
-                    Action::Module(ModuleAction {
-                        module_name: name.to_string(),
-                        kind: ModuleActionKind::Skip {
-                            reason: "platform not matched".to_string(),
-                        },
-                        origin: None,
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Modules,
+                &owner,
+                ["gated-a", "gated-b"]
+                    .into_iter()
+                    .map(|name| {
+                        Action::Module(ModuleAction {
+                            module_name: name.to_string(),
+                            kind: ModuleActionKind::Skip {
+                                reason: "platform not matched".to_string(),
+                            },
+                            origin: None,
+                        })
                     })
-                })
-                .collect(),
-        )],
+                    .collect(),
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &owner,
+                ["nvim", "zsh"]
+                    .into_iter()
+                    .map(|name| {
+                        Action::Module(ModuleAction {
+                            module_name: name.to_string(),
+                            kind: ModuleActionKind::RunScript {
+                                // A no-op every shell this runs under reads.
+                                script: crate::config::ScriptEntry::Simple("cd .".to_string()),
+                                phase: crate::reconciler::ScriptPhase::PostApply,
+                            },
+                            origin: None,
+                        })
+                    })
+                    .collect(),
+            ),
+        ],
         warnings: vec![],
     };
     let printer = crate::test_helpers::test_printer();
@@ -1903,8 +2601,8 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&crate::reconciler::PhaseFilter::Phase(PhaseName::Modules)),
-            &[],
+            None,
+            &modules,
             ReconcileContext::Apply,
             false,
             None,
@@ -1921,8 +2619,9 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         .collect();
     assert_eq!(
         module_ids,
-        vec!["nvim:skip".to_string(), "zsh:skip".to_string()],
-        "each module must re-appear under its own name-qualified id"
+        vec!["nvim:script".to_string(), "zsh:script".to_string()],
+        "each module must re-appear under its own name-qualified id, and a \
+         skipped module under none"
     );
 }
 
@@ -2358,6 +3057,290 @@ fn completion_index_backfills_every_historical_row_from_its_plan_position() {
     }
 }
 
+#[test]
+fn legacy_chmod_tracking_rows_carrying_their_mode_are_swept_on_open() {
+    // `file:chmod:<mode>:<target>` dropped only its verb, so every
+    // permissions fix recorded the mode glued to the path. The parse now
+    // yields the bare target, and nothing sweeps `managed_resources` on
+    // observation — so without the migration a host that ever ran a chmod
+    // shows both spellings in `cfgd status` forever.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in [
+            "0o600:/etc/config.yaml",
+            "0o755:C:/Users/u/bin",
+            "/etc/config.yaml",
+        ] {
+            store
+                .upsert_managed_resource("file", rid, "local", None, None)
+                .unwrap();
+        }
+        // A path that merely LOOKS mode-prefixed is another type's row and a
+        // legal filename either way; the sweep is scoped to `file`.
+        store
+            .upsert_managed_resource("env", "0o600:/etc/env", "local", None, None)
+            .unwrap();
+        rewind_schema_version(&store, 22);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut rows: Vec<(String, String)> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows,
+        vec![
+            ("env".to_string(), "0o600:/etc/env".to_string()),
+            ("file".to_string(), "/etc/config.yaml".to_string()),
+        ],
+        "every mode-prefixed file row goes, the corrected twin and the other \
+         type's row stay"
+    );
+}
+
+#[test]
+fn legacy_manager_provision_rows_meet_the_package_grammar_on_open() {
+    // The daemon once recorded a failed provision cascade as
+    // `('manager', 'provision:<name>')` and its planned refusals as
+    // `('manager', 'refuse:<name>')`, while every live check mints both under
+    // `package` — and nothing on a CLI-only host resolves the `manager`
+    // spellings. Opening the store settles the legacy rows as ONE sweep over
+    // both retyped ids: one with a standing `package` twin is the duplicate
+    // and resolves, one without a twin is the only record of the finding and
+    // retypes, and history keeps the type it was recorded under. The rewind
+    // lands at 21 — the version real stores hold after migration 20's
+    // provision-only form ran — so the reopen drives exactly the
+    // already-migrated path migration 21 exists for, provision rows settling
+    // through its repeated predicate.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        // A legacy row already resolved before the upgrade: history.
+        store
+            .record_drift("manager", "provision:old", None, None, "local")
+            .unwrap();
+        store.resolve_all_drift().unwrap();
+        // Each retyped spelling gets a legacy row with a standing package
+        // twin, and one without.
+        for (rtype, rid) in [
+            ("manager", "provision:snap"),
+            ("package", "provision:snap"),
+            ("manager", "provision:pipx"),
+            ("manager", "refuse:brew"),
+            ("package", "refuse:brew"),
+            ("manager", "refuse:npm"),
+        ] {
+            store.record_drift(rtype, rid, None, None, "local").unwrap();
+        }
+        rewind_schema_version(&store, 21);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("package".to_string(), "provision:pipx".to_string()),
+            ("package".to_string(), "provision:snap".to_string()),
+            ("package".to_string(), "refuse:brew".to_string()),
+            ("package".to_string(), "refuse:npm".to_string()),
+        ],
+        "each twinned legacy row resolves, each lone one retypes"
+    );
+    let resolved_as = |rtype: &str, rid: &str| -> i64 {
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM drift_events
+                     WHERE resource_type = ?1 AND resource_id = ?2
+                     AND resolved_at IS NOT NULL",
+                params![rtype, rid],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        resolved_as("manager", "provision:snap"),
+        1,
+        "the duplicate is resolved in place, keeping its recorded type"
+    );
+    assert_eq!(
+        resolved_as("manager", "refuse:brew"),
+        1,
+        "the refuse twin gets the same in-place resolve"
+    );
+    assert_eq!(
+        resolved_as("manager", "provision:old"),
+        1,
+        "a row resolved before the upgrade is history and keeps its type"
+    );
+    let indexed: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_drift_events_resource'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        indexed, 1,
+        "the resource-key index lands with the migration"
+    );
+}
+
+#[test]
+fn legacy_colon_spelled_system_rows_meet_the_composer_grammar_on_open() {
+    // The daemon tick recorded `('system', '<configurator>:<key>')` while
+    // every resolver matches the composer's `<configurator>.<key>`, so an
+    // apply that converged the setting never touched the row. Opening the
+    // store respells the lone rows and resolves the ones whose dot twin
+    // already stands. The split is on the FIRST colon and only where the
+    // segment before it holds no dot: a KEY may carry a colon, and an id that
+    // is already dot-spelled must come through untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for (rtype, rid) in [
+            ("system", "gsettings:org.gnome.interface"),
+            ("system", "sysctl.vm.swappiness"),
+            ("system", "windowsRegistry.HKCU:\\Software\\cfgd"),
+            ("system", "shell:aliases"),
+            ("system", "shell.aliases"),
+            // Another type's row of the same shape: the sweep is scoped to
+            // `system`, and `<mgr>:<pkg>` is a package row's own grammar.
+            ("package", "brew:ripgrep"),
+        ] {
+            store.record_drift(rtype, rid, None, None, "local").unwrap();
+        }
+        rewind_schema_version(&store, 23);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("package".to_string(), "brew:ripgrep".to_string()),
+            (
+                "system".to_string(),
+                "gsettings.org.gnome.interface".to_string()
+            ),
+            ("system".to_string(), "shell.aliases".to_string()),
+            ("system".to_string(), "sysctl.vm.swappiness".to_string()),
+            (
+                "system".to_string(),
+                "windowsRegistry.HKCU:\\Software\\cfgd".to_string()
+            ),
+        ],
+        "the lone colon row is respelled, the twinned one resolves, and every \
+         other row is untouched"
+    );
+    let resolved_rows: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM drift_events WHERE resolved_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resolved_rows, 1,
+        "exactly the duplicate colon row resolves; nothing else is touched"
+    );
+}
+
+#[test]
+fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_dropped() {
+    // The pre-fix tick recorded `('module', '<name>:skip')` on every pass over
+    // a module it skipped whole, plus a matching tracking row. Nothing mints,
+    // heals or re-finds that shape now, so without the migration it stands
+    // forever. A `<name>:script` row is a real finding of the same type and
+    // must come through untouched, and so must a row whose own grammar merely
+    // ENDS in those five characters: the migration's predicate is
+    // `module_row_facet`'s, which judges the FIRST separator, so
+    // `mod:extra:skip` and `mod/path:skip` are not skip rows.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in [
+            "gated:skip",
+            "nvim:script",
+            "mod:extra:skip",
+            "mod/path:skip",
+        ] {
+            store
+                .record_drift("module", rid, None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource("module", rid, "local", None, None)
+                .unwrap();
+        }
+        // Another type carrying the same tail: the sweep is scoped to `module`.
+        store
+            .record_drift("package", "brew:skip", None, None, "local")
+            .unwrap();
+        rewind_schema_version(&store, MIGRATIONS.len() - 1);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("module".to_string(), "mod/path:skip".to_string()),
+            ("module".to_string(), "mod:extra:skip".to_string()),
+            ("module".to_string(), "nvim:script".to_string()),
+            ("package".to_string(), "brew:skip".to_string()),
+        ],
+        "only the whole-module skip row resolves"
+    );
+    let tracked: Vec<String> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.resource_id)
+        .collect();
+    let mut tracked = tracked;
+    tracked.sort_unstable();
+    assert_eq!(
+        tracked,
+        vec![
+            "mod/path:skip".to_string(),
+            "mod:extra:skip".to_string(),
+            "nvim:script".to_string()
+        ],
+        "the skip row's tracking row is dropped and every sibling kept"
+    );
+}
+
 // --- concurrent in-memory stores ---
 
 #[test]
@@ -2431,8 +3414,10 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
     // hand keeps the fixture from rotting as earlier migrations change.
     {
         let store = StateStore::open(&path).unwrap();
-        store.conn.execute("DROP TABLE backup_runs", []).unwrap();
+        // Rewind first: the rewind un-adds every column a later migration added,
+        // and one of them is on `backup_runs`, which the next line removes.
         rewind_schema_version(&store, 12);
+        store.conn.execute("DROP TABLE backup_runs", []).unwrap();
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -3226,85 +4211,6 @@ fn package_manager_prefix_is_scoped_per_manager() {
 }
 
 #[test]
-fn package_manager_prefix_record_returns_none_when_nothing_recorded() {
-    let store = StateStore::open_in_memory().unwrap();
-    assert!(
-        store
-            .package_manager_prefix_record("npm")
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn package_manager_prefix_record_surfaces_resolved_at() {
-    let store = StateStore::open_in_memory().unwrap();
-    store
-        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
-        .unwrap();
-
-    let record = store
-        .package_manager_prefix_record("npm")
-        .unwrap()
-        .expect("row should exist");
-    assert_eq!(record.manager, "npm");
-    assert_eq!(record.prefix, "/home/u/.npm-global");
-    assert!(record.is_fallback);
-    assert!(
-        !record.resolved_at.is_empty(),
-        "resolved_at must be populated"
-    );
-}
-
-#[test]
-fn forget_package_manager_prefix_returns_none_when_nothing_recorded() {
-    let store = StateStore::open_in_memory().unwrap();
-    assert!(
-        store
-            .forget_package_manager_prefix("npm")
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn forget_package_manager_prefix_deletes_the_row_and_returns_it() {
-    let store = StateStore::open_in_memory().unwrap();
-    store
-        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
-        .unwrap();
-
-    let forgotten = store
-        .forget_package_manager_prefix("npm")
-        .unwrap()
-        .expect("row should have existed");
-    assert_eq!(forgotten.prefix, "/home/u/.npm-global");
-
-    // The row must actually be gone, not just returned — the whole point is
-    // forcing the next resolution to derive fresh.
-    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
-}
-
-#[test]
-fn forget_package_manager_prefix_is_scoped_per_manager() {
-    let store = StateStore::open_in_memory().unwrap();
-    store
-        .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
-        .unwrap();
-    store
-        .record_package_manager_prefix("pipx", "/home/u/.local/pipx", false)
-        .unwrap();
-
-    store.forget_package_manager_prefix("npm").unwrap();
-
-    assert_eq!(store.package_manager_prefix("npm").unwrap(), None);
-    assert_eq!(
-        store.package_manager_prefix("pipx").unwrap(),
-        Some(("/home/u/.local/pipx".to_string(), false))
-    );
-}
-
-#[test]
 fn journal_entry_is_file_work_covers_module_file_deploys() {
     let entry = |phase: &str, action_type: &str, resource_id: &str| JournalEntry {
         id: 1,
@@ -3385,4 +4291,261 @@ fn is_file_work_classifies_by_resource_identity_not_phase() {
     assert!(entry("files", "module", "nvim:files:3").is_file_work());
     assert!(entry("packages", "file", "~/.gitconfig").is_file_work());
     assert!(entry("post-scripts", "unknown", "file:~/.vimrc").is_file_work());
+}
+
+#[test]
+fn open_pins_wal_and_normal_synchronous() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::open(&dir.path().join("state.db")).unwrap();
+
+    let journal_mode: String = store
+        .conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    let synchronous: i64 = store
+        .conn
+        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+        .unwrap();
+
+    // NORMAL is 1; the default FULL is 2. The two answers are asserted
+    // together because `synchronous=NORMAL` is only safe under WAL — read
+    // separately, either one could be right while the pair is wrong.
+    assert_eq!(journal_mode.to_lowercase(), "wal");
+    assert_eq!(synchronous, 1);
+}
+
+#[test]
+fn in_transaction_batches_every_write_into_one_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let store = StateStore::open(&db_path).unwrap();
+    let reader = StateStore::open(&db_path).unwrap();
+
+    store
+        .in_transaction(|| {
+            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            store.upsert_managed_resource("file", "~/.b", "profile:test", None, None)?;
+            // Committed per statement, both rows would already be visible to
+            // another connection here; inside one transaction neither is.
+            assert!(reader.managed_resources().unwrap().is_empty());
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(reader.managed_resources().unwrap().len(), 2);
+}
+
+#[test]
+fn in_transaction_rolls_back_when_the_batch_fails() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "batch aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    // The row written before the failure is gone, and the connection is not
+    // left inside an open transaction: the next write commits on its own.
+    assert!(store.managed_resources().unwrap().is_empty());
+    store
+        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+/// The apply row's verdict is written inside the bookkeeping batch, so a tail
+/// that fails cannot leave a run reading `Success` beside no ownership rows —
+/// the next run's declarative prune reads those rows to know what cfgd owns.
+#[test]
+fn a_failed_bookkeeping_batch_leaves_the_apply_row_in_progress() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("work", "hash", ApplyStatus::InProgress, None)
+        .unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.update_apply_status(apply_id, ApplyStatus::Success, Some("{}"))?;
+        store.upsert_managed_resource("file", "~/.a", "profile:work", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "tail aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    let record = store.get_apply(apply_id).unwrap().expect("apply row");
+    assert_eq!(record.status, ApplyStatus::InProgress);
+    assert!(store.managed_resources().unwrap().is_empty());
+}
+
+#[test]
+fn in_transaction_rolls_back_when_the_batch_panics() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let prior_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.in_transaction::<()>(|| {
+            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            panic!("batch panicked");
+        })
+    }));
+    std::panic::set_hook(prior_hook);
+    assert!(unwound.is_err());
+
+    assert!(store.managed_resources().unwrap().is_empty());
+    store
+        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+/// A failed batch clears the nesting flag via the guard's `Drop`, so a
+/// second, sequential `in_transaction` call right after a failure must not
+/// find the flag still set and trip the nesting assert.
+#[test]
+fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "batch aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    // Would trip the debug_assert in `in_transaction` if the failed call
+    // above had left the nesting flag set.
+    store
+        .in_transaction(|| {
+            store.upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        })
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+/// A nested call — `in_transaction` invoked from inside `f` — panics in a
+/// debug build, naming the rule the rustdoc documents, rather than surfacing
+/// as the inner `BEGIN`'s generic database error.
+#[cfg(debug_assertions)]
+#[test]
+fn a_nested_in_transaction_call_panics_naming_the_rule() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let prior_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.in_transaction::<()>(|| {
+            store.in_transaction(|| Ok(()))?;
+            Ok(())
+        })
+    }));
+    std::panic::set_hook(prior_hook);
+
+    let payload = unwound.expect_err("a nested call must panic, not silently proceed");
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .expect("panic payload must be a string");
+    assert!(
+        message.contains("does not nest"),
+        "panic message must name the rule: {message}"
+    );
+}
+
+/// An upsert refreshes its own timestamp. `module_state` bound `installed_at`
+/// only on INSERT, so `Last Applied` on `cfgd status` reported the moment the
+/// module was FIRST seen and never moved again, however many applies ran over
+/// it — a row that looks stale on a machine that is perfectly current.
+///
+/// A conflict target whose timestamp is genuinely a first-seen instant says so
+/// with a `// stamp-ok: <why>` marker on the SQL or the line above it.
+#[test]
+fn every_upsert_refreshes_its_own_timestamp() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the state module is checked out")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .collect();
+    files.sort();
+    let mut upserts = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, _) in body.match_indices("ON CONFLICT") {
+            upserts += 1;
+            // The SET list runs to the end of the SQL string literal.
+            let set = body[at..]
+                .split_once('"')
+                .map(|(head, _)| head)
+                .unwrap_or(&body[at..]);
+            let stamped = set.contains("_at =")
+                || set.contains("timestamp =")
+                || set.contains("last_applied =")
+                || set.contains("last_fetched =");
+            let n = body[..at].matches('\n').count();
+            let hatched = lines[n].contains("// stamp-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// stamp-ok:"));
+            if !stamped && !hatched {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        upserts >= 8,
+        "the walk no longer reaches the state store's upserts — it found {upserts}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an upsert refreshes the timestamp its own readers report, or says why \
+         the stamp is a first-seen instant with a `// stamp-ok:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A second apply re-stamps `installed_at`, which is what `Last Applied`
+/// reports. Back-dating the row and upserting again is the only way to observe
+/// it: the stamp has second resolution, so two upserts in one test tick are
+/// indistinguishable however many times they run.
+#[test]
+fn a_second_apply_advances_the_module_stamp() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_module_state("nvim", None, "pkgh", "fileh", None, "installed")
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE module_state SET installed_at = '2020-01-01T00:00:00Z' WHERE module_name = 'nvim'",
+            [],
+        )
+        .unwrap();
+
+    store
+        .upsert_module_state("nvim", None, "pkgh2", "fileh2", None, "installed")
+        .unwrap();
+
+    let record = store
+        .module_states()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.module_name == "nvim")
+        .expect("the module was upserted twice");
+    assert_ne!(
+        record.installed_at, "2020-01-01T00:00:00Z",
+        "the second apply must re-stamp the row, not leave the first-seen instant"
+    );
 }

@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::PathDisplayExt;
+use crate::output::Role;
 
 /// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
 ///
@@ -132,7 +133,7 @@ pub(crate) fn install_systemd_service(
         message: format!("write unit file: {}", e),
     })?;
 
-    tracing::info!(path = %unit_path.posix(), "installed systemd service");
+    tracing::info!("daemon: installed systemd service at {}", unit_path.posix());
     Ok(())
 }
 
@@ -205,11 +206,10 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         } else {
             "systemctl --user enable --now cfgd.service"
         };
-        printer.status_simple(
-            Role::Warn,
-            "systemctl not found — daemon installed but not started",
-        );
-        printer.hint(format!("Start it later with: {}", hint_cmd));
+        printer
+            .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
+            .detail(super::INSTALLED_NOT_STARTED);
+        printer.hint(format!("Start it later with `{hint_cmd}`"));
         return Ok(false);
     }
 
@@ -220,22 +220,21 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         match resolve_runtime_dir(std::env::var("XDG_RUNTIME_DIR").ok().as_deref(), &fallback) {
             RuntimeDirPlan::AlreadySet => None,
             RuntimeDirPlan::Derived(dir) => {
-                printer.status_simple(
-                    Role::Info,
-                    format!(
-                        "XDG_RUNTIME_DIR unset — using {} for the user service bus",
-                        dir.posix()
-                    ),
-                );
+                printer
+                    .status(Role::Info, "XDG_RUNTIME_DIR unset")
+                    .detail(format!("using {} for the user service bus", dir.posix()));
                 Some(dir)
             }
             RuntimeDirPlan::Missing => {
-                printer.status_simple(
-                    Role::Warn,
-                    "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent) — daemon installed but not started",
-                );
-                printer.hint(
-                    "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
+                printer
+                    .status(
+                        Role::Warn,
+                        "No user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
+                    )
+                    .detail(super::INSTALLED_NOT_STARTED);
+                printer.hint_commands(
+                    "Enable lingering so the user service can run without an active login:",
+                    &["loginctl enable-linger $USER", "cfgd daemon install"],
                 );
                 return Ok(false);
             }
@@ -255,7 +254,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             Ok(output) => {
                 let detail = crate::stderr_lossy_trimmed(&output);
                 printer.status_simple(
-                    Role::Warn,
+                    Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                     format!(
                         "systemctl {} failed: {}",
                         args.join(" "),
@@ -271,7 +270,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             }
             Err(e) => {
                 printer.status_simple(
-                    Role::Warn,
+                    Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                     format!(
                         "systemctl {} failed: {}",
                         args.join(" "),
@@ -327,16 +326,15 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         return;
     }
     if !crate::systemctl_available() {
-        printer.status_simple(
-            Role::Warn,
-            "systemctl not found — unit file removed but daemon may still be running",
-        );
+        printer
+            .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
+            .detail("unit file removed but daemon may still be running");
         let hint_cmd = if scope == crate::Scope::System {
             "systemctl disable --now cfgd.service".to_string()
         } else {
             "systemctl --user disable --now cfgd.service".to_string()
         };
-        printer.hint(format!("Stop it manually with: {}", hint_cmd));
+        printer.hint(format!("Stop it manually with `{hint_cmd}`"));
         return;
     }
 
@@ -348,7 +346,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     disable.join(" "),
@@ -358,7 +356,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     disable.join(" "),
@@ -386,7 +384,7 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
-        tracing::info!(path = %unit_path.posix(), "removed systemd service");
+        tracing::info!("daemon: removed systemd service at {}", unit_path.posix());
     }
 
     // Reload AFTER removal so systemd drops the now-deleted unit from its view.
@@ -399,7 +397,7 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
         {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "systemctl {} failed: {}",
                     reload.join(" "),
@@ -539,6 +537,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(PathBuf::from("/srv/my state")),
                 runtime_dir: Some(PathBuf::from("/run/my cfgd")),
+                cache_dir: None,
             },
         );
         assert!(
@@ -717,13 +716,13 @@ mod tests {
         let started = start_systemd_service(&printer, crate::Scope::User).expect("ok(false)");
         assert!(!started, "missing systemctl cannot start the service");
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("systemctl not found — daemon installed but not started"),
             "expected not-found warning: {out}"
         );
         assert!(
-            out.contains("Start it later with: systemctl --user enable --now cfgd.service"),
+            out.contains("Start it later with `systemctl --user enable --now cfgd.service`"),
             "user-scope hint must carry the --user form: {out}"
         );
     }
@@ -742,9 +741,9 @@ mod tests {
         let started = start_systemd_service(&printer, crate::Scope::System).expect("ok(false)");
         assert!(!started);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Start it later with: systemctl enable --now cfgd.service"),
+            out.contains("Start it later with `systemctl enable --now cfgd.service`"),
             "system-scope hint must be the bare (no --user) form: {out}"
         );
         assert!(
@@ -764,7 +763,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::User);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.is_empty(),
             "stop under test-home override must produce no output, got: {out}"
@@ -786,13 +785,13 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::User);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("systemctl not found — unit file removed but daemon may still be running"),
             "expected not-found warning: {out}"
         );
         assert!(
-            out.contains("Stop it manually with: systemctl --user disable --now cfgd.service"),
+            out.contains("Stop it manually with `systemctl --user disable --now cfgd.service`"),
             "user-scope hint must carry the --user form: {out}"
         );
     }
@@ -810,9 +809,9 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::System);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Stop it manually with: systemctl disable --now cfgd.service"),
+            out.contains("Stop it manually with `systemctl disable --now cfgd.service`"),
             "system-scope hint must be the bare (no --user) form: {out}"
         );
         assert!(
@@ -830,6 +829,7 @@ mod tests {
         let dirs = DaemonDirOverrides {
             state_dir: Some(PathBuf::from("/srv/cfgd/state")),
             runtime_dir: Some(PathBuf::from("/srv/cfgd/run")),
+            ..Default::default()
         };
         let unit = generate_systemd_unit(
             Path::new("/usr/local/bin/cfgd"),
@@ -863,6 +863,7 @@ mod tests {
         let dirs = DaemonDirOverrides {
             state_dir: Some(PathBuf::from("/srv/cfgd/state")),
             runtime_dir: None,
+            ..Default::default()
         };
         let unit = generate_systemd_unit(
             Path::new("/usr/local/bin/cfgd"),
@@ -910,6 +911,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(state.clone()),
                 runtime_dir: Some(runtime.clone()),
+                ..Default::default()
             },
         )
         .expect("install");

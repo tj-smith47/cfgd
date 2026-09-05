@@ -3,7 +3,7 @@
 cfgd ships pre-built binaries for Linux, macOS, and Windows (amd64 + arm64)
 through the [GitHub Releases page](https://github.com/tj-smith47/cfgd/releases)
 and a number of platform-native package managers. Pick whichever channel best
-fits how you manage tooling on each machine — the binary is identical across
+fits how you manage tooling on each machine: the binary is identical across
 channels.
 
 ## Linux / macOS
@@ -37,10 +37,20 @@ cargo install cfgd
 Useful when no pre-built binary exists for your platform, or when you want a
 debug-symbol-stripped release-mode build compiled against your local toolchain.
 
+### Nix (Linux + macOS)
+
+cfgd is packaged in the [`tj-smith47/nix-pkgs`](https://github.com/tj-smith47/nix-pkgs) flake:
+
+```sh
+nix profile install github:tj-smith47/nix-pkgs#cfgd
+```
+
+The flake also exposes an overlay (`overlays.default`) for NixOS and Home Manager configurations.
+
 ### AUR (Arch Linux)
 
 cfgd is published to the [AUR](https://aur.archlinux.org/packages/cfgd) as a
-source package — it compiles from source on install (the `rust` and `cargo`
+source package: it compiles from source on install (the `rust` and `cargo`
 build dependencies are pulled in automatically). Use any AUR helper:
 
 ```sh
@@ -62,21 +72,21 @@ one matching your distro and install it with the native package manager:
 ```sh
 # Debian / Ubuntu (and derivatives)
 curl -L -o cfgd.deb \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.deb
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.9.0_linux_amd64.deb
 sudo dpkg -i cfgd.deb        # or: sudo apt install ./cfgd.deb
 
 # Fedora / RHEL / Alma / Rocky / Amazon Linux (dnf or yum)
 sudo dnf install \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.rpm
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.9.0_linux_amd64.rpm
 
 # Alpine
 curl -L -o cfgd.apk \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.7.0_linux_amd64.apk
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.9.0_linux_amd64.apk
 sudo apk add --allow-untrusted cfgd.apk
 ```
 
 These packages bundle a statically linked binary, so they install and run on
-**any** Linux distribution regardless of its C library — musl (Alpine) as well
+**any** Linux distribution regardless of its C library: musl (Alpine) as well
 as older glibc releases (Enterprise Linux 7/8/9, Amazon Linux 2, and long-term
 support distributions) that the dynamically linked tarball does not support. The
 packages are also mirrored to a [CloudSmith](https://cloudsmith.io/~jarvispro/repos/cfgd/)
@@ -94,7 +104,7 @@ and `cfgd upgrade` resolve the matching asset for your platform automatically.
 
 ```sh
 curl -L -o cfgd.tar.gz \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.7.0-linux-amd64.tar.gz
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.9.0-linux-amd64.tar.gz
 tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
@@ -114,7 +124,7 @@ install -m 0755 cfgd /usr/local/bin/cfgd
 ## Windows
 
 cfgd publishes signed installers to the three mainstream Windows package
-managers. All three deliver the same binary — pick whichever you already use
+managers. All three deliver the same binary; pick whichever you already use
 to manage tooling on the machine.
 
 ### winget (Windows 11 / App Installer)
@@ -159,13 +169,13 @@ in CI runners or developer images). `choco upgrade cfgd` upgrades, and
 ### Direct download
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.7.0-windows-amd64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.9.0-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath C:\Tools\cfgd
 # Add C:\Tools\cfgd to your PATH (System Properties → Environment Variables)
 ```
 
 Before running the binary on shared hosts, verify the signature with keyless
-cosign — see [Verifying downloads](#verifying-downloads) below.
+cosign: see [Verifying downloads](#verifying-downloads) below.
 
 ### Visual C++ runtime requirement
 
@@ -188,7 +198,8 @@ Once installed by any channel, confirm the binary is on `PATH` and reports a
 sensible version:
 
 ```sh
-cfgd version
+$ cfgd --version
+cfgd 0.9.0
 ```
 
 To verify the signature on a downloaded archive by hand, see
@@ -196,9 +207,9 @@ To verify the signature on a downloaded archive by hand, see
 
 ## Verifying downloads
 
-Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor) —
+Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor):
 there is no long-lived public key to trust. For every archive `<archive>` (for
-example `cfgd-0.7.0-linux-amd64.tar.gz`) the release publishes:
+example `cfgd-0.9.0-linux-amd64.tar.gz`) the release publishes:
 
 | Asset | Purpose |
 |---|---|
@@ -210,7 +221,7 @@ To verify a download, run the two steps below. This is exactly what
 `cfgd upgrade` performs internally:
 
 ```sh
-VER=0.7.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
+VER=0.9.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
 A="cfgd-${VER}-${OS}-${ARCH}.tar.gz"
 base="https://github.com/tj-smith47/cfgd/releases/download/v${VER}"
 curl -fsSLO "$base/$A"
@@ -218,8 +229,8 @@ curl -fsSLO "$base/$A.sha256"
 curl -fsSLO "$base/$A.sha256.cosign.bundle"
 
 # 1. Verify the keyless cosign signature over the checksum file. This proves the
-#    checksum came from cfgd's own release workflow, not just from GitHub asset
-#    hosting.
+#    checksum came from cfgd's own release workflow, not merely from GitHub
+#    asset hosting.
 cosign verify-blob \
   --bundle "$A.sha256.cosign.bundle" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
@@ -239,7 +250,7 @@ Notes:
   orchestrator), and `nightly.yml` on `master` (the rolling prerelease). A
   publisher-compromise attacker cannot mint a passing signature without
   running one of those exact workflows on its canonical ref in cfgd's own
-  repository — replacing the binary and its `.sha256` on a mirror, or signing
+  repository; replacing the binary and its `.sha256` on a mirror, or signing
   from any other workflow or branch, is not enough.
 - Verification requires the [`cosign` CLI](https://docs.sigstore.dev/cosign/system_config/installation/).
   Keyless verification needs network access to the Fulcio/Rekor roots, which
@@ -264,12 +275,12 @@ CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 The verification it performs is the same two steps as
 [Verifying downloads](#verifying-downloads): it verifies the keyless cosign
 signature over the `<archive>.sha256` file (pinned to a canonical-repo release
-workflow identity — the release pipeline signs each asset from the per-crate
+workflow identity: the release pipeline signs each asset from the per-crate
 `publish-crate.yml` leg that `release.yml` invokes), then confirms the archive
 matches that trusted checksum.
 
-By default, if the `cosign` CLI isn't installed locally — or the release lacks
-the cosign bundle — `cfgd upgrade` emits a warning and **falls back to
+By default, if the `cosign` CLI isn't installed locally (or the release lacks
+the cosign bundle) `cfgd upgrade` emits a warning and **falls back to
 SHA256-only** verification, which trusts GitHub Releases asset hosting alone.
 Pass `--require-cosign` (or set `CFGD_REQUIRE_COSIGN=1`) to make signature
 verification mandatory: any condition that would trigger the fallback fails the
@@ -287,8 +298,8 @@ work from the newer binary.
   release that widened it, not "the current release". Every crate version
   in this file is otherwise kept in lockstep with the cfgd version by
   release automation that does a literal old-version-string replace across
-  the whole file, so the digits below are backslash-escaped — an
-  intentional break of the literal match, invisible once rendered — to
+  the whole file, so the digits below are backslash-escaped (an
+  intentional break of the literal match, invisible once rendered) to
   keep that automation from sweeping a historical fact forward and making
   it false.
 -->
@@ -296,10 +307,10 @@ work from the newer binary.
 > signer identity to `release.yml` alone, but assets are actually signed by
 > the `publish-crate.yml` leg. Keyless verification of a newer release
 > therefore fails closed on v0\.5\.0 when `cosign` is present (no SHA256
-> fallback — that is the intended fail-closed behavior). Reinstall once via
+> fallback; that is the intended fail-closed behavior). Reinstall once via
 > any install method above to get the v0\.6\.0+ binary, which pins the
 > identity at the repository level and accepts the real signer; self-upgrade
-> then works. Hosts **without** the `cosign` CLI are unaffected — they take
+> then works. Hosts **without** the `cosign` CLI are unaffected: they take
 > the documented SHA256 fallback.
 
 ## Containers and Kubernetes
@@ -322,7 +333,7 @@ kubectl krew install cfgd
 ```
 
 The plugin ships inside the same `cfgd` binary and dispatches on `argv[0]`,
-so installing via any other channel works too — symlink (or copy) the
+so installing via any other channel works too: symlink (or copy) the
 binary as `kubectl-cfgd` somewhere on `PATH` and kubectl picks it up:
 
 ```sh
@@ -361,28 +372,30 @@ lookup, that field degrades gracefully (`not connected` / `not deployed` /
 
 ```sh
 $ kubectl cfgd version
-Client        0.7.0
+Client        0.9.0
 Server (k8s)  1.31
 Operator      0.7.0
 CSI           0.7.0
 
 $ kubectl cfgd version --namespace cfgd-system -o json
 {
-  "version": "0.7.0",
+  "version": "0.9.0",
   "kubectl": "1.31",
   "operator": "0.7.0",
   "csi": "0.7.0",
-  "cfgd": "0.7.0"
+  "cfgd": "0.9.0"
 }
 ```
 
+The client version tracks the cfgd release; the operator and CSI versions are the components' own releases, which move on their own cadence. The Helm chart's `appVersion` follows the cfgd crate and supplies the agent image tag only: the operator and CSI image tags are pinned to their own crate versions in `values.yaml`.
+
 ## Next steps
 
-- [Bootstrap a config](bootstrap.md) — `cfgd init` against a git repo or a
+- [Bootstrap a config](bootstrap.md): `cfgd init` against a git repo or a
   fresh local directory
-- [Configuration reference](configuration.md) — full YAML schema (including
+- [Configuration reference](configuration.md): full YAML schema (including
   Windows-specific behaviors)
-- [Package manager reference](packages.md) — `winget`, `chocolatey`, `scoop`,
+- [Package manager reference](packages.md): `winget`, `chocolatey`, `scoop`,
   and the cross-platform managers cfgd uses *inside* configs
-- [Daemon setup](daemon.md) — installing the reconciliation daemon as a
+- [Daemon setup](daemon.md): installing the reconciliation daemon as a
   systemd service, launchd agent, or Windows Service

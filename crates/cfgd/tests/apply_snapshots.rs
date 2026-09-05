@@ -33,7 +33,6 @@ use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
-#[cfg(unix)]
 use common::profile_with_packages_setup;
 use common::{
     apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
@@ -49,7 +48,9 @@ fn happy_output() -> ApplyOutput {
         status: "success".to_string(),
         apply_id: Some(42),
         succeeded: 3,
+        skipped: 0,
         failed: 0,
+        not_attempted: 0,
         source_commits,
         backups: vec![],
     }
@@ -74,6 +75,29 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, 
 /// fold any surviving `\` so a Windows capture matches the same golden.
 fn normalize_duration(raw: &str) -> String {
     cfgd_core::normalize_snapshot_durations(raw).replace('\\', "/")
+}
+
+/// Collapse the alignment padding ahead of an action row's trailing column.
+///
+/// The report's column is measured on the REAL subjects, and a subject holding
+/// a host temp path is substituted for a short placeholder only afterwards —
+/// so the padding left beside the other rows encodes the length of THIS host's
+/// temp dir. A golden pinning structure, order and labels must not also pin
+/// that; the column itself is a renderer unit test
+/// (`output::renderer::status`), where the subjects are literals.
+fn collapse_alignment_padding(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.split_inclusive('\n') {
+        let mut folded = line.to_string();
+        for marker in ['(', '\u{2014}'] {
+            let pair = format!("  {marker}");
+            while let Some(idx) = folded.find(&pair) {
+                folded.remove(idx);
+            }
+        }
+        out.push_str(&folded);
+    }
+    out
 }
 
 #[test]
@@ -251,7 +275,6 @@ fn apply_with_failures_human() {
 /// under the profile's own label, and a serial `Files` phase below both. The
 /// golden pins structure, order and labels — a capture sink never wraps, so
 /// the per-line alignment budget stays a renderer unit test.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn apply_phase_tree_human() {
@@ -277,7 +300,7 @@ fn apply_phase_tree_human() {
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
-    let stripped = normalize_duration(&strip_ansi(&normalized));
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
 }
 

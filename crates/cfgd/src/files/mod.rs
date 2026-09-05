@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tera::{Context, Tera};
+use tera::Context;
 
 use cfgd_core::config::{EnvVar, FileStrategy, ResolvedProfile};
-use cfgd_core::errors::{FileError, Result};
+use cfgd_core::errors::Result;
 
 mod apply;
 mod plan;
@@ -20,7 +20,7 @@ pub(crate) use template::is_tera_template;
 /// Concrete FileManager implementation for cfgd.
 /// Manages files declared in profiles: copy, template, diff, permissions.
 pub struct CfgdFileManager {
-    tera: Mutex<Tera>,
+    tera: Mutex<template::TemplateEngines>,
     context: Context,
     config_dir: PathBuf,
     secret_backend: Option<Box<dyn cfgd_core::providers::SecretBackend>>,
@@ -40,9 +40,6 @@ impl CfgdFileManager {
     /// `config_dir` is the directory containing cfgd.yaml (used to resolve relative source paths).
     /// `resolved` is the fully resolved profile with merged env vars.
     pub fn new(config_dir: &Path, resolved: &ResolvedProfile) -> Result<Self> {
-        let mut tera = Tera::default();
-        tera.autoescape_on(Vec::<&str>::new());
-
         let mut context = Context::new();
 
         // Flat profile env vars
@@ -58,7 +55,7 @@ impl CfgdFileManager {
         context.insert("sources", &sources);
 
         Ok(Self {
-            tera: Mutex::new(tera),
+            tera: Mutex::new(template::TemplateEngines::new()),
             context,
             config_dir: config_dir.to_path_buf(),
             secret_backend: None,
@@ -97,18 +94,4 @@ impl CfgdFileManager {
         self.secret_backend = backend;
         self.secret_providers = providers;
     }
-}
-
-/// Check whether a file is encrypted with the given backend.
-///
-/// - `"sops"`: parses the file as YAML or JSON and checks for a top-level `sops` key
-///   that contains both `mac` and `lastmodified` sub-keys, which SOPS always writes.
-///   This avoids false positives from files that merely mention "sops" in comments.
-/// - `"age"`: checks whether the file begins with the `age-encryption.org` magic header.
-/// - Any other backend: returns `FileError::UnknownEncryptionBackend`.
-pub(crate) fn is_file_encrypted(
-    path: &Path,
-    backend: &str,
-) -> std::result::Result<bool, FileError> {
-    cfgd_core::is_file_encrypted(path, backend)
 }

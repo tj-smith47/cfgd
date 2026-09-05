@@ -1,8 +1,9 @@
 Doctor
-✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
 
-Name     test-host
-Profile  default
+Config
+  ✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
+  Name     test-host
+  Profile  default
 
 Tools
   ✓ git: found
@@ -12,8 +13,8 @@ Secrets
   ✓ age key: /home/test/.config/sops/age/keys.txt
   ✓ .sops.yaml: /home/test/.config/cfgd/.sops.yaml
 
-System
+Installation
   ✓ State store: accessible
   ✓ Profiles directory: /home/test/.config/cfgd/profiles (0 profiles)
 
-✓ All checks passed
+✓ Passed every check

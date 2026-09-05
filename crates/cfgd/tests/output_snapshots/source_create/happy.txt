@@ -1,4 +1,4 @@
 ✓ Created cfgd-source.yaml at <CONFIG_DIR>/cfgd-source.yaml
-⊙ Included 1 profile: default
+◉ Included 1 profile: default
 
-→ Edit the file to configure policy tiers and platform-profiles
+→ Edit the manifest to configure policy tiers and platform-profiles, then run `cfgd source validate <CONFIG_DIR>/cfgd-source.yaml`

@@ -1,0 +1,24 @@
+cfgd Directories
+  Scope  user
+
+Config
+  Directory  /home/you/.config/cfgd
+  Source     default
+  File       /home/you/.config/cfgd/cfgd.yaml
+
+State
+  Directory   /home/you/.local/state/cfgd
+  Source      default
+  Database    /home/you/.local/state/cfgd/state.db
+  Apply Lock  /home/you/.local/state/cfgd/apply.lock
+
+Cache
+  Directory  /home/you/.cache/cfgd
+  Source     default
+  Sources    /home/you/.cache/cfgd/sources
+  Modules    /home/you/.cache/cfgd/modules
+
+Runtime
+  Directory  /run/user/1000/cfgd
+  Source     default
+  Socket     /run/user/1000/cfgd/cfgd.sock

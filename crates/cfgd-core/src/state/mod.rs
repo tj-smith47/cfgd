@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -14,6 +15,7 @@ mod decisions;
 mod drift;
 mod journal;
 mod managed;
+pub use managed::{HashRefresh, package_resource_id, split_package_resource_id};
 mod modules;
 mod package_prefix;
 mod pending_config;
@@ -21,16 +23,18 @@ mod sources;
 mod types;
 
 pub use decisions::RESOLUTION_AUTO_ACCEPTED;
-pub use package_prefix::PackageManagerPrefixRecord;
 pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
     save_pending_server_config,
 };
+pub use sources::ConfigSourceUpsert;
 pub use types::{
-    ApplyRecord, ApplyStatus, BackupRunDraft, BackupRunRecord, BackupRunStatus,
-    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord, JournalEntry,
-    ManagedResource, ModuleFileRecord, ModuleStateRecord, PendingDecision, SourceConfigHash,
-    SourceConflictRecord,
+    ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunRecord, BackupRunStatus,
+    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, DriftVerdict, ENV_SESSION_RESOURCE_ID,
+    FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
+    ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
+    SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
+    module_status_display, source_status_display,
 };
 
 /// Canonical state DB filename. The single source of truth so the default and
@@ -441,6 +445,186 @@ const MIGRATIONS: &[&str] = &[
     // never the journal.
     "ALTER TABLE apply_journal ADD COLUMN completion_index INTEGER;
      UPDATE apply_journal SET completion_index = action_index;",
+    // Migration 15: a single-row record of the last time this machine was
+    // actually SCANNED for drift (a live `diff`/`verify`/`status --scan` pass,
+    // or a daemon reconcile tick) — distinct from `drift_events`, which holds
+    // rows only while something is actively drifting and goes empty on a
+    // clean host. Without this a clean host has no signal at all for whether
+    // its recorded-state `status` dashboard reflects a check from five
+    // seconds ago or five weeks ago. `id = 1` pins it to one row: there is
+    // exactly one "last scan" per machine, and an UPSERT keyed on that fixed
+    // id is simpler than a MAX(timestamp) query over a growing table.
+    "CREATE TABLE IF NOT EXISTS last_scan (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        timestamp TEXT NOT NULL
+    );",
+    // Migration 16: a column no longer read. It once told a restore's safety
+    // copy apart from a run of the unit, back when the copy was stored as one
+    // of the unit's snapshots; the copy now lives beside the source as a
+    // `.cfgd-backup` sidecar and writes no row at all. A legacy `safety` row
+    // still names a payload inside the unit's destination, and reads as the
+    // ordinary snapshot it physically is. Migrations are append-only, so the
+    // column stays.
+    "ALTER TABLE backup_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'run';",
+    // Migration 17: what the source declared for the item this row asks
+    // about. Without it the only change signal was a hash over the source's
+    // whole delivered set, which re-asked every answered item whenever an
+    // unrelated item joined the set, and never re-asked an item whose own
+    // declared value changed while the set stood still. NULL is "not
+    // fingerprinted yet" and is deliberately not backfilled: the classifier
+    // stamps the current fingerprint onto such a row without asking, so an
+    // answer given before this column existed survives the upgrade.
+    "ALTER TABLE pending_decisions ADD COLUMN content_hash TEXT;",
+    // Migration 18: whether the commit a source was last fetched at carried a
+    // signature cfgd would accept. Verification already asked the question on
+    // every load, but only ever as a gate — nothing recorded the answer, so
+    // `source list` could not tell an operator which of their sources are
+    // signed without re-running git against every checkout. NULL is "not
+    // known" (never fetched since this column existed, or a checkout cfgd
+    // could not read) and is deliberately not backfilled to 0: an unsigned
+    // source and an unreadable one are different facts.
+    "ALTER TABLE config_sources ADD COLUMN last_commit_signed INTEGER;",
+    // Migration 19: the per-file breakdown behind `last_hash` for a link-deployed
+    // row, one `<path>:<sha256>` per line. `last_hash` is one aggregate over
+    // every file a row stands for, so it can say THAT something moved but never
+    // HOW MUCH: a one-line edit under a 52-file module tree read as 52 files
+    // refreshed. NULL is "no breakdown recorded yet" and is backfilled silently
+    // by the first refresh that sees the row; a refresh that finds no prior
+    // breakdown reports no count rather than the row's coverage.
+    "ALTER TABLE managed_resources ADD COLUMN file_hashes TEXT;",
+    // Migration 20, two halves of one drift-identity settlement. The index:
+    // `record_drift` is an UPDATE-then-SELECT per recorded row over a table
+    // that only grows, and it, the per-key resolvers and the set-based
+    // resolvers' row-value `IN` all seek this index; only the complement
+    // (`NOT IN`) resolver still examines every unresolved row, which is
+    // inherent to a complement. The retype: the daemon once recorded a
+    // failed provision as `('manager', 'provision:<name>')` while the CLI's
+    // live check mints `('package', 'provision:<name>')` — two spellings of
+    // one finding, and nothing on a CLI-only host resolves the `manager`
+    // one. A legacy row with a standing `package` twin is the duplicate and
+    // resolves; one without a twin is the only record of the finding and is
+    // retyped so the live check and the apply can settle it. Resolved rows
+    // keep their recorded type — history describes what was written.
+    "CREATE INDEX IF NOT EXISTS idx_drift_events_resource
+         ON drift_events (resource_type, resource_id);
+
+     UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'package'
+                        AND p.resource_id = drift_events.resource_id
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_type = 'package'
+       WHERE resource_type = 'manager'
+         AND resource_id GLOB 'provision:*'
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 21: migration 20's sweep for the `refuse:` twin the daemon
+    // recorded beside every failed provision cascade. A separate entry rather
+    // than a widened 20 because stores already sit at schema_version 21 —
+    // 20's provision-only form ran there, and the runner never revisits an
+    // entry a store's version says is done, so an edit to 20 would strand
+    // those stores' `refuse:` rows forever. Both predicates repeat so a store
+    // that skipped 20's sweep entirely is still settled whole; on one that
+    // ran it, the `provision:` half matches nothing. Same order for the same
+    // reason: resolve the twinned rows first, then retype the lone ones.
+    "UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'manager'
+         AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'package'
+                        AND p.resource_id = drift_events.resource_id
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_type = 'package'
+       WHERE resource_type = 'manager'
+         AND (resource_id GLOB 'provision:*' OR resource_id GLOB 'refuse:*')
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 22: the `file` tracking rows a permissions fix wrote under the
+    // old id. `file:chmod:<mode>:<target>` dropped only its verb, so the mode
+    // stayed glued to the path and every `SetPermissions` apply recorded
+    // `0o600:/etc/config.yaml`. The parse now yields the bare target, and
+    // nothing sweeps `managed_resources` on observation (see this module's
+    // schema notes), so the old rows would sit in `cfgd status` forever
+    // beside their corrected twins. Deleting them is safe by migration 9's
+    // reasoning: a file row is bookkeeping the next apply re-derives, and it
+    // carries no `uninstall_cmd` for anything to act on.
+    "DELETE FROM managed_resources
+       WHERE resource_type = 'file' AND resource_id GLOB '0o[0-7]*:*';",
+    // Migration 23: the `system` drift rows a daemon tick recorded under the
+    // action grammar's own `<configurator>:<key>`, where every other producer
+    // and every resolver spells `<configurator>.<key>`. Nothing matched them,
+    // so an apply that converged the setting left the row standing and the CLI
+    // scan kept it by design — on a host whose daemon has since stopped, no
+    // surface could ever resolve it. Same order and same reasoning as
+    // migrations 20/21: a row whose dot-spelled twin already stands is the
+    // duplicate and resolves, a lone one is respelled onto the grammar its
+    // healers match. Split on the FIRST colon and only where nothing before it
+    // is a dot: no registered configurator name carries either character,
+    // while a KEY carries both (`windowsRegistry.HKCU:\Software\...`), so an
+    // id already dot-spelled is left exactly as it is. Resolved rows keep
+    // their recorded id — history describes what was written.
+    "UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'system'
+         AND instr(resource_id, ':') > 1
+         AND instr(substr(resource_id, 1, instr(resource_id, ':') - 1), '.') = 0
+         AND resolved_by IS NULL AND resolved_at IS NULL
+         AND EXISTS (SELECT 1 FROM drift_events p
+                      WHERE p.resource_type = 'system'
+                        AND p.resource_id =
+                            substr(drift_events.resource_id, 1,
+                                   instr(drift_events.resource_id, ':') - 1)
+                            || '.'
+                            || substr(drift_events.resource_id,
+                                      instr(drift_events.resource_id, ':') + 1)
+                        AND p.resolved_by IS NULL AND p.resolved_at IS NULL);
+
+     UPDATE drift_events
+         SET resource_id = substr(resource_id, 1, instr(resource_id, ':') - 1)
+                           || '.'
+                           || substr(resource_id, instr(resource_id, ':') + 1)
+       WHERE resource_type = 'system'
+         AND instr(resource_id, ':') > 1
+         AND instr(substr(resource_id, 1, instr(resource_id, ':') - 1), '.') = 0
+         AND resolved_by IS NULL AND resolved_at IS NULL;",
+    // Migration 24: the `module` rows a pre-fix daemon tick recorded for a
+    // module it skipped WHOLE (a platform gate, an encryption backend this
+    // host cannot read). Nothing under such a module was ever probed, so the
+    // row stood for no finding; it is minted by no producer now, healed by no
+    // apply, and re-found by no CLI check — `<name>:skip` names no file — so
+    // on an upgraded host it would stand forever and hold every `--exit-code`
+    // surface at 5 with no command able to clear it. Resolving it is safe by
+    // migration 23's reasoning, and deleting its tracking row by migration
+    // 9's: a module row is bookkeeping the next apply re-derives, carrying no
+    // `uninstall_cmd` for anything to act on.
+    //
+    // The predicate is `module_row_facet`'s, spelled in SQL: that reader judges
+    // the FIRST separator, so only `<name>:skip` with no earlier `:` or `/` is
+    // a skip row. A `GLOB '*:skip'` is broader and would resolve a row whose
+    // own grammar happens to end in those five characters
+    // (`mod:extra:skip`, `mod/path:skip`) — rows this migration was never
+    // about, and which no producer of a skip row can mint.
+    "UPDATE drift_events
+         SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE resource_type = 'module'
+         AND resource_id LIKE '%:skip'
+         AND instr(resource_id, ':') = length(resource_id) - 4
+         AND instr(resource_id, '/') = 0
+         AND resolved_by IS NULL AND resolved_at IS NULL;
+
+     DELETE FROM managed_resources
+       WHERE resource_type = 'module'
+         AND resource_id LIKE '%:skip'
+         AND instr(resource_id, ':') = length(resource_id) - 4
+         AND instr(resource_id, '/') = 0;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
@@ -481,6 +665,42 @@ fn register_sql_functions(conn: &Connection) -> Result<()> {
 /// SQLite-backed state store for cfgd.
 pub struct StateStore {
     pub(in crate::state) conn: Connection,
+    /// Set for the duration of an [`StateStore::in_transaction`] call, so a
+    /// nested call is caught at the call site that broke the rule instead of
+    /// surfacing as a generic `BEGIN`-inside-`BEGIN` database error.
+    in_transaction: Cell<bool>,
+}
+
+/// Rolls back an open [`StateStore::in_transaction`] batch unless it committed.
+///
+/// The `?` in `in_transaction` is what makes this a guard rather than a match
+/// arm: an early return from `f` must not leave the connection inside a
+/// transaction, because every later write on this store would then join a batch
+/// nobody will commit.
+struct TransactionGuard<'a> {
+    conn: &'a Connection,
+    finished: bool,
+}
+
+impl Drop for TransactionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+/// Clears [`StateStore::in_transaction`]'s nesting flag on drop, so an early
+/// `?` return or a panic inside `f` still leaves the next, sequential call
+/// free to proceed rather than finding the flag stuck `true` forever.
+struct NestingGuard<'a> {
+    flag: &'a Cell<bool>,
+}
+
+impl Drop for NestingGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.set(false);
+    }
 }
 
 impl StateStore {
@@ -488,6 +708,26 @@ impl StateStore {
     /// Uses `~/.local/state/cfgd/state.db`.
     pub fn open_default() -> Result<Self> {
         Self::open_in_dir(&default_state_dir()?)
+    }
+
+    /// The database file this store is connected to, or `None` when it is not
+    /// backed by one.
+    ///
+    /// sqlite answers an EMPTY path for a temporary or in-memory database, which
+    /// is normalized to `None` here so the two "no file" answers are one and a
+    /// caller never asks the filesystem about `""`.
+    ///
+    /// For a holder that keeps a connection open across units of work: cfgd
+    /// itself relocates the database (the legacy-state-dir migration inside
+    /// [`Self::open`]), and a connection survives that relocation attached to an
+    /// inode the path no longer names. Comparing this path's
+    /// [`crate::file_identity`] against the one captured at open is how such a
+    /// holder notices, since neither sqlite nor the filesystem reports it.
+    pub fn db_path(&self) -> Option<&Path> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
     }
 
     /// Open or create the state store at `scope`'s default location — the
@@ -523,13 +763,73 @@ impl StateStore {
     /// Open or create a state store at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // `synchronous=NORMAL` is the WAL-mode counterpart of the default
+        // `FULL`: a committing writer stops fsyncing the WAL on every commit and
+        // syncs at checkpoints instead. It is safe precisely BECAUSE `WAL` is
+        // set on the line beside it — under WAL, `NORMAL` still cannot lose or
+        // corrupt a committed transaction when the PROCESS dies (the WAL is
+        // durable in the page cache and replayed on the next open); the window
+        // it trades away is an OS crash or power loss between commit and
+        // checkpoint, which costs the most recent applies' journal rows on a
+        // machine that just lost power mid-apply. An apply writes one row per
+        // action plus a backup blob per touched file, and paying a disk sync for
+        // each was the single largest fixed cost of a large apply.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+        )?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         register_sql_functions(&conn)?;
 
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            in_transaction: Cell::new(false),
+        };
         store.run_migrations()?;
         Ok(store)
+    }
+
+    /// Run `f` with every write it performs committed as ONE transaction.
+    ///
+    /// Every `StateStore` write method takes `&self` and so runs in SQLite's
+    /// implicit per-statement transaction: a run recording a hundred managed
+    /// resources took a hundred commits, each one a WAL write and (before
+    /// `synchronous=NORMAL`) a disk sync. Wrap a LOOP of writes in this and the
+    /// whole loop costs one.
+    ///
+    /// `f` returning `Err` rolls the batch back, so a partially-recorded loop
+    /// never survives the failure that interrupted it — the caller's `?`
+    /// already abandons the run at that point, and half a bookkeeping sweep is
+    /// worse to reason about than none. A panic inside `f` rolls back too, via
+    /// the guard's `Drop`.
+    ///
+    /// NOT for a write whose whole value is being on disk BEFORE the next thing
+    /// happens: the journal's per-action begin/finish rows and the pre-action
+    /// file backups are the record a crashed apply is reconstructed from, and
+    /// batching them would lose exactly the rows describing the action that
+    /// crashed. Transactions do not nest — never call this from inside `f`.
+    /// A debug build catches the violation here, at the call site that broke
+    /// the rule, with a `debug_assert` naming it; release behavior is
+    /// unchanged and still fails with the generic `BEGIN`-inside-`BEGIN`
+    /// database error the inner `BEGIN` reports.
+    pub fn in_transaction<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        debug_assert!(
+            !self.in_transaction.get(),
+            "StateStore::in_transaction does not nest — never call this from inside `f`"
+        );
+        self.in_transaction.set(true);
+        let _nesting_guard = NestingGuard {
+            flag: &self.in_transaction,
+        };
+
+        self.conn.execute_batch("BEGIN")?;
+        let mut guard = TransactionGuard {
+            conn: &self.conn,
+            finished: false,
+        };
+        let value = f()?;
+        self.conn.execute_batch("COMMIT")?;
+        guard.finished = true;
+        Ok(value)
     }
 
     /// Create an in-memory state store (for testing).
@@ -538,7 +838,10 @@ impl StateStore {
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         register_sql_functions(&conn)?;
 
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            in_transaction: Cell::new(false),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -690,14 +993,10 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     // is unset, resolving a home that config discovery cannot — the two
     // subsystems must agree.
     if crate::home_dir_var().is_none() {
-        return Err(StateError::DirectoryNotWritable {
-            path: PathBuf::from("~/.local/state/cfgd"),
-        }
-        .into());
+        return Err(StateError::HomeDirectoryUnresolved { role: "state" }.into());
     }
-    let base = directories::BaseDirs::new().ok_or_else(|| StateError::DirectoryNotWritable {
-        path: PathBuf::from("~/.local/state/cfgd"),
-    })?;
+    let base = directories::BaseDirs::new()
+        .ok_or(StateError::HomeDirectoryUnresolved { role: "state" })?;
     Ok(match base.state_dir() {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),

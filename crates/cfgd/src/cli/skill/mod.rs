@@ -16,13 +16,20 @@ use serde::Serialize;
 
 /// The author-facing resource kinds a skill can teach, as a clap positional
 /// value. Maps 1:1 to [`cfgd_core::generate::SkillKind`] via [`SkillKind::to_core`].
+///
+/// The CRD kinds accept the one-word spelling the validate subcommands use
+/// (`cfgd machineconfig validate`) beside clap's hyphenated default, so the
+/// kind is typed the same way on every surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SkillKind {
     Module,
     Profile,
     Source,
+    #[value(alias = "machineconfig")]
     MachineConfig,
+    #[value(alias = "configpolicy")]
     ConfigPolicy,
+    #[value(alias = "clusterconfigpolicy")]
     ClusterConfigPolicy,
 }
 
@@ -213,11 +220,14 @@ fn validate_provider_ids(
 ) -> anyhow::Result<()> {
     for name in providers {
         if !all.iter().any(|p| p.id() == name) {
-            let valid: Vec<&str> = all.iter().map(|p| p.id()).collect();
-            return Err(anyhow!(
-                "unknown provider '{name}'; valid providers: {}",
-                valid.join(", ")
-            ));
+            let valid: Vec<String> = all.iter().map(|p| p.id().to_string()).collect();
+            return Err(cfgd_core::errors::CfgdError::Skill(
+                cfgd_core::errors::SkillError::UnknownProvider {
+                    name: name.clone(),
+                    valid,
+                },
+            )
+            .into());
         }
     }
     Ok(())
@@ -258,8 +268,14 @@ fn results_section(heading: String, results: &[SkillInstallResult]) -> Doc {
     Doc::new().section(heading, |mut sec| {
         for r in results {
             let role = if r.warn { Role::Warn } else { r.status.role() };
+            // The stored/`-o json` path stays as recorded; the row folds it
+            // like every other display slot naming a path.
             let subject = match &r.path {
-                Some(path) => format!("{}: {path}", r.provider),
+                Some(path) => format!(
+                    "{}: {}",
+                    r.provider,
+                    cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(path))
+                ),
                 None => r.provider.clone(),
             };
             sec = sec.status_with(role, subject, |f| match &r.reason {
@@ -412,7 +428,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
     let heading = format!("Installed skills ({} scope)", scope_word(scope));
     let doc = if installed.is_empty() {
         Doc::new().section(heading, |sec| {
-            sec.status_with(Role::Info, "no skills installed".to_string(), |f| f)
+            sec.status_with(Role::Info, "No skills installed".to_string(), |f| f)
         })
     } else {
         Doc::new().section(heading, |mut sec| {
@@ -422,7 +438,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
                     "{}/{}: {} ({})",
                     s.provider,
                     s.kind.as_str(),
-                    s.path.display(),
+                    cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&s.path)),
                     version
                 );
                 let role = if s.stale { Role::Warn } else { Role::Ok };
@@ -511,7 +527,10 @@ pub fn cmd_skill_remove(
         let id = provider.id().to_string();
         match provider.remove(core_kind, scope, env!("CARGO_PKG_VERSION")) {
             Ok(Some(path)) => results.push(SkillInstallResult::removed(id, path)),
-            Ok(None) => results.push(SkillInstallResult::skipped(id, "not installed")),
+            Ok(None) => results.push(SkillInstallResult::skipped(
+                id,
+                cfgd_core::Absence::NotInstalled.as_str(),
+            )),
             Err(e) => {
                 any_failure = true;
                 results.push(SkillInstallResult::failed(id, install_failure_reason(&e)));
@@ -521,7 +540,7 @@ pub fn cmd_skill_remove(
     for provider in &not_installed {
         results.push(SkillInstallResult::skipped(
             provider.id().to_string(),
-            "not installed",
+            cfgd_core::Absence::NotInstalled.as_str(),
         ));
     }
 
@@ -608,7 +627,10 @@ pub fn cmd_skill_update(
         for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
             let id = provider.id().to_string();
             if !skill_already_installed(provider.as_ref(), kind, scope) {
-                results.push(SkillInstallResult::skipped(id, "not installed"));
+                results.push(SkillInstallResult::skipped(
+                    id,
+                    cfgd_core::Absence::NotInstalled.as_str(),
+                ));
                 continue;
             }
             let r = update_one(provider.as_ref(), core_kind, scope);
@@ -637,4 +659,77 @@ pub fn cmd_skill_update(
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every CRD kind is typed the way its validator subcommand spells it
+    /// (`cfgd machineconfig validate` → `cfgd skill install machineconfig`),
+    /// beside clap's hyphenated default, so a kind is one word on every surface.
+    #[test]
+    fn crd_skill_kinds_accept_the_validator_spelling() {
+        use clap::ValueEnum;
+        for (kind, spellings) in [
+            (
+                SkillKind::MachineConfig,
+                ["machineconfig", "machine-config"],
+            ),
+            (SkillKind::ConfigPolicy, ["configpolicy", "config-policy"]),
+            (
+                SkillKind::ClusterConfigPolicy,
+                ["clusterconfigpolicy", "cluster-config-policy"],
+            ),
+        ] {
+            for spelling in spellings {
+                assert_eq!(
+                    SkillKind::from_str(spelling, false).ok(),
+                    Some(kind),
+                    "{spelling}"
+                );
+            }
+        }
+    }
+
+    /// `--provider <unknown>` (shared by `skill install`/`remove`/`update`
+    /// through `validate_provider_ids`) must carry the typed
+    /// `SkillError::UnknownProvider` — not a bare `anyhow!` — so the exit
+    /// code resolves to `NotFound` (6) and `-o json` gets the stable
+    /// `{"error":"not_found",...}` payload uniform with every other named
+    /// lookup miss in the CLI (unknown module, profile, backup name, …).
+    #[test]
+    fn validate_provider_ids_unknown_name_is_a_typed_not_found_error() {
+        let all = all_skill_providers();
+        let err = validate_provider_ids(&all, &["no-such-provider".to_string()]).unwrap_err();
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("an unknown --provider name must carry the typed SkillError::UnknownProvider");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Skill(
+                    cfgd_core::errors::SkillError::UnknownProvider { .. }
+                )
+            ),
+            "expected SkillError::UnknownProvider, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
+        );
+    }
+
+    #[test]
+    fn validate_provider_ids_known_name_passes() {
+        let all = all_skill_providers();
+        let first_id = all[0].id().to_string();
+        assert!(validate_provider_ids(&all, &[first_id]).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_ids_empty_list_is_auto_mode_and_passes() {
+        let all = all_skill_providers();
+        assert!(validate_provider_ids(&all, &[]).is_ok());
+    }
 }

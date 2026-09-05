@@ -14,8 +14,8 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// directory is owner-private. Used by `run_health_server` to guarantee the
 /// IPC socket cannot be dropped into a world-traversable location. Refuses
 /// to proceed if the final mode has any group/other bits set — an attacker
-/// with `+w` on the parent could rename our socket and substitute theirs,
-/// defeating the 0600 we set on the socket itself.
+/// with `+w` on the parent could rename the socket and substitute theirs,
+/// defeating the 0600 set on the socket itself.
 ///
 /// The check is mode-only: it covers the umask-leak case
 /// (mkdir under default 0o022 leaving 0755) as well as operator-pre-created
@@ -68,7 +68,7 @@ pub(crate) async fn run_health_server(
 
     // Stale socket from a crashed daemon — `UnixListener::bind` would error
     // with EADDRINUSE. `check_already_running` cleans up the dead-daemon case
-    // before we get here, but a stale leftover from a kill -9 still slips
+    // before this point, but a stale leftover from a kill -9 still slips
     // through; remove it best-effort.
     if ipc_path_buf.exists() {
         let _ = std::fs::remove_file(&ipc_path_buf);
@@ -340,8 +340,8 @@ pub fn query_daemon_status(
     // Cap total bytes read from the daemon so a hijacked or hostile peer
     // can't stream multi-GiB garbage and OOM the CLI. The `Take` wrapper
     // returns Ok(0) once `MAX_RESPONSE_BYTES` are consumed, which BufRead
-    // reports as a clean EOF — we then look at the underlying `limit()`
-    // to distinguish "real EOF" from "cap reached".
+    // reports as a clean EOF — the underlying `limit()` then distinguishes
+    // "real EOF" from "cap reached".
     let mut limited = std::io::Read::take(&mut stream, MAX_RESPONSE_BYTES);
     let reader = BufReader::new(&mut limited);
     let mut lines: Vec<String> = Vec::new();
@@ -359,7 +359,7 @@ pub fn query_daemon_status(
         }
     }
 
-    // `Take::limit()` is the remaining unread budget; zero means we hit the cap
+    // `Take::limit()` is the remaining unread budget; zero means the cap was hit
     // before the peer closed the socket, i.e. the response was truncated.
     if limited.limit() == 0 {
         return Err(DaemonError::HealthSocketError {
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn ensure_owner_private_dir_refuses_world_traversable_after_chmod_recovery() {
         // ensure_owner_private_dir attempts to chmod the dir to 0700. If the
-        // chmod fails (we make the path immutable-style via a symlink to a
+        // chmod fails (the path is made immutable-style via a symlink to a
         // file), the function errors out. Cheaper alternative: feed it a path
         // that points at a regular file — create_dir_all errors, surfacing
         // the HealthSocketError.
@@ -464,6 +464,7 @@ mod tests {
         };
         let mut waited = 0;
         while socket_mode(&sock) != Some(0o600) && waited < 200 {
+            // sleep-ok: bounded poll on a filesystem permission side effect, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             waited += 1;
         }
@@ -535,6 +536,7 @@ mod tests {
         // stale file was removed and a fresh listener bound in its place.
         let mut got_response = None;
         for _ in 0..50 {
+            // sleep-ok: bounded retry loop on the socket's own connect result, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let Ok(mut client) = UnixStream::connect(&sock).await else {
                 continue;
@@ -591,10 +593,10 @@ mod tests {
         std::thread::spawn(move || {
             if let Ok((mut conn, _)) = listener.accept() {
                 // Drain the request line + headers (until blank line) so the
-                // client's write side completes before we respond.
+                // client's write side completes before responding.
                 let mut buf = [0u8; 1024];
                 // A single read is enough: the client's request is well under 1 KiB
-                // and we don't need every byte — we just need the kernel buffer
+                // and not every byte is needed — only the kernel buffer needs to be
                 // drained enough that our write isn't blocked.
                 let _ = conn.read(&mut buf);
                 let _ = conn.write_all(raw_response);
@@ -634,7 +636,7 @@ mod tests {
         assert_eq!(status.drift_count, 7, "driftCount → drift_count mapping");
         assert_eq!(status.sources.len(), 1);
         assert_eq!(status.sources[0].name, "remote");
-        assert_eq!(status.sources[0].drift_count, 2);
+        assert_eq!(status.sources[0].drift_count, Some(2));
         assert_eq!(status.sources[0].status, "degraded");
         assert!(status.update_available.is_none(), "absent field → None");
     }

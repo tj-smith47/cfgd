@@ -1,6 +1,9 @@
 Phase: System
   profile:snapshot
     ✓ set seccomp.default-audit: missing → present
-      ⊙ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json
 
 ✓ seccomp profiles applied
+
+Caveats
+  profile:snapshot
+    ◉ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json

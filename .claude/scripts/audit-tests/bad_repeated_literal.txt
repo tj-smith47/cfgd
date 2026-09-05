@@ -1,0 +1,13 @@
+# EXPECTED: caught — this ordinary (non-attribute) string literal repeats 3
+# times outside any wrapped attribute, so the DRY gate must still fire.
+fn one() -> &'static str {
+    "this literal is deliberately long enough to trip the DRY gate"
+}
+
+fn two() -> &'static str {
+    "this literal is deliberately long enough to trip the DRY gate"
+}
+
+fn three() -> &'static str {
+    "this literal is deliberately long enough to trip the DRY gate"
+}

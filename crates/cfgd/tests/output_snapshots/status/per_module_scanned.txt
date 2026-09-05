@@ -1,0 +1,20 @@
+Status: dev-tools
+  Status        Drifted
+  Last Applied  5m ago
+  Packages      2
+  Files         12
+  Shell         3
+    Aliases     1
+    Env         2
+  Scripts       3
+    preApply    1
+    postApply   2
+  System        shell
+  Dependencies  base
+
+Drift
+  ⚠ module:dev-tools:files /home/user/.config/nvim/init.lua — content differs
+  ⚠ module:dev-tools:files /home/user/.zshrc                — content differs
+  ⚠ module:dev-tools:packages ripgrep                       — not installed
+
+→ Run `cfgd apply --module dev-tools` to reconcile

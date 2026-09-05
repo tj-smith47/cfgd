@@ -1,0 +1,9 @@
+{
+  "artifact": "<REGISTRY>/test/image:v1",
+  "attested": false,
+  "base": null,
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "locked": null,
+  "platform": "<PLATFORM>",
+  "signed": false
+}

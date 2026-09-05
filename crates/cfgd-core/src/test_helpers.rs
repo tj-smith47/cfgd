@@ -1,3 +1,38 @@
+//! Reusable test mocks, builders and RAII pins for the process-global state a
+//! test cannot otherwise reach.
+//!
+//! Compiled under `#[cfg(any(test, feature = "test-helpers"))]` (`lib.rs`),
+//! so this module is part of every `cargo doc --all-features` render even
+//! though only a consumer enabling `test-helpers` sees it outside a test build.
+//!
+//! # Which exclusion a TTL guard needs
+//!
+//! Every memo ceiling here is one process-global atomic and a test binary is
+//! one process, so a concurrent pin from another test is visible. What that
+//! costs is decided by what the test ASSERTS on, and the guards answer it three
+//! different ways on purpose — copying a sibling's answer is how a test ends up
+//! excluding the wrong thing. Ask what a concurrent pin could do to the claim:
+//!
+//! - the test asserts on an ANSWER the memo returns (`command_path` resolves
+//!   this binary): a longer ceiling only lets entries live longer and a zero one
+//!   only recomputes them, so neither changes the answer. No exclusion —
+//!   `CommandPathMemoTtlGuard` carries none.
+//! - the test asserts on a COUNT of the work the memo saved (one version query,
+//!   one enumeration, one reused derivation): another test's zero pin makes the
+//!   memoized answer recompute, which is exactly the number being measured. A
+//!   named `serial_test` group, declared at every call site
+//!   (`available_version_memo`, `enumeration_memo`, `tick_cache_reuse`; the
+//!   availability sweep shares the UNNAMED group its own count tests use).
+//! - the test asserts WHETHER SOMETHING HAPPENED at all (a transfer was
+//!   attempted, or was spared), which is not a counter that can share a group:
+//!   the lock inside the guard (`GitRefreshWindowGuard`), taken by construction
+//!   so no call site can forget it.
+//!
+//! The lock is the strongest of the three and still the narrowest: it excludes
+//! other PINS, never an unpinned concurrent reader of the same setting. Any
+//! test whose claim turns on the pinned value must therefore pin — in whichever
+//! direction it needs — rather than assume the default is live.
+
 // Reusable test mocks and builders — gated behind `test-helpers` feature.
 //
 // Provides mock implementations of the core provider traits (FileManager,
@@ -32,6 +67,10 @@ pub struct MockFileManager {
     /// When set, `content_drift` returns this result verbatim instead of deriving
     /// the outcome from on-disk content. Lets tests pin an exact drift shape.
     pub content_drift_result: Mutex<Option<FileDriftResult>>,
+    /// What `link_deployed_content_hashes` reports. Empty by default — the mock
+    /// deploys nothing — so only a test that has recorded a managed row for the
+    /// same target fills it.
+    pub link_deployed: Mutex<Vec<crate::providers::LinkDeployedRow>>,
 }
 
 impl MockFileManager {
@@ -44,7 +83,14 @@ impl MockFileManager {
             content_drift_calls: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
             content_drift_result: Mutex::new(None),
+            link_deployed: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Pin what `link_deployed_content_hashes` reports, so a caller can drive
+    /// the recorded-hash refresh without a real symlink deployment.
+    pub fn set_link_deployed(&self, rows: Vec<crate::providers::LinkDeployedRow>) {
+        *self.link_deployed.lock().unwrap() = rows;
     }
 
     pub fn set_fail_apply(&self, fail: bool) {
@@ -104,6 +150,7 @@ impl crate::providers::FileManager for MockFileManager {
         source: &Path,
         target: &Path,
         _origin: Option<&str>,
+        _strategy: Option<crate::config::FileStrategy>,
     ) -> crate::errors::Result<FileDriftResult> {
         self.content_drift_calls
             .lock()
@@ -124,6 +171,7 @@ impl crate::providers::FileManager for MockFileManager {
                 matches: false,
                 expected: "managed source present".to_string(),
                 actual: "source not found".to_string(),
+                unmanaged: false,
             });
         }
         if !target_path.exists() {
@@ -132,6 +180,7 @@ impl crate::providers::FileManager for MockFileManager {
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
+                unmanaged: false,
             });
         }
         // Only a successful read on BOTH sides counts as a comparison; if either
@@ -149,7 +198,17 @@ impl crate::providers::FileManager for MockFileManager {
             } else {
                 "content differs from source".to_string()
             },
+            unmanaged: false,
         })
+    }
+
+    /// The mock deploys nothing, so it reports no link-deployed content unless
+    /// a test pinned some through [`MockFileManager::set_link_deployed`].
+    fn link_deployed_content_hashes(
+        &self,
+        _profile: &crate::config::MergedProfile,
+    ) -> crate::errors::Result<Vec<crate::providers::LinkDeployedRow>> {
+        Ok(self.link_deployed.lock().unwrap().clone())
     }
 }
 
@@ -925,9 +984,10 @@ impl BareGitRepoBuilder {
         }
 
         BareGitRepo {
+            bare_path: bare_repo.path().to_path_buf(),
             _bare_dir: bare_dir,
             _work_dir: work_dir,
-            bare_repo,
+            bare_repo: Some(bare_repo),
             head_branch,
         }
     }
@@ -940,7 +1000,8 @@ impl BareGitRepoBuilder {
 pub struct BareGitRepo {
     _bare_dir: tempfile::TempDir,
     _work_dir: tempfile::TempDir,
-    bare_repo: git2::Repository,
+    bare_path: std::path::PathBuf,
+    bare_repo: Option<git2::Repository>,
     head_branch: String,
 }
 
@@ -952,12 +1013,41 @@ impl BareGitRepo {
 
     /// The `file://` URL for this bare repo, suitable for clone/fetch.
     pub fn url(&self) -> String {
-        file_url(self.bare_repo.path())
+        file_url(&self.bare_path)
     }
 
     /// The path to the bare repo on disk.
     pub fn path(&self) -> &Path {
-        self.bare_repo.path()
+        &self.bare_path
+    }
+
+    /// Take the upstream out of service, so any later transfer against it
+    /// fails and a cache-served read is provably cache-served.
+    ///
+    /// `remove_dir_all` alone is not portable: this fixture holds the
+    /// repository open, libgit2 keeps mapped packfiles in a process-global
+    /// cache, and Windows refuses to unlink an open or mapped file. The held
+    /// handle is dropped first; if the removal is still refused, the
+    /// repository is broken in place (HEAD, config, refs) until it stops
+    /// answering. Query methods (`has_tag`, `tags`, …) panic after this.
+    // env-mutator-ok: deletes a fixture repo; its `drop(…)` is `std::mem::drop`, not a guard's.
+    pub fn remove_upstream(&mut self) {
+        drop(self.bare_repo.take());
+        if std::fs::remove_dir_all(&self.bare_path).is_ok() {
+            return;
+        }
+        for f in ["HEAD", "config", "packed-refs"] {
+            let _ = std::fs::remove_file(self.bare_path.join(f));
+        }
+        for d in ["refs", "info"] {
+            let _ = std::fs::remove_dir_all(self.bare_path.join(d));
+        }
+    }
+
+    fn repo(&self) -> &git2::Repository {
+        self.bare_repo
+            .as_ref()
+            .expect("the upstream was removed by remove_upstream")
     }
 
     /// The name of the main branch (usually "master" or "main").
@@ -965,23 +1055,58 @@ impl BareGitRepo {
         &self.head_branch
     }
 
+    /// Commit onto the default branch AFTER the fixture was built, the way an
+    /// upstream moves between two of a test's own fetches.
+    ///
+    /// The builder's working clone is gone by then, so the commit is written
+    /// straight into the bare repository: each entry replaces or adds one
+    /// top-level file over the current tip's tree. Paths are single-segment —
+    /// a nested path needs a tree per level and no fixture has wanted one.
+    pub fn publish_commit(&self, message: &str, files: &[(&str, &str)]) -> git2::Oid {
+        let repo = git2::Repository::open_bare(self.path()).expect("open bare repo");
+        let branch_ref = format!("refs/heads/{}", self.head_branch);
+        let parent_oid = repo
+            .refname_to_id(&branch_ref)
+            .expect("resolve head branch");
+        let parent = repo.find_commit(parent_oid).expect("find tip commit");
+        let parent_tree = parent.tree().expect("tip tree");
+
+        let mut builder = repo
+            .treebuilder(Some(&parent_tree))
+            .expect("tree builder over the tip");
+        for (path, content) in files {
+            assert!(
+                !path.contains('/'),
+                "publish_commit takes top-level paths only, got {path}"
+            );
+            let blob = repo.blob(content.as_bytes()).expect("write blob");
+            builder.insert(path, blob, 0o100644).expect("insert blob");
+        }
+        let tree_id = builder.write().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find written tree");
+
+        let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
+        repo.commit(Some(&branch_ref), &sig, &sig, message, &tree, &[&parent])
+            .expect("commit onto the default branch")
+    }
+
     /// Check whether a lightweight tag exists in the bare repo.
     pub fn has_tag(&self, name: &str) -> bool {
-        self.bare_repo
+        self.repo()
             .find_reference(&format!("refs/tags/{name}"))
             .is_ok()
     }
 
     /// Check whether a branch exists in the bare repo.
     pub fn has_branch(&self, name: &str) -> bool {
-        self.bare_repo
+        self.repo()
             .find_reference(&format!("refs/heads/{name}"))
             .is_ok()
     }
 
     /// List all tag names in the bare repo.
     pub fn tags(&self) -> Vec<String> {
-        self.bare_repo
+        self.repo()
             .tag_names(None)
             .map(|names| {
                 names
@@ -1001,10 +1126,10 @@ impl BareGitRepo {
 /// The glyphs a SETTLED status line can start with. A running window's `◐` is
 /// not one: it is repainted in place and is never the action's own line.
 ///
-/// ONE definition on purpose. Two of them is how a side-channel `⊙` came to
+/// ONE definition on purpose. Two of them is how a side-channel `◉` came to
 /// sit beside a tree line for the same action while the fence guarding that
 /// action still read as passing.
-pub const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}'];
+pub const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2205}', '\u{25C9}'];
 
 /// The settled status lines of a captured transcript, trimmed and in order.
 /// Strip ANSI before calling: a styled glyph is preceded by its escape.
@@ -1058,6 +1183,95 @@ pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
 /// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::for_test().0
+}
+
+/// A Rust source's logical lines: every `\`-continued string literal folded
+/// onto the line that opened it, paired with that opening line's 1-based
+/// number.
+///
+/// A source-walking pin looks for two tells on ONE line, and a literal
+/// continued across two physical lines carries them on two — so a walk reading
+/// `body.lines()` directly is evaded by a line break. Two shapes make a naive
+/// fold wrong, and both are handled here: a literal ENDING in an escaped
+/// backslash (`"foo\\"`) is not continued, judged by an odd trailing count;
+/// and a RAW literal has no escapes at all, so neither the line opening one
+/// nor any line inside it can be continued.
+///
+/// The raw-literal scan ignores ordinary string literals, so an `r#` written
+/// inside one is read as an opener. That direction is the safe one: it can
+/// only SUPPRESS a fold — costing a walk one offender it would have caught —
+/// never join two lines that were never one.
+pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut continues = false;
+    let mut raw_hashes: Option<usize> = None;
+    for (n, line) in body.lines().enumerate() {
+        let opened_inside_raw = raw_hashes.is_some();
+        scan_raw_literals(line, &mut raw_hashes);
+        let trimmed = line.trim_end();
+        let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
+        let opens_next =
+            !opened_inside_raw && raw_hashes.is_none() && trailing % 2 == 1 && !trimmed.is_empty();
+        let piece = if opens_next {
+            &trimmed[..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
+        match out.last_mut() {
+            Some((_, acc)) if continues => acc.push_str(piece.trim_start()),
+            _ => out.push((n + 1, piece.to_string())),
+        }
+        continues = opens_next;
+    }
+    out
+}
+
+/// A raw literal opening at `bytes[i]` (`r`, some `#`s, a `"`): its hash
+/// count, or `None` when nothing opens there.
+///
+/// `pub(crate)` because two scanners read this arithmetic — the raw-only scan
+/// below and the fixture walk's string-aware line scan — and an off-by-one
+/// carried by only one of them would let the two disagree about where a
+/// literal ends.
+pub(crate) fn raw_string_open(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes[i] != b'r' {
+        return None;
+    }
+    let open = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+    (bytes.get(i + 1 + open) == Some(&b'"')).then_some(open)
+}
+
+/// Whether the raw literal opened with `open` hashes closes at `bytes[i]` (a
+/// `"` followed by at least as many `#`s). The twin of [`raw_string_open`],
+/// shared for the same reason.
+pub(crate) fn raw_string_closes(bytes: &[u8], i: usize, open: usize) -> bool {
+    bytes[i] == b'"' && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
+}
+
+/// Advance the raw-literal state across one physical line: `r`, some `#`s and
+/// a `"` opens one; a `"` followed by the same number of `#`s closes it.
+fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match *hashes {
+            Some(open) => {
+                if raw_string_closes(bytes, i, open) {
+                    *hashes = None;
+                    i += 1 + open;
+                    continue;
+                }
+            }
+            None => {
+                if let Some(open) = raw_string_open(bytes, i) {
+                    *hashes = Some(open);
+                    i += 2 + open;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
 }
 
 /// A `PackageStateStore` that remembers nothing — for a fixture whose subject
@@ -1204,27 +1418,32 @@ pub fn test_state() -> crate::state::StateStore {
 /// Useful for reconciler tests that need a module with real package actions.
 pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
+        dep_pulled: false,
         name: name.to_string(),
         packages: vec![
             crate::modules::ResolvedPackage {
                 canonical_name: "neovim".to_string(),
                 resolved_name: "neovim".to_string(),
                 manager: "brew".to_string(),
+                manager_declared: false,
                 version: Some("0.10.2".to_string()),
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "ripgrep".to_string(),
                 resolved_name: "ripgrep".to_string(),
                 manager: "brew".to_string(),
+                manager_declared: false,
                 version: Some("14.1.0".to_string()),
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
         ],
         files: vec![],
@@ -1397,24 +1616,174 @@ impl ProbePath {
     }
 }
 
-/// Owns a tempdir holding a `/bin/sh` shim binary plus the env-vars that
-/// route a single `tool_cmd(env_var, default)` factory at it. The shim
+/// One argv-dispatch arm of a shim written by [`write_tool_shim`].
+///
+/// `matches` is a substring of the invocation's space-joined argv; the FIRST
+/// arm whose substring is present answers the call. An empty `matches` always
+/// answers, so it is how a shim spells its fallback behaviour — an arm after
+/// one is unreachable.
+pub struct ShimArm<'a> {
+    /// The argv substring this arm answers; `""` answers every invocation.
+    pub matches: &'a str,
+    /// Written verbatim to stdout — no trailing newline is added.
+    pub stdout: &'a str,
+    /// Written verbatim to stderr — no trailing newline is added.
+    pub stderr: &'a str,
+    /// The status the shim exits with once this arm has answered.
+    pub exit_code: i32,
+}
+
+impl<'a> ShimArm<'a> {
+    /// An arm answering every invocation naming `matches` with `stdout` and a
+    /// zero exit — a stand-in that fakes one subcommand's listing.
+    pub fn on(matches: &'a str, stdout: &'a str) -> Self {
+        Self {
+            matches,
+            stdout,
+            stderr: "",
+            exit_code: 0,
+        }
+    }
+
+    /// The fallback arm: answers every invocation no earlier arm claimed.
+    pub fn always(stdout: &'a str, stderr: &'a str, exit_code: i32) -> Self {
+        Self {
+            matches: "",
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+/// Write an executable stand-in for an external tool into `dir` and return the
+/// path to invoke it by. Every invocation appends its space-joined argv as one
+/// line to `<dir>/argv.log`, then the first matching [`ShimArm`] decides what
+/// the shim writes and what it exits with.
+///
+/// Two arms, one per host family, with identical observable behaviour:
+///
+/// - **Unix** — a `/bin/sh` script, `chmod 0755`, named `name`. Canned output
+///   is emitted through `printf '%s'`, single-quote-escaped into the script.
+/// - **Windows** — a `@echo off` batch file named `<name>.cmd`, which
+///   `std::process::Command` executes through `cmd.exe` when it is named by an
+///   absolute path (as a `CFGD_*_BIN` seam names it). Canned output lives in
+///   sidecar files beside the script and is emitted with `type`, because
+///   `echo` would append CRLF and demand `^`-escaping of everything a package
+///   listing contains; argv dispatch is `findstr /C:` over the command line.
+///
+/// Three Windows-only limits a caller must respect:
+///
+/// - **A tool cfgd invokes with a `\r` or `\n` in an argument cannot be
+///   shimmed here at all.** Those two bytes truncate a `cmd.exe` command
+///   line, so `std::process::Command` refuses them outright when the program
+///   is a batch file (`ErrorKind::InvalidInput`, "batch file arguments are
+///   invalid"). A `%` is fine: std neutralizes it with the `%%cd:~,%` no-op
+///   substring trick rather than rejecting it. The cases in this workspace
+///   are the two whole-listing argvs — `rpm --queryformat
+///   "%{NAME}\t%{VERSION}\n"` and `dpkg-query -f=${Package}\t${Version}\n` —
+///   whose trailing newline is the record separator; a test standing in for
+///   one stays `#[cfg(unix)]` and says so.
+/// - A `matches` substring may not contain `"` — `findstr /C:` takes it as
+///   the pattern's own terminator.
+/// - An argv carrying `&`, `|`, `<` or `>` corrupts the log line.
+pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::path::PathBuf {
+    let log_path = dir.join("argv.log");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Single-quote-safe escaping: replace ' with '\''.
+        let sq = |s: &str| s.replace('\'', "'\\''");
+        let mut script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            sq(&log_path.display().to_string())
+        );
+        let mut answered = false;
+        for arm in arms {
+            let (out, err, code) = (sq(arm.stdout), sq(arm.stderr), arm.exit_code);
+            if arm.matches.is_empty() {
+                script.push_str(&format!(
+                    "printf '%s' '{out}'\nprintf '%s' '{err}' 1>&2\nexit {code}\n"
+                ));
+                answered = true;
+                break;
+            }
+            script.push_str(&format!(
+                "case \"$*\" in\n*'{}'*) printf '%s' '{out}'; printf '%s' '{err}' 1>&2; exit {code} ;;\nesac\n",
+                sq(arm.matches)
+            ));
+        }
+        if !answered {
+            script.push_str("exit 0\n");
+        }
+
+        let bin_path = dir.join(name);
+        std::fs::write(&bin_path, script).expect("write shim");
+        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+        bin_path
+    }
+
+    #[cfg(windows)]
+    {
+        // `echo(` (rather than `echo `) prints an empty line for an empty
+        // argv instead of `ECHO is off.`.
+        let mut script = format!("@echo off\r\n>>\"{}\" echo(%*\r\n", log_path.display());
+        let emit = |script: &mut String, arm: &ShimArm<'_>, idx: usize| {
+            for (stream, body, redirect) in [("out", arm.stdout, ""), ("err", arm.stderr, " 1>&2")]
+            {
+                if body.is_empty() {
+                    continue;
+                }
+                let side = dir.join(format!("{name}.{idx}.{stream}"));
+                std::fs::write(&side, body).expect("write shim output");
+                script.push_str(&format!("type \"{}\"{redirect}\r\n", side.display()));
+            }
+            script.push_str(&format!("exit /b {}\r\n", arm.exit_code));
+        };
+
+        let mut answered = false;
+        for (idx, arm) in arms.iter().enumerate() {
+            if arm.matches.is_empty() {
+                emit(&mut script, arm, idx);
+                answered = true;
+                break;
+            }
+            script.push_str(&format!(
+                "echo(%*| findstr /C:\"{}\" >nul\r\nif errorlevel 1 goto cfgd_arm{idx}\r\n",
+                arm.matches
+            ));
+            emit(&mut script, arm, idx);
+            script.push_str(&format!(":cfgd_arm{idx}\r\n"));
+        }
+        if !answered {
+            script.push_str("exit /b 0\r\n");
+        }
+
+        let bin_path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&bin_path, script).expect("write shim");
+        bin_path
+    }
+}
+
+/// Owns a tempdir holding a [`write_tool_shim`] stand-in plus the env-vars
+/// that route a single `tool_cmd(env_var, default)` factory at it. The shim
 /// records its full argv to a log file and exits with a chosen status,
 /// optionally writing canned stdout/stderr.
 ///
 /// Construct with [`ToolShim::install`]. Drops the env-vars and tempdir on
 /// drop, even when a test panics — env state never leaks across tests.
 ///
-/// Unix-only: the shim is a `/bin/sh` script. Tests using this helper should
-/// be gated behind `#[cfg(unix)]`.
-#[cfg(unix)]
+/// Cross-platform: a `/bin/sh` script on Unix, a `.cmd` batch file on Windows.
 pub struct ToolShim {
     _tmp: tempfile::TempDir,
     env_var: String,
     log_path: std::path::PathBuf,
 }
 
-#[cfg(unix)]
 impl ToolShim {
     /// Install a shim that records argv to a log and exits with `exit_code`,
     /// emitting `stdout` to stdout and `stderr` to stderr. The shim is pointed
@@ -1426,39 +1795,7 @@ impl ToolShim {
     /// installed last. `argv` is appended one line per invocation so
     /// multi-call tests can assert ordering.
     pub fn install(env_var: &str, exit_code: i32, stdout: &str, stderr: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join(format!("shim-{env_var}"));
-        let log_path = tmp.path().join("argv.log");
-
-        // Single-quote-safe escaping: replace ' with '\''.
-        let stdout_lit = stdout.replace('\'', "'\\''");
-        let stderr_lit = stderr.replace('\'', "'\\''");
-
-        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
-        let script = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
-             printf '%s' '{stdout_lit}'\n\
-             printf '%s' '{stderr_lit}' 1>&2\n\
-             exit {exit_code}\n",
-        );
-        std::fs::write(&bin_path, script).expect("write shim");
-        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin_path, perms).expect("chmod");
-
-        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
-        // reader observes a mid-update env state.
-        unsafe {
-            std::env::set_var(env_var, &bin_path);
-        }
-
-        Self {
-            _tmp: tmp,
-            env_var: env_var.to_string(),
-            log_path,
-        }
+        Self::with_arms(env_var, &[ShimArm::always(stdout, stderr, exit_code)])
     }
 
     /// Install a shim that exits non-zero (emitting `stderr`) **only** when its
@@ -1466,27 +1803,23 @@ impl ToolShim {
     /// like [`ToolShim::install`]. Use to exercise batch-then-per-package
     /// fallbacks where one package in a batch is invalid but the rest are valid.
     pub fn install_failing_on(env_var: &str, fail_substr: &str, stderr: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
+        Self::with_arms(
+            env_var,
+            &[
+                ShimArm {
+                    matches: fail_substr,
+                    stdout: "",
+                    stderr,
+                    exit_code: 1,
+                },
+                ShimArm::always("", "", 0),
+            ],
+        )
+    }
+
+    fn with_arms(env_var: &str, arms: &[ShimArm<'_>]) -> Self {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join(format!("shim-{env_var}"));
-        let log_path = tmp.path().join("argv.log");
-
-        let stderr_lit = stderr.replace('\'', "'\\''");
-        let substr_lit = fail_substr.replace('\'', "'\\''");
-
-        let log_lit = log_path.display().to_string().replace('\'', "'\\''");
-        let script = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> '{log_lit}'\n\
-             case \"$*\" in\n\
-             *'{substr_lit}'*) printf '%s' '{stderr_lit}' 1>&2; exit 1 ;;\n\
-             esac\n\
-             exit 0\n",
-        );
-        std::fs::write(&bin_path, script).expect("write shim");
-        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+        let bin_path = write_tool_shim(tmp.path(), &format!("shim-{env_var}"), arms);
 
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
         // reader observes a mid-update env state.
@@ -1495,25 +1828,49 @@ impl ToolShim {
         }
 
         Self {
+            log_path: tmp.path().join("argv.log"),
             _tmp: tmp,
             env_var: env_var.to_string(),
-            log_path,
         }
     }
 
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
+    ///
+    /// `cmd` hands a batch file its arguments individually quoted, so the
+    /// Windows log is stripped of `"` to read as the same unquoted join
+    /// `"$*"` gives on Unix.
     pub fn argv_log(&self) -> String {
-        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+        let raw = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+        #[cfg(windows)]
+        return raw.replace('"', "");
+        #[cfg(not(windows))]
+        raw
     }
 
     /// Number of times the shim was invoked.
     pub fn invocation_count(&self) -> usize {
         self.argv_log().lines().filter(|l| !l.is_empty()).count()
     }
+
+    /// The captured argv lines that name `subject`, in order.
+    ///
+    /// The seam this shim installs is an ENV VAR, which is process-global and
+    /// carries no exclusive guard — so any test running in parallel that spawns
+    /// the same tool lands in this log too, whatever `serial_test` group the
+    /// asserting test is in (`serial` excludes only other serial tests). A
+    /// spawn-count claim is always about one subject — one registry key, one
+    /// schema, one domain — so filter to the lines naming it rather than
+    /// asserting on a log another test also writes to.
+    pub fn argv_lines_naming(&self, subject: &str) -> Vec<String> {
+        self.argv_log()
+            .lines()
+            .filter(|l| l.contains(subject))
+            .map(str::to_string)
+            .collect()
+    }
 }
 
-#[cfg(unix)]
 impl Drop for ToolShim {
     fn drop(&mut self) {
         // SAFETY: see `install`.
@@ -1836,7 +2193,8 @@ thread_local! {
 /// exclusive guard) composing with a spawn inside it is normal, and a thread
 /// that already holds the exclusive side must not queue behind itself. A nested
 /// acquisition, and any acquisition on a thread already holding the exclusive
-/// guard, is therefore a no-op. See [`PATH_ENV_LOCK`].
+/// guard, is therefore a no-op. See `PATH_ENV_LOCK`.
+// env-mutator-ok: takes cfgd's PATH lock and sets a thread-local Cell; writes no env var.
 pub fn path_env_read_guard() -> SpawnEnvGuard {
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
         || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
@@ -1853,7 +2211,7 @@ pub fn path_env_read_guard() -> SpawnEnvGuard {
 /// about to spawn helper threads: a helper carries neither of this lock's
 /// thread-locals — they are per-thread, and a freshly spawned thread starts
 /// with both at their default — so a helper's own [`path_env_read_guard`]
-/// genuinely blocks on [`PATH_ENV_LOCK`] rather than short-circuiting as a
+/// genuinely blocks on `PATH_ENV_LOCK` rather than short-circuiting as a
 /// re-entrant no-op, and never unblocks if the exclusive holder is the same
 /// thread that is now waiting on the helper. Check this BEFORE spawning, so
 /// that precondition fails fast instead of hanging.
@@ -1887,7 +2245,7 @@ impl Drop for SpawnEnvGuard {
 /// [`CwdGuard`] with a [`PathShimGuard`], or nesting either, is a natural
 /// thing for a test to do and must not queue the gate against itself. The
 /// inner acquisitions are no-ops and the gate is released
-/// when the outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread
+/// when the outermost guard drops. See `PATH_ENV_LOCK` for the cross-thread
 /// limit.
 ///
 /// The one order that cannot be made re-entrant is shared-then-exclusive: a
@@ -1896,6 +2254,7 @@ impl Drop for SpawnEnvGuard {
 /// avoids — it would let a `PATH`/cwd mutation run while the in-flight spawn
 /// this lock exists to protect is still resolving its program. Take the
 /// exclusive guard first, or not inside a spawn.
+// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write, never performs one.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
     debug_assert!(
         SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) == 0,
@@ -1973,10 +2332,422 @@ impl Drop for BootstrappedPathDirsGuard {
     }
 }
 
+/// Run `measure` inside a window in which nothing else moved the process-wide
+/// resolution generation (`crate::command_resolution_generation`), retrying with
+/// a fresh call until it gets one.
+///
+/// Every memo-hit claim — "the sweep ran once", "the memoized miss still
+/// stands" — is only measurable while that generation holds still, and any test
+/// in the binary that runs a mock install or a lifecycle script bumps it for
+/// everyone. Without this the assertion is not wrong, it is unmeasurable, and it
+/// fails at random on a loaded runner. `serial_test::serial` cannot substitute:
+/// it excludes only other serial tests, not the parallel majority.
+///
+/// `measure` must be re-runnable — build the registry, counters and probe files
+/// it observes INSIDE the closure, so a retry measures a fresh subject rather
+/// than one an abandoned attempt already warmed.
+pub fn measured_in_a_stable_generation<T>(mut measure: impl FnMut() -> T) -> T {
+    for _ in 0..64 {
+        let before = crate::command_resolution_generation();
+        let measured = measure();
+        if crate::command_resolution_generation() == before {
+            return measured;
+        }
+    }
+    panic!(
+        "the resolution generation never held still across a measurement — \
+         something in this binary is invalidating it continuously"
+    );
+}
+
+/// RAII pin of the `command_path` memo's TTL, restoring the prior setting on
+/// drop.
+///
+/// The memo expires an entry after 30 seconds so a weeks-long daemon notices a
+/// binary a human installed by hand. That ceiling is invisible to production
+/// and load-bearing for it, but it is wall time, and a test asserting either
+/// that a memoized answer STANDS or that it EXPIRES would otherwise be asserting
+/// about how long two adjacent statements took on a loaded runner. Pin it and
+/// the claim is about the mechanism.
+///
+/// Pinning is process-global and needs no serialization of its own: a longer TTL
+/// only lets another test's entries live longer, and a zero TTL only makes them
+/// recompute — neither can change the ANSWER any concurrent test reads.
+pub struct CommandPathMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl CommandPathMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::set_command_path_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized entry can expire
+    /// mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every entry is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires an answer.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for CommandPathMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::set_command_path_memo_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the installed-package enumeration memo's TTL, restoring the
+/// prior setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for the
+/// same reason and with the same three constructors: the enumeration memo also
+/// carries a 30-second ceiling, so a holder that outlives one unit of work
+/// (the MCP server) re-asks after a human installs something cfgd did not.
+///
+/// Unlike its sibling, pinning this one DOES need serialization: every test
+/// that reads the enumeration memo asserts on the COUNT of enumerations rather
+/// than on the answer, so a concurrent zero pin makes another test's memoized
+/// listing recompute and changes exactly what that test measures. Pair every
+/// use with `#[serial_test::serial(enumeration_memo)]`, the named group the
+/// enumeration-count tests share — named, so nothing outside them is held up.
+///
+/// Scope is the test BINARY, since the override atomic is process-global and a
+/// binary is a process. cfgd-core's own tests pin to zero, so every use here
+/// carries the group; the four count assertions in the `cfgd` crate omit it on
+/// purpose, because nothing in THAT binary pins the ceiling and a group key
+/// there would exclude nothing. That is a precondition on the `cfgd` binary
+/// rather than a property of this type: the first `cfgd`-crate test to pin
+/// `always_expired` has to add the group to all four in the same change
+/// (`cli/live_drift.rs`, `cli/doctor.rs`, `cli/diff.rs`,
+/// `generate/scan/tests.rs`), or it breaks them with nothing going red where
+/// the mistake was made.
+pub struct EnumerationMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl EnumerationMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_enumeration_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized enumeration can
+    /// expire mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every enumeration is expired the moment it is
+    /// stored. For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for EnumerationMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_enumeration_memo_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the provider-availability sweep's TTL, restoring the prior
+/// setting on drop. The sibling of [`EnumerationMemoTtlGuard`] over the sweep a
+/// `ProviderRegistry` memoizes: that one memoizes what a manager HAS, this one
+/// whether the manager is on the machine at all.
+///
+/// The ceiling exists for the holder that outlives one run — the daemon keeps
+/// one registry across ticks — so a test whose claim is that a sweep still
+/// stands pins `never_expires`, and one whose claim is that the ceiling retires
+/// a sweep pins `always_expired`. Pair every use with the UNNAMED
+/// `#[serial_test::serial]`, which is the group the sweep's own tests already
+/// share: the pin is process-global and every test that reads this memo asserts
+/// on a COUNT of `is_available` probes, and a named group would not exclude the
+/// unnamed ones.
+pub struct AvailabilityMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl AvailabilityMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_availability_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime. For a test whose claim is that a
+    /// sweep still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every sweep is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for AvailabilityMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_availability_memo_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the available-version memo's TTL, restoring the prior setting on
+/// drop. The sibling of [`EnumerationMemoTtlGuard`] over the other half of the
+/// package-manager memo pair: that one memoizes what a manager HAS, this one
+/// what it OFFERS.
+///
+/// Pinning needs the same serialization for the same reason — every test that
+/// reads this memo asserts on the COUNT of version queries, so a concurrent zero
+/// pin makes another test's memoized offer recompute and changes exactly what
+/// that test measures. Pair every use with
+/// `#[serial_test::serial(available_version_memo)]`.
+pub struct AvailableVersionMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl AvailableVersionMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_available_version_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized offer can expire
+    /// mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every offer is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for AvailableVersionMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_available_version_memo_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the daemon tick cache's config-reuse ceiling, restoring the
+/// prior setting on drop. The sibling of [`AvailableVersionMemoTtlGuard`] for
+/// the backstop that bounds how long ONE config derivation may be reused when
+/// its recorded inputs all still stand.
+///
+/// The real ceiling is five minutes, so the expiry filter it guards is
+/// unreachable from a test that does not pin it. Pair every use with
+/// `#[serial_test::serial(tick_cache_reuse)]`: the pin is process-global and
+/// every test that reads this cache asserts on a COUNT of derivations, which is
+/// exactly what a concurrent zero pin changes.
+pub struct ConfigReuseMaxAgeGuard {
+    prior: Option<u64>,
+}
+
+impl ConfigReuseMaxAgeGuard {
+    /// Pin the ceiling to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below rather than silently restoring the default.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::daemon::tick_cache::set_config_reuse_max_age_override(Some(millis)),
+        }
+    }
+
+    /// Pin the ceiling beyond any test's lifetime, for a test whose claim is
+    /// that a derivation still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the ceiling to zero, so every derivation is stale the moment it is
+    /// stored. For a test whose claim is that the ceiling retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for ConfigReuseMaxAgeGuard {
+    fn drop(&mut self) {
+        crate::daemon::tick_cache::set_config_reuse_max_age_override(self.prior);
+    }
+}
+
+/// RAII pin of the daemon tick cache's module-reuse ceiling, restoring the
+/// prior setting on drop. [`ConfigReuseMaxAgeGuard`]'s counterpart for the
+/// resolved module set, which stands for the same thirty seconds the git
+/// refresh window and the enumeration memo carry.
+///
+/// Kept separate from its sibling rather than folded into one guard, for the
+/// same reason the five memo ceilings each keep their own constant: they answer
+/// different questions, and one pin that moved both would make a test unable to
+/// say which ceiling it was asserting about. Pair every use with
+/// `#[serial_test::serial(tick_cache_reuse)]`.
+pub struct ModuleReuseTtlGuard {
+    prior: Option<u64>,
+}
+
+impl ModuleReuseTtlGuard {
+    /// Pin the ceiling to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::daemon::tick_cache::set_module_reuse_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the ceiling beyond any test's lifetime.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the ceiling to zero, so every resolution is stale the moment it is
+    /// stored.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for ModuleReuseTtlGuard {
+    fn drop(&mut self) {
+        crate::daemon::tick_cache::set_module_reuse_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the module git-cache refresh window, restoring the prior setting
+/// on drop. The third sibling of [`CommandPathMemoTtlGuard`], guarding the
+/// window inside which one `git fetch` of a repository serves every later ask
+/// for it.
+///
+/// Any test that drives TWO fetches of one fixture repository and expects the
+/// second to really transfer — a tag pushed upstream between them — pins
+/// `always_expired`, because the window is exactly what would otherwise serve
+/// the first transfer's answer to the second ask. A test whose claim is that one
+/// transfer served both pins `never_expires`, so the assertion is about the
+/// mechanism rather than about how long two adjacent statements took.
+///
+/// **The pin serializes itself**: constructing a guard takes a process-global
+/// mutex that is held until it drops, so two pins cannot overlap however the
+/// tests holding them are scheduled. That is not the sibling guards' contract
+/// and it is deliberate. Per-test temp directories keep two tests from sharing a
+/// key in the refresh MAP, but the pin is a single process-global atomic, and
+/// every test that reads this window asserts on whether a transfer HAPPENED —
+/// precisely what the pin decides. A concurrent `always_expired` landing inside
+/// a `never_expires` test opens the window to zero, its second fetch reaches for
+/// an upstream the fixture has deleted, and the test goes hard red.
+/// [`AvailableVersionMemoTtlGuard`] closes the same hazard with a named
+/// `serial_test` group; this one cannot, because its users ALSO need the
+/// unnamed group for `CFGD_ALLOW_LOCAL_SOURCES` and `serial_test` accepts only
+/// ident keys, so "the default group AND a named one" is inexpressible. Building
+/// the exclusion into the guard needs no attribute at the call site, so no
+/// PINNING test can forget it.
+///
+/// What the exclusion does NOT cover: a test that drives a fetch without pinning
+/// at all. The pin is one process-global atomic and an unpinned test reads
+/// whatever is currently pinned, so a `never_expires` held here can spare an
+/// unpinned concurrent test a transfer it was counting on. Every test whose
+/// claim turns on whether a transfer happened must therefore pin, whichever
+/// direction it needs — the guard makes the exclusion automatic among pins, not
+/// among readers.
+pub struct GitRefreshWindowGuard {
+    prior: Option<u64>,
+    // Ordered after `prior` only for readability; `Drop` restores the atomic
+    // explicitly and the lock is released after that, when this field drops.
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+/// Held for the life of every [`GitRefreshWindowGuard`], so at most one pin of
+/// the refresh window exists in the process at a time.
+static GIT_REFRESH_WINDOW_PIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl GitRefreshWindowGuard {
+    /// Pin the window to `ttl`, saturating at the millisecond range. Blocks
+    /// while another guard is alive.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // A test that panicked while pinned poisoned the mutex; the pin it left
+        // behind was already restored by its own `Drop` during the unwind, so
+        // the lock still hands out sound exclusion.
+        let lock = GIT_REFRESH_WINDOW_PIN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the window
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::modules::set_repo_refresh_ttl_override(Some(millis)),
+            _lock: lock,
+        }
+    }
+
+    /// Pin the window beyond any test's lifetime, so no recorded transfer can
+    /// age out mid-test. For a test whose claim is that one transfer stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the window to zero, so every repository is fetched on every ask. For
+    /// a test whose claim is about what a transfer itself does.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for GitRefreshWindowGuard {
+    fn drop(&mut self) {
+        crate::modules::set_repo_refresh_ttl_override(self.prior);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is
-// process-global. The pattern mirrors `cfgd-core/src/util/git.rs:190`.
+// process-global.
 // ---------------------------------------------------------------------------
 
 /// RAII guard that captures the prior value of an env var and restores it on
@@ -2080,6 +2851,7 @@ pub struct CwdGuard {
 impl CwdGuard {
     /// Capture the current working directory, then change to `new`.
     /// Returns an error if either step fails.
+    // env-mutator-ok: sets the process working directory, which is not an environment variable.
     pub fn set(new: impl AsRef<Path>) -> std::io::Result<Self> {
         let spawn_excl = path_env_mutation_guard();
         let orig = std::env::current_dir()?;
@@ -2193,9 +2965,14 @@ struct CosignEnvSnapshot {
 }
 
 impl CosignTestShim {
-    /// Builder entry point. Chain `with_*` methods then call [`install`].
+    /// Builder entry point. Chain `with_*` methods then call [`CosignTestShimBuilder::install`].
     pub fn builder() -> CosignTestShimBuilder {
-        CosignTestShimBuilder::default()
+        CosignTestShimBuilder {
+            argv_logging: true,
+            keygen: false,
+            exit_code: 0,
+            stderr: String::new(),
+        }
     }
 
     /// Install with defaults: argv logging on, keygen off, exit 0, empty
@@ -2249,24 +3026,19 @@ unsafe fn restore_env(var: &str, prior: Option<std::ffi::OsString>) {
     }
 }
 
-/// Builder for [`CosignTestShim`]. All fields default to the most common
-/// existing variant: argv logging on, keygen off, exit 0, empty stderr.
+/// Builder for [`CosignTestShim`], reached only through
+/// [`CosignTestShim::builder`], which seeds the most common existing variant:
+/// argv logging on, keygen off, exit 0, empty stderr.
+///
+/// The fields are private and the type carries no `Default`, so that
+/// constructor is the only way to hold one — which is what lets the roster
+/// count `CosignTestShim::builder` and watch every test that reaches this
+/// builder's own environment write.
 pub struct CosignTestShimBuilder {
     argv_logging: bool,
     keygen: bool,
     exit_code: i32,
     stderr: String,
-}
-
-impl Default for CosignTestShimBuilder {
-    fn default() -> Self {
-        Self {
-            argv_logging: true,
-            keygen: false,
-            exit_code: 0,
-            stderr: String::new(),
-        }
-    }
 }
 
 impl CosignTestShimBuilder {
@@ -2303,6 +3075,7 @@ impl CosignTestShimBuilder {
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
     /// EXIT}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
+    // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
     pub fn install(self) -> CosignTestShim {
         let bin_path = fake_cosign_bin_path();
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -2360,6 +3133,13 @@ pub struct MockPackageManager {
     pub bootstrap_method: String,
     pub bootstrap_requires: Vec<String>,
     pub bootstrap_creates: Vec<String>,
+    /// The mediators this mock's cascade would install through, in order,
+    /// taken when the plan says the run delivers one; `bootstrap_method` is
+    /// the host arm it falls to otherwise. The npm/pipx/go shape.
+    pub bootstrap_cascade: Vec<String>,
+    /// What `tool_version()` answers, for a test about the detail a landed
+    /// provision states.
+    pub tool_version: Option<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
@@ -2400,6 +3180,38 @@ pub struct MockPackageManager {
     /// that owns the registry — a `Box<dyn PackageManager>` cannot be read
     /// back for its own `install_calls`.
     install_log: Option<std::sync::Arc<Mutex<Vec<Vec<String>>>>>,
+    /// How many times this manager was asked to enumerate what it has
+    /// installed. The observable behind every "asked once per manager, not once
+    /// per package" claim — a count, never a duration — and shared, because a
+    /// `Box<dyn PackageManager>` in a registry cannot be read back for it.
+    enumerations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Whether declared and listed names fold to lowercase, the way a
+    /// case-insensitive manager's identity space does.
+    folds_case: bool,
+    /// Whether this mock's entries register package SOURCES for its family,
+    /// the `brew-tap` shape — the flag every tap-first ordering surface reads.
+    registers_sources: bool,
+    /// What this manager's listing reports as each package's installed
+    /// version, keyed by name. A name with no entry lists as
+    /// `UNKNOWN_PACKAGE_VERSION`, the trait default's answer.
+    versions: std::collections::BTreeMap<String, String>,
+    /// Everything `install()` has landed, folded into `installed_packages`
+    /// alongside `installed`.
+    ///
+    /// A real manager reports a package it just installed, and a mock that did
+    /// not was the only reason a run could install one package twice without a
+    /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
+    /// install npm`, and the `Packages` phase then asked apt for `npm` again.
+    landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Whether `version_meets_minimum_checked` fails instead of answering —
+    /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
+    /// out and can fail to spawn.
+    comparisons_fail: bool,
+    /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
+    /// a package in place at all, so a below-floor package is a check error
+    /// rather than a planned raise. `false` by default: every manager that
+    /// lists versions carries a raise verb, distinct or its own install.
+    no_upgrade_verb: bool,
 }
 
 impl MockPackageManager {
@@ -2409,6 +3221,8 @@ impl MockPackageManager {
             available: true,
             bootstrap_capable: false,
             bootstrap_method: "mock".to_string(),
+            bootstrap_cascade: Vec::new(),
+            tool_version: None,
             bootstrap_requires: Vec::new(),
             bootstrap_creates: Vec::new(),
             installed: std::collections::HashSet::new(),
@@ -2422,8 +3236,51 @@ impl MockPackageManager {
             mediated: std::collections::BTreeMap::new(),
             availability: None,
             raises: None,
+            landed: std::sync::Arc::default(),
             install_log: None,
+            enumerations: std::sync::Arc::default(),
+            folds_case: false,
+            registers_sources: false,
+            versions: std::collections::BTreeMap::new(),
+            comparisons_fail: false,
+            no_upgrade_verb: false,
         }
+    }
+
+    /// The `pkg version -t` shape: the version comparator fails to spawn
+    /// rather than answering, so a caller judging a floor gets a check error
+    /// instead of a `bool`.
+    pub fn failing_version_comparisons(mut self) -> Self {
+        self.comparisons_fail = true;
+        self
+    }
+
+    /// A manager that cannot raise an already-held package in place at all —
+    /// `upgrade_verb()` answers `None`, so a below-floor package becomes a
+    /// check error rather than a planned raise.
+    pub fn without_upgrade_verb(mut self) -> Self {
+        self.no_upgrade_verb = true;
+        self
+    }
+
+    /// The `brew-tap` shape: entries are package SOURCES for the family, so
+    /// ordering surfaces put this mock's installs first.
+    pub fn registering_family_sources(mut self) -> Self {
+        self.registers_sources = true;
+        self
+    }
+
+    /// The chocolatey/scoop/winget shape: the identity space is lowercase, so
+    /// a module declaring `Wget` must match a listing of `wget`.
+    pub fn case_insensitive(mut self) -> Self {
+        self.folds_case = true;
+        self
+    }
+
+    /// The shared counter of this manager's enumerations, taken BEFORE the
+    /// manager is boxed into a registry.
+    pub fn enumeration_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::clone(&self.enumerations)
     }
 
     /// The `cargo`/`npm`/`pipx` shape: no local index, so no refresh node.
@@ -2439,6 +3296,19 @@ impl MockPackageManager {
         self
     }
 
+    /// Installed, and reporting `version` for it — the shape a manager whose
+    /// listing states versions really has, so a declared `minVersion` floor
+    /// has something to be judged against. Spelled the same as
+    /// `StubPackageManager::with_installed_at` in cfgd-core's own tests, since
+    /// the two mocks answer the same question. A name left out keeps
+    /// `UNKNOWN_PACKAGE_VERSION`, which is what a manager that cannot state a
+    /// version answers.
+    pub fn with_installed_at(mut self, pkg: &str, version: &str) -> Self {
+        self.installed.insert(pkg.to_string());
+        self.versions.insert(pkg.to_string(), version.to_string());
+        self
+    }
+
     pub fn unavailable(mut self) -> Self {
         self.available = false;
         self
@@ -2450,6 +3320,14 @@ impl MockPackageManager {
     }
 
     /// Bootstrappable, with the method its plan names.
+    /// A cascade that prefers `mediators` (in order) whenever the run delivers
+    /// one, and otherwise takes `bootstrappable_via`'s method.
+    pub fn preferring_delivered(mut self, mediators: &[&str]) -> Self {
+        self.bootstrap_capable = true;
+        self.bootstrap_cascade = mediators.iter().map(|m| (*m).to_string()).collect();
+        self
+    }
+
     pub fn bootstrappable_via(mut self, method: &str) -> Self {
         self.bootstrap_capable = true;
         self.bootstrap_method = method.to_string();
@@ -2468,6 +3346,13 @@ impl MockPackageManager {
     /// content for a manager this run will provision.
     pub fn creating_dirs(mut self, dirs: &[&str]) -> Self {
         self.bootstrap_creates = dirs.iter().map(|d| (*d).to_string()).collect();
+        self
+    }
+
+    /// Report this version once available, so a landed provision has a fact
+    /// to state beside its row.
+    pub fn reporting_version(mut self, version: &str) -> Self {
+        self.tool_version = Some(version.to_string());
         self
     }
 
@@ -2574,6 +3459,10 @@ impl crate::providers::PackageManager for MockPackageManager {
         &self.mgr_name
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        (!self.no_upgrade_verb).then_some("upgrade")
+    }
+
     fn is_available(&self) -> bool {
         if let Some(flag) = &self.availability {
             return flag.load(std::sync::atomic::Ordering::SeqCst);
@@ -2584,12 +3473,24 @@ impl crate::providers::PackageManager for MockPackageManager {
                 .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<crate::providers::BootstrapPlan> {
         self.bootstrap_capable.then(|| {
-            crate::providers::BootstrapPlan::new(self.bootstrap_method.clone())
+            let method = self
+                .bootstrap_cascade
+                .iter()
+                .find(|m| delivered(m))
+                .unwrap_or(&self.bootstrap_method);
+            crate::providers::BootstrapPlan::new(method.clone())
                 .requiring(self.bootstrap_requires.clone())
                 .creating(self.bootstrap_creates.clone())
         })
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        self.tool_version.clone()
     }
 
     fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
@@ -2612,7 +3513,45 @@ impl crate::providers::PackageManager for MockPackageManager {
         &self,
         _cx: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<std::collections::HashSet<String>> {
-        Ok(self.installed.clone())
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut reported = self.installed.clone();
+        reported.extend(self.landed.lock().unwrap().iter().cloned());
+        Ok(reported)
+    }
+
+    fn installed_packages_with_versions(
+        &self,
+        cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<crate::providers::PackageInfo>> {
+        Ok(self
+            .installed_packages(cx)?
+            .into_iter()
+            .map(|name| {
+                let version = self
+                    .versions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| crate::providers::UNKNOWN_PACKAGE_VERSION.to_string());
+                crate::providers::PackageInfo { name, version }
+            })
+            .collect())
+    }
+
+    fn package_identity(&self, entry: &str) -> String {
+        if self.folds_case {
+            entry.to_lowercase()
+        } else {
+            entry.to_string()
+        }
+    }
+
+    fn listed_identity(&self, listed_name: &str) -> String {
+        if self.folds_case {
+            listed_name.to_lowercase()
+        } else {
+            listed_name.to_string()
+        }
     }
 
     fn install(
@@ -2622,9 +3561,11 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<()> {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
+            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        self.landed.lock().unwrap().extend(packages.iter().cloned());
         if let Some(log) = &self.install_log {
             log.lock().unwrap().push(packages.to_vec());
         }
@@ -2647,6 +3588,10 @@ impl crate::providers::PackageManager for MockPackageManager {
         self.keeps_index
     }
 
+    fn registers_family_sources(&self) -> bool {
+        self.registers_sources
+    }
+
     fn refresh_index(
         &self,
         _cx: &crate::providers::PackageContext<'_>,
@@ -2656,6 +3601,17 @@ impl crate::providers::PackageManager for MockPackageManager {
 
     fn available_version(&self, _package: &str) -> crate::errors::Result<Option<String>> {
         Ok(None)
+    }
+
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        if self.comparisons_fail {
+            return Err("mock comparator failed to spawn".to_string());
+        }
+        Ok(self.version_meets_minimum(available, min_version))
     }
 }
 
@@ -2736,10 +3692,10 @@ impl ReconcilerTestHarnessBuilder {
         let mut registry = crate::providers::ProviderRegistry::new();
 
         for pm in self.package_managers {
-            registry.package_managers.push(Box::new(pm));
+            registry.add_package_manager(Box::new(pm));
         }
         for sc in self.system_configurators {
-            registry.system_configurators.push(Box::new(sc));
+            registry.add_system_configurator(Box::new(sc));
         }
         for sp in self.secret_providers {
             registry.secret_providers.push(Box::new(sp));
@@ -2861,35 +3817,27 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
             .expect("failed to parse profile YAML in test harness")
     };
 
-    let merged = crate::config::MergedProfile {
-        modules: spec.modules.clone(),
-        env: spec.env.clone(),
-        env_scope: spec.env_scope.unwrap_or_default(),
-        aliases: spec.aliases.clone(),
-        packages: spec.packages.clone().unwrap_or_default(),
-        files: spec.files.clone().unwrap_or_default(),
-        system: spec.system.clone(),
-        secrets: spec.secrets.clone(),
-        scripts: spec.scripts.clone().unwrap_or_default(),
-        backups: spec.backups.clone(),
-    };
+    // Built through the production merge rather than field-by-field: the merge
+    // is what records which layer declared each env var and alias, and a
+    // harness that assembles the struct by hand hands the reconciler a profile
+    // whose entries name no owner.
+    let layers = vec![crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: "harness-test".to_string(),
+        priority: 1000,
+        policy: crate::config::LayerPolicy::Local,
+        spec,
+    }];
+    let merged = crate::config::merge_layers(&layers);
 
-    crate::config::ResolvedProfile {
-        layers: vec![crate::config::ProfileLayer {
-            source: "local".to_string(),
-            profile_name: "harness-test".to_string(),
-            priority: 1000,
-            policy: crate::config::LayerPolicy::Local,
-            spec,
-        }],
-        merged,
-    }
+    crate::config::ResolvedProfile { layers, merged }
 }
 
 /// Install a claude-code skill for `kind` at `scope`, then rewrite its stamped
 /// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
 /// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
 /// line, so a line rewrite faithfully reproduces an old install.
+// env-mutator-ok: writes a skill file; its `install(…)` is `SkillProvider`'s, not a shim's.
 pub fn seed_stale_skill(
     kind: crate::generate::SkillKind,
     scope: crate::providers::skill::SkillScope,
@@ -2918,11 +3866,348 @@ pub fn seed_stale_skill(
     path
 }
 
+/// Pin `store`'s recorded scan stamp at `timestamp` and refuse every later
+/// write to it, so a caller can drive the refused-write branch of
+/// [`crate::state::StateStore::record_scan`] and see what its own fallback
+/// renders.
+///
+/// A file-level refusal rather than a connection-level one, because the
+/// consumer of that refusal opens its OWN store from the same state directory
+/// and nothing on this connection reaches it. The row stays READABLE — the
+/// refusal is a pair of `RAISE(ABORT)` triggers, not a dropped table — since
+/// the value a caller must show is the one already recorded.
+///
+/// Repeatable, and re-pinnable at a new stamp.
+pub fn freeze_last_scan_at(
+    store: &crate::state::StateStore,
+    timestamp: &str,
+) -> crate::errors::Result<()> {
+    store.freeze_last_scan_at(timestamp)
+}
+
+/// The production region of a Rust source file a walk-style pin reads: the file
+/// with EVERY top-level inline test module removed.
+///
+/// A pin that scans source has to drop the file's own `#[cfg(test)]` blocks,
+/// which describe the surface rather than rendering it. What it must not drop is
+/// production code, and both cheaper spellings do: cutting at the first bare
+/// `#[cfg(test)]` blinds the walk below a mid-file `#[cfg(test)] use` import or
+/// test-only `impl`, and cutting at the last `#[cfg(test)]\nmod ` blinds it below
+/// an aggregator's one-line `mod tests;` DECLARATION, whose tests live in another
+/// file (93% of `reconciler/mod.rs`, 59% of `daemon/mod.rs`). Both fail silently,
+/// since a walk that reads nothing reports nothing.
+///
+/// So this is a strip, not a suffix cut: a trailing test module is only the
+/// common case, and a file may hold several inline siblings (`output/mod.rs` has
+/// six). A declaration survives — it carries no test text — and so does every
+/// line between and after the blocks.
+///
+/// The shape relied on is rustfmt's, which every file in this workspace is
+/// formatted by: the attribute alone at column 0, and the module's closing `}`
+/// alone at column 0. Each anchor drops through the next such line. A platform
+/// gate stacks a second attribute (`#[cfg(test)]` / `#[cfg(unix)]` /
+/// `mod tests {`) between the marker and the `mod` line, so the scan skips
+/// every column-0 attribute line before checking for `mod ` — three daemon
+/// service files and `cli/kubectl.rs` carry exactly this shape, and without
+/// the skip their whole test module read as production text. The one way the
+/// rustfmt assumption breaks is a multi-line raw string inside a test module
+/// whose body carries a bare `}` at column 0, which would end the strip early
+/// — no such literal exists today, and `cli::tests::production_body` assumes
+/// the same shape.
+///
+/// A walk over several files pairs this with a per-file floor on what it found,
+/// so a future re-blinding fails rather than passes quietly.
+pub fn production_slice(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        if line == "#[cfg(test)]" {
+            let mut rest = lines.clone();
+            while rest.clone().next().is_some_and(|m| m.starts_with('#')) {
+                rest.next();
+            }
+            if rest
+                .clone()
+                .next()
+                .is_some_and(|m| m.starts_with("mod ") && m.trim_end().ends_with('{'))
+            {
+                rest.next();
+                lines = rest;
+                for inner in lines.by_ref() {
+                    if inner == "}" {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// The shapes the fold has to tell apart, in one source.
+    ///
+    /// A raw literal is the one a naive "trailing backslash continues the
+    /// line" rule gets WRONG in the dangerous direction: it joins two lines
+    /// that were never one, and a walk then reports a tell on a line that does
+    /// not carry it. An escaped backslash is the same mistake at the end of an
+    /// ordinary literal. The hashed and byte-raw forms take the hash-counting
+    /// arithmetic in `scan_raw_literals`, which the zero-hash case never
+    /// touches, so each holds a case of its own.
+    #[test]
+    fn the_continuation_fold_joins_only_a_real_continuation() {
+        let body = concat!(
+            "let a = \"one \\\n",
+            "    two\";\n",
+            "let b = r\"a raw line ending in \\\n",
+            "    and its next line\";\n",
+            "let c = \"escaped \\\\\";\n",
+            "let d = r#\"a hashed raw ending in \\\n",
+            "    still raw\"#;\n",
+            "let e = br\"a byte raw ending in \\\n",
+            "    and its next line\";\n",
+            "let f = r##\"holds a \"# decoy and ends in \\\n",
+            "    still raw\"##;\n"
+        );
+        let folded = logical_source_lines(body);
+        assert_eq!(
+            folded.len(),
+            10,
+            "only the first literal is continued: {folded:?}"
+        );
+        assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
+        assert_eq!(
+            folded[0].1, "let a = \"one two\";",
+            "a real continuation joins onto the line that opened it, its indent eaten"
+        );
+        assert_eq!(folded[1].0, 3);
+        assert!(
+            folded[1].1.ends_with('\\'),
+            "a raw literal has no continuations, so its line stands alone and \
+             keeps its backslash: {folded:?}"
+        );
+        assert_eq!(folded[2].0, 4, "the raw literal's next line is its own");
+        assert_eq!(folded[3].0, 5);
+        assert!(
+            folded[3].1.ends_with("\\\\\";"),
+            "an escaped backslash ends the literal it is in: {folded:?}"
+        );
+        assert_eq!(folded[4].0, 6);
+        assert!(
+            folded[4].1.ends_with('\\'),
+            "a hashed raw literal suppresses the fold like a bare one: {folded:?}"
+        );
+        assert_eq!(folded[5].0, 7, "the hashed raw's next line is its own");
+        assert_eq!(folded[6].0, 8);
+        assert!(
+            folded[6].1.ends_with('\\'),
+            "a byte-raw literal suppresses the fold like a bare one: {folded:?}"
+        );
+        assert_eq!(folded[7].0, 9, "the byte raw's next line is its own");
+        assert_eq!(folded[8].0, 10);
+        assert!(
+            folded[8].1.ends_with('\\'),
+            "a two-hash raw literal stays open past a one-hash `\"#` decoy, \
+             so its line stands alone: {folded:?}"
+        );
+        assert_eq!(folded[9].0, 11, "the two-hash raw's next line is its own");
+    }
+
+    #[test]
+    fn production_slice_cuts_at_the_trailing_test_module_not_an_early_attribute() {
+        // The attribute is composed rather than written out: a literal one here
+        // is a `#[cfg(test)]` at the start of a line, which the audit's own
+        // test-block stripper would take for this file's test module.
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "use a::b;\n{attr}\nuse c::d;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod tests_inline #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "the cut must keep the production code between an early \
+             `#[cfg(test)]` import and the trailing test module: {production}"
+        );
+        assert!(
+            !production.contains("fn hidden"),
+            "the trailing test module must be cut away: {production}"
+        );
+        assert_eq!(
+            production_slice("pub fn only_production() -> u8 { 1 }\n"),
+            "pub fn only_production() -> u8 { 1 }\n",
+            "a file with no test module comes back whole"
+        );
+    }
+
+    /// The shape of an aggregator `mod.rs`: `mod tests;` is a one-line
+    /// DECLARATION sitting beside its sibling `mod x;` lines, and the file's
+    /// real content follows it. Cutting there is the blinding the helper exists
+    /// to prevent, so the whole source survives.
+    #[test]
+    fn production_slice_keeps_a_file_whose_test_module_is_a_mid_file_declaration() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "mod plan;\nmod verify;\n{attr}\nmod tests;\n\
+             pub use plan::Plan;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n"
+        );
+        assert_eq!(
+            production_slice(&src),
+            src,
+            "a `mod tests;` declaration is not the end of the file, so nothing \
+             below it may be cut away"
+        );
+    }
+
+    /// Both shapes in one file: the declaration is skipped and the search
+    /// continues to the inline block, which is where the cut lands.
+    #[test]
+    fn production_slice_cuts_at_the_inline_block_past_a_mid_file_declaration() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "mod plan;\n{attr}\nmod tests;\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "the code between the declaration and the inline block must \
+             survive: {production}"
+        );
+        assert!(
+            production.contains("mod tests;"),
+            "the declaration itself is production text, not a cut point: \
+             {production}"
+        );
+        assert!(
+            !production.contains("fn hidden"),
+            "the inline test module is where the cut lands: {production}"
+        );
+    }
+
+    /// The strip is not a suffix cut. Here the inline block comes FIRST and a
+    /// bare `mod tests;` declaration is the rightmost anchor, so anything that
+    /// searches backward for one cut point either stops at the declaration
+    /// (dropping the file) or cuts at the block (dropping everything after it).
+    #[test]
+    fn production_slice_strips_an_inline_block_that_is_not_the_last_anchor() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "{attr}\nmod early_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\nmod tests;\n\
+             pub const TRAILING: &str = \"below the declaration\";\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            !production.contains("fn hidden"),
+            "an inline block is stripped wherever it sits: {production}"
+        );
+        for kept in ["a literal a walk must see", "below the declaration"] {
+            assert!(
+                production.contains(kept),
+                "production after an earlier inline block must survive: \
+                 {production}"
+            );
+        }
+    }
+
+    /// Several inline siblings in one file — the shape `output/mod.rs` has —
+    /// where a suffix cut leaves every block but the last inside the slice.
+    #[test]
+    fn production_slice_strips_every_inline_sibling() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "{attr}\nmod first #OPEN#\n    fn hidden_one() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const A: &str = \"between one and two\";\n\
+             {attr}\nmod second #OPEN#\n    fn hidden_two() #OPEN##CLOSE#\n#CLOSE#\n\
+             pub const B: &str = \"between two and three\";\n\
+             {attr}\nmod third #OPEN#\n    fn hidden_three() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        for gone in ["hidden_one", "hidden_two", "hidden_three"] {
+            assert!(
+                !production.contains(gone),
+                "every inline sibling is stripped, not just the last: \
+                 {production}"
+            );
+        }
+        for kept in ["between one and two", "between two and three"] {
+            assert!(
+                production.contains(kept),
+                "the production between the siblings survives: {production}"
+            );
+        }
+    }
+
+    /// A platform-gated test module stacks a second attribute
+    /// (`#[cfg(unix)]`) between `#[cfg(test)]` and its `mod tests {` line —
+    /// the shape `daemon/health_ipc.rs`, both `daemon/service/*.rs` files and
+    /// `cli/kubectl.rs` carry. Checking only the IMMEDIATE next line for
+    /// `mod ` missed it, leaking a whole test module into every walk reading
+    /// through this helper.
+    #[test]
+    fn production_slice_skips_a_stacked_platform_attribute_before_the_mod_line() {
+        let attr = format!("#[cfg({})]", "test");
+        let src = format!(
+            "pub const RENDERED: &str = \"a literal a walk must see\";\n\
+             {attr}\n#[cfg(unix)]\nmod tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+        )
+        .replace("#OPEN#", "{")
+        .replace("#CLOSE#", "}");
+        let production = production_slice(&src);
+        assert!(
+            production.contains("a literal a walk must see"),
+            "production ahead of the stacked-attribute module survives: {production}"
+        );
+        assert!(
+            !production.contains("fn hidden"),
+            "the module behind a stacked platform attribute is still cut away: {production}"
+        );
+    }
+
+    /// The guard's exclusion is the reason no window-pinning test carries a
+    /// serial attribute for it, so the exclusion has to be observable rather
+    /// than assumed. Every assertion here is made from INSIDE this test's own
+    /// guard: whether the lock is FREE is never this test's to claim, because
+    /// any of the window tests may hold it at any moment, and asserting on it
+    /// makes this test fail for someone else's correct behaviour.
+    #[test]
+    fn a_live_window_pin_holds_the_lock_that_keeps_a_second_pin_out() {
+        let pinned = GitRefreshWindowGuard::never_expires();
+        assert!(
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_err(),
+            "a live pin must hold the lock, or two tests can pin the window at once"
+        );
+        drop(pinned);
+        // The release is observed by taking the exclusion again rather than by
+        // asking whether the lock is free — a guard that failed to release
+        // would leave this acquisition unsatisfiable on the same thread.
+        let _second = GitRefreshWindowGuard::never_expires();
+        assert!(
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_err(),
+            "the second pin must hold the lock the first one released"
+        );
+    }
 
     /// Concurrent dispatch is made of a reader that cannot leave its critical
     /// section until a SECOND reader enters it: a lane worker blocked in a
@@ -2977,6 +4262,7 @@ mod tests {
     /// timeout, so this test only ever passes or never returns.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn spawn_env_guards_compose_without_deadlocking() {
         let dir = tempfile::tempdir().expect("tempdir");
         let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
@@ -3054,16 +4340,16 @@ mod tests {
 
         let fm = MockFileManager::new();
 
-        let ok = fm.content_drift(&source, &matching, None).unwrap();
+        let ok = fm.content_drift(&source, &matching, None, None).unwrap();
         assert!(ok.matches);
         assert_eq!(ok.actual, "content matches source");
 
-        let bad = fm.content_drift(&source, &drifted, None).unwrap();
+        let bad = fm.content_drift(&source, &drifted, None, None).unwrap();
         assert!(!bad.matches);
         assert!(bad.actual.contains("differs"));
 
         let missing = fm
-            .content_drift(&source, &dir.path().join("nope.txt"), None)
+            .content_drift(&source, &dir.path().join("nope.txt"), None, None)
             .unwrap();
         assert!(!missing.matches);
         assert_eq!(missing.actual, "missing");
@@ -3079,12 +4365,14 @@ mod tests {
             matches: false,
             expected: "content matches source".to_string(),
             actual: "content differs from source".to_string(),
+            unmanaged: false,
         });
 
         let result = fm
             .content_drift(
                 Path::new("/does/not/exist"),
                 Path::new("/also/missing"),
+                None,
                 None,
             )
             .unwrap();
@@ -3101,7 +4389,7 @@ mod tests {
 
         let fm = MockFileManager::new();
         let result = fm
-            .content_drift(&dir.path().join("absent-source.txt"), &target, None)
+            .content_drift(&dir.path().join("absent-source.txt"), &target, None, None)
             .unwrap();
 
         assert!(!result.matches, "absent managed source must report drift");
@@ -3435,7 +4723,7 @@ mod tests {
 
         // Verify files from commits are present. `read_to_string` returns the
         // on-disk bytes — on a Windows git checkout with default
-        // `core.autocrlf=true`, that is CRLF even though we committed LF.
+        // `core.autocrlf=true`, that is CRLF even though LF was committed.
         // Compare after `normalize_line_endings` so the assertion is about
         // logical content, not the OS-specific eol translation policy.
         let readme = std::fs::read_to_string(clone_dir.path().join("README.md")).unwrap();
@@ -3979,7 +5267,7 @@ env:
                 .build();
 
             // The configurator is wired in
-            assert_eq!(h.registry.system_configurators.len(), 1);
+            assert_eq!(h.registry.system_configurators().len(), 1);
 
             // Plan still works (system drift doesn't automatically generate actions
             // without matching profile system config), so it yields no phases.
@@ -4027,8 +5315,8 @@ env:
             assert_eq!(result.status, ApplyStatus::Success);
 
             // Verify full wiring: all providers present
-            assert_eq!(h.registry.package_managers.len(), 1);
-            assert_eq!(h.registry.system_configurators.len(), 1);
+            assert_eq!(h.registry.package_managers().len(), 1);
+            assert_eq!(h.registry.system_configurators().len(), 1);
             assert_eq!(h.registry.secret_providers.len(), 1);
             assert!(h.registry.file_manager.is_some());
         }

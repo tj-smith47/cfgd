@@ -1,21 +1,26 @@
 Add source:bridge-src
-◐ Cloning source 'bridge-src'
+◐ Cloning source:bridge-src
   Cloning into '<STATE_DIR>/sources/bridge-src'...
-✓ Cloning source 'bridge-src'
 
-Source Manifest
-  Name      bridge-src
-  Version   1.0.0
-  Profiles  default
+Manifest
+  Name     bridge-src
+  Version  1.0.0
+
+Profiles
+  profile:default
+    Env
+      EDITOR  vim
+    Packages
+      brew formulae  ripgrep
 
 Policy
-  ⊙ Scripts: blocked
-  ⊙ Secret access: blocked
+  Require Signed Commits  no
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
 
 ✓ No conflicts with current config
 
-✓ subscribed
+✓ Subscribed
 
-Profile  default
-
-→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

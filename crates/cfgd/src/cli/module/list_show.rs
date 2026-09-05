@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -23,6 +23,19 @@ pub enum PackageDisplay {
     },
 }
 
+/// A declared value with its own `platforms:` gate named after it, for the two
+/// surfaces that list a module's DOCUMENT rather than this host's desired
+/// state. Ungated values are returned untouched.
+pub(in crate::cli) fn gated_value(
+    value: String,
+    entry: &impl cfgd_core::platform::PlatformGated,
+) -> String {
+    match entry.platform_annotation() {
+        Some(tags) => format!("{value} ({tags})"),
+        None => value,
+    }
+}
+
 /// `secondary` (pink/magenta) attaches to remote-sourced modules so the
 /// upgrade-candidate set is scannable without re-reading the column. The
 /// literal value ("remote") still carries the meaning when colors are off.
@@ -30,11 +43,14 @@ fn source_role(source: &str) -> Option<Role> {
     (source == "remote").then_some(Role::Secondary)
 }
 
-/// `accent` (orange) tags rows that need a user action — currently `pending`
-/// (referenced in profile but not applied) and `out-of-date` (state drift
-/// detected). Other states stay plain so the call-to-action stays scannable.
-fn status_role(status: &str) -> Option<Role> {
-    matches!(status, "pending" | "out-of-date").then_some(Role::Accent)
+/// The Status cell: the display word and its tint, both from the workspace's
+/// one module-state vocabulary. No row here can read `Drifted` or `Unknown` —
+/// both come from a check, and `module list` runs none: it reports recorded
+/// state only.
+fn status_cell(status: &str) -> (String, Option<Role>) {
+    let (word, role) =
+        cfgd_core::state::module_status_display(status, cfgd_core::state::DriftVerdict::Clean);
+    (word.to_string(), Some(role))
 }
 
 /// Build the `cfgd module list` Doc. Caller owns `entries` (constructed from
@@ -43,9 +59,10 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     let mut doc = Doc::new().heading("Modules");
 
     if entries.is_empty() {
-        doc = doc
-            .status(Role::Info, "No modules found")
-            .hint(format!("Add modules to {}/modules/", config_dir.posix()));
+        doc = doc.status(Role::Info, "No modules found").hint(format!(
+            "Create one with `cfgd module create <name>`, or add a directory under {}/modules/",
+            config_dir.posix()
+        ));
         return doc.with_data(entries);
     }
 
@@ -56,9 +73,9 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         for e in entries {
             t = t.row_styled([
                 (e.name.clone(), None),
-                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                (e.status.clone(), status_role(&e.status)),
+                status_cell(&e.status),
                 (e.packages.to_string(), None),
                 (e.files.to_string(), None),
                 (e.depends.to_string(), None),
@@ -70,11 +87,16 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         for e in entries {
             t = t.row_styled([
                 (e.name.clone(), None),
-                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                (e.status.clone(), status_role(&e.status)),
+                status_cell(&e.status),
                 (
-                    format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+                    format!(
+                        "{}, {}, {}",
+                        cfgd_core::pluralize(e.packages, "package"),
+                        cfgd_core::pluralize(e.files, "file"),
+                        cfgd_core::pluralize(e.depends, "dep")
+                    ),
                     None,
                 ),
             ]);
@@ -82,7 +104,8 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         t
     };
 
-    doc.table(table).with_data(entries)
+    doc.table(table.without_unfillable_columns())
+        .with_data(entries)
 }
 
 /// Build the not-found error returned to `main.rs::render_cli_error`, the sole
@@ -92,7 +115,10 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
 pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow::Error {
     let mut hints = Vec::new();
     if !available.is_empty() {
-        hints.push(format!("Available modules: {}", available.join(", ")));
+        hints.push(cfgd_core::output::HintCommands::from(format!(
+            "Available modules: {}",
+            available.join(", ")
+        )));
     }
     // Carry the typed `ModuleError::NotFound` in the chain so the exit-code
     // downcast in `main.rs` resolves to ExitCode::NotFound (6); the attached
@@ -115,37 +141,56 @@ pub fn build_module_show_doc(
     output: &ModuleShowOutput,
     lock_entry: Option<&ModuleLockEntry>,
     packages: &[PackageDisplay],
-    post_apply: &[String],
     show_values: bool,
+    arrow: &str,
+    now: &str,
 ) -> Doc {
-    let mut doc = Doc::new().heading(format!("Module: {}", output.name));
-
+    // One aligned block: the Status row needs a role-tinted value, which only
+    // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
+    // `kv` block — so every row of the header is built here.
+    let mut rows = Vec::new();
     if let Some(version) = &output.metadata.version {
-        doc = doc.kv("Version", version);
+        rows.push(KvPair::new("Version", version));
     }
     if !output.depends.is_empty() {
-        doc = doc.kv("Dependencies", output.depends.join(", "));
+        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
     }
-    doc = doc.kv("Directory", &output.directory);
+    rows.push(KvPair::new(
+        "Directory",
+        cfgd_core::fold_home_in_text(&output.directory),
+    ));
 
     if let Some(entry) = lock_entry {
-        doc = doc
-            .kv("Source", "remote (locked)")
-            .kv("URL", &entry.url)
-            .kv("Pinned ref", &entry.pinned_ref)
-            .kv("Commit", &entry.commit)
-            .kv("Integrity", &entry.integrity);
+        rows.push(KvPair::annotated("Source", "remote", "locked"));
+        rows.push(KvPair::new("URL", &entry.url));
+        rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
+        rows.push(KvPair::new("Commit", &entry.commit));
+        rows.push(KvPair::new("Integrity", &entry.integrity));
     } else {
-        doc = doc.kv("Source", "local");
+        rows.push(KvPair::new("Source", "local"));
     }
 
     if let Some(state_rec) = &output.state {
-        doc = doc
-            .kv("Status", &state_rec.status)
-            .kv("Last applied", &state_rec.installed_at)
-            .kv("Packages hash", &state_rec.packages_hash)
-            .kv("Files hash", &state_rec.files_hash);
+        // Recorded state only, same as the list table — see `status_cell`.
+        let (word, role) = cfgd_core::state::module_status_display(
+            &state_rec.status,
+            cfgd_core::state::DriftVerdict::Clean,
+        );
+        rows.push(KvPair::role_valued("Status", word, role));
+        // The age, not the recorded instant: `-o json`'s `state.installedAt`
+        // carries the exact moment, and the row a person reads answers how
+        // long ago — the same split `cfgd status <module>` makes.
+        rows.push(KvPair::new(
+            "Last Applied",
+            cfgd_core::humanize_age_cell(Some(&state_rec.installed_at), now),
+        ));
+        rows.push(KvPair::new("Packages Hash", &state_rec.packages_hash));
+        rows.push(KvPair::new("Files Hash", &state_rec.files_hash));
     }
+
+    let mut doc = Doc::new()
+        .heading_title("Module", &output.name)
+        .kv_rows(rows);
 
     doc = doc.section_if_nonempty("Packages", packages, |s, pkgs| {
         pkgs.iter().fold(s, |s, pkg| match pkg {
@@ -161,15 +206,28 @@ pub fn build_module_show_doc(
                     .unwrap_or_default();
                 s.status(
                     Role::Ok,
-                    format!("{} -> {} install {}{}", name, manager, resolved_name, ver),
+                    format!(
+                        "{} {} {} install {}{}",
+                        name, arrow, manager, resolved_name, ver
+                    ),
                 )
             }
-            PackageDisplay::Skipped { name, platforms } => s.status(
-                Role::Info,
-                format!("{}{} — skipped (platform filter)", name, platforms),
-            ),
+            PackageDisplay::Skipped { name, platforms } => {
+                s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
+                    f.detail(crate::cli::status::PLATFORM_SKIPPED)
+                })
+            }
             PackageDisplay::Unresolved { summary, error } => {
-                s.status(Role::Warn, format!("{} — unresolved: {}", summary, error))
+                // `summary` already carries two data colons of its own
+                // (`prefer:`, `min:`) — `.qualifier("unresolved")` would add
+                // a third with a different meaning ("unresolved" is not a
+                // field on the summary). It opens the DETAIL instead, where
+                // the word governs the reason that follows it; appended to the
+                // subject it read as a qualifier on the last field's value
+                // (`min: 1.0 unresolved`).
+                s.status_with(Role::Warn, summary.clone(), |f| {
+                    f.detail(format!("unresolved: {error}"))
+                })
             }
         })
     });
@@ -185,6 +243,17 @@ pub fn build_module_show_doc(
         })
     });
 
+    // This surface describes what the module DECLARES, not what this host will
+    // take from it, so a gated entry is listed and annotated — the same
+    // annotation vocabulary a platform-filtered package row already carries.
+    // Aliases lead the pair, the order every surface naming both renders them
+    // in.
+    doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
+        aliases.iter().fold(s, |s, alias| {
+            s.kv(&alias.name, gated_value(alias.command.clone(), alias))
+        })
+    });
+
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
             let display = if show_values {
@@ -192,20 +261,33 @@ pub fn build_module_show_doc(
             } else {
                 mask_value(&ev.value)
             };
-            s.kv(&ev.name, display)
+            s.kv(&ev.name, gated_value(display, ev))
         })
     });
 
-    doc = doc.section_if_nonempty("Aliases", &output.spec.aliases, |s, aliases| {
-        aliases
+    // Every hook the module declares, in execution order — read through the
+    // one tally so this section and `cfgd status <module>`'s cannot disagree
+    // about what the module declares. No drift engine ever watches a hook
+    // body, so this is always a bare declaration, the same `command_list`
+    // shape `cfgd status <module>`'s Scripts section uses: the hook name is
+    // the key, never a `status` row borrowing a verdict no check gave it.
+    let declared = cfgd_core::modules::ModuleSurfaces::of(&output.spec);
+    doc = doc.section_if_nonempty("Scripts", &declared.scripts, |s, hooks| {
+        let pairs: Vec<(String, String)> = hooks
             .iter()
-            .fold(s, |s, alias| s.kv(&alias.name, &alias.command))
-    });
-
-    doc = doc.section_if_nonempty("Post-apply Scripts", post_apply, |s, scripts| {
-        scripts
-            .iter()
-            .fold(s, |s, script| s.status(Role::Info, script))
+            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
+            .map(|(hook, body)| {
+                // `--show-values` is the only way to read a whole body; the
+                // default row condenses it, exactly as the status inventory does.
+                let value = if show_values {
+                    body.clone()
+                } else {
+                    cfgd_core::output::condense_script_label(body)
+                };
+                (hook.to_string(), value)
+            })
+            .collect();
+        s.command_list(pairs)
     });
 
     doc.with_data(output)
@@ -327,12 +409,16 @@ pub(crate) fn cmd_module_show(
         spec: module.spec.clone(),
     };
 
+    // Which manager already holds a bare entry is part of what "resolved"
+    // means, so the display reads the same installed state the plan does.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let installed = Some(&pkg_cx);
     let packages: Vec<PackageDisplay> = if module.spec.packages.is_empty() {
         Vec::new()
     } else {
         let registry = build_registry();
-        let mgr_map = managers_map(&registry);
-        let platform = Platform::detect();
+        let mgr_map = registry.manager_map();
+        let platform = Platform::current();
         module
             .spec
             .packages
@@ -364,13 +450,21 @@ pub(crate) fn cmd_module_show(
                     format!(", platforms: {}", entry.platforms.join("/"))
                 };
 
-                match modules::resolve_package(entry, name, &platform, &mgr_map) {
-                    Ok(Some(resolved)) => PackageDisplay::Resolved {
-                        name: entry.name.clone(),
-                        manager: resolved.manager.clone(),
-                        resolved_name: resolved.resolved_name.clone(),
-                        version: resolved.version.clone(),
-                    },
+                match modules::resolve_package(entry, name, platform, &mgr_map, installed) {
+                    Ok(Some(mut resolved)) => {
+                        // `module show` prints the version beside each package,
+                        // so it is one of the surfaces that asks for one.
+                        modules::fill_available_versions(
+                            std::slice::from_mut(&mut resolved),
+                            &mgr_map,
+                        );
+                        PackageDisplay::Resolved {
+                            name: entry.name.clone(),
+                            manager: resolved.manager.clone(),
+                            resolved_name: resolved.resolved_name.clone(),
+                            version: resolved.version.clone(),
+                        }
+                    }
                     Ok(None) => PackageDisplay::Skipped {
                         name: entry.name.clone(),
                         platforms: platform_str,
@@ -387,26 +481,13 @@ pub(crate) fn cmd_module_show(
             .collect()
     };
 
-    let post_apply: Vec<String> = module
-        .spec
-        .scripts
-        .as_ref()
-        .map(|s| {
-            s.post_apply
-                .iter()
-                // Each entry renders as its own `.status()` subject below,
-                // which must never carry a multi-line inline script body raw.
-                .map(|e| condense_script_label(e.run_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     printer.emit(build_module_show_doc(
         &output,
         lock_entry,
         &packages,
-        &post_apply,
         show_values,
+        printer.arrow(),
+        &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
 }
@@ -423,14 +504,27 @@ mod role_mapping_tests {
         assert_eq!(source_role("registry:foo"), None);
     }
 
+    /// The Status cell speaks the workspace's one module-state vocabulary, and
+    /// the two states `module list` derives for a module with no recorded
+    /// apply (`pending` / `available`) both read `NotApplied` — the row's
+    /// `Active` column is what distinguishes them.
     #[test]
-    fn status_role_accents_actionable_states() {
-        assert_eq!(status_role("pending"), Some(Role::Accent));
-        assert_eq!(status_role("out-of-date"), Some(Role::Accent));
-        assert_eq!(status_role("installed"), None);
-        assert_eq!(status_role("available"), None);
-        assert_eq!(status_role("error"), None);
-        assert_eq!(status_role(""), None);
+    fn status_cell_speaks_the_display_vocabulary() {
+        assert_eq!(
+            status_cell("installed"),
+            ("Synced".to_string(), Some(Role::Ok))
+        );
+        assert_eq!(
+            status_cell("error"),
+            ("Failed".to_string(), Some(Role::Fail))
+        );
+        for no_record in ["pending", "available", ""] {
+            assert_eq!(
+                status_cell(no_record),
+                ("NotApplied".to_string(), Some(Role::Pending)),
+                "{no_record:?} should read NotApplied"
+            );
+        }
     }
 }
 

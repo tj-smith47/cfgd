@@ -246,7 +246,10 @@ fn module_update_happy_human() {
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "upd-mod".to_string(),
-        packages: vec!["ripgrep".to_string()],
+        // Explicit rather than bare: the confirmation renders the schema path
+        // the token names, and a bare name resolves to whatever THIS host's
+        // native manager is, which would pin the golden to the build machine.
+        packages: vec!["apt:ripgrep".to_string()],
         files: vec![],
         env: vec![],
         aliases: vec![],
@@ -568,7 +571,7 @@ fn module_delete_cleans_lockfile_entry() {
 
     let human = strip_ansi(&cap.human());
     assert!(
-        human.contains("Removed 'lock-mod' from modules.lock"),
+        human.contains("Removed from modules.lock"),
         "human output must contain lockfile removal message; got:\n{human}"
     );
 

@@ -4,14 +4,33 @@ metadata:
   name: base
 spec:
   env:
+    # vim rather than a GUI editor: this profile is the one every machine
+    # inherits, including headless ones with no display.
     - name: EDITOR
       value: vim
+    # replace with your own name — git refuses to commit without an author
     - name: GIT_AUTHOR_NAME
       value: Your Name
+    # replace with your own address — this one is reserved for documentation
     - name: GIT_AUTHOR_EMAIL
       value: you@example.com
+    # gated: xdg-open is the freedesktop opener, and setting BROWSER to it on
+    # macOS or Windows would name a binary that is not there
+    - name: BROWSER
+      value: xdg-open
+      platforms: [linux, freebsd]
+
+  aliases:
+    # macOS ships pbcopy; everywhere else this is the closest equivalent, and
+    # the clipboard tool it shells out to is X11's
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
 
   packages:
+    # cargo rather than a system manager: these four move faster than distro
+    # packaging does, and cargo is the one source that has current builds of
+    # all of them on every platform this profile targets.
     cargo:
       - bat
       - eza
@@ -22,11 +41,18 @@ spec:
     managed:
       - source: shell/.zshrc
         target: ~/.zshrc
+      # .tera renders the file per machine, so one source serves hosts whose
+      # git identity or signing key differ.
       - source: git/.gitconfig.tera
         target: ~/.gitconfig
     permissions:
+      # OpenSSH refuses to use a key directory or config that any other user
+      # can read, so these two modes are a precondition rather than a
+      # preference.
       "~/.ssh": "700"
       "~/.ssh/config": "600"
 
   system:
+    # replace with the login shell you actually want; zsh is assumed by the
+    # .zshrc above
     shell: /bin/zsh

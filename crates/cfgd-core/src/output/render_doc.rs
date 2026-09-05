@@ -8,13 +8,25 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::component::Component;
-use super::doc::Doc;
-use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
+use super::doc::{Doc, HeadingKind};
+use super::renderer::{
+    Elapsed, Renderer, StatusFields, Table, Writer, finalize_painted_subject, finalize_subject,
+};
+use super::theme::ThemedStyle;
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     renderer.enter_doc();
-    if let Some(h) = &doc.heading {
-        renderer.render_heading(sink, h);
+    match &doc.heading {
+        Some(HeadingKind::Plain(text)) => renderer.render_heading(sink, text),
+        Some(HeadingKind::Title(label)) => {
+            let styled = label.styled(&renderer.theme);
+            renderer.render_heading_styled(sink, &styled);
+        }
+        Some(HeadingKind::OwnerPrefixed { prefix, owner }) => {
+            let styled = owner.styled_with_prefix(&renderer.theme, prefix);
+            renderer.render_heading_styled(sink, &styled);
+        }
+        None => {}
     }
     for child in &doc.children {
         render_component(renderer, sink, child, /*depth=*/ 0);
@@ -29,14 +41,16 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             renderer.render_heading(sink, text);
         }
         Component::KvBlock { pairs } => {
-            let pairs: Vec<(String, String)> = pairs
-                .iter()
-                .map(|p| (p.key.clone(), p.value.clone()))
-                .collect();
-            renderer.render_kv_block(sink, depth, &pairs);
+            renderer.render_kv_block(sink, depth, pairs);
+        }
+        Component::CommandList { pairs } => {
+            renderer.render_command_list(sink, depth, pairs);
         }
         Component::Bullet { text } => {
-            renderer.render_bullet(sink, depth, text);
+            renderer.render_bullet(sink, depth, text, None, None);
+        }
+        Component::Paragraph { text } => {
+            renderer.render_paragraph(sink, depth, text);
         }
         Component::Status {
             role,
@@ -44,14 +58,33 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             detail,
             duration_ms,
             target,
+            qualifier,
             label,
+            verdict,
+            painted,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
             // Sanitize caller-supplied subject ANSI BEFORE composing the
-            // renderer-owned label SGR; matches `StatusBuilder::Drop`'s
+            // renderer-owned qualifier/label SGR; matches `StatusBuilder::Drop`'s
             // boundary handling so both Doc and streaming paths stay
-            // byte-identical.
-            let subject_owned = finalize_subject(&renderer.theme, subject, None, label.as_ref());
+            // byte-identical. A painted subject is painted instead of folded —
+            // its own slots are already sanitized — and takes a plain subject
+            // style so the row's role coat cannot repaint it.
+            let subject_owned = match painted {
+                Some(p) => finalize_painted_subject(
+                    &renderer.theme,
+                    p,
+                    qualifier.as_deref(),
+                    label.as_ref(),
+                ),
+                None => finalize_subject(
+                    &renderer.theme,
+                    subject,
+                    None,
+                    qualifier.as_deref(),
+                    label.as_ref(),
+                ),
+            };
             renderer.render_status(
                 sink,
                 depth,
@@ -59,15 +92,23 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     role: *role,
                     subject: &subject_owned,
                     detail: detail.as_deref(),
-                    duration: duration_ms.map(|ms| Duration::from_millis(ms as u64)),
+                    duration: duration_ms.map(|ms| Elapsed::row(Duration::from_millis(ms as u64))),
                     target: target_pb.as_deref(),
-                    subject_style: None,
+                    subject_style: painted.as_ref().map(|_| ThemedStyle::plain()),
                     detail_style: None,
+                    verdict: verdict.as_deref(),
                 },
             );
         }
-        Component::Hint { text } => {
-            renderer.render_hint(sink, depth, text);
+        Component::ChildRow {
+            subject,
+            detail,
+            label,
+        } => {
+            renderer.render_child_row_labeled(sink, depth + 1, subject, detail, label.as_ref());
+        }
+        Component::Hint { text, commands } => {
+            renderer.render_hint(sink, depth, text, commands);
         }
         Component::Note { text } => {
             renderer.render_note(sink, depth, text);
@@ -79,11 +120,15 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             headers,
             rows,
             row_roles,
+            wrap_cells,
+            owner_columns,
         } => {
             let t = Table {
                 headers: headers.clone(),
                 rows: rows.clone(),
                 row_roles: row_roles.clone(),
+                wrap_cells: *wrap_cells,
+                owner_columns: owner_columns.clone(),
             };
             renderer.render_table(sink, depth, &t);
         }
@@ -91,9 +136,27 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             name,
             keep_when_empty,
             empty_state,
+            owner,
+            annotation,
             children,
         } => {
-            renderer.render_section_open(name, *keep_when_empty);
+            // `owner` sections are built via `SectionBuilder::new_owner`, whose
+            // `name` is always an `OwnerLabel::plain()` `kind:name` token — the
+            // split mirrors `Owner::token()`'s own composition, never the
+            // reverse: nothing else stores a colon-joined `name` on this path.
+            let styled_name = if *owner {
+                name.split_once(':').map(|(kind, label_name)| {
+                    super::OwnerLabel::new(kind, label_name).styled(&renderer.theme)
+                })
+            } else {
+                None
+            };
+            renderer.render_section_open_styled(
+                name,
+                styled_name,
+                annotation.clone(),
+                *keep_when_empty,
+            );
             if let Some(es) = empty_state {
                 renderer.render_section_empty_state(es);
             }
@@ -115,18 +178,10 @@ mod row_roles_round_trip_tests {
     //! styling is invisible without colors enabled.
 
     use super::*;
-    use crate::output::renderer::Renderer;
+    use crate::output::renderer::{Renderer, StringSink};
     use crate::output::{Role, Theme, Verbosity};
     use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
-
-    struct StringSink(Arc<Mutex<String>>);
-    impl super::Writer for StringSink {
-        fn write_line(&self, text: &str) {
-            self.0.lock().unwrap().push_str(text);
-            self.0.lock().unwrap().push('\n');
-        }
-    }
 
     #[test]
     #[serial_test::serial]
@@ -151,7 +206,8 @@ mod row_roles_round_trip_tests {
         let doc = Doc::new().table(t);
         render_doc(&renderer, &sink, &doc);
 
-        let out = buf.lock().unwrap().clone();
+        // raw-capture-ok: asserting on the raw truecolor SGR bytes themselves — captured_text would strip the ANSI this test exists to check
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let dracula_pink = "\x1b[38;2;255;121;198m";
         let dracula_orange = "\x1b[38;2;255;184;108m";
         assert!(
@@ -161,6 +217,99 @@ mod row_roles_round_trip_tests {
         assert!(
             out.contains(dracula_orange),
             "accent (orange) must reach renderer; got:\n{out:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod heading_title_tests {
+    //! `Doc::heading_title` is theme-deferred (`HeadingKind::Title` holds a
+    //! plain `TitleLabel`, not a pre-styled string) — this proves the styled
+    //! 3-slot render really does reach the renderer at `render_doc` time,
+    //! not just that `to_json_value`'s plain fallback round-trips (covered in
+    //! `doc.rs`'s own tests).
+
+    use super::*;
+    use crate::output::renderer::{Renderer, StringSink};
+    use crate::output::{Theme, Verbosity};
+    use crate::test_helpers::EnvVarGuard;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    #[serial_test::serial]
+    fn doc_heading_title_renders_the_three_slot_form_not_a_single_header_coat() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let renderer = Renderer::new(theme.clone(), Verbosity::Normal);
+        let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+
+        let doc = Doc::new().heading_title("Status", "dev-tools");
+        render_doc(&renderer, &sink, &doc);
+
+        // raw-capture-ok: comparing against TitleLabel's own styled() output, which carries ANSI — captured_text would strip exactly what this test compares
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = crate::output::TitleLabel::new("Status", "dev-tools").styled(&theme);
+        assert_eq!(out.trim_end(), expected);
+        // Not vacuous: a plain `render_heading("Status: dev-tools")` would
+        // paint the whole line in one `theme.header` coat, which is NOT what
+        // the three-slot form produces.
+        let single_coat = theme.header.apply_to("Status: dev-tools").to_string();
+        assert_ne!(out.trim_end(), single_coat);
+    }
+}
+
+#[cfg(test)]
+mod owner_section_restyle_tests {
+    //! `render_component`'s `Component::Section { owner: true, .. }` arm
+    //! (lines 117-124) re-derives an `OwnerLabel` from the section's colon-
+    //! joined `name` and restyles it through `renderer.theme` — proving that
+    //! restyle actually reaches the renderer needs a COLOURED render, which
+    //! neither `doc.rs`'s own tests (JSON round-trip only) nor `regression.rs`
+    //! (unstyled `golden_doc!` captures) exercise.
+
+    use super::*;
+    use crate::output::renderer::{Renderer, StringSink};
+    use crate::output::{Doc, OwnerLabel, Theme, Verbosity};
+    use crate::test_helpers::EnvVarGuard;
+    use std::sync::{Arc, Mutex};
+
+    /// A `subsection_owner` child renders the owner token styled through
+    /// `OwnerLabel::styled`, not the section header slot's own plain coat.
+    #[test]
+    #[serial_test::serial]
+    fn subsection_owner_restyles_the_owner_token_not_the_header_slot() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let renderer = Renderer::new(theme.clone(), Verbosity::Normal);
+        let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+
+        let label = OwnerLabel::new("module", "nvim");
+        let doc = Doc::new().section("Phase: Files", |s| {
+            s.subsection_owner(&label, |sub| sub.bullet("wrote init.lua"))
+        });
+        render_doc(&renderer, &sink, &doc);
+
+        // raw-capture-ok: comparing against OwnerLabel's own styled() output, which carries ANSI — stripping it first would hide exactly what this test checks
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = label.styled(&theme);
+        assert!(
+            out.contains(&expected),
+            "owner token missing or restyled: {out:?}"
+        );
+
+        // Not vacuous: a plain, non-owner section named "module:nvim" would
+        // paint the whole header string in one `theme.header` coat instead of
+        // the three-slot owner styling.
+        let single_coat = theme.header.apply_to("module:nvim").to_string();
+        assert!(
+            !out.contains(&single_coat),
+            "restyle must diverge from a plain header coat: {out:?}"
         );
     }
 }

@@ -6,17 +6,37 @@ use super::source::default_true;
 // Compliance configuration
 // ---------------------------------------------------------------------------
 
+/// `spec.compliance`: periodic snapshotting of machine state for drift/audit history.
+///
+/// ```yaml
+/// compliance:
+///   enabled: true
+///   interval: 1h
+///   retention: 30d
+///   scope:
+///     files: true
+///     packages: true
+///   export:
+///     format: Json
+///     path: ~/.local/state/cfgd/compliance/
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceConfig {
+    /// Whether the daemon takes compliance snapshots on its tick. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// How often a snapshot is taken, as a duration string. Default: `1h`.
     #[serde(default = "default_compliance_interval")]
     pub interval: String,
+    /// How long a snapshot is kept before being pruned, as a duration string.
+    /// Default: `30d`.
     #[serde(default = "default_compliance_retention")]
     pub retention: String,
+    /// Which surfaces a snapshot covers.
     #[serde(default)]
     pub scope: ComplianceScope,
+    /// Where and in what format a snapshot is exported.
     #[serde(default)]
     pub export: ComplianceExport,
 }
@@ -28,19 +48,36 @@ fn default_compliance_retention() -> String {
     "30d".into()
 }
 
+/// `spec.compliance.scope`: which managed surfaces a snapshot covers.
+///
+/// ```yaml
+/// scope:
+///   files: true
+///   packages: true
+///   system: true
+///   secrets: false
+///   watchPaths: [/etc/hosts]
+///   watchPackageManagers: [apt]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceScope {
+    /// Include declared files' content/permission state. Default: `true`.
     #[serde(default = "default_true")]
     pub files: bool,
+    /// Include declared packages' installed state. Default: `true`.
     #[serde(default = "default_true")]
     pub packages: bool,
+    /// Include system configurator settings. Default: `true`.
     #[serde(default = "default_true")]
     pub system: bool,
+    /// Include declared secrets' presence/hash state (never plaintext). Default: `true`.
     #[serde(default = "default_true")]
     pub secrets: bool,
+    /// Extra filesystem paths to watch for drift beyond declared files.
     #[serde(default)]
     pub watch_paths: Vec<String>,
+    /// Extra package managers to watch beyond those a module declares against.
     #[serde(default)]
     pub watch_package_managers: Vec<String>,
 }
@@ -58,6 +95,8 @@ impl Default for ComplianceScope {
     }
 }
 
+/// Serialization format for a compliance export: `Json` or `Yaml`
+/// (case-insensitive on read; `PascalCase` in generated YAML).
 #[derive(Debug, Clone, Default, Serialize, PartialEq, schemars::JsonSchema)]
 pub enum ComplianceFormat {
     #[default]
@@ -70,11 +109,21 @@ case_insensitive_enum!(ComplianceFormat {
     "Yaml" => ComplianceFormat::Yaml,
 });
 
+/// `spec.compliance.export`: where a compliance snapshot is written.
+///
+/// ```yaml
+/// export:
+///   format: Yaml
+///   path: ~/.local/state/cfgd/compliance/
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceExport {
+    /// Export file format. Default: `Json`.
     #[serde(default)]
     pub format: ComplianceFormat,
+    /// Directory a snapshot file is written into. Default:
+    /// `~/.local/state/cfgd/compliance/`.
     #[serde(default = "default_compliance_path")]
     pub path: String,
 }

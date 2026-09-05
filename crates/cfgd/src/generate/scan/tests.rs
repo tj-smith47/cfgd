@@ -377,10 +377,16 @@ impl PackageManager for TestPackageManager {
     fn name(&self) -> &str {
         self.manager_name
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(
@@ -458,6 +464,40 @@ fn test_scan_installed_packages_collects_from_multiple_managers() {
 
     assert_eq!(entries[2].name, "ripgrep");
     assert_eq!(entries[2].manager, "brew");
+}
+
+// A generate session holds ONE context across every turn of its tool loop, so
+// a model that scans installed packages on several turns must not re-list the
+// machine each time.
+#[test]
+fn test_scan_installed_packages_asks_each_manager_once_per_session() {
+    // The count is a memo-hit claim, so the memo's age ceiling is pinned out
+    // of reach — unpinned it rests on the 30s wall clock. No serialization:
+    // nothing in this crate's test binary pins the ceiling to zero, and a
+    // longer ceiling can only let another test's entries live longer.
+    let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
+    let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let brew =
+            cfgd_core::test_helpers::MockPackageManager::new("brew").with_installed(&["ripgrep"]);
+        let counter = brew.enumeration_counter();
+        let managers: Vec<&dyn PackageManager> = vec![&brew];
+
+        for _ in 0..3 {
+            let entries = scan_installed_packages(&managers, None, &cx).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "ripgrep");
+        }
+
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    });
+
+    assert_eq!(
+        enumerations, 1,
+        "three scan turns on one context must cost one enumeration per manager"
+    );
 }
 
 #[test]
@@ -551,7 +591,7 @@ fn test_scan_installed_packages_sorted_by_name_then_manager() {
 #[test]
 fn test_scan_system_settings_returns_valid_result() {
     // Just verify it returns a valid SystemSettingsResult without crashing.
-    // Values are platform-dependent so we only check structural validity.
+    // Values are platform-dependent so only structural validity is checked.
     let result = scan_system_settings().unwrap();
     // systemd_units and launch_agents are always sorted
     let mut sorted_units = result.systemd_units.clone();
@@ -1144,10 +1184,16 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn name(&self) -> &str {
             "erroring"
         }
+        fn upgrade_verb(&self) -> Option<&'static str> {
+            Some("upgrade")
+        }
         fn is_available(&self) -> bool {
             true
         }
-        fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        fn bootstrap_plan_given(
+            &self,
+            _delivered: &dyn Fn(&str) -> bool,
+        ) -> Option<cfgd_core::providers::BootstrapPlan> {
             None
         }
         fn bootstrap(
@@ -1977,7 +2023,7 @@ fn test_scan_dotfiles_counts_only_file_content_for_size() {
 #[test]
 fn test_scan_system_settings_collects_and_sorts_launch_agent_plists() {
     // The launch_agents block reads `~/Library/LaunchAgents` via expand_tilde,
-    // which honors the thread-local test-home override — so we can exercise it
+    // which honors the thread-local test-home override — so this can exercise it
     // deterministically on any platform without touching the real HOME.
     let tmp = TempDir::new().unwrap();
     let agents = tmp.path().join("Library").join("LaunchAgents");

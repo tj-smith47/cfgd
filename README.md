@@ -36,7 +36,7 @@ Declare your entire machine (packages, dotfiles, system settings, secrets) with 
 
 ## What is cfgd
 
-Most dotfile managers track files. `cfgd` enables you to manage your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles continuously. If something drifts, it's detected and corrected.
+Most dotfile managers track files. `cfgd` manages your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles continuously. If something drifts, it is detected and corrected.
 
 ## How It Works
 
@@ -52,7 +52,9 @@ Most dotfile managers track files. `cfgd` enables you to manage your entire mach
 
 **Modules** are shareable, self-contained config packages. Install someone else's dev environment or publish your own. Cross-platform package resolution picks the right manager automatically. See [docs/modules.md](docs/modules.md).
 
-**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort; they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
+**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort; they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md), or watch [two machines converge through the daemon](docs/daemon.md#what-it-does).
+
+<img src="demo/cfgd-drift.gif" width="1320" alt="cfgd catching a sabotaged file with cfgd status, explaining it with cfgd diff, and healing it with cfgd apply">
 
 ## Quick Start
 
@@ -84,9 +86,9 @@ cfgd completion fish | source   # config.fish
 
 ## Why cfgd exists
 
-I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time, I gradually discovered things I'd forgotten, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and incomplete, and I thought there needed to be a better way; I should just be able to clone a repo and have my entire workstation (packages, scripts, dotfiles, system settings) feel familiar again. And even better, to keep aspects of that feeling in sync between my home and work laptops (parts of it, at least).
+I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company-specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time I kept discovering things I'd forgotten, and things (System Settings, for one) I wished the backup had covered. It all felt manual and incomplete: I should be able to clone a repo and have my entire workstation (packages, scripts, dotfiles, system settings) feel familiar again. Better still, to keep parts of that feeling in sync between my home and work laptops.
 
-Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my setup. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias.
+The other inspiration was devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment once they shell in. At minimum, I wanted my full Neovim setup available in any ephemeral container without modifying the devcontainer config in every team's repository to accommodate it. I needed something that could bootstrap my config into any environment from the outside, regardless of whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick way to share my exact setup, down to the alias.
 
 `cfgd` borrows from the best ideas across practices:
 
@@ -172,7 +174,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 **For developers:**
 - [One-command bootstrap](docs/bootstrap.md): `cfgd init --from <repo> --apply` on a new machine
 - [AI-guided generation](docs/ai-generate.md): `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
-- [MCP server](docs/ai-generate.md#serving-the-cli-itself): `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not just write config for one
+- [MCP server](docs/ai-generate.md#serving-the-cli-itself): `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not only write config for one
 - [Authoring skills](docs/skill.md): `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
 - [Shareable modules](docs/modules.md): cross-platform dev environment packages with dependency resolution and registries
 - [18 package managers](docs/packages.md): brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
@@ -215,7 +217,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
 | [Declarative Backups](docs/backups.md) | `spec.backups[]` snapshots, hook ordering, retention, restoring |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
-| [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
+| [Installation](docs/installation.md) | Every install channel, verifying signed downloads, self-upgrade |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, both MCP servers (`mcp-server` for authoring, `mcp` for driving the CLI) |
 | [Authoring Skills](docs/skill.md) | `cfgd skill` installer, supported agent providers, choosing between generate and skills |
@@ -226,18 +228,24 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 
 ## Distribution
 
-In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows; amd64 + arm64), each release also publishes to:
+In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows on amd64 + arm64; FreeBSD on amd64), each release also publishes to:
 
 | Channel | Artifact |
 |---|---|
 | [Homebrew](https://github.com/tj-smith47/homebrew-tap) | `brew install tj-smith47/tap/cfgd` |
-| [crates.io](https://crates.io/crates/cfgd) | `cargo install cfgd` |
+| [crates.io](https://crates.io/crates/cfgd) | `cargo install cfgd` (or `cargo binstall cfgd` for the pre-built binary) |
 | [AUR](https://aur.archlinux.org/packages/cfgd) | `yay -S cfgd` (Arch Linux; builds from source) |
+| [winget](https://github.com/microsoft/winget-pkgs) | `winget install --id TJSmith.cfgd` |
+| [Scoop](https://github.com/tj-smith47/scoop-bucket) | `scoop bucket add tj-smith47 https://github.com/tj-smith47/scoop-bucket; scoop install cfgd` |
+| [Chocolatey](https://community.chocolatey.org/packages/cfgd) | `choco install cfgd` |
+| [Nix](https://github.com/tj-smith47/nix-pkgs) | `nix profile install github:tj-smith47/nix-pkgs#cfgd` |
+| [deb / rpm / apk](docs/installation.md#linux-native-packages-deb--rpm--apk) | Static-binary native packages, also mirrored to [CloudSmith](https://cloudsmith.io/~jarvispro/repos/cfgd/) |
 | [GHCR](https://ghcr.io/tj-smith47) | Docker images: `cfgd`, `cfgd-operator`, `cfgd-csi` |
 | [Helm](chart/cfgd/) | `helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd` |
-| [Krew](manifests/krew/) | `kubectl krew install cfgd` (the [kubectl plugin](docs/operator.md) for node debugging and fleet inspection) |
+| [Krew](https://github.com/tj-smith47/krew-index) | `kubectl krew install cfgd` (the [kubectl plugin](docs/operator.md) for node debugging and fleet inspection) |
 | [OLM](ecosystem/olm/) | Operator bundle for OLM-managed clusters |
 | [Crossplane](function-cfgd/) | `function-cfgd` composition function for [team config distribution](docs/team-config.md) |
+| [MCP Registry](https://registry.modelcontextprotocol.io) | `io.github.tj-smith47/cfgd`: the `cfgd mcp-server` stdio server, for AI agents and editors |
 
 **CI/CD integrations:**
 
@@ -250,16 +258,22 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 
 ```yaml
 # Example: set up your dev tools on a GitHub Actions runner
-- uses: tj-smith47/cfgd/ecosystem/github-action-setup@master
+- uses: tj-smith47/cfgd/ecosystem/github-actions/setup@master
   with:
     source: git@github.com:you/machine-config.git
     module: dev-tools
+
+# Example: plan config changes on every PR, comment the diff, gate the merge
+- uses: tj-smith47/cfgd/ecosystem/github-actions/plan@master
+  with:
+    config-dir: .
+    fail-on-error: true
 ```
 
 Modules can also be exported as [DevContainer Features](https://containers.dev/implementors/features/) for injection into devcontainers:
 
 ```sh
-cfgd module export my-tool --format devcontainer
+cfgd module export my-tool --as devcontainer
 ```
 
 **Building from source:**

@@ -36,49 +36,73 @@ pub fn cmd_module_push(
         ));
     }
 
-    printer.heading("Push Module");
-    let mut header = vec![
+    // No `Platform` row: `resolve_platform` is the flag or this host, so
+    // whenever a row keyed on the flag would render, its value IS the string
+    // the settled row's detail already carries — the same fact twice in one
+    // five-line block. The detail states the resolved platform whether or not
+    // `--platform` was given, so the block reads the same either way.
+    let header = vec![
         ("Directory".to_string(), dir.to_string()),
         ("Artifact".to_string(), artifact.to_string()),
     ];
-    if let Some(p) = platform {
-        header.push(("Platform".to_string(), p.to_string()));
-    }
-    printer.kv_block(header);
 
-    let digest =
-        cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
-            crate::cli::cli_error(
-                artifact,
-                "push_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
-            )
-        })?;
-
-    printer.kv("Digest", &digest);
-
-    let crate::cli::helpers::SignAttestOutcome {
-        signed,
-        attested: attestation_attached,
-    } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
-
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being pushed, the push verdict (carrying the digest as its
+    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push Module`
+    // title spends the word twice on one screen for two different things.
+    // `push_module` keeps its `&Printer` signature (it has non-CLI callers
+    // too), so the section is opened and scoped here rather than threaded into
+    // the library call, and `depth_inheritance` is what settles its spinner at
+    // the section's depth instead of depth 0.
     let mut applied_name: Option<String> = None;
-    if apply {
-        let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
-        let module_doc = cfgd_core::config::parse_module(&module_yaml)
-            .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+    let (digest, resolved_platform, signed, attestation_attached) = {
+        let push_sec = printer.section("Push Module");
+        let _inherit = printer.depth_inheritance();
+        push_sec.kv_block(header);
+        let cfgd_core::oci::PushOutcome {
+            digest,
+            platform: resolved_platform,
+        } = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(
+            |e| {
+                crate::cli::cli_error(
+                    artifact,
+                    "push_failed",
+                    e.to_string(),
+                    // No `platform`: the key names the platform an artifact
+                    // WAS pushed for, and this branch pushed none. Echoing the
+                    // flag here answers `null` for the defaulted case, which
+                    // reads as "no platform" rather than "no artifact".
+                    serde_json::json!({ "artifact": artifact, "dir": dir }),
+                )
+            },
+        )?;
+        let crate::cli::helpers::SignAttestOutcome { signed, attested } =
+            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 
-        let signature = build_module_signature(printer, signed, key);
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
-        applied_name = Some(module_doc.metadata.name.clone());
-    }
+        if apply {
+            let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
+            let module_doc = cfgd_core::config::parse_module(&module_yaml)
+                .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
 
+            let signature = build_module_signature(printer, signed, key);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
+            applied_name = Some(module_doc.metadata.name.clone());
+        }
+        push_sec.hint(super::success_next_step(super::Mutation::ModulePushed {
+            applied: applied_name.as_deref(),
+        }));
+        (digest, resolved_platform, signed, attested)
+    };
+
+    // The RESOLVED platform, never the `--platform` flag: this push stamped it
+    // into the manifest, and the operator reads it back into a Module's
+    // `PLATFORMS` column, so a payload key naming the artifact's platform
+    // answering `null` for a defaulted one is a wrong value, not a silence.
     printer.emit(Doc::new().with_data(serde_json::json!({
         "dir": dir,
         "artifact": artifact,
-        "platform": platform,
+        "platform": resolved_platform,
         "digest": digest,
         "signed": signed,
         "attestation": attestation_attached,
@@ -238,11 +262,19 @@ pub(super) fn build_module_crd_json(
     let env: Vec<cfgd_crd::ModuleEnvVar> = env
         .iter()
         .map(|entry| {
-            let cfgd_core::config::EnvVar { name, value } = entry;
+            let cfgd_core::config::EnvVar {
+                name,
+                value,
+                platforms,
+            } = entry;
             cfgd_crd::ModuleEnvVar {
                 name: name.clone(),
                 value: value.clone(),
                 append: false, // local EnvVar has no append concept today
+                // Carried so a module round-trips through the registry
+                // unchanged, and so the pod-mutating webhook can honour the
+                // gate instead of injecting an entry the module gated off.
+                platforms: platforms.clone(),
             }
         })
         .collect();
@@ -371,71 +403,82 @@ pub fn cmd_module_pull(
 ) -> anyhow::Result<()> {
     let output_path = Path::new(output);
 
-    printer.heading("Pull Module");
-    printer.kv_block([("Artifact", artifact_ref), ("Output", output)]);
-
-    if require_signature {
-        cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
-            crate::cli::cli_error(
-                artifact_ref,
-                "verify_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
-            )
-        })?;
-        printer.status_simple(Role::Ok, "Signature verified");
-    }
-
-    if verify_attestation {
-        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts).map_err(
-            |e| {
-                crate::cli::cli_error(
-                    artifact_ref,
-                    "verify_failed",
-                    e.to_string(),
-                    serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
-                )
-            },
-        )?;
-        printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
-    }
-
-    cfgd_core::oci::pull_module(
-        artifact_ref,
-        output_path,
-        cfgd_core::oci::SignaturePolicy::None,
-        Some(printer),
-    )
-    .map_err(|e| {
-        crate::cli::cli_error(
-            artifact_ref,
-            "pull_failed",
-            e.to_string(),
-            serde_json::json!({ "artifact": artifact_ref, "output": output }),
-        )
-    })?;
-
-    printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
-
     let mut module_name: Option<String> = None;
     let mut module_description: Option<String> = None;
     let mut package_count: Option<usize> = None;
     let mut file_count: Option<usize> = None;
-    if output_path.join("module.yaml").exists() {
-        let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
-        if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
-            let mut pairs = vec![("Module".to_string(), doc.metadata.name.clone())];
-            if let Some(desc) = &doc.metadata.description {
-                pairs.push(("Description".to_string(), desc.clone()));
-            }
-            pairs.push(("Packages".to_string(), doc.spec.packages.len().to_string()));
-            pairs.push(("Files".to_string(), doc.spec.files.len().to_string()));
-            printer.kv_block(pairs);
-            module_name = Some(doc.metadata.name.clone());
-            module_description = doc.metadata.description.clone();
-            package_count = Some(doc.spec.packages.len());
-            file_count = Some(doc.spec.files.len());
+
+    // Same shape as `cmd_module_push`: ONE section named for the command,
+    // holding what is being pulled, the verifications the pull gated on, the
+    // pull verdict and what the pulled module turned out to contain.
+    // `pull_module` keeps its `&Printer` signature (it has non-CLI callers
+    // too), so the section is opened and scoped here rather than threaded into
+    // the library call, and `depth_inheritance` settles its spinner at the
+    // section's depth instead of depth 0.
+    {
+        let pull_sec = printer.section("Pull Module");
+        let _inherit = printer.depth_inheritance();
+        pull_sec.kv_block([("Artifact", artifact_ref), ("Output", output)]);
+
+        if require_signature {
+            cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
+                crate::cli::cli_error(
+                    artifact_ref,
+                    "verify_failed",
+                    e.to_string(),
+                    serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+                )
+            })?;
+            printer.status_simple(Role::Ok, "Verified signature");
         }
+
+        if verify_attestation {
+            cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts)
+                .map_err(|e| {
+                    crate::cli::cli_error(
+                        artifact_ref,
+                        "verify_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
+                    )
+                })?;
+            printer.status_simple(Role::Ok, "Verified SLSA provenance attestation");
+        }
+
+        cfgd_core::oci::pull_module(
+            artifact_ref,
+            output_path,
+            cfgd_core::oci::SignaturePolicy::None,
+            Some(printer),
+        )
+        .map_err(|e| {
+            crate::cli::cli_error(
+                artifact_ref,
+                "pull_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact_ref, "output": output }),
+            )
+        })?;
+
+        if output_path.join("module.yaml").exists() {
+            let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
+            if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
+                let mut pairs = vec![("Module".to_string(), doc.metadata.name.clone())];
+                if let Some(desc) = &doc.metadata.description {
+                    pairs.push(("Description".to_string(), desc.clone()));
+                }
+                pairs.push(("Packages".to_string(), doc.spec.packages.len().to_string()));
+                pairs.push(("Files".to_string(), doc.spec.files.len().to_string()));
+                pull_sec.kv_block(pairs);
+                module_name = Some(doc.metadata.name.clone());
+                module_description = doc.metadata.description.clone();
+                package_count = Some(doc.spec.packages.len());
+                file_count = Some(doc.spec.files.len());
+            }
+        }
+        pull_sec.hint(super::success_next_step(super::Mutation::ModulePulled {
+            name: module_name.as_deref(),
+        }));
     }
 
     printer.emit(Doc::new().with_data(serde_json::json!({
@@ -793,11 +836,52 @@ mod tests {
             (server, registry)
         }
 
+        /// `cmd_module_push`'s push spinner used to render at
+        /// depth 0 unconditionally (a bare `printer.spinner()` call inside
+        /// `push_module`, a library fn with no `SectionGuard` of its own).
+        /// It now runs inside the command's one `printer.section("Push
+        /// Module")` plus `depth_inheritance()`, so the settled line nests one
+        /// level deeper than the section header instead of sitting flush with
+        /// it.
         #[test]
         #[serial]
-        fn push_with_platform_kv_includes_platform_in_output() {
-            // Mock a successful push (no sign / attest) so we reach the
-            // happy-path doc emit and the platform kv entry is added.
+        fn push_settle_line_nests_under_the_push_section_header() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                super::super::PushOptions {
+                    platform: None,
+                    apply: false,
+                    sign: false,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect("push must succeed");
+            drop(printer);
+
+            let output = cfgd_core::test_helpers::captured_text(&buf);
+            crate::cli::test_support::assert_nests_under(&output, "Push Module", "Pushed module");
+        }
+
+        /// A `--platform` push states the platform ONCE, in the settled row's
+        /// detail. The conditional `Platform` header row spelled the same
+        /// value a second time in the same five-line block, and the two could
+        /// never differ: `resolve_platform` is the flag or this host, so
+        /// whenever the row rendered its value WAS the parenthetical.
+        #[test]
+        #[serial]
+        fn push_states_a_named_platform_once_in_the_settled_row() {
+            // Mock a successful push (no sign / attest) to reach the
+            // happy-path doc emit and the settled row's detail.
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
             let (_server, registry) = mock_push_registry();
@@ -822,12 +906,51 @@ mod tests {
 
             let output = cap.lock().unwrap();
             assert!(
-                output.contains("Platform"),
-                "platform kv label must appear in human output: {output}"
+                !output.contains("Platform"),
+                "a `Platform` header row restates the settled row's detail: {output}"
             );
+            assert_eq!(
+                output.matches("linux/amd64").count(),
+                1,
+                "the resolved platform is stated once, in the row that produced it: {output}"
+            );
+        }
+
+        /// The platform a push RESOLVED is the artifact's whether or not a
+        /// flag named it: the settled row carries it beside the digest, and
+        /// the payload's `platform` key holds it. Filled from the `Option`
+        /// flag, that key answered `null` for an artifact whose manifest — and
+        /// whose Module `PLATFORMS` column, read back off that manifest by the
+        /// operator — said `linux/amd64`.
+        #[test]
+        #[serial]
+        fn push_without_a_platform_flag_reports_the_host_platform_in_both_renders() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, cap) = Printer::for_test_doc();
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                super::no_flags(),
+            )
+            .expect("push must succeed");
+            drop(printer);
+
+            let host = cfgd_core::oci::current_platform();
+            let human = cap.human();
             assert!(
-                output.contains("linux/amd64"),
-                "platform value must appear in human output: {output}"
+                human.contains(&host),
+                "the pushed row reports the platform it resolved ({host}): {human}"
+            );
+            let doc = cap.json().expect("success doc must be emitted");
+            assert_eq!(
+                doc["platform"],
+                serde_json::Value::String(host),
+                "the payload carries the resolved platform, never the flag: {doc}"
             );
         }
 
@@ -979,6 +1102,10 @@ spec:
   env:
     - name: FOO
       value: bar
+    - name: MAC_ONLY
+      value: yes
+      platforms:
+        - macos
   aliases:
     - name: ll
       command: ls -la
@@ -1079,7 +1206,7 @@ spec:
                 result.is_err(),
                 "key-based --sign with no sibling cosign.pub must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("No sibling public key found"),
                 "missing sibling key must be surfaced to the user: {warning:?}"
@@ -1103,7 +1230,7 @@ spec:
                 result.is_err(),
                 "a KMS key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("KMS/PKCS#11 key reference"),
                 "a KMS-style --key must be recognized instead of guessing a nonsense sibling path: {warning:?}"
@@ -1130,7 +1257,7 @@ spec:
                 result.is_err(),
                 "a PKCS#11 key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("KMS/PKCS#11 key reference"),
                 "a pkcs11: --key must be recognized as a non-filesystem reference instead of being \
@@ -1147,8 +1274,19 @@ spec:
 
             assert_eq!(
                 spec["env"],
-                serde_json::json!([{ "name": "FOO", "value": "bar", "append": false }]),
-                "env vars must round-trip into the CRD's env field: {spec:?}"
+                serde_json::json!([
+                    { "name": "FOO", "value": "bar", "append": false },
+                    {
+                        "name": "MAC_ONLY",
+                        "value": "yes",
+                        "append": false,
+                        "platforms": ["macos"],
+                    },
+                ]),
+                "env vars round-trip into the CRD's env field, gate included, so a module \
+                 pushed to a registry comes back declaring what it declared — and so the \
+                 pod-mutating webhook can honour the gate rather than injecting an entry \
+                 the module gated off: {spec:?}"
             );
             assert_eq!(
                 spec["packages"][0]["platforms"],
@@ -1259,6 +1397,84 @@ spec:
             doc["output"].is_string(),
             "output field must be present: {doc}"
         );
+    }
+
+    /// `cmd_module_pull` called `pull_module` on a bare
+    /// `printer` with no section wrapping it, while `cmd_module_push` (see
+    /// `push_settle_line_nests_under_the_push_section_header` below) already
+    /// opened a section around the matching `push_module` call — an asymmetry,
+    /// since both library fns open their own bare top-level spinner the same
+    /// way. `cmd_module_pull` now opens `printer.section("Pull Module")` +
+    /// `depth_inheritance()` around `pull_module`, so its settle line nests one
+    /// level deeper than the section header instead of sitting flush with it,
+    /// matching push's shape exactly.
+    #[test]
+    fn pull_settle_line_nests_under_the_pull_section_header() {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+
+        let src_dir = tempfile::tempdir().expect("src module dir");
+        write_module_yaml(src_dir.path());
+
+        let layer_data = cfgd_core::oci::create_tar_gz(src_dir.path()).expect("create layer");
+        let config_blob =
+            serde_json::to_vec(&serde_json::json!({ "moduleYaml": "name: test-mod" })).unwrap();
+        let config_digest = cfgd_core::sha256_digest(&config_blob);
+        let layer_digest = cfgd_core::sha256_digest(&layer_data);
+
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                "digest": config_digest,
+                "size": config_blob.len(),
+            },
+            "layers": [{
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                "digest": layer_digest,
+                "size": layer_data.len(),
+            }],
+        });
+
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer_data)
+            .create();
+
+        let artifact_ref = format!("{}/test/mod:v1", registry);
+        let output_dir = tempfile::tempdir().expect("output dir");
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+        cmd_module_pull(
+            &printer,
+            &artifact_ref,
+            output_dir.path().to_str().unwrap(),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect("pull must succeed");
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        crate::cli::test_support::assert_nests_under(&output, "Pull Module", "Pulled module");
     }
 
     #[test]

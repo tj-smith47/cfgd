@@ -1,14 +1,18 @@
 Daemon Status
-✓ Daemon is running
+  Config              /home/u/.config/cfgd/cfgd.yaml
+  Profile             work
+  Modules             base, dev-tools
+  PID                 4242
+  Uptime              1h
+  Reconcile Interval  300s
+  Sync Interval       900s
+  Drift Count         7
+  Last Reconcile      2d ago
 
-PID             4242
-Uptime          3600s
-Drift count     7
-Last reconcile  2026-05-12T10:00:00Z
-Last sync       2026-05-12T09:55:00Z
+✓ Daemon running
 
 Sources
-  Name   Status   Drift  Last Sync           
-  ───────────────────────────────────────────
-  local  active   0      -                   
-  team   syncing  7      2026-05-12T09:00:00Z
+  Name   Source                          Priority  Status  Commit        Last Sync  Signed  Requires Signed
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  local  /etc/cfgd/local                 50        Active  -             never      -       no             
+  team   https://github.com/team/config  100       Failed  abc123456789  2d ago     yes     yes            

@@ -7,8 +7,7 @@ use crate::errors::Result;
 /// The column list every decision query selects, in the order
 /// [`decision_from_row`] reads them. One constant so a query cannot select a
 /// different shape than the mapper expects.
-const DECISION_COLUMNS: &str =
-    "id, source, resource, tier, action, summary, created_at, resolved_at, resolution";
+const DECISION_COLUMNS: &str = "id, source, resource, tier, action, summary, created_at, resolved_at, resolution, content_hash";
 
 /// The `pending_decisions.resolution` value a row carries when installed state
 /// answered the question — accepted because the machine already satisfies the
@@ -26,12 +25,18 @@ fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingDecisio
         created_at: row.get(6)?,
         resolved_at: row.get(7)?,
         resolution: row.get(8)?,
+        content_hash: row.get(9)?,
     })
 }
 
 impl StateStore {
     /// Upsert a pending decision. If an unresolved decision already exists for this
     /// (source, resource) pair, updates the summary and resets the timestamp.
+    ///
+    /// `content_hash` is the fingerprint of what the source declares for the
+    /// item, and it is written on both paths: the row records the version of
+    /// the item it is asking about, so a later run can tell an answered item
+    /// from one that has changed since it was answered.
     pub fn upsert_pending_decision(
         &self,
         source: &str,
@@ -39,13 +44,23 @@ impl StateStore {
         tier: &str,
         action: &str,
         summary: &str,
+        content_hash: Option<&str>,
     ) -> Result<i64> {
         let timestamp = crate::utc_now_iso8601();
         // Try to update an existing unresolved row first
         let updated = self.conn.execute(
-            "UPDATE pending_decisions SET tier = ?1, action = ?2, summary = ?3, created_at = ?4
+            "UPDATE pending_decisions
+                 SET tier = ?1, action = ?2, summary = ?3, created_at = ?4, content_hash = ?7
                  WHERE source = ?5 AND resource = ?6 AND resolved_at IS NULL",
-            params![tier, action, summary, timestamp, source, resource],
+            params![
+                tier,
+                action,
+                summary,
+                timestamp,
+                source,
+                resource,
+                content_hash
+            ],
         )?;
 
         if updated > 0 {
@@ -61,11 +76,66 @@ impl StateStore {
         }
 
         self.conn.execute(
-            "INSERT INTO pending_decisions (source, resource, tier, action, summary, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![source, resource, tier, action, summary, timestamp],
+            "INSERT INTO pending_decisions
+                 (source, resource, tier, action, summary, created_at, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                source,
+                resource,
+                tier,
+                action,
+                summary,
+                timestamp,
+                content_hash
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The fingerprint the NEWEST row for `(source, resource)` carries.
+    ///
+    /// Three answers, and the classifier's whole gate: `None` is an item
+    /// nobody was ever asked about, `Some(None)` a row written before the item
+    /// was fingerprinted, and `Some(Some(hash))` the version of the item that
+    /// row asked about. The newest row is the one that speaks, for the reason
+    /// [`Self::withheld_decisions`] reads it too — a resolved row superseded
+    /// by a fresh question is not the current answer.
+    pub fn latest_decision_content_hash(
+        &self,
+        source: &str,
+        resource: &str,
+    ) -> Result<Option<Option<String>>> {
+        match self.conn.query_row(
+            "SELECT content_hash FROM pending_decisions
+                 WHERE source = ?1 AND resource = ?2
+                 ORDER BY id DESC LIMIT 1",
+            params![source, resource],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(hash) => Ok(Some(hash)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Stamp the newest row for `(source, resource)` with `content_hash`.
+    ///
+    /// The write behind the first observation of an item's content: the row
+    /// keeps its answer and its timestamps, and only learns which version of
+    /// the item it was answering.
+    pub fn set_decision_content_hash(
+        &self,
+        source: &str,
+        resource: &str,
+        content_hash: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pending_decisions SET content_hash = ?1
+                 WHERE id = (SELECT MAX(id) FROM pending_decisions
+                             WHERE source = ?2 AND resource = ?3)",
+            params![content_hash, source, resource],
+        )?;
+        Ok(())
     }
 
     /// Get all unresolved pending decisions.
@@ -159,10 +229,11 @@ impl StateStore {
 
     /// Whether `(source, resource)` has ever been asked about, in any state.
     ///
-    /// The idempotence guard on minting: a `Notify` policy asks once and then
-    /// respects whatever answer the row carries, so an item is re-asked only
-    /// when the source's delivered set actually changed. Resolved rows count —
-    /// a rejection must not be re-minted the tick after it is recorded.
+    /// The existence half of the minting guard: a `Notify` policy asks once
+    /// and then respects whatever answer the row carries. Resolved rows count
+    /// — a rejection must not be re-minted the tick after it is recorded.
+    /// Whether an EXISTING answer still covers what the source now declares is
+    /// [`Self::latest_decision_content_hash`]'s question, not this one's.
     pub fn has_decision(&self, source: &str, resource: &str) -> Result<bool> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM pending_decisions WHERE source = ?1 AND resource = ?2",

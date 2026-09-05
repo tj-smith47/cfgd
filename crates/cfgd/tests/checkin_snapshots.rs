@@ -36,9 +36,16 @@ fn happy_output() -> CheckinOutput {
 fn checkin_happy_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server status", "ok");
-    printer.kv("Config changed", "false");
-    printer.status_simple(Role::Info, "No drift to report");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
+    {
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Info, "No system settings drift to report");
+    }
     printer.emit(build_checkin_doc(&happy_output()));
     drop(printer);
 
@@ -63,17 +70,28 @@ fn checkin_happy_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "checkin/happy.json");
 }
 
-/// Drift > 0, report succeeded — the streaming "Drift report" section closes
-/// with an Ok status carrying the count.
+/// Drift > 0, report succeeded — the streaming "System Settings" section closes
+/// with an Ok status carrying the count. The section names the CLASS the gateway
+/// is told about, because system-configurator answers are the whole of a
+/// check-in's drift payload. Mirrors production's real section shape
+/// (`printer.section("System Settings")`, the outcome written on the section
+/// itself while the wait is narrated a layer down) — see
+/// `cmd_checkin_drift_settle_line_nests_under_the_system_settings_section_header`
+/// in `cli/checkin.rs`, which asserts the settled line renders deeper than the
+/// header for the real command.
 #[test]
 fn checkin_drift_reported_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server status", "ok");
-    printer.kv("Config changed", "false");
     {
-        let sp = printer.spinner("Reporting drift");
-        sp.finish_ok("3 drift items reported");
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
+    {
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Ok, "Reported 3 drifted system settings");
     }
     printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: "ok".to_string(),
@@ -98,9 +116,16 @@ fn checkin_drift_reported_human() {
 fn checkin_no_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server status", "ok");
-    printer.kv("Config changed", "false");
-    printer.status_simple(Role::Info, "No drift to report");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config unchanged");
+    }
+    {
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Info, "No system settings drift to report");
+    }
     printer.emit(build_checkin_doc(&happy_output()));
     drop(printer);
 
@@ -109,23 +134,27 @@ fn checkin_no_drift_human() {
 }
 
 /// Server pushed a desired config — `Role::Warn` status precedes the nested
-/// "Server config" section so the urgency carries.
+/// "Server Config" section so the urgency carries.
 #[test]
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Checkin");
-    printer.kv("Server status", "ok");
-    printer.kv("Config changed", "true");
+    {
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec
+            .status(Role::Ok, "Checked in")
+            .detail("server status ok, config changed");
+    }
     printer.status_simple(Role::Warn, "Server pushed desired config");
     {
-        let push_sec = printer.section("Server config");
+        let push_sec = printer.section("Server Config");
         push_sec.status_simple(Role::Ok, "Saved to <PATH>");
-        push_sec.status_simple(
-            Role::Info,
-            "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'",
-        );
+        push_sec.hint("Run 'cfgd plan' to preview changes, then 'cfgd apply'");
     }
-    printer.status_simple(Role::Info, "No drift to report");
+    {
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Info, "No system settings drift to report");
+    }
     printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: "ok".to_string(),
         config_changed: true,
@@ -143,20 +172,23 @@ fn checkin_server_pushed_config_human() {
     );
 }
 
-/// Bridge invariant: streaming "Checkin" section drops, then a synthetic
+/// Bridge invariant: streaming "Gateway" section drops, then a synthetic
 /// buffered status emits — combined human surface contains exactly one
 /// blank line at the transition. The bridge synthetic adds a status that
 /// real `cmd_checkin` does not emit (production's buffered Doc is
 /// payload-only); deterministic minimal content on both sides is preferred
-/// over matching the real shape.
+/// over matching the real shape, EXCEPT the section itself — `Gateway` is
+/// the section production actually opens around the checkin request
+/// (`cli/checkin.rs`'s `printer.section("Gateway")`), so the mirror stays a
+/// mirror instead of naming a section production never renders.
 #[test]
 fn checkin_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();
 
     printer.heading("Checkin");
     {
-        let net_sec = printer.section("Checkin");
-        net_sec.status_simple(Role::Ok, "server status: ok");
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec.status_simple(Role::Ok, "Checked in");
     }
 
     let doc = Doc::new()

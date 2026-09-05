@@ -43,7 +43,7 @@ spec:
       {{- end }}
       containers:
         - name: cfgd-csi
-          image: "{{ .Values.csiDriver.image.repository }}:{{ .Values.csiDriver.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.csiDriver.image.repository }}:{{ .Values.csiDriver.image.tag }}"
           imagePullPolicy: {{ .Values.csiDriver.image.pullPolicy }}
           securityContext:
             privileged: true

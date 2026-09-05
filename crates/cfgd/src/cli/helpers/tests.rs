@@ -11,7 +11,7 @@ use cfgd_core::test_helpers::EnvVarGuard;
 // Helpers shared across tests
 // ---------------------------------------------------------------------------
 
-fn make_cli(config: PathBuf) -> Cli {
+pub(crate) fn make_cli(config: PathBuf) -> Cli {
     Cli {
         config,
         config_explicit: false,
@@ -22,7 +22,10 @@ fn make_cli(config: PathBuf) -> Cli {
         color: crate::cli::ColorWhen::Auto,
         output: OutputFormatArg(OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -42,7 +45,7 @@ const PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
                             metadata:\n  name: default\n\
                             spec: {}\n";
 
-fn quiet_printer() -> Printer {
+pub(crate) fn quiet_printer() -> Printer {
     Printer::for_test().0
 }
 
@@ -50,48 +53,147 @@ fn quiet_printer() -> Printer {
 // parse_package_flag
 // ---------------------------------------------------------------------------
 
-#[test]
-fn parse_package_flag_bare_package_has_no_manager() {
-    let (mgr, pkg) = parse_package_flag("ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "ripgrep");
+fn parse(token: &str) -> anyhow::Result<PackageRef> {
+    parse_package_flag(token, &[], "apt")
 }
 
 #[test]
-fn parse_package_flag_known_manager_prefix_splits() {
-    let (mgr, pkg) = parse_package_flag("brew:ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr.as_deref(), Some("brew"));
-    assert_eq!(pkg, "ripgrep");
+fn parse_package_flag_bare_name_takes_the_native_manager() {
+    let pkg = parse("ripgrep").unwrap();
+    assert_eq!(pkg.schema_path, None);
+    assert_eq!(pkg.name, "ripgrep");
+    assert_eq!(pkg.slot_or("apt"), "apt");
+    assert_eq!(pkg.display("apt"), "ripgrep (apt)");
 }
 
 #[test]
-fn parse_package_flag_unknown_manager_prefix_is_bare() {
-    let (mgr, pkg) = parse_package_flag("cargo:ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "cargo:ripgrep");
+fn parse_package_flag_manager_prefix_names_its_own_schema_path() {
+    let pkg = parse("brew:ripgrep").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("brew"));
+    assert_eq!(pkg.slot.as_deref(), Some("brew"));
+    assert_eq!(pkg.manager.as_deref(), Some("brew"));
+    assert_eq!(pkg.name, "ripgrep");
 }
 
 #[test]
-fn parse_package_flag_empty_prefix_is_bare() {
-    // ":ripgrep" has an empty prefix — treat as bare package name.
-    let (mgr, pkg) = parse_package_flag(":ripgrep", &["brew"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, ":ripgrep");
+fn parse_package_flag_sub_list_prefix_resolves_to_its_write_slot() {
+    let taps = parse("brew.taps:charmbracelet/tap").unwrap();
+    assert_eq!(taps.schema_path.as_deref(), Some("brew.taps"));
+    assert_eq!(taps.slot.as_deref(), Some("brew-tap"));
+    assert_eq!(taps.name, "charmbracelet/tap");
+    assert_eq!(taps.display("apt"), "charmbracelet/tap (brew.taps)");
+
+    let casks = parse("brew.casks:firefox").unwrap();
+    assert_eq!(casks.slot.as_deref(), Some("brew-cask"));
+    assert_eq!(casks.manager.as_deref(), Some("brew-cask"));
+}
+
+/// Every `--package` prefix the table names carries its own noun into the
+/// confirmation line, and a bare name or a custom manager falls back to
+/// `package`. Walked over the whole table, so a prefix added later is named
+/// correctly by both the add verb and the remove verb or fails here.
+#[test]
+fn every_package_prefix_names_its_entries_in_the_confirmation_line() {
+    for path in cfgd_core::config::PACKAGE_SCHEMA_PATHS {
+        let pkg = parse(&format!("{}:thing", path.path)).unwrap();
+        assert_eq!(
+            pkg.noun(),
+            path.noun(),
+            "`--package {}:` renamed its entries on the way to the CLI",
+            path.path
+        );
+        assert_eq!(
+            pkg.noun_capitalized(),
+            format!(
+                "{}{}",
+                path.noun()[..1].to_ascii_uppercase(),
+                &path.noun()[1..]
+            ),
+        );
+    }
+    assert_eq!(parse("brew.taps:charmbracelet/tap").unwrap().noun(), "tap");
+    assert_eq!(parse("brew.casks:firefox").unwrap().noun(), "cask");
+    assert_eq!(parse("ripgrep").unwrap().noun(), "package");
+    assert_eq!(
+        parse_package_flag("mise:node", &["mise".to_string()], "apt")
+            .unwrap()
+            .noun(),
+        "package",
+        "a custom manager has no sub-list of its own"
+    );
 }
 
 #[test]
-fn parse_package_flag_empty_suffix_is_bare() {
-    // "brew:" has an empty suffix — treat as bare package name.
-    let (mgr, pkg) = parse_package_flag("brew:", &["brew"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:");
+fn parse_package_flag_snap_classic_writes_a_slot_no_manager_is_named_for() {
+    // `snap.classic` has no registered manager of its own — the `snap` manager
+    // installs both lists — so the write slot and the manager differ.
+    let pkg = parse("snap.classic:code").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("snap.classic"));
+    assert_eq!(pkg.slot.as_deref(), Some("snap-classic"));
+    assert_eq!(pkg.manager.as_deref(), Some("snap"));
 }
 
 #[test]
-fn parse_package_flag_no_known_managers_always_bare() {
-    let (mgr, pkg) = parse_package_flag("brew:ripgrep", &[]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:ripgrep");
+fn parse_package_flag_keeps_every_colon_after_the_first() {
+    let pkg = parse("apt:libc6:amd64").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("apt"));
+    assert_eq!(pkg.name, "libc6:amd64");
+}
+
+#[test]
+fn parse_package_flag_rejects_an_unknown_prefix_instead_of_taking_it_as_a_name() {
+    let err = parse("brew.tap:charmbracelet/tap").unwrap_err().to_string();
+    assert!(
+        err.contains("unknown package manager 'brew.tap'"),
+        "should name the prefix, got: {err}"
+    );
+    assert!(
+        err.contains("brew.taps"),
+        "should list the known schema paths, got: {err}"
+    );
+}
+
+#[test]
+fn parse_package_flag_rejects_the_wire_spelling_of_a_virtual_brew_manager() {
+    for (token, hint) in [
+        ("brew-tap:charmbracelet/tap", "brew.taps:charmbracelet/tap"),
+        ("brew-cask:firefox", "brew.casks:firefox"),
+    ] {
+        let err = parse(token).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("use {hint}")),
+            "should name the schema spelling, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_package_flag_hints_the_native_manager_for_a_colon_carrying_name() {
+    let err = parse("libc6:amd64").unwrap_err().to_string();
+    assert!(
+        err.contains("did you mean apt:libc6:amd64?"),
+        "a non-manager-shaped prefix is part of the name, got: {err}"
+    );
+}
+
+#[test]
+fn parse_package_flag_accepts_a_declared_custom_manager() {
+    let pkg = parse_package_flag("mytool:widget", &["mytool".to_string()], "apt").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("mytool"));
+    assert_eq!(pkg.slot.as_deref(), Some("mytool"));
+    assert_eq!(pkg.manager.as_deref(), Some("mytool"));
+    assert_eq!(pkg.name, "widget");
+}
+
+#[test]
+fn parse_package_flag_rejects_an_empty_half() {
+    for token in [":ripgrep", "brew:"] {
+        let err = parse(token).unwrap_err().to_string();
+        assert!(
+            err.contains("expected <manager>[.<list>]:<name>"),
+            "should state the grammar, got: {err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +202,21 @@ fn parse_package_flag_no_known_managers_always_bare() {
 
 #[test]
 fn empty_resolved_profile_contains_only_named_module() {
-    let rp = empty_resolved_profile("mymod", "work");
+    let rp = empty_resolved_profile(&["mymod".to_string()], "work");
     assert_eq!(rp.merged.modules, vec!["mymod".to_string()]);
     // All other merged fields are default-empty.
     assert!(rp.merged.env.is_empty());
     assert!(rp.merged.packages.brew.is_none());
+}
+
+/// Repeatable `--module a --module b` carries the whole list through, in
+/// order — the isolate path unions/replaces on this list directly, so a
+/// dropped or reordered name here would silently narrow which modules an
+/// isolated run plans.
+#[test]
+fn empty_resolved_profile_contains_every_named_module_in_order() {
+    let rp = empty_resolved_profile(&["a".to_string(), "b".to_string()], "work");
+    assert_eq!(rp.merged.modules, vec!["a".to_string(), "b".to_string()]);
 }
 
 /// The synthesized layer exists only to carry the profile name: a module-only
@@ -112,7 +224,7 @@ fn empty_resolved_profile_contains_only_named_module() {
 /// fallback `ResolvedProfile::profile_name` reports for a layerless profile.
 #[test]
 fn empty_resolved_profile_reports_the_requested_profile_name() {
-    let rp = empty_resolved_profile("mymod", "work");
+    let rp = empty_resolved_profile(&["mymod".to_string()], "work");
     assert_eq!(rp.profile_name(), "work");
     assert_eq!(rp.layers.len(), 1);
     assert!(rp.layers[0].spec.modules.is_empty());
@@ -146,21 +258,7 @@ fn active_profile_name_reports_unknown_without_a_config() {
 }
 
 // ---------------------------------------------------------------------------
-// known_manager_names
 // ---------------------------------------------------------------------------
-
-#[test]
-fn known_manager_names_returns_non_empty_list() {
-    let names = known_manager_names();
-    assert!(
-        !names.is_empty(),
-        "expected at least one package manager registered"
-    );
-    // Every name must be a non-empty string.
-    for name in &names {
-        assert!(!name.is_empty(), "manager name must not be empty");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // parse_file_spec
@@ -609,7 +707,7 @@ fn open_in_editor_nonzero_exit_prints_warn_but_does_not_error() {
     // Must return Ok even when editor exits non-zero (only warns).
     open_in_editor(&file, &printer).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("non-zero"),
         "expected warn about non-zero exit, got: {output}"
@@ -698,15 +796,15 @@ fn resolve_profile_name_returns_cli_profile_override_when_set() {
 #[test]
 fn managers_map_empty_registry_returns_empty_map() {
     let registry = ProviderRegistry::new();
-    let map = managers_map(&registry);
+    let map = registry.manager_map();
     assert!(map.is_empty());
 }
 
 #[test]
 fn managers_map_keys_match_manager_names() {
     let mut registry = ProviderRegistry::new();
-    registry.package_managers = packages::all_package_managers();
-    let map = managers_map(&registry);
+    registry.set_package_managers(packages::all_package_managers());
+    let map = registry.manager_map();
     assert!(
         !map.is_empty(),
         "expected managers from all_package_managers"
@@ -743,11 +841,12 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
 
     let cli = make_cli(config_path.clone());
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -756,7 +855,7 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
     )
     .unwrap();
 
-    // No sources → resolved must equal the local profile we passed in.
+    // No sources → resolved must equal the local profile passed in.
     assert_eq!(result.resolved.merged.modules, local.merged.modules);
     assert!(result.conflicts.is_empty());
     assert!(result.source_env.is_empty());
@@ -845,7 +944,7 @@ fn create_local_source_repo_with_form(
 /// Build a cfgd.yaml that subscribes to a single local source selecting
 /// `profile`, plus a local `default.yaml` profile, under `tmp`. Returns the
 /// config path. Mirrors the layout the existing source tests build.
-fn write_config_with_local_source(
+pub(crate) fn write_config_with_local_source(
     tmp: &std::path::Path,
     source_repo: &std::path::Path,
     source_profile: &str,
@@ -888,11 +987,12 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -954,11 +1054,12 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -1004,13 +1105,14 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // Prime the cache with a refresh so the cache-only read path has a cache
     // dir to read (the daemon's sync task plays this role in production).
     compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -1021,10 +1123,11 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
 
     // Read path: cache-only, no network.
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1086,13 +1189,15 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         packages: vec!["local-pkg".to_string()],
     });
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // No prime: cache dir for 'test-src' does not exist.
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1137,15 +1242,17 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // refresh = true (apply/plan path) primes the cache AND resolves.
     let apply_side = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         true,
         composition::ConstraintMode::Enforce,
@@ -1153,10 +1260,11 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     .unwrap();
     // refresh = false (read path) on the now-primed cache.
     let read_side = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1199,12 +1307,14 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         merged: MergedProfile::default(),
     };
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1216,6 +1326,417 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
     assert_eq!(
         desired.resolved.merged.modules, local.merged.modules,
         "no-sources resolved must equal the local profile"
+    );
+}
+
+/// The core module-isolation proof: `--module` without `--with-profile`
+/// zeroes EVERY profile-owned contribution, not just packages/files. Builds a
+/// local profile with content in every `MergedProfile` field — env, aliases,
+/// packages, files, system, secrets, scripts, backups — resolves it under
+/// `module_filter = ["standalone"]`, `with_profile = false`, and asserts every
+/// one of those fields comes back empty/default on the far side while
+/// `modules` carries exactly the requested name. Before this fix only
+/// packages/files were zeroed and env/aliases/system/scripts/secrets/backups
+/// still flowed through from the real profile.
+#[test]
+#[serial]
+fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let module_dir = tmp.path().join("modules").join("standalone");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: standalone\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+
+    let mut system = config::SystemSettings::new();
+    system.insert(
+        "hostname".to_string(),
+        serde_yaml::Value::String("rich-host".to_string()),
+    );
+
+    let rich = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile {
+            modules: vec!["profile-only-module".to_string()],
+            env: vec![config::EnvVar {
+                name: "RICH_VAR".to_string(),
+                value: "1".to_string(),
+                platforms: vec![],
+            }],
+            env_scope: config::EnvScope::Login,
+            aliases: vec![config::ShellAlias {
+                name: "gs".to_string(),
+                command: "git status".to_string(),
+                platforms: vec![],
+            }],
+            packages: config::PackagesSpec {
+                pipx: vec!["some-tool".to_string()],
+                ..Default::default()
+            },
+            files: config::FilesSpec {
+                managed: vec![],
+                permissions: std::collections::HashMap::from([(
+                    "/etc/rich".to_string(),
+                    "0644".to_string(),
+                )]),
+            },
+            system,
+            secrets: vec![config::SecretSpec {
+                source: "op://vault/item".to_string(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: None,
+            }],
+            scripts: config::ScriptSpec {
+                pre_apply: vec![config::ScriptEntry::Simple("echo pre".to_string())],
+                ..Default::default()
+            },
+            backups: vec![config::BackupSpec {
+                name: "daily".to_string(),
+                source: PathBuf::from("/data"),
+                destination: None,
+                name_pattern: "{filename}.{timestamp}".to_string(),
+                schedule: None,
+                retention: 10,
+                pre_backup: vec![],
+                post_backup: vec![],
+            }],
+            entry_owners: Default::default(),
+        },
+    };
+
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &rich,
+        &["standalone".to_string()],
+        false,
+        &printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let m = &desired.resolved.merged;
+    assert_eq!(
+        m.modules,
+        vec!["standalone".to_string()],
+        "isolate replaces the module list with exactly the requested name(s)"
+    );
+    assert!(
+        m.env.is_empty(),
+        "env must be zeroed under isolation, got: {:?}",
+        m.env
+    );
+    assert_eq!(
+        m.env_scope,
+        config::EnvScope::default(),
+        "env_scope must reset to its default under isolation"
+    );
+    assert!(
+        m.aliases.is_empty(),
+        "aliases must be zeroed under isolation, got: {:?}",
+        m.aliases
+    );
+    assert!(
+        m.packages.pipx.is_empty(),
+        "packages must be zeroed under isolation (module's own resolved packages are tracked separately on DesiredState::modules)"
+    );
+    assert!(
+        m.files.managed.is_empty() && m.files.permissions.is_empty(),
+        "files must be zeroed under isolation"
+    );
+    assert!(
+        m.system.is_empty(),
+        "system must be zeroed under isolation, got: {:?}",
+        m.system
+    );
+    assert!(
+        m.secrets.is_empty(),
+        "secrets must be zeroed under isolation, got: {:?}",
+        m.secrets
+    );
+    assert!(
+        m.scripts.pre_apply.is_empty(),
+        "scripts must be zeroed under isolation, got: {:?}",
+        m.scripts.pre_apply
+    );
+    assert!(
+        m.backups.is_empty(),
+        "backups must be zeroed under isolation, got: {:?}",
+        m.backups
+    );
+}
+
+/// The sibling proof for `--with-profile`: the named module is UNIONED into
+/// the real profile's module list, and every other field of the composed
+/// profile survives untouched — the opposite of isolation.
+#[test]
+#[serial]
+fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owned_field() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    for name in ["standalone", "profile-only-module"] {
+        let module_dir = tmp.path().join("modules").join(name);
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+
+    let rich = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile {
+            modules: vec!["profile-only-module".to_string()],
+            env: vec![config::EnvVar {
+                name: "RICH_VAR".to_string(),
+                value: "1".to_string(),
+                platforms: vec![],
+            }],
+            ..Default::default()
+        },
+    };
+
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &rich,
+        &["standalone".to_string()],
+        true,
+        &printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let m = &desired.resolved.merged;
+    assert_eq!(
+        m.modules,
+        vec!["profile-only-module".to_string(), "standalone".to_string()],
+        "--with-profile unions the requested module onto the end of the profile's own list"
+    );
+    assert_eq!(
+        m.env,
+        vec![config::EnvVar {
+            name: "RICH_VAR".to_string(),
+            value: "1".to_string(),
+            platforms: vec![],
+        }],
+        "--with-profile must not zero any profile-owned field"
+    );
+}
+
+/// Like [`create_local_source_repo`], but the delivered `source-module`
+/// carries a `preApply` script instead of a package — a body
+/// `load_source_modules` gates on the source's `subscription.allowScripts`
+/// opt-in (default `false`, unset here). Used to prove: a `--module` naming a
+/// module blocked this way must surface `ModuleError::ScriptsNotAllowed`, not
+/// the swallowed "not found" the deleted `Err(e) if module_filter.is_some()
+/// => Vec::new()` arm produced.
+pub(crate) fn create_local_source_repo_with_blocked_script(root: &std::path::Path) -> PathBuf {
+    let repo_dir = root.join("source-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+
+    cfgd_core::git_cmd_local()
+        .args(["init", "-b", "master"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["config", "user.name", "Test"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+
+    std::fs::write(
+        repo_dir.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    modules:\n      - source-module\n",
+    )
+    .unwrap();
+
+    let module_dir = repo_dir.join("modules").join("source-module");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: source-module\nspec:\n  scripts:\n    preApply:\n      - run: \"echo hi\"\n",
+    )
+    .unwrap();
+
+    cfgd_core::git_cmd_local()
+        .args(["add", "."])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+
+    repo_dir
+}
+
+/// `--module source-module` against a source that never opted into
+/// `subscription.allowScripts` must surface `ModuleError::ScriptsNotAllowed`
+/// — the real reason resolution failed — rather than the generic "not found"
+/// the deleted swallow arm (`Err(e) if module_filter.is_some() =>
+/// Vec::new()`) used to produce for EVERY resolution error alike. This is the
+/// scenario a fail-without-fix probe reproduces against a copied tree with
+/// that arm reintroduced: RED (silently reports zero modules, no error)
+/// without the fix, GREEN (typed `ScriptsNotAllowed`) with it.
+#[test]
+#[serial]
+fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real_error() {
+    let tmp = tempdir().unwrap();
+    let source_repo = create_local_source_repo_with_blocked_script(tmp.path());
+    let config_path = write_config_with_local_source(tmp.path(), &source_repo, "default");
+    // `write_config_with_local_source` subscribes to a profile (`default`)
+    // the source repo does not carry — irrelevant here, since this test
+    // resolves `source-module` directly via `--module`, never through the
+    // profile's own module list.
+
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let mut cli = make_cli(config_path.clone());
+    cli.state_dir = Some(tmp.path().join("state"));
+    cli.cache_dir = Some(tmp.path().join("cache"));
+
+    let cfg = config::load_config(&config_path).unwrap();
+    let local = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile::default(),
+    };
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let result = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &local,
+        &["source-module".to_string()],
+        false,
+        &printer,
+        true,
+        composition::ConstraintMode::Enforce,
+    );
+    let err = match result {
+        Ok(_) => panic!("expected ScriptsNotAllowed, got Ok"),
+        Err(e) => e,
+    };
+
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::Module(
+                cfgd_core::errors::ModuleError::ScriptsNotAllowed { .. }
+            )
+        ),
+        "expected ScriptsNotAllowed, got: {cfgd_err}"
+    );
+}
+
+/// A registry build constructs every package manager and every configurator
+/// this host supports. A resolution that walks no modules needs none of them,
+/// so the cell it hands back must still be empty — and a caller that does ask
+/// must still get a working registry out of it.
+#[test]
+#[serial]
+fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let no_modules = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile::default(),
+    };
+    let mut desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &no_modules,
+        &[],
+        false,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+    assert!(
+        !desired.registry_built(),
+        "a resolution that walks no modules must build no registry"
+    );
+    assert!(
+        !desired.take_registry(&cfg).package_managers().is_empty(),
+        "the caller that does ask must still get a populated registry"
+    );
+
+    // The same resolution over a profile that names a module has to map its
+    // packages onto managers, so that one really does build the registry.
+    let module_dir = tmp.path().join("modules").join("my-module");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-module\nspec:\n  packages:\n    - name: module-pkg\n      prefer: [cargo]\n",
+    )
+    .unwrap();
+    let with_module = empty_resolved_profile(&["my-module".to_string()], "work");
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &with_module,
+        &[],
+        false,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+    assert!(
+        desired.registry_built(),
+        "a resolution that walks modules must build the registry it maps with"
     );
 }
 
@@ -1391,7 +1912,8 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
     };
 
     let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
-    display_and_persist_conflicts(&cli, &result, &printer);
+    let ctx = RunContext::new(&cli, &printer);
+    display_and_persist_conflicts(&ctx, &result, &printer);
     drop(printer);
 
     let out = cap.lock().expect("capture lock");
@@ -1420,4 +1942,221 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
         open_state_store(cli.state_dir.as_deref(), cli.scope()).is_ok(),
         "state store must be openable after persistence"
     );
+}
+
+#[test]
+#[serial]
+fn display_and_persist_conflicts_rewords_the_arrow_on_the_primary_apply_surface() {
+    use std::collections::HashMap;
+
+    let tmp = tempdir().expect("tempdir");
+    let mut cli = make_cli(tmp.path().join("cfgd.yaml"));
+    cli.state_dir = Some(tmp.path().join("state"));
+
+    let result = composition::CompositionResult {
+        resolved: ResolvedProfile {
+            layers: Vec::new(),
+            merged: MergedProfile::default(),
+        },
+        conflicts: vec![composition::ConflictResolution {
+            resource_id: "package:apt:curl".to_string(),
+            resolution_type: composition::ResolutionType::Locked,
+            winning_source: "acme-baseline".to_string(),
+            details: "LOCKED curl <- acme-baseline".to_string(),
+        }],
+        source_env: HashMap::new(),
+        source_commits: HashMap::new(),
+        source_module_roots: Vec::new(),
+        constraint_violations: Vec::new(),
+    };
+
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let ctx = RunContext::new(&cli, &printer);
+    display_and_persist_conflicts(&ctx, &result, &printer);
+    drop(printer);
+
+    let out = cap.lock().expect("capture lock");
+    // Same event, same producer as source add's preview — the two must not
+    // disagree about which vocabulary reaches the terminal.
+    assert!(
+        out.contains("LOCKED curl from acme-baseline"),
+        "apply's Source Conflicts section must reword the arrow: {out}"
+    );
+    assert!(
+        !out.contains("<-"),
+        "a raw ASCII arrow must never reach the terminal: {out}"
+    );
+}
+
+#[test]
+fn the_desired_state_registers_each_custom_manager_exactly_once() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let mut local = empty_resolved_profile(&["my-module".to_string()], "work");
+    local.merged.modules.clear();
+    local.merged.packages.custom = vec![cfgd_core::config::CustomManagerSpec {
+        name: "mise".to_string(),
+        check: "mise --version".to_string(),
+        list_installed: "mise ls".to_string(),
+        install: "mise use -g {package}".to_string(),
+        uninstall: "mise rm -g {package}".to_string(),
+        update: None,
+        packages: vec!["node".to_string()],
+    }];
+
+    let mut desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &local,
+        &[],
+        false,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+
+    // The registry the resolution hands back is the one the caller applies with.
+    // Registered twice, `package_managers()` answers with two managers of the
+    // same name, and every surface that folds over them — availability, the
+    // stranded-install warning, the concurrency lane keyed on the name — sees
+    // a manager that does not exist.
+    let mise = desired
+        .take_registry(&cfg)
+        .package_managers()
+        .iter()
+        .filter(|m| m.name() == "mise")
+        .count();
+    assert_eq!(mise, 1);
+}
+
+// Every user-owned document a command rewrites through `rewrite_user_yaml`
+// — the machine config, a profile, a module — comes back holding only what
+// its author declared. A serde round-trip of the typed struct otherwise writes
+// `daemon: null`, `origin: []`, `packages: null`, `system: {}`, … for every
+// section the file never had, and a `daemon: null` was what `cfgd config set
+// daemon.reconcile.autoApply` refused to traverse after `cfgd init --from`.
+// Parsing each document from its minimal YAML (rather than building the struct
+// by hand) is what makes this walk the population: a field added to any of
+// these specs later defaults into the round-trip and is checked here without
+// anyone naming it.
+#[test]
+fn rewriting_a_user_document_writes_no_absent_sections() {
+    let dir = tempdir().unwrap();
+    let cases: [(&str, &str); 3] = [
+        (
+            "cfgd.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n",
+        ),
+        (
+            "base.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - nvim\n",
+        ),
+        (
+            "module.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: neovim\n",
+        ),
+    ];
+    for (file, source) in cases {
+        let path = dir.path().join(file);
+        std::fs::write(&path, source).unwrap();
+        match file {
+            "cfgd.yaml" => {
+                let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+            "base.yaml" => {
+                let doc: cfgd_core::config::ProfileDocument = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+            _ => {
+                let doc: cfgd_core::config::ModuleDocument = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+        }
+        let written = std::fs::read_to_string(&path).unwrap();
+        for litter in [": null", ": []", ": {}", "fileStrategy: Symlink"] {
+            assert!(
+                !written.contains(litter),
+                "{file}: rewrite wrote {litter:?} for a section the author never declared:\n{written}"
+            );
+        }
+        // Symmetric round-trip: what was written parses back as the same document
+        // kind, so pruning dropped nothing a reader needs.
+        let reparsed: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let original: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+        assert_eq!(
+            reparsed, original,
+            "{file}: rewrite changed the document's content"
+        );
+    }
+}
+
+// A default scalar is dropped only when the author never declared it: a config
+// that wrote `fileStrategy: Symlink` out on purpose keeps it, and the same
+// struct still carries the key in a `-o json` payload, which is what a
+// per-field `skip_serializing_if` got wrong.
+#[test]
+fn a_declared_default_scalar_is_kept_and_the_payload_always_carries_it() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n  fileStrategy: Symlink\n";
+    std::fs::write(&path, source).unwrap();
+    let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("fileStrategy: Symlink"),
+        "a declared default was dropped from the user's file:\n{written}"
+    );
+
+    let payload = serde_json::to_value(&doc).unwrap();
+    assert_eq!(
+        payload["spec"]["fileStrategy"],
+        serde_json::json!("Symlink"),
+        "the serialized payload must name the effective strategy even when it is the default"
+    );
+}
+
+// A non-default scalar the author never declared is real content (a
+// `profile switch` writing the new profile name) and is never pruned.
+#[test]
+fn an_undeclared_non_default_scalar_is_written() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n";
+    std::fs::write(&path, source).unwrap();
+    let mut doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    doc.spec.file_strategy = cfgd_core::config::FileStrategy::Copy;
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("fileStrategy: Copy"),
+        "an undeclared non-default value was pruned:\n{written}"
+    );
+}
+
+// The one shape the prune must never touch: a sequence ELEMENT is data even
+// when it is empty or null, and the document's top-level keys stay whatever
+// the type serialized.
+#[test]
+fn prune_absent_sections_keeps_sequence_elements_and_top_level_keys() {
+    let mut tree: serde_yaml::Value = serde_yaml::from_str(
+        "spec:\n  files:\n    - source: a\n      mode: null\n    - {}\n  empty: []\nmeta: null\n",
+    )
+    .unwrap();
+    prune_absent_sections(&mut tree, 0);
+    let expected: serde_yaml::Value =
+        serde_yaml::from_str("spec:\n  files:\n    - source: a\n    - {}\nmeta: null\n").unwrap();
+    assert_eq!(tree, expected);
 }

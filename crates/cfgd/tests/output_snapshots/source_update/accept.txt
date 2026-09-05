@@ -1,13 +1,14 @@
-Update Sources
-◐ Fetching source 'accept-src'
+Update source:accept-src
+◐ Fetching source:accept-src
   From file://<BARE_ROOT>/accept-src-source
    * branch            master     -> FETCH_HEAD
      <SHA>..<SHA>  master     -> origin/master
-✓ Fetching source 'accept-src'
 
-source:accept-src
-  permission changes
-    ⚠ Required items increased from 0 to 2
-  ✓ updated
+Permission Changes
+  ⚠ Required items increased from 0 to 2
+
+✓ Updated
 
 ✓ Updated 1 source
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

@@ -1,9 +1,10 @@
-Rollback
-  Target apply ID          1
+Rollback: #1
   File backups to restore  2
 
 Phase: Files
   ✓ 2 files processed
   ✓ 2 newly created files removed
 
-✓ Rollback complete
+✓ Rolled back
+
+→ Run `cfgd diff` to see how the machine now differs from your config

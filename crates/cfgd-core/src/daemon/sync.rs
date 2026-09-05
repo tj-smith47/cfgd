@@ -20,14 +20,15 @@ pub(crate) async fn handle_sync(
 ) -> bool {
     let timestamp = crate::utc_now_iso8601();
     let mut changes = false;
+    let mut pulled_to: Option<String> = None;
 
     if auto_pull {
         let repo = repo_path.to_path_buf();
         // libgit2 credential fallback discovers ~/.ssh keys via home_dir_var, so the
         // test-home override must survive the thread hop
-        let pull_result = crate::spawn_blocking_with_test_home(move || git_pull(&repo)).await;
+        let pull_result = crate::spawn_blocking_with_test_home(move || git_pull_sync(&repo)).await;
         match pull_result {
-            Ok(Ok(true)) => {
+            Ok(PullOutcome::Moved(movement)) => {
                 // Verify signature on new HEAD after pull if required
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
@@ -45,6 +46,36 @@ pub(crate) async fn handle_sync(
                                 error = %e,
                                 "sync: signature verification failed after pull"
                             );
+                            // The pull already moved the checkout, and the
+                            // reconcile that follows reads whatever is on disk
+                            // — so returning here without putting the accepted
+                            // commit back would compose the very commit this
+                            // arm just refused, and keep composing it on every
+                            // later tick.
+                            let repo = repo_path.to_path_buf();
+                            let accepted = movement.from.clone();
+                            // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
+                            let rolled_back = tokio::task::spawn_blocking(move || {
+                                crate::sources::reset_checkout_to(&repo, &accepted)
+                            })
+                            .await;
+                            match rolled_back {
+                                Ok(Ok(())) => tracing::warn!(
+                                    source = %source_name,
+                                    commit = %crate::short_commit(&movement.from),
+                                    "sync: rolled the checkout back to the last accepted commit"
+                                ),
+                                Ok(Err(msg)) => tracing::error!(
+                                    source = %source_name,
+                                    error = %msg,
+                                    "sync: could not roll the checkout back off the refused commit"
+                                ),
+                                Err(e) => tracing::error!(
+                                    source = %source_name,
+                                    error = %e,
+                                    "sync: rollback task panicked"
+                                ),
+                            }
                             // Don't treat this as "changes" — the content is untrusted
                             return false;
                         }
@@ -58,11 +89,30 @@ pub(crate) async fn handle_sync(
                         }
                     }
                 }
-                tracing::info!("sync: pulled new changes from remote");
+                // The log stream carries no theme — it is written with ANSI
+                // off, to journald or to a file — so the relationship glyph is
+                // the default arrow rather than a preset's override.
+                let theme = crate::output::Theme::default();
+                // `source` before the name: a source called `local` reads as an
+                // adverb otherwise ("pulled locally, a → b"), and every sibling
+                // line on this stream marks its subject the same way.
+                tracing::info!(
+                    "sync: pulled source {source_name} {} {} {}",
+                    crate::short_commit(&movement.from),
+                    theme.arrow(),
+                    crate::short_commit(&movement.to)
+                );
+                pulled_to = Some(movement.to);
                 changes = true;
             }
-            Ok(Ok(false)) => tracing::debug!("sync: already up to date"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "sync: pull failed"),
+            Ok(PullOutcome::UpToDate) => tracing::debug!("sync: already up to date"),
+            // A config directory under no version control has no remote to be
+            // out of date with, so there is nothing to warn about — and this
+            // leg runs on a timer, so a warning here repeats forever.
+            Ok(PullOutcome::NotARepository) => {
+                tracing::debug!(source = %source_name, "sync: source is not a git repository");
+            }
+            Ok(PullOutcome::Failed(e)) => tracing::warn!(error = %e, "sync: pull failed"),
             Err(e) => tracing::error!(error = %e, "sync: pull task panicked"),
         }
     }
@@ -74,7 +124,7 @@ pub(crate) async fn handle_sync(
         let push_result =
             crate::spawn_blocking_with_test_home(move || git_auto_commit_push(&repo)).await;
         match push_result {
-            Ok(Ok(true)) => tracing::info!("sync: pushed local changes to remote"),
+            Ok(Ok(true)) => tracing::info!("sync: pushed source {source_name} to remote"),
             Ok(Ok(false)) => tracing::debug!("sync: nothing to push"),
             Ok(Err(e)) => tracing::warn!(error = %e, "sync: push failed"),
             Err(e) => tracing::error!(error = %e, "sync: push task panicked"),
@@ -87,6 +137,9 @@ pub(crate) async fn handle_sync(
         for s in &mut st.sources {
             if s.name == source_name {
                 s.last_sync = Some(timestamp.clone());
+                if let Some(commit) = &pulled_to {
+                    s.last_commit = Some(commit.clone());
+                }
             }
         }
     }
@@ -123,11 +176,14 @@ pub(crate) async fn handle_version_check(
     // no-op with no network call (the pump cadence is the upper bound; the
     // persisted timestamp gates across daemon restarts).
     if !crate::upgrade::should_check(policy, interval, now, crate::upgrade::last_checked_secs()) {
-        tracing::debug!(?policy, "version check gated (Manual or within interval)");
+        tracing::debug!(
+            ?policy,
+            "daemon: version check gated (Manual or within interval)"
+        );
         return;
     }
 
-    tracing::info!("checking for cfgd updates");
+    tracing::info!("daemon: checking for cfgd updates");
 
     let channel = update_cfg.channel.clone();
     let version_for_check = cfgd_version.to_string();
@@ -141,17 +197,17 @@ pub(crate) async fn handle_version_check(
     let check = match check_result {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "version check failed");
+            tracing::warn!(error = %e, "daemon: version check failed");
             return;
         }
         Err(e) => {
-            tracing::error!(error = %e, "version check task panicked");
+            tracing::error!(error = %e, "daemon: version check task panicked");
             return;
         }
     };
 
     if !check.update_available {
-        tracing::debug!(version = %check.current, "cfgd is up to date");
+        tracing::debug!(version = %check.current, "daemon: cfgd is up to date");
         // Binary current → the consolidated skill-stale surface may apply.
         // It only runs when no binary update is pending, so the two surfaces
         // can never both fire.
@@ -160,7 +216,12 @@ pub(crate) async fn handle_version_check(
     }
 
     let version_str = check.latest.to_string();
-    tracing::info!(current = %check.current, latest = %check.latest, "update available");
+    tracing::debug!(current = %check.current, latest = %check.latest, "daemon: update available");
+    tracing::info!(
+        "daemon: update available — {} is newer than {}",
+        check.latest,
+        check.current
+    );
 
     // Binary update pending → binary surface only (rule 1 suppresses the skill
     // surface). The Auto apply path's ride-along refreshes user-scope skills in
@@ -206,7 +267,7 @@ async fn notify_update_available(
         notifier.notify(
             "cfgd: update available",
             &format!(
-                "Version {} is available (current: {}). Run 'cfgd upgrade' to update.",
+                "Version {} is available (current: {}). Run `cfgd upgrade` to update.",
                 version_str, check.current
             ),
         );
@@ -281,7 +342,7 @@ async fn apply_daemon_update(
     cfgd_version: &str,
 ) {
     let Some(release) = check.release.clone() else {
-        tracing::warn!("auto-update: release info unavailable; surfacing instead");
+        tracing::warn!("daemon: auto-update release info unavailable — surfacing instead");
         notify_update_available(check, version_str, state, notifier).await;
         return;
     };
@@ -301,13 +362,14 @@ async fn apply_daemon_update(
 
     match install {
         Ok(Ok(applied)) => {
-            tracing::info!(
+            tracing::debug!(
                 version = %version_str,
-                daemon_restarted = applied.daemon_restarted,
-                "auto-update installed",
+                daemon_terminated = applied.daemon_terminated,
+                "daemon: auto-update installed",
             );
-            let restart_note = if applied.daemon_restarted {
-                "; restarting daemon."
+            tracing::info!("daemon: auto-update installed {version_str}");
+            let restart_note = if applied.daemon_terminated {
+                "; daemon stopped to pick up the new binary."
             } else {
                 "."
             };
@@ -317,11 +379,11 @@ async fn apply_daemon_update(
             );
         }
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "auto-update install failed; surfacing instead");
+            tracing::warn!(error = %e, "daemon: auto-update install failed — surfacing instead");
             notify_update_available(check, version_str, state, notifier).await;
         }
         Err(e) => {
-            tracing::error!(error = %e, "auto-update task panicked");
+            tracing::error!(error = %e, "daemon: auto-update task panicked");
         }
     }
 }
@@ -340,21 +402,23 @@ pub(super) fn compliance_snapshot_unchanged(latest_hash: Option<&str>, fresh_has
     latest_hash == Some(fresh_hash)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_compliance_snapshot(
     config_path: &Path,
     profile_override: Option<&str>,
     hooks: &dyn DaemonHooks,
     compliance_cfg: &config::ComplianceConfig,
     state_dir_override: Option<&Path>,
+    cache_dir_override: Option<&Path>,
     scope: crate::Scope,
     printer: &crate::output::Printer,
 ) {
-    tracing::info!("running compliance snapshot");
+    tracing::info!("daemon: running compliance snapshot");
 
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "compliance: config load failed");
+            tracing::error!(error = %e, "daemon: compliance config load failed");
             return;
         }
     };
@@ -367,7 +431,7 @@ pub(crate) fn handle_compliance_snapshot(
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
         Some(p) => p,
         None => {
-            tracing::error!("compliance: no profile configured — skipping");
+            tracing::error!("daemon: compliance has no profile configured — skipping");
             return;
         }
     };
@@ -375,7 +439,7 @@ pub(crate) fn handle_compliance_snapshot(
     let local_resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "compliance: profile resolution failed");
+            tracing::error!(error = %e, "daemon: compliance profile resolution failed");
             return;
         }
     };
@@ -396,8 +460,9 @@ pub(crate) fn handle_compliance_snapshot(
         &local_resolved,
         &printer,
         scope,
+        cache_dir_override,
     ) {
-        Ok(r) => r,
+        Ok(composed) => (composed.resolved, composed.source_module_roots),
         Err(e) => {
             tracing::error!(
                 error = %e,
@@ -410,33 +475,6 @@ pub(crate) fn handle_compliance_snapshot(
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
 
-    // Resolve the profile's modules (incl. source-delivered roots) so module
-    // files/packages/system appear in the daemon-stored snapshot, matching the CLI
-    // compliance surface.
-    let resolved_modules = super::resolve_daemon_modules(
-        &registry,
-        &resolved,
-        &config_dir,
-        &source_module_roots,
-        &printer,
-        scope,
-    );
-
-    // Wire a content-aware file manager when this binary provides one. The
-    // workstation agent does; absent it (default hook), daemon file checks stay
-    // existence + permissions only (honest degradation), while the daemon's own
-    // drift action is already content + module aware via the reconcile plan.
-    match hooks.build_file_manager(&config_dir, &resolved) {
-        Ok(fm) => registry.file_manager = fm,
-        Err(e) => {
-            tracing::warn!(error = %e, "compliance: file manager build failed — file checks degrade to existence + permissions");
-        }
-    }
-
-    let source_names: Vec<String> = std::iter::once(LOCAL_LAYER.to_string())
-        .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
-        .collect();
-
     // Opened before the snapshot collect (not just before the store write) so
     // `collect_package_checks` can thread the same connection through
     // `PackageContext` instead of a manager opening its own second one.
@@ -444,7 +482,7 @@ pub(crate) fn handle_compliance_snapshot(
         Some(d) => match StateStore::open_in_dir(d) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(error = %e, "compliance: state store error");
+                tracing::error!(error = %e, "daemon: compliance state store error");
                 return;
             }
         },
@@ -455,11 +493,42 @@ pub(crate) fn handle_compliance_snapshot(
         None => match StateStore::open_default_for(scope) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(error = %e, "compliance: state store error");
+                tracing::error!(error = %e, "daemon: compliance state store error");
                 return;
             }
         },
     };
+
+    let pkg_cx = PackageContext::new(&printer, &store);
+
+    // Resolve the profile's modules (incl. source-delivered roots) so module
+    // files/packages/system appear in the daemon-stored snapshot, matching the CLI
+    // compliance surface.
+    let resolved_modules = super::resolve_daemon_modules(
+        &registry,
+        &resolved,
+        &config_dir,
+        &source_module_roots,
+        Some(&pkg_cx),
+        &printer,
+        scope,
+        cache_dir_override,
+    );
+
+    // Wire a content-aware file manager when this binary provides one. The
+    // workstation agent does; absent it (default hook), daemon file checks stay
+    // existence + permissions only (honest degradation), while the daemon's own
+    // drift action is already content + module aware via the reconcile plan.
+    match hooks.build_file_manager(&config_dir, &resolved) {
+        Ok(fm) => registry.file_manager = fm,
+        Err(e) => {
+            tracing::warn!(error = %e, "daemon: compliance file manager build failed — file checks degrade to existence + permissions");
+        }
+    }
+
+    let source_names: Vec<String> = std::iter::once(LOCAL_LAYER.to_string())
+        .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
+        .collect();
 
     let snapshot = match crate::compliance::collect_snapshot(
         profile_name,
@@ -471,10 +540,11 @@ pub(crate) fn handle_compliance_snapshot(
         &source_names,
         &printer,
         &store,
+        None,
     ) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!(error = %e, "compliance: snapshot collection failed");
+            tracing::error!(error = %e, "daemon: compliance snapshot collection failed");
             return;
         }
     };
@@ -484,7 +554,7 @@ pub(crate) fn handle_compliance_snapshot(
     let hash = match crate::compliance::snapshot_content_hash(&snapshot) {
         Ok((_, h)) => h,
         Err(e) => {
-            tracing::error!(error = %e, "compliance: snapshot serialization failed");
+            tracing::error!(error = %e, "daemon: compliance snapshot serialization failed");
             return;
         }
     };
@@ -493,36 +563,45 @@ pub(crate) fn handle_compliance_snapshot(
     let latest_hash = match store.latest_compliance_hash() {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!(error = %e, "compliance: failed to query latest hash");
+            tracing::warn!(error = %e, "daemon: compliance failed to query latest hash");
             None
         }
     };
 
     if compliance_snapshot_unchanged(latest_hash.as_deref(), &hash) {
-        tracing::debug!("compliance: no state change, skipping snapshot");
+        tracing::debug!("daemon: compliance unchanged, skipping snapshot");
         return;
     }
 
     // Store the new snapshot
     if let Err(e) = store.store_compliance_snapshot(&snapshot) {
-        tracing::error!(error = %e, "compliance: failed to store snapshot");
+        tracing::error!(error = %e, "daemon: compliance failed to store snapshot");
         return;
     }
 
-    tracing::info!(
+    tracing::debug!(
         compliant = snapshot.summary.compliant,
         warning = snapshot.summary.warning,
         violation = snapshot.summary.violation,
-        "compliance snapshot stored"
+        "daemon: compliance snapshot stored"
+    );
+    tracing::info!(
+        "daemon: compliance snapshot stored — {} compliant, {} warning, {} violation",
+        snapshot.summary.compliant,
+        snapshot.summary.warning,
+        snapshot.summary.violation
     );
 
     // Export if configured
     match crate::compliance::export_snapshot_to_file(&snapshot, &compliance_cfg.export) {
         Ok(file_path) => {
-            tracing::info!(path = %file_path.posix(), "compliance snapshot exported");
+            tracing::info!(
+                "daemon: compliance snapshot exported to {}",
+                file_path.posix()
+            );
         }
         Err(e) => {
-            tracing::error!(error = %e, "compliance: failed to export snapshot");
+            tracing::error!(error = %e, "daemon: compliance failed to export snapshot");
             return;
         }
     }
@@ -533,11 +612,15 @@ pub(crate) fn handle_compliance_snapshot(
         let cutoff_str = crate::unix_secs_to_iso8601(cutoff_secs);
         match store.prune_compliance_snapshots(&cutoff_str) {
             Ok(deleted) if deleted > 0 => {
-                tracing::info!(deleted = deleted, "compliance: pruned old snapshots");
+                tracing::info!(
+                    "daemon: pruned {} old compliance {}",
+                    deleted,
+                    crate::plural_noun(deleted, "snapshot")
+                );
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "compliance: failed to prune snapshots");
+                tracing::warn!(error = %e, "daemon: compliance failed to prune snapshots");
             }
         }
     }

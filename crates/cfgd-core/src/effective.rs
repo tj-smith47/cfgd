@@ -44,6 +44,15 @@ pub struct EffectivePackage {
     pub name: String,
     /// Whether the package came from the profile or a specific module.
     pub origin: Origin,
+    /// The `minVersion` floor the declaration pins, where it pins one.
+    ///
+    /// Carried on the deduplicated entry rather than re-read off the modules,
+    /// because the live version check
+    /// ([`reconciler::package_version_drift`](crate::reconciler::package_version_drift))
+    /// must judge exactly the set the presence check judges: a walk back over
+    /// `module.packages` would re-report a `(manager, name)` the profile also
+    /// declares, under a second row for one package.
+    pub min_version: Option<String>,
 }
 
 /// A single managed file after the profile and its modules are combined.
@@ -109,6 +118,67 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
     system
 }
 
+/// The stricter of two declared floors: `None` loses to `Some`, and between two
+/// floors the winner is the one the OTHER does not satisfy.
+///
+/// With `mgr` in hand the family owns the whole question, both halves of it.
+/// Two floors it can read are compared by its own comparator — an apt epoch
+/// `1:2.30` loses to `9.0` because `dpkg`'s upstream part of the first is
+/// `2.30`. One it cannot read WINS, whichever side declared it, and travels to
+/// the seam that reports it: `1:2.30` against `>=1.2` must settle on `>=1.2` in
+/// both declaration orders, or the malformed floor vanishes with no check error
+/// in one of them. When it can read NEITHER, the CLAIMED floor is the one
+/// carried: both spellings error identically at verify, so the choice is
+/// stated rather than left to fall out of the comparison.
+///
+/// Without a manager the dedup judges no readability of its own, and the same
+/// carry-the-doubt rule falls to the shared parser
+/// ([`declared_floor_parses`](crate::declared_floor_parses)): comparing an
+/// unparseable floor here would answer `false` for the parse rather than for
+/// the constraint, and the readable floor would quietly outrank a declaration
+/// that — claimed alone by one module — is a check error the reader must see.
+/// Between two floors neither parses, the CLAIMED one stays: both error
+/// identically at the manager.
+fn stricter_floor(
+    claimed: &Option<String>,
+    candidate: &Option<String>,
+    mgr: Option<&dyn crate::providers::PackageManager>,
+) -> Option<String> {
+    match (claimed, candidate) {
+        (_, None) => claimed.clone(),
+        (None, Some(_)) => candidate.clone(),
+        (Some(a), Some(b)) => {
+            let winner = match mgr {
+                Some(m) => match (m.floor_comparable(a), m.floor_comparable(b)) {
+                    (true, true) => match m.version_meets_minimum_checked(a, b) {
+                        Ok(true) => a,
+                        Ok(false) => b,
+                        // The manager's own comparator failed to spawn (FreeBSD
+                        // `pkg version -t`) rather than answering — fall to the
+                        // order-independent shared comparator so a transient
+                        // spawn failure cannot make this dedup depend on which
+                        // module happened to be scanned first.
+                        Err(_) => {
+                            if crate::version_meets_floor(a, b) {
+                                a
+                            } else {
+                                b
+                            }
+                        }
+                    },
+                    (false, _) => a,
+                    (_, false) => b,
+                },
+                None if !crate::declared_floor_parses(a) => a,
+                None if !crate::declared_floor_parses(b) => b,
+                None if crate::version_meets_floor(a, b) => a,
+                None => b,
+            };
+            Some(winner.clone())
+        }
+    }
+}
+
 /// Build the effective desired package set: the profile's packages combined with
 /// every module's packages, cross-scope deduplicated by the shared
 /// [`PackageClaim`] rules (a `(manager, name)` declared in both a module and the
@@ -121,9 +191,15 @@ pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule])
 ///
 /// The result lists every *configured* manager's packages and is host-agnostic;
 /// callers intersect it with registry availability (see the module docs).
+///
+/// `managers` is [`crate::providers::ProviderRegistry::manager_map`], supplied by
+/// every caller that holds a registry: it is read only to settle a `minVersion`
+/// dedup in the owning family's grammar. A caller with
+/// no registry in hand passes `None` and gets the manager-agnostic rule.
 pub fn effective_desired_packages(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
+    managers: Option<&std::collections::HashMap<String, &dyn crate::providers::PackageManager>>,
 ) -> Vec<EffectivePackage> {
     // Drive the shared claiming primitive directly so the rules (module wins,
     // earlier-module wins, `script` exempt) stay in one implementation without
@@ -138,7 +214,23 @@ pub fn effective_desired_packages(
                     manager: pkg.manager.clone(),
                     name: pkg.resolved_name.clone(),
                     origin: Origin::Module(module.name.clone()),
+                    min_version: pkg.min_version.clone(),
                 });
+            } else if let Some(claimed) = packages
+                .iter_mut()
+                .find(|e| e.manager == pkg.manager && e.name == pkg.resolved_name)
+            {
+                // "Earlier module wins" settles WHO installs the package; a
+                // floor is a CONSTRAINT, and the planner enforces every
+                // module's own (`plan_modules` walks each module's packages
+                // through `package_survives_elision`). The strictest one
+                // therefore survives the dedup, or the live check would be
+                // blind to a floor the apply still acts on.
+                claimed.min_version = stricter_floor(
+                    &claimed.min_version,
+                    &pkg.min_version,
+                    managers.and_then(|m| m.get(&pkg.manager)).copied(),
+                );
             }
         }
     }
@@ -149,6 +241,9 @@ pub fn effective_desired_packages(
                 packages.push(EffectivePackage {
                     manager: manager.clone(),
                     name,
+                    // `spec.packages` entries are bare names: only a module
+                    // entry carries a `minVersion`.
+                    min_version: None,
                     origin: Origin::Profile,
                 });
             }
@@ -199,6 +294,73 @@ pub fn effective_files(
     files
 }
 
+/// Every effective file's RESOLVED deployment strategy, keyed by its expanded
+/// target, with the profile-wide default carried alongside for a target the map
+/// does not name.
+///
+/// The lookup a drift READER and the unmanaged-file SWEEP both need: a finding
+/// (or a plan action) carries the path it was taken at and nothing else, while
+/// whether an unmanaged target is a conflict at all turns on the strategy the
+/// entry declares — a `Patch` entry merges into the target's own bytes, so its
+/// target is nobody's stranger. The default is applied HERE rather than at each
+/// consumer, because three consumers resolving it separately is how one of them
+/// read a strategy-less entry as `Symlink` under a global `fileStrategy: Patch`
+/// and prompted about a file the other two adopted in place.
+#[derive(Default)]
+pub struct FileStrategies {
+    by_target: std::collections::HashMap<std::path::PathBuf, crate::config::FileStrategy>,
+    default: crate::config::FileStrategy,
+}
+
+impl FileStrategies {
+    /// The resolved strategy for `target`; the profile-wide default when the
+    /// map does not name it.
+    #[must_use]
+    pub fn for_target(&self, target: &Path) -> crate::config::FileStrategy {
+        self.by_target.get(target).copied().unwrap_or(self.default)
+    }
+
+    /// [`Self::for_target`] for a caller that must also know whether the
+    /// effective state still DECLARES the target at all: `None` for a target
+    /// no entry names, where the blanket lookup would answer the profile-wide
+    /// default about a file the resolution cannot speak for — a recorded row
+    /// outliving its declaration renders an absent cell, never a guess.
+    #[must_use]
+    pub fn for_declared_target(&self, target: &Path) -> Option<crate::config::FileStrategy> {
+        self.by_target.get(target).copied()
+    }
+
+    /// An empty map over `default`, for a caller with no composed profile to
+    /// derive one from.
+    #[must_use]
+    pub fn with_default(default: crate::config::FileStrategy) -> Self {
+        Self {
+            by_target: std::collections::HashMap::new(),
+            default,
+        }
+    }
+}
+
+/// Build the [`FileStrategies`] lookup from effective state, so a
+/// module-contributed file is as visible in it as a profile one. The FIRST
+/// declaration of a target wins, matching [`effective_files`]'s order: profile
+/// entries precede module ones.
+#[must_use]
+pub fn effective_file_strategies(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    config_dir: &Path,
+    default: crate::config::FileStrategy,
+) -> FileStrategies {
+    let mut by_target = std::collections::HashMap::new();
+    for file in effective_files(profile, modules, config_dir) {
+        by_target
+            .entry(crate::expand_tilde(&file.target))
+            .or_insert(file.strategy.unwrap_or(default));
+    }
+    FileStrategies { by_target, default }
+}
+
 fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
     let resolved_source = crate::resolve_relative_path(Path::new(&spec.source), config_dir)
         .map_or_else(|_| spec.source.clone(), |p| to_posix_string(&p));
@@ -237,11 +399,13 @@ mod tests {
             secrets: Vec::new(),
             scripts: crate::config::ScriptSpec::default(),
             backups: Vec::new(),
+            entry_owners: crate::config::EntryOwners::default(),
         }
     }
 
     fn module(name: &str) -> ResolvedModule {
         ResolvedModule {
+            dep_pulled: false,
             name: name.to_string(),
             packages: Vec::new(),
             files: Vec::new(),
@@ -266,16 +430,43 @@ mod tests {
             canonical_name: name.to_string(),
             resolved_name: name.to_string(),
             manager: manager.to_string(),
+            manager_declared: false,
             version: None,
             script: None,
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }
     }
 
     fn yaml(value: &str) -> serde_yaml::Value {
         serde_yaml::from_str(value).expect("valid yaml fixture")
+    }
+
+    // --- stricter_floor --------------------------------------------------
+
+    #[test]
+    fn a_failed_floor_comparator_falls_to_the_order_independent_shared_comparator() {
+        let mgr = crate::test_helpers::MockPackageManager::new("pkg").failing_version_comparisons();
+        let a = Some("1.2".to_string());
+        let b = Some("1.9".to_string());
+
+        let forward = stricter_floor(&a, &b, Some(&mgr));
+        let backward = stricter_floor(&b, &a, Some(&mgr));
+
+        assert_eq!(forward, Some("1.9".to_string()));
+        assert_eq!(backward, Some("1.9".to_string()));
+    }
+
+    #[test]
+    fn a_working_floor_comparator_is_still_asked_before_any_fallback() {
+        let mgr = crate::test_helpers::MockPackageManager::new("pkg");
+        let a = Some("1.2".to_string());
+        let b = Some("1.9".to_string());
+
+        assert_eq!(stricter_floor(&a, &b, Some(&mgr)), Some("1.9".to_string()));
+        assert_eq!(stricter_floor(&b, &a, Some(&mgr)), Some("1.9".to_string()));
     }
 
     // --- effective_system_map ------------------------------------------------
@@ -343,7 +534,7 @@ mod tests {
         let mut profile = empty_profile();
         profile.packages.dnf = vec!["ripgrep".into(), "fd".into()];
 
-        let pkgs = effective_desired_packages(&profile, &[]);
+        let pkgs = effective_desired_packages(&profile, &[], None);
 
         assert_eq!(pkgs.len(), 2);
         assert!(pkgs.iter().all(|p| p.manager == "dnf"));
@@ -358,7 +549,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("cargo", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].manager, "cargo");
@@ -373,7 +564,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("dnf", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         // Same (manager, name) in both: one entry, attributed to the module.
         assert_eq!(pkgs.len(), 1);
@@ -389,7 +580,7 @@ mod tests {
         let mut m = module("dev");
         m.packages = vec![pkg("cargo", "ripgrep")];
 
-        let pkgs = effective_desired_packages(&profile, &[m]);
+        let pkgs = effective_desired_packages(&profile, &[m], None);
 
         // Same name, different manager: both kept.
         assert_eq!(pkgs.len(), 2);
@@ -411,7 +602,7 @@ mod tests {
         let mut b = module("b");
         b.packages = vec![pkg("script", "setup")];
 
-        let pkgs = effective_desired_packages(&profile, &[a, b]);
+        let pkgs = effective_desired_packages(&profile, &[a, b], None);
 
         // script is exempt from dedup: both same-named scripts survive, each
         // attributed to its own module.
@@ -432,7 +623,7 @@ mod tests {
         let mut b = module("b");
         b.packages = vec![pkg("brew", "fd")];
 
-        let pkgs = effective_desired_packages(&profile, &[a, b]);
+        let pkgs = effective_desired_packages(&profile, &[a, b], None);
 
         // Same (manager, name) in two modules: one entry, attributed to the
         // earlier module in slice order.
@@ -531,5 +722,56 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].origin, Origin::Profile);
         assert_eq!(files[1].origin, Origin::Module("dev".into()));
+    }
+
+    /// The default is applied ONCE, inside the lookup. Three consumers each
+    /// running `strategy.unwrap_or(default)` themselves is how `cfgd diff` and
+    /// the apply-time conflict sweep came to disagree about whether a
+    /// strategy-less entry under a global `fileStrategy: patch` was a conflict
+    /// at all — a `Patch` target is adopted in place and is never one.
+    #[test]
+    fn a_strategy_less_entry_resolves_to_the_profile_wide_default() {
+        let mut profile = empty_profile();
+        let mut bare = managed("dot/gitconfig", "/home/u/.gitconfig");
+        bare.strategy = None;
+        profile.files.managed = vec![bare, managed("dot/npmrc", "/home/u/.npmrc")];
+        let mut m = module("dev");
+        let mut bare_module = resolved_file("/cache/vimrc", "/home/u/.vimrc");
+        bare_module.strategy = None;
+        m.files = vec![bare_module];
+
+        let strategies =
+            effective_file_strategies(&profile, &[m], Path::new("/cfg"), FileStrategy::Patch);
+
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.gitconfig")),
+            FileStrategy::Patch,
+            "a profile entry declaring no strategy takes the global default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.vimrc")),
+            FileStrategy::Patch,
+            "a module entry declaring no strategy takes the same default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.npmrc")),
+            FileStrategy::Copy,
+            "a declared strategy still wins over the default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.never-declared")),
+            FileStrategy::Patch,
+            "a target nothing declares reads the default rather than a wrong answer"
+        );
+        assert_eq!(
+            strategies.for_declared_target(Path::new("/home/u/.gitconfig")),
+            Some(FileStrategy::Patch),
+            "a declared, strategy-less target still answers through the declared lookup"
+        );
+        assert_eq!(
+            strategies.for_declared_target(Path::new("/home/u/.never-declared")),
+            None,
+            "the declared lookup refuses a target no entry names"
+        );
     }
 }

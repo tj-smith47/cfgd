@@ -1,16 +1,17 @@
-source:pinned-source
+Show source:pinned-source
   URL                 https://github.com/team/pinned
   Branch              main
   Priority            200
-  Accept Recommended  false
+  Accept Recommended  no
   Sync Interval       30m
-  Auto Apply          false
+  Auto Apply          no
   Pin Version         v2.0.0
 
 State
-  Status         synced
-  Last Fetched   2026-06-01T12:00:00Z
+  Status         Active
+  Last Sync      2h ago
   Last Commit    aabbccddeeff
-  Version        2.0.0
+  Locked Commit  aabbccddeeff (same as last commit)
   Locked Ref     v2.0.0
-  Locked Commit  aabbccddeeff
+  Signed         no
+  Version        2.0.0

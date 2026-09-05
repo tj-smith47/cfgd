@@ -33,18 +33,42 @@ spec:
         description: Auto-generated derived type for DriftAlertSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              Drifted system settings a device reported at check-in.
+
+              A device's report covers its system settings alone — the answers of the
+              system configurators its profile declares (`sysctl`, `kernelModules`,
+              `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
+              and aliases are checked on the device by `cfgd diff` and reach the fleet only
+              as the aggregate counts of a compliance summary, never as findings — so a
+              device with no DriftAlert is a device whose system settings matched, not a
+              device proven in sync.
             properties:
               deviceId:
+                description: Identifier of the device that reported the drift, as it enrolled.
                 type: string
               driftDetails:
                 default: []
+                description: |-
+                  One entry per drifted system setting, each carrying what was declared and
+                  what the device found.
                 items:
+                  description: One system setting whose live value diverged from its declared value.
                   properties:
                     actual:
+                      description: The value the device actually reported.
                       type: string
                     expected:
+                      description: The value the MachineConfig declares.
                       type: string
                     field:
+                      description: |-
+                        The drifted setting, named `<configurator>.<key>` as the device reported
+                        it (e.g. `sysctl.net.ipv4.ip_forward`).
+
+                        The configurator qualifies the key because a key names a setting only
+                        within its own configurator: two of them may declare the same one, and
+                        this list merges by this field.
                       type: string
                   required:
                   - actual
@@ -56,17 +80,24 @@ spec:
                 - field
                 x-kubernetes-list-type: map
               machineConfigRef:
-                description: Typed reference to a MachineConfig resource.
+                description: The MachineConfig whose desired state the device diverged from.
                 properties:
                   name:
+                    description: Name of the referenced MachineConfig.
                     type: string
                   namespace:
+                    description: |-
+                      Namespace the MachineConfig lives in. Omitted, the referring
+                      resource's own namespace is used.
                     nullable: true
                     type: string
                 required:
                 - name
                 type: object
               severity:
+                description: |-
+                  How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
+                  Drives alert routing rather than any automatic remediation.
                 enum:
                 - Low
                 - Medium

@@ -49,6 +49,9 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 Role::Ok,
                 format!("Encrypted {} via {}", file.posix(), backend_name),
             )
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::SecretEncrypted,
+            ))
             .with_data(serde_json::json!({
                 "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
@@ -166,6 +169,9 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                     backend_name
                 ),
             )
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::SecretEdited,
+            ))
             .with_data(serde_json::json!({
                 "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
@@ -248,10 +254,10 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     printer.emit(
         Doc::new()
-            .status(
-                Role::Ok,
-                "Secrets setup complete — files can now be encrypted with 'cfgd secret encrypt'",
-            )
+            .status(Role::Ok, "Set up secrets")
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::SecretsInitialized,
+            ))
             .with_data(payload),
     );
 

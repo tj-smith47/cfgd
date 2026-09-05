@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
+use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::manager_family;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, ICON_ARROW, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
@@ -11,27 +13,66 @@ const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.
 const PS_ENV_FILE: &str = ".cfgd-env.ps1";
 
-/// Tell the user their already-running shell predates the env file this apply
-/// wrote, so the freshly bootstrapped PATH entries are one command away instead
-/// of requiring a re-login nobody thinks to try.
+/// Render the run's closing `Caveats` section: every note providers reported
+/// during the run, plus (when this apply touched the shell env surface) the
+/// re-source reminder that used to print under its own "Shell environment
+/// changed" heading — folded into the `cfgd:env` group on real provenance
+/// rather than a heading invented for it alone.
 ///
-/// Gated purely on the descriptions `apply_env_action` returns — it suffixes
-/// `:skipped` when the on-disk bytes already matched — so nothing here re-stats
-/// the filesystem and races whatever ran after the Env phase.
-pub(in crate::cli) fn print_shell_env_reminder(
+/// Groups render informational-first, `cfgd:env` always last: it is the one
+/// group that is action-required (the reader has to actually run the command),
+/// so it is the last thing printed before the prompt returns. Every other
+/// group keeps the order `ApplyResult::caveats` collected it in.
+///
+/// The re-source text is gated purely on the descriptions `apply_env_action`
+/// returns — it suffixes `:skipped` when the on-disk bytes already matched —
+/// so nothing here re-stats the filesystem and races whatever ran after the
+/// Env phase.
+pub(in crate::cli) fn print_caveats(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
 ) {
+    let mut caveats = result.caveats.clone();
+    let env_owner = cfgd_core::reconciler::Owner::cfgd("env");
+
+    if let Some(reminder) = shell_env_reminder_note(result) {
+        match caveats.iter_mut().find(|(owner, _)| *owner == env_owner) {
+            Some((_, notes)) => notes.push(reminder),
+            None => caveats.push((env_owner.clone(), vec![reminder])),
+        }
+    }
+
+    // `cfgd:env` renders last, after every informational group: it is the one
+    // group that is action-required (the reader has to actually run its
+    // command). Not a general owner ordering — `Owner::sort_key` is the only
+    // one of those, applied where `Phase::from_actions` builds the phase
+    // tree's groups — so this stays a one-off split-and-append on the single
+    // fixed `cfgd:env` owner rather than a second comparator.
+    let (mut informational, env_last): (Vec<_>, Vec<_>) = caveats
+        .into_iter()
+        .partition(|(owner, _)| *owner != env_owner);
+    informational.extend(env_last);
+
+    cfgd_core::reconciler::render_caveats(printer, &informational);
+}
+
+/// The `cfgd:env` re-source reminder, as a note — `None` when this apply
+/// never touched a shell env file worth sourcing.
+fn shell_env_reminder_note(
+    result: &cfgd_core::reconciler::ApplyResult,
+) -> Option<cfgd_core::providers::ActionNote> {
     let mut wrote_env = false;
     let mut candidates: Vec<&str> = Vec::new();
+    let write_prefix = format!("env:{}:", cfgd_core::reconciler::ENV_VERB_WRITE);
+    let inject_prefix = format!("env:{}:", cfgd_core::reconciler::ENV_VERB_INJECT);
     for action in &result.action_results {
         if !action.success || action.description.ends_with(":skipped") {
             continue;
         }
         let desc = action.description.as_str();
         let Some(path) = desc
-            .strip_prefix("env:write:")
-            .or_else(|| desc.strip_prefix("env:inject:"))
+            .strip_prefix(&write_prefix)
+            .or_else(|| desc.strip_prefix(&inject_prefix))
         else {
             continue;
         };
@@ -44,7 +85,7 @@ pub(in crate::cli) fn print_shell_env_reminder(
         }
     }
     if !wrote_env {
-        return;
+        return None;
     }
 
     // Windows can produce BOTH files in one apply, so the command is chosen by
@@ -58,7 +99,7 @@ pub(in crate::cli) fn print_shell_env_reminder(
         .find(|p| p.ends_with(preferred))
         .or_else(|| candidates.first())
     {
-        Some(path) => fold_home_to_tilde(path),
+        Some(path) => cfgd_core::fold_home_in_text(path),
         None => format!("~/{preferred}"),
     };
     let command = if shown.ends_with(PS_ENV_FILE) {
@@ -67,10 +108,9 @@ pub(in crate::cli) fn print_shell_env_reminder(
         format!("source {shown}")
     };
 
-    // A warning, not a bullet: until the user acts, the shell they are sitting
-    // in disagrees with the environment this run just wrote.
-    let section = printer.section("Shell environment changed");
-    section.status_simple(Role::Warn, format!("run `{command}` — or open a new shell"));
+    Some(cfgd_core::providers::ActionNote::next_step(format!(
+        "Run `{command}`, or open a new shell"
+    )))
 }
 
 /// The env file the shell the user is *standing in* can actually source.
@@ -112,16 +152,6 @@ fn current_shell_env_file() -> &'static str {
     )
 }
 
-/// Render an absolute env-file path as `~/…` when it sits under the current
-/// home, so the reminder shows a command the user can retype verbatim.
-fn fold_home_to_tilde(path: &str) -> String {
-    let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
-    match path.strip_prefix(&format!("{}/", home.trim_end_matches('/'))) {
-        Some(rest) if !home.is_empty() => format!("~/{rest}"),
-        _ => path.to_string(),
-    }
-}
-
 /// Derive a short action type string from a reconciler Action.
 pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static str {
     match action {
@@ -153,10 +183,13 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ModuleActionKind::DeployFiles { .. } => "deploy",
             reconciler::ModuleActionKind::RunScript { .. } => "run",
             reconciler::ModuleActionKind::Skip { .. } => "skip",
+            reconciler::ModuleActionKind::FilesRefused { .. } => "refuse",
         },
         reconciler::Action::Env(ea) => match ea {
-            reconciler::EnvAction::WriteEnvFile { .. } => "write",
-            reconciler::EnvAction::InjectSourceLine { .. } => "inject",
+            reconciler::EnvAction::WriteEnvFile { .. } => cfgd_core::reconciler::ENV_VERB_WRITE,
+            reconciler::EnvAction::InjectSourceLine { .. } => {
+                cfgd_core::reconciler::ENV_VERB_INJECT
+            }
             reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
         },
         reconciler::Action::Manager(ma) => match ma {
@@ -254,10 +287,15 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
             SecretAction::ResolveEnv { .. } | SecretAction::Skip { .. } => vec![],
         },
         reconciler::Action::Module(ma) => match &ma.kind {
-            reconciler::ModuleActionKind::DeployFiles { files } => {
+            reconciler::ModuleActionKind::DeployFiles { files, .. } => {
                 files.iter().map(|f| show(&f.target)).collect()
             }
-            _ => vec![],
+            // Spelled out rather than wildcarded: a module kind that starts
+            // naming paths must be classified here before this compiles.
+            reconciler::ModuleActionKind::InstallPackages { .. }
+            | reconciler::ModuleActionKind::RunScript { .. }
+            | reconciler::ModuleActionKind::Skip { .. }
+            | reconciler::ModuleActionKind::FilesRefused { .. } => vec![],
         },
         reconciler::Action::Package(_)
         | reconciler::Action::System(_)
@@ -342,10 +380,10 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
 /// operator confirms the run — can hand the same classification to
 /// [`reconciler::mint_decisions`] later instead of classifying twice.
 pub(in crate::cli) fn withheld_for_run(
+    ctx: &RunContext<'_>,
     state: &cfgd_core::state::StateStore,
     cfg: &cfgd_core::config::CfgdConfig,
-    resolved: &cfgd_core::config::ResolvedProfile,
-    config_dir: &Path,
+    desired: DesiredOwnership<'_>,
     config_parsed: bool,
     writes: DecisionWrites<'_>,
     actual: &reconciler::ActualPackages,
@@ -353,8 +391,12 @@ pub(in crate::cli) fn withheld_for_run(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
 )> {
+    let DesiredOwnership {
+        resolved,
+        entry_owners,
+    } = desired;
     let mut local = reconciler::local_profile(resolved);
-    packages::resolve_manifest_packages(&mut local.packages, config_dir)?;
+    ctx.resolve_manifest_packages(&mut local.packages)?;
 
     let scope = if config_parsed {
         reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)
@@ -393,7 +435,35 @@ pub(in crate::cli) fn withheld_for_run(
         .with_unrecorded(&review.to_mint, &scope)
         .with_undecidable(review.undecidable.clone())
         .with_auto_accepted(&review.auto_accepted);
-    Ok((withheld, review))
+    // Resolved AFTER the folds above, so an unrecorded row this run classified
+    // is priced the same way a stored one is — the header must not show the
+    // content of some withheld rows and the summary of others.
+    let rows: Vec<_> = withheld
+        .pending
+        .iter()
+        .chain(withheld.rejected.iter())
+        .cloned()
+        .collect();
+    let contents = reconciler::DecisionContents::for_decisions(
+        resolved,
+        &rows,
+        ctx.config_dir(),
+        entry_owners,
+    );
+    Ok((withheld.with_contents(contents), review))
+}
+
+/// The resolution a classification reads, paired with the per-entry ownership
+/// record derived from it.
+///
+/// One parameter rather than two because the two halves must come from the
+/// SAME resolution: owners built from a different resolve would name a winner
+/// for an entry this run never saw, and the annotation beside a withheld row
+/// would then describe another machine's merge.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cli) struct DesiredOwnership<'a> {
+    pub resolved: &'a cfgd_core::config::ResolvedProfile,
+    pub entry_owners: &'a cfgd_core::config::EntryOwners,
 }
 
 /// Whether a run may record the decisions its policy review classified NOW.
@@ -422,47 +492,64 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// draws. It is taken at [`reconciler::PhaseCoverage::Complete`]: a structured
 /// consumer diffing plans across hosts is exactly who needs to see the
 /// `Modules` phase of platform-gated skips that the tree folds into its header.
+///
+/// `total_actions` prices what the apply will actually attempt, through
+/// [`reconciler::attempted_count`] — the same counter
+/// [`reconciler::Plan::total_actions`] and the apply header's own count are
+/// built from, applied to the scoped tree so a `--phase` run prices what it
+/// listed. An action [`reconciler::Action::pre_skip_reason`] answers for is
+/// still LISTED — the row says why it cannot run — and is not counted. A plain
+/// sum over the rendered rows counted it, so the plan's footer promised one more
+/// action than the apply performed.
+///
+/// Every action description renders through the wire-safe [`ICON_ARROW`],
+/// never a caller's themed [`Printer::arrow()`] — a `-o json` field is the
+/// SAME bytes under every `--theme`/preset, and a parameter here is the seam
+/// that regresses that promise.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
     phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
+    sources: &[reconciler::ComposedSource],
 ) -> PlanOutput {
-    let phases: Vec<PlanPhaseOutput> =
-        reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
-            .into_iter()
-            .map(|(phase_item, groups)| PlanPhaseOutput {
-                phase: phase_item.name.display_name().to_string(),
-                groups: groups
-                    .into_iter()
-                    .map(|(group, actions)| {
-                        PlanGroupOutput::new(
-                            group.owner.clone(),
-                            actions
-                                .into_iter()
-                                .map(|action| PlanActionOutput {
-                                    description: reconciler::format_plan_item(action),
-                                    action_type: action_type_str(action).to_string(),
-                                    targets: action_targets(action),
-                                    origin: action_origin(action),
-                                    manager: manager_action_output(action),
-                                })
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-            })
-            .collect();
-    let total_actions = phases
-        .iter()
-        .flat_map(|p| p.groups.iter())
-        .map(|g| g.actions().len())
-        .sum();
+    let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
+    let total_actions = reconciler::attempted_count(
+        tree.iter()
+            .flat_map(|(_, groups)| groups.iter())
+            .flat_map(|(_, actions)| actions.iter().copied()),
+    );
+    let phases: Vec<PlanPhaseOutput> = tree
+        .into_iter()
+        .map(|(phase_item, groups)| PlanPhaseOutput {
+            phase: phase_item.name.display_name().to_string(),
+            groups: groups
+                .into_iter()
+                .map(|(group, actions)| {
+                    PlanGroupOutput::new(
+                        group.owner.clone(),
+                        actions
+                            .into_iter()
+                            .map(|action| PlanActionOutput {
+                                description: reconciler::format_plan_item(action, ICON_ARROW),
+                                action_type: action_type_str(action).to_string(),
+                                targets: action_targets(action),
+                                origin: action_origin(action),
+                                manager: manager_action_output(action),
+                                detail: reconciler::action_produced_detail(action, None, 0, &[]),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        })
+        .collect();
     PlanOutput {
         context: context_name.to_string(),
         phases,
         total_actions,
+        sources: sources.to_vec(),
         warnings: plan.warnings.clone(),
         pending_backups: pending_backups.to_vec(),
         pending_decisions: withheld.pending.clone(),
@@ -502,8 +589,10 @@ fn is_script_work(a: &reconciler::Action) -> bool {
         reconciler::Action::Module(reconciler::ModuleAction {
             kind: reconciler::ModuleActionKind::InstallPackages { resolved },
             ..
-        }) => resolved.iter().any(|p| p.manager == "script"),
-        reconciler::Action::Package(pa) => package_manager_name(pa) == "script",
+        }) => resolved
+            .iter()
+            .any(|p| p.manager == cfgd_core::SCRIPT_SENTINEL),
+        reconciler::Action::Package(pa) => package_manager_name(pa) == cfgd_core::SCRIPT_SENTINEL,
         reconciler::Action::Script(_) => true,
         _ => false,
     }
@@ -528,9 +617,12 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 /// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`
 /// destructively prune it, so a later zero-action outcome can be reported
 /// honestly. Without this, `apply`/`plan` claim "everything is up to date" even
-/// when a scoping flag (`--phase`/`--only`/`--skip`/`--skip-scripts`/`--module`)
+/// when a scoping flag (`--phase`/`--only`/`--skip`/`--skip-scripts`)
 /// excluded real, pending work — telling the user the system is in sync when it
-/// is not.
+/// is not. `--module` is not one of these: it resolves atomically (an
+/// unresolvable name is a propagated error, not a scope reduction), so a
+/// `--module`-scoped plan that ends up empty genuinely has nothing pending
+/// for that module.
 pub(in crate::cli) struct ScopeReport {
     /// Any scoping flag that can narrow the plan to a subset was set.
     pub filter_active: bool,
@@ -538,17 +630,17 @@ pub(in crate::cli) struct ScopeReport {
     pub unfiltered_total: usize,
     /// Display names of the phases that held actions before pruning.
     pub phases_with_work: Vec<String>,
-    /// Set to the requested module name when `--module <name>` resolved to
-    /// nothing (typo / not found / unreadable) rather than to real actions.
-    pub module_miss: Option<String>,
+    /// At least one `--skip`/`--only` token matched zero actions
+    /// ([`TokenHits::misses`], set by `filter_plan` after it runs). A plan
+    /// that ends up empty for THIS reason is not "up to date" — a filter
+    /// token that never resolved anything is not evidence the machine
+    /// converged, so this must override the `unfiltered_total == 0` shortcut
+    /// below even when the profile itself had nothing else pending.
+    pub filter_miss: bool,
 }
 
 impl ScopeReport {
-    pub(in crate::cli) fn capture(
-        plan: &reconciler::Plan,
-        filter_active: bool,
-        module_miss: Option<String>,
-    ) -> Self {
+    pub(in crate::cli) fn capture(plan: &reconciler::Plan, filter_active: bool) -> Self {
         Self {
             filter_active,
             unfiltered_total: plan.total_actions(),
@@ -558,7 +650,7 @@ impl ScopeReport {
                 .filter(|p| !p.is_empty())
                 .map(|p| p.name.display_name().to_string())
                 .collect(),
-            module_miss,
+            filter_miss: false,
         }
     }
 }
@@ -569,30 +661,28 @@ impl ScopeReport {
 /// from one where a scoping flag excluded pending work (`Warn` — the system was
 /// *not* reconciled). Shared by both `apply` and `plan`/dry-run so the two
 /// surfaces never diverge.
-pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &ScopeReport) {
-    if let Some(name) = &scope.module_miss {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Module '{name}' matched no actions — it was not found or could not be resolved"
-            ),
-        );
+///
+/// `pending_decisions` counts what a withheld-decision block above this line
+/// just listed; the in-sync verdict is [`nothing_to_do_verdict`]'s to word.
+pub(in crate::cli) fn report_no_in_scope_actions(
+    printer: &Printer,
+    scope: &ScopeReport,
+    pending_decisions: usize,
+) {
+    if !scope.filter_active || (scope.unfiltered_total == 0 && !scope.filter_miss) {
+        let (role, verdict) = nothing_to_do_verdict(pending_decisions);
+        printer.status_simple(role, verdict);
         return;
     }
-    if !scope.filter_active || scope.unfiltered_total == 0 {
-        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
-        return;
-    }
-    printer.status_simple(
-        Role::Warn,
-        format!(
-            "No actions in scope — the active filter excluded all {} planned; the system was not reconciled",
+    printer
+        .status(Role::Warn, "No actions in scope")
+        .detail(format!(
+            "the active filter excluded all {} planned; the system was not reconciled",
             cfgd_core::pluralize(scope.unfiltered_total, "action")
-        ),
-    );
+        ));
     if !scope.phases_with_work.is_empty() {
         printer.hint(format!(
-            "actions exist in {}: {}",
+            "Actions exist in {}: {} — run `cfgd plan` without the filter to preview them",
             cfgd_core::plural_noun(scope.phases_with_work.len(), "phase"),
             scope.phases_with_work.join(", ")
         ));
@@ -603,24 +693,35 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
 /// holds no in-scope work — the verdict [`report_no_in_scope_actions`] chooses.
 ///
 /// `scope` is `None` for the surfaces that expose no scoping flag at all
-/// (`cfgd init --apply`, `cfgd module create --apply`), where the only verdict
-/// reachable is `MSG_NOTHING_TO_DO`; taking it directly there says that, where
-/// a `ScopeReport` built solely to land on the same arm would not.
+/// (`cfgd init --apply`, `cfgd module create --apply`), where no filter can
+/// have excluded anything; taking that arm directly says so, where a
+/// `ScopeReport` built solely to land on it would not.
 pub(in crate::cli) fn report_plan_verdict(
     printer: &Printer,
     total_actions: usize,
     scope: Option<&ScopeReport>,
+    pending_decisions: usize,
+    preview: &crate::cli::PreviewScope<'_>,
 ) {
     if total_actions > 0 {
         printer.status_simple(
             Role::Info,
             format!("{} planned", cfgd_core::pluralize(total_actions, "action")),
         );
+        // The reader has just read the changes, so the preview closes on the
+        // command that performs them — scoped as this preview was, or a bare
+        // `cfgd apply` would perform work it never showed. Every other verdict
+        // surface in the CLI already names its verb; this arm was the one that
+        // ended on a count.
+        printer.hint(crate::cli::perform_preview_hint(preview));
         return;
     }
     match scope {
-        Some(scope) => report_no_in_scope_actions(printer, scope),
-        None => printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO),
+        Some(scope) => report_no_in_scope_actions(printer, scope, pending_decisions),
+        None => {
+            let (role, verdict) = nothing_to_do_verdict(pending_decisions);
+            printer.status_simple(role, verdict);
+        }
     }
 }
 
@@ -630,6 +731,10 @@ pub(in crate::cli) fn report_plan_verdict(
 #[derive(Clone, Copy)]
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
+    /// How this preview was scoped, for the verdict's next step. A bare
+    /// `cfgd apply` offered after a filtered preview performs work the reader
+    /// was never shown.
+    pub preview: crate::cli::PreviewScope<'a>,
     pub phase_filter: Option<&'a PhaseFilter>,
     pub dry_run_fm: Option<&'a CfgdFileManager>,
     pub scope: &'a ScopeReport,
@@ -653,6 +758,7 @@ pub(in crate::cli) fn display_plan_preview(
         scope,
         pending_backups,
         withheld,
+        preview: _,
     } = *args;
 
     // The run's own rows and warnings, before anything this command adds: the
@@ -661,7 +767,14 @@ pub(in crate::cli) fn display_plan_preview(
     run.header(printer);
 
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups, withheld);
+    let plan_output = build_plan_output(
+        plan,
+        context,
+        phase_filter,
+        pending_backups,
+        withheld,
+        run.sources(),
+    );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.
@@ -678,7 +791,7 @@ pub(in crate::cli) fn display_plan_preview(
     // surface them separately so a preview doesn't silently omit work a real
     // (non-dry-run) apply would do.
     if !pending_backups.is_empty() {
-        let section = printer.section("Backups (run on apply)");
+        let section = printer.section_phase(&PhaseLabel::new("Backups (run on apply)"));
         for name in pending_backups {
             section.status_simple(Role::Info, name);
         }
@@ -708,7 +821,7 @@ pub(in crate::cli) fn display_plan_preview(
                                 printer
                                     .status(
                                         Role::Warn,
-                                        format!("cannot preview {}", target.posix()),
+                                        format!("Cannot preview {}", target.posix()),
                                     )
                                     .detail(cfgd_core::output::collapse_to_subject_line(e));
                                 continue;
@@ -719,16 +832,21 @@ pub(in crate::cli) fn display_plan_preview(
                     } else {
                         std::fs::read_to_string(source).unwrap_or_default()
                     };
-                    // `printer.diff` bypasses section header flushing; wrapping the
-                    // file label in `section()` would render the header after the diff.
-                    printer.heading(target.display_posix());
-                    printer.diff(&target_content, &source_content);
+                    printer
+                        .section(target.display_posix())
+                        .diff(&target_content, &source_content);
                 }
             }
         }
     }
 
-    report_plan_verdict(printer, plan_output.total_actions, Some(scope));
+    report_plan_verdict(
+        printer,
+        plan_output.total_actions,
+        Some(scope),
+        withheld.pending.len(),
+        &args.preview,
+    );
 }
 
 // --- Plan filtering for --skip and --only ---
@@ -882,7 +1000,7 @@ pub(in crate::cli) fn pattern_matches_action(
     owner: &reconciler::Owner,
     action_path: &str,
 ) -> bool {
-    if let Some((kind, _name)) = pattern.split_once(':')
+    if let Some((kind, _name)) = cfgd_core::output::split_owner_token(pattern)
         && reconciler::OwnerKind::from_token(kind).is_some()
     {
         return owner.token() == pattern;
@@ -985,130 +1103,11 @@ fn warn_legacy_module_patterns(printer: &Printer, skip: &[String], only: &[Strin
     }
 }
 
-/// Check if a file target is an unmanaged file — exists on disk but not tracked by cfgd.
-/// A cfgd-managed symlink (pointing into config_dir) is NOT unmanaged.
-pub(in crate::cli) fn is_unmanaged_file(
-    target: &Path,
-    config_dir: &Path,
-    state: &StateStore,
-) -> bool {
-    // Target must exist on disk
-    if !target.exists() && target.symlink_metadata().is_err() {
-        return false;
-    }
-
-    // If it's a symlink pointing into the config dir, it's cfgd-managed
-    if let Ok(link_target) = target.read_link() {
-        if link_target.starts_with(config_dir) {
-            return false;
-        }
-        // Also check ~/.cache/cfgd/modules/ for module symlinks
-        {
-            let module_cache = cfgd_core::expand_tilde(Path::new("~/.cache/cfgd/modules"));
-            if link_target.starts_with(&module_cache) {
-                return false;
-            }
-        }
-    }
-
-    // Check state store — if already tracked, it's managed. The id is minted
-    // posix-folded (`reconciler::format`), so the lookup folds too: asked with
-    // native separators, every managed file on Windows answers "unmanaged" and
-    // the conflict pass copies cfgd's OWN files aside on every apply.
-    let target_str = cfgd_core::to_posix_string(target);
-    if let Ok(managed) = state.is_resource_managed("file", &target_str) {
-        return !managed;
-    }
-
-    true
-}
-
-/// Whether a strategy adopts an existing unmanaged target in place instead of
-/// replacing it.
-///
-/// `Patch` merges into the target's own bytes, so the unmanaged-file prompt
-/// must never fire for it: every one of its choices is wrong. "Adopt
-/// (overwrite)" misdescribes a merge, and "Backup" renames the target away
-/// *before* apply — the merge would then read an empty current content and
-/// write only the ensured keys, destroying exactly the content the strategy
-/// exists to preserve.
-fn adopts_in_place(strategy: FileStrategy) -> bool {
-    matches!(strategy, FileStrategy::Patch)
-}
-
-/// Whether `target` already holds exactly the bytes the planned write would
-/// put there.
-///
-/// The adoption short-circuit: a converged target is not a conflict, so it must
-/// not be prompted about, copied aside, or rewritten. `desired_hash` is `None`
-/// whenever the content is not knowable ahead of the write — a link strategy, a
-/// `Patch` merge, an unreadable source — and that answers "not converged", so
-/// the conflict path runs exactly as before.
-///
-/// Judged on `symlink_metadata`, never `exists()`: a symlink at the target is a
-/// thing to replace, not content to compare, however its destination reads.
-fn target_holds_desired_content(target: &Path, desired_hash: Option<&str>) -> bool {
-    let Some(want) = desired_hash else {
-        return false;
-    };
-    let Ok(meta) = target.symlink_metadata() else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    match std::fs::read(target) {
-        Ok(bytes) => cfgd_core::sha256_hex(&bytes) == want,
-        Err(_) => false,
-    }
-}
-
-/// The hash of the bytes a module file deployment will write, when that is
-/// answerable before the deployment runs.
-///
-/// Only a `Copy`/`Template` entry writes whole content (both read the source
-/// verbatim in `reconciler::modules`); a link entry replaces the target with a
-/// link and a `Patch` entry merges into whatever the target already holds, so
-/// neither has a comparable "desired content" at all.
-///
-/// `strategy` is the RESOLVED strategy, matching what `reconciler::modules`
-/// will act on: a file declaring none of its own under a global
-/// `fileStrategy: copy` writes whole content just the same, and reading the
-/// unresolved field would answer `None` and re-adopt it on every apply.
-fn module_file_desired_hash(
-    file: &cfgd_core::modules::ResolvedFile,
-    strategy: FileStrategy,
-) -> Option<String> {
-    if !matches!(strategy, FileStrategy::Copy | FileStrategy::Template) {
-        return None;
-    }
-    if !file.source.is_file() {
-        return None;
-    }
-    std::fs::read(&file.source)
-        .ok()
-        .map(|bytes| cfgd_core::sha256_hex(&bytes))
-}
-
-/// A conflict policy that has been SETTLED for one target.
-///
-/// [`OnConflict::Ask`] is a request, never an outcome: by the time a target is
-/// acted on, the question has been answered — by the prompt, by `--yes`, or by
-/// there being nobody to ask. Giving the answer its own type without an `Ask`
-/// variant is what makes "ask" unrepresentable at the executors, where it had
-/// been folded into their `Overwrite` catch-all — so a run that asked to be
-/// asked, and could not be, destroyed the file instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::cli) enum ResolvedConflict {
-    /// Copy the existing file aside, then write.
-    Backup,
-    /// Replace the existing file, keeping no copy of it.
-    Overwrite,
-    /// Leave the existing file alone and drop cfgd's write.
-    Skip,
-    /// Abort the apply without touching the file.
-    Fail,
-}
+/// The classification, the plan sweep and the settled-policy vocabulary all
+/// live in the reconciler: the daemon reconciles the same plans against the
+/// same machine and must reach them too. What stays here is the half core
+/// cannot have — the flag, and the prompt that answers it.
+use cfgd_core::reconciler::ResolvedConflict;
 
 /// Resolve the run's `--on-conflict` request into the policy every target gets,
 /// or `None` when each target must be asked about individually.
@@ -1154,198 +1153,55 @@ const PROMPT_POLICIES: [ResolvedConflict; 4] = [
     ResolvedConflict::Fail,
 ];
 
-/// The reason a target skipped for holding an unmanaged file reports, shared by
-/// the profile action's `Skip` reason and the module arm's status line so the
-/// two cannot describe the same decision differently.
-const UNMANAGED_SKIP_REASON: &str = "skipped: target exists as unmanaged file";
-
+/// Settle every unmanaged file target in the plan under `--on-conflict`, and
+/// report the ones whose settled policy is `Backup`.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
+    module_cache: &Path,
     state: &StateStore,
     printer: &Printer,
     auto_yes: bool,
     requested: OnConflict,
-    default_strategy: FileStrategy,
-) -> anyhow::Result<()> {
+    strategies: &cfgd_core::effective::FileStrategies,
+) -> anyhow::Result<HashSet<PathBuf>> {
     let policy = resolve_conflict_policy(requested, auto_yes);
     let options = conflict_prompt_options();
-    // Targets the pass decided to leave alone. Planning emits a `SetPermissions`
-    // as a SIBLING of the write, so rewriting only the write leaves a chmod
-    // behind — and "skip" would still change the mode of the file it promised
-    // not to touch.
-    let mut skipped: Vec<PathBuf> = Vec::new();
-
-    for phase in &mut plan.phases {
-        for (_owner, actions) in phase.groups_mut() {
-            let mut i = 0;
-            while i < actions.len() {
-                // Profile file actions
-                if let reconciler::Action::File(
-                    FileAction::Create {
-                        target,
-                        strategy,
-                        source_hash,
-                        ..
-                    }
-                    | FileAction::Update {
-                        target,
-                        strategy,
-                        source_hash,
-                        ..
-                    },
-                ) = &actions[i]
-                {
-                    let target = target.clone();
-                    let strategy = *strategy;
-                    let desired = source_hash.clone();
-                    if !adopts_in_place(strategy)
-                        && !target_holds_desired_content(&target, desired.as_deref())
-                        && is_unmanaged_file(&target, config_dir, state)
-                    {
-                        let chosen = resolve_for_target(policy, &target, None, printer, &options)?;
-                        if chosen == ResolvedConflict::Skip {
-                            skipped.push(target.clone());
-                        }
-                        apply_conflict_policy(chosen, &target, &mut actions[i], printer)?;
-                    }
-                }
-
-                // Module file actions
-                if let reconciler::Action::Module(ref mut ma) = actions[i]
-                    && let reconciler::ModuleActionKind::DeployFiles { ref mut files } = ma.kind
-                {
-                    let module_name = ma.module_name.clone();
-                    let mut j = 0;
-                    while j < files.len() {
-                        let file_target = cfgd_core::expand_tilde(&files[j].target);
-                        let strategy = files[j].strategy.unwrap_or(default_strategy);
-                        let desired = module_file_desired_hash(&files[j], strategy);
-                        if !adopts_in_place(strategy)
-                            && !target_holds_desired_content(&file_target, desired.as_deref())
-                            && is_unmanaged_file(&file_target, config_dir, state)
-                        {
-                            let chosen = resolve_for_target(
-                                policy,
-                                &file_target,
-                                Some(&module_name),
-                                printer,
-                                &options,
-                            )?;
-                            match chosen {
-                                ResolvedConflict::Backup => {
-                                    backup_file(&file_target, printer)?;
-                                }
-                                ResolvedConflict::Skip => {
-                                    // A dropped module file leaves no action to
-                                    // render, so the decision is reported here
-                                    // or nowhere — the profile arm's `Skip`
-                                    // action says the same thing in the tree.
-                                    printer.status_simple(
-                                        Role::Skipped,
-                                        format!(
-                                            "module '{}': {} — {}",
-                                            module_name,
-                                            file_target.posix(),
-                                            UNMANAGED_SKIP_REASON
-                                        ),
-                                    );
-                                    skipped.push(file_target);
-                                    files.remove(j);
-                                    continue;
-                                }
-                                ResolvedConflict::Fail => {
-                                    return Err(unmanaged_conflict_error(
-                                        &file_target,
-                                        Some(&module_name),
-                                    ));
-                                }
-                                ResolvedConflict::Overwrite => {}
-                            }
-                        }
-                        j += 1;
-                    }
-                }
-
-                i += 1;
-            }
-        }
-    }
-
-    prune_skipped_leftovers(plan, &skipped);
-    Ok(())
-}
-
-/// Clear away what a skipped target leaves behind in the plan.
-///
-/// Two leftovers, both of which contradict what "skip" was told to mean:
-///
-/// - the sibling `SetPermissions` planning pairs with every `Create`/`Update`.
-///   Left in place, `--on-conflict skip` still changes the mode of the file it
-///   undertook to leave untouched — a smaller edit than the write, and the same
-///   broken promise. Swept over the whole plan rather than the neighbouring
-///   index, so a phase that groups the pair differently cannot reintroduce it
-/// - a module deployment whose every file was skipped, which would otherwise
-///   render and journal a deployment of nothing
-fn prune_skipped_leftovers(plan: &mut reconciler::Plan, skipped: &[PathBuf]) {
-    for phase in &mut plan.phases {
-        phase.retain_actions(|action| match action {
-            reconciler::Action::File(FileAction::SetPermissions { target, .. }) => {
-                !skipped.iter().any(|s| s == target)
-            }
-            reconciler::Action::Module(ma) => !matches!(
-                &ma.kind,
-                reconciler::ModuleActionKind::DeployFiles { files } if files.is_empty()
-            ),
-            _ => true,
-        });
-    }
-    plan.phases.retain(|p| !p.is_empty());
-}
-
-/// The policy to apply to one conflicting target: the run's policy, or the
-/// answer to a per-file prompt when the run's policy is `Ask`.
-fn resolve_for_target(
-    policy: Option<ResolvedConflict>,
-    target: &Path,
-    module_name: Option<&str>,
-    printer: &Printer,
-    options: &[String],
-) -> anyhow::Result<ResolvedConflict> {
-    if let Some(settled) = policy {
-        announce_conflict(target, module_name, printer);
-        return Ok(settled);
-    }
-    prompt_conflict_policy(target, module_name, printer, options)
-}
-
-/// Say which file is in the way before anything is done about it.
-fn announce_conflict(target: &Path, module_name: Option<&str>, printer: &Printer) {
-    let msg = match module_name {
-        Some(m) => format!(
-            "Module '{}': target exists as unmanaged file: {}",
-            m,
-            target.posix()
-        ),
-        None => format!("Target exists as unmanaged file: {}", target.posix()),
+    let mut resolve = |target: &Path, module: Option<&str>| match policy {
+        Some(settled) => Ok(settled),
+        None => prompt_conflict_policy(target, module, printer, &options),
     };
-    printer.status_simple(Role::Warn, msg);
-}
-
-/// The `--on-conflict fail` abort, worded the same for a profile file and a
-/// module one.
-fn unmanaged_conflict_error(target: &Path, module_name: Option<&str>) -> anyhow::Error {
-    match module_name {
-        Some(m) => anyhow::anyhow!(
-            "module '{}': target exists as unmanaged file: {} (--on-conflict fail)",
-            m,
-            target.posix()
+    // A settled policy answers every conflict without asking, so the sweep is a
+    // silent read of every declared target and source — narrated, because it is
+    // seconds of hashing between the plan and the header. An UNSETTLED one
+    // prompts per file, which is its own live indicator and cannot share the
+    // terminal with an animated bar.
+    let backups = match policy {
+        Some(_) => printer.narrate("Planning", |sp| {
+            reconciler::sweep_unmanaged_file_targets(
+                plan,
+                config_dir,
+                module_cache,
+                state,
+                printer,
+                strategies,
+                Some(sp),
+                &mut resolve,
+            )
+        }),
+        None => reconciler::sweep_unmanaged_file_targets(
+            plan,
+            config_dir,
+            module_cache,
+            state,
+            printer,
+            strategies,
+            None,
+            &mut resolve,
         ),
-        None => anyhow::anyhow!(
-            "target exists as unmanaged file: {} (--on-conflict fail)",
-            target.posix()
-        ),
-    }
+    }?;
+    Ok(backups)
 }
 
 /// Ask the user how to handle one unmanaged file target.
@@ -1362,8 +1218,16 @@ fn prompt_conflict_policy(
     module_name: Option<&str>,
     printer: &Printer,
     options: &[String],
-) -> anyhow::Result<ResolvedConflict> {
-    announce_conflict(target, module_name, printer);
+) -> Result<ResolvedConflict, cfgd_core::errors::FileError> {
+    let subject = match module_name {
+        Some(m) => format!(
+            "Module '{}': target exists as unmanaged file: {}",
+            m,
+            target.posix()
+        ),
+        None => format!("Target exists as unmanaged file: {}", target.posix()),
+    };
+    printer.status_simple(Role::Warn, subject);
     match printer.prompt_select("How should cfgd handle this file?", options) {
         Ok(choice) => Ok(options
             .iter()
@@ -1383,204 +1247,31 @@ fn prompt_conflict_policy(
 fn settle_prompt_failure(
     err: inquire::InquireError,
     target: &Path,
-) -> anyhow::Result<ResolvedConflict> {
+) -> Result<ResolvedConflict, cfgd_core::errors::FileError> {
     match err {
         inquire::InquireError::OperationInterrupted | inquire::InquireError::OperationCanceled => {
-            Err(anyhow::anyhow!(
-                "interrupted at the unmanaged-file prompt for {}; nothing was applied",
-                target.posix()
-            ))
+            Err(cfgd_core::errors::FileError::AdoptionPromptInterrupted {
+                path: target.to_path_buf(),
+            })
         }
         _ => Ok(ResolvedConflict::Backup),
     }
 }
 
-/// Copy an unmanaged target aside before cfgd overwrites it, and return where
-/// the copy landed.
-///
-/// A COPY, never a rename. The rename this replaced left a window in which the
-/// user's file was at neither path: a crash between the rename and the apply's
-/// own write lost it outright. Copying leaves the original at `target` until
-/// the write rename-replaces it, so at every instant the content exists at the
-/// sidecar, at the target, or at both.
-///
-/// The copied bytes are re-read and hashed before the copy is reported, so a
-/// short write or a full disk is an error rather than a sidecar that silently
-/// holds less than the file it claims to preserve.
-pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<PathBuf> {
-    let meta = target
-        .symlink_metadata()
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-
-    if meta.file_type().is_symlink() {
-        let dest = target
-            .read_link()
-            .map_err(|e| anyhow::anyhow!("Failed to backup symlink {}: {}", target.posix(), e))?;
-        // Reserved unoccupied, so the link is created rather than replacing
-        // whatever a previous adoption left — including a dangling link, which
-        // `symlink_metadata` still counts as an entry someone made.
-        let backup_path = reserve_backup_path(target, None)?;
-        cfgd_core::create_symlink(&dest, &backup_path)
-            .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-        printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-        return Ok(backup_path);
-    }
-
-    if meta.is_dir() {
-        // Same reservation, and load-bearing here: `copy_dir_recursive` writes
-        // INTO an existing directory, so an occupied sidecar would silently
-        // merge two different originals into one tree.
-        let backup_path = reserve_backup_path(target, None)?;
-        cfgd_core::copy_dir_recursive(target, &backup_path)
-            .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-        printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-        return Ok(backup_path);
-    }
-
-    let content = std::fs::read(target)
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-    let hash = cfgd_core::sha256_hex(&content);
-    let backup_path = reserve_backup_path(target, Some(&hash))?;
-    // An earlier adoption already preserved these exact bytes; rewriting the
-    // sidecar would only widen the window in which it is half-written.
-    if sidecar_holds(&backup_path, &hash) {
-        printer.status_simple(
-            Role::Ok,
-            format!("Already backed up at {}", backup_path.posix()),
-        );
-        return Ok(backup_path);
-    }
-    cfgd_core::atomic_write(&backup_path, &content)
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-    if !sidecar_holds(&backup_path, &hash) {
-        return Err(anyhow::anyhow!(
-            "Backup of {} to {} did not verify (content hash mismatch)",
-            target.posix(),
-            backup_path.posix()
-        ));
-    }
-    // Full `0o7777`: a sidecar is the file it preserves, and a setuid or sticky
-    // bit dropped in the copy is not restorable from it.
-    if let Some(mode) = cfgd_core::file_permissions_mode_full(&meta) {
-        cfgd_core::set_file_permissions(&backup_path, mode)
-            .map_err(|e| backup_error(target, &backup_path, e))?;
-    }
-    printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-    Ok(backup_path)
-}
-
-/// How many `-N` disambiguators are tried before a reservation gives up.
-///
-/// A bound rather than an unbounded scan: past this many distinct originals
-/// adopted at one target within one second, the situation is a loop and the
-/// honest answer is an error, not a hundredth sidecar.
-const BACKUP_DISAMBIGUATOR_LIMIT: u32 = 64;
-
-/// Where this backup may be written without destroying an older one.
-///
-/// The primary `<target>.cfgd-backup` is what `profile update` and module
-/// removal offer to restore, so it keeps the FIRST content adopted there — the
-/// one that predates cfgd. A second, different original is stamped instead of
-/// clobbering it, because a sidecar overwritten by the file that displaced it
-/// is the same data loss the copy exists to prevent.
-///
-/// The stamp has one-second resolution, so it is a hint at a free name and
-/// never a guarantee of one: two adoptions of the same target inside one second
-/// derive the same stamp, and the second would clobber the first. Every
-/// candidate is therefore checked, and a taken one moves to `-1`, `-2`, … until
-/// a free name is found or the limit is reached.
-fn reserve_backup_path(target: &Path, hash: Option<&str>) -> anyhow::Result<PathBuf> {
-    let primary = cfgd_backup_path(target, "");
-    if !sidecar_occupied(&primary, hash) {
-        return Ok(primary);
-    }
-    let stamp = cfgd_core::utc_now_backup_stamp();
-    let stamped = cfgd_backup_path(target, &format!(".{stamp}"));
-    if !sidecar_occupied(&stamped, hash) {
-        return Ok(stamped);
-    }
-    for n in 1..=BACKUP_DISAMBIGUATOR_LIMIT {
-        let candidate = cfgd_backup_path(target, &format!(".{stamp}-{n}"));
-        if !sidecar_occupied(&candidate, hash) {
-            return Ok(candidate);
-        }
-    }
-    Err(anyhow::anyhow!(
-        "No free backup path beside {}: {} and {} disambiguators are all taken",
-        target.posix(),
-        stamped.posix(),
-        BACKUP_DISAMBIGUATOR_LIMIT
-    ))
-}
-
-/// Whether a candidate sidecar path is spoken for.
-///
-/// Judged with `symlink_metadata`, so a dangling link or a directory counts as
-/// an entry someone made — writing over either is the loss the reservation
-/// exists to avoid. `hash` is `Some` only for a regular-file backup, where a
-/// sidecar already holding exactly these bytes is not an obstacle but the same
-/// backup, and reusing it is the whole point.
-fn sidecar_occupied(path: &Path, hash: Option<&str>) -> bool {
-    if path.symlink_metadata().is_err() {
-        return false;
-    }
-    match hash {
-        Some(h) => !sidecar_holds(path, h),
-        None => true,
-    }
-}
-
-/// Whether the sidecar at `path` is a regular file holding exactly `hash`.
-fn sidecar_holds(path: &Path, hash: &str) -> bool {
-    path.symlink_metadata().is_ok_and(|m| m.is_file())
-        && std::fs::read(path).is_ok_and(|bytes| cfgd_core::sha256_hex(&bytes) == hash)
-}
-
-fn backup_error(target: &Path, backup_path: &Path, e: std::io::Error) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Failed to backup {} to {}: {}",
-        target.posix(),
-        backup_path.posix(),
-        e
-    )
-}
-
-/// Carry out one resolved policy against one profile-file action.
-pub(in crate::cli) fn apply_conflict_policy(
-    policy: ResolvedConflict,
-    target: &Path,
-    action: &mut reconciler::Action,
-    printer: &Printer,
-) -> anyhow::Result<()> {
-    match policy {
-        ResolvedConflict::Backup => {
-            backup_file(target, printer)?;
-        }
-        ResolvedConflict::Skip => {
-            let origin = match action {
-                reconciler::Action::File(FileAction::Create { origin, .. })
-                | reconciler::Action::File(FileAction::Update { origin, .. }) => origin.clone(),
-                _ => LOCAL_LAYER.to_string(),
-            };
-            *action = reconciler::Action::File(FileAction::Skip {
-                target: target.to_path_buf(),
-                reason: UNMANAGED_SKIP_REASON.to_string(),
-                origin,
-            });
-        }
-        ResolvedConflict::Fail => return Err(unmanaged_conflict_error(target, None)),
-        ResolvedConflict::Overwrite => {}
-    }
-    Ok(())
-}
-
 /// Apply --skip and --only filters to a plan, modifying it in place.
 ///
-/// Also emits the two diagnostics that only filtering can produce: the
-/// deprecation for a legacy `modules[.name]` pattern, and the stranded-install
+/// Also emits the diagnostics that only filtering can produce: the
+/// deprecation for a legacy `modules[.name]` pattern, the stranded-install
 /// warning for a filter that removed a package manager's bootstrap without
-/// removing the installs that need it. Both live here so neither call site can
-/// forget one.
+/// removing the installs that need it, and the SSOT zero-match accounting —
+/// a warning for every `--skip`/`--only` token that matched zero actions. All
+/// three live here so no call site can forget one, and no command hand-rolls
+/// a second "matched nothing" message of its own (see `warn_zero_match_tokens`).
+///
+/// Returns whether any token matched zero actions, so the caller's
+/// [`ScopeReport`] can refuse `MSG_NOTHING_TO_DO` on the strength of a filter
+/// that never matched anything rather than a machine that is actually in
+/// sync.
 pub(in crate::cli) fn filter_plan(
     plan: &mut reconciler::Plan,
     skip: &[String],
@@ -1588,7 +1279,8 @@ pub(in crate::cli) fn filter_plan(
     phase_filter: Option<&reconciler::PhaseFilter>,
     printer: &Printer,
     registry: &ProviderRegistry,
-) {
+    known_modules: &HashSet<String>,
+) -> bool {
     // Every selector the user supplied is materialised into the plan HERE, so
     // one pass owns the whole question of what this run will do. `--phase` is
     // resolved as a predicate downstream, which cannot split a node — and a
@@ -1598,11 +1290,29 @@ pub(in crate::cli) fn filter_plan(
         reconciler::restrict_provision_batches(plan, phase, selector);
     }
     if skip.is_empty() && only.is_empty() {
-        return;
+        return false;
     }
     warn_legacy_module_patterns(printer, skip, only);
     let skip = &normalize_legacy_phase_patterns(printer, "--skip", skip);
     let only = &normalize_legacy_phase_patterns(printer, "--only", only);
+
+    // Owner tokens present before any pruning — the "did you mean one of
+    // these" hint a zero-match token gets must describe what this run's plan
+    // actually held, not what survives the very filter it failed to match.
+    let owners_present: Vec<String> = {
+        let mut tokens: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|p| p.owned_actions())
+            .map(|(owner, _)| owner.token())
+            .collect();
+        tokens.sort();
+        tokens.dedup();
+        tokens
+    };
+
+    let mut skip_hits = TokenHits::new(skip);
+    let mut only_hits = TokenHits::new(only);
 
     let mut removals = BootstrapRemovals::default();
     for phase in &mut plan.phases {
@@ -1626,6 +1336,8 @@ pub(in crate::cli) fn filter_plan(
                                 packages,
                                 skip,
                                 only,
+                                &mut skip_hits,
+                                &mut only_hits,
                             );
                             if !kept.is_empty() {
                                 filtered_actions.push(reconciler::Action::Package(
@@ -1650,6 +1362,8 @@ pub(in crate::cli) fn filter_plan(
                                 packages,
                                 skip,
                                 only,
+                                &mut skip_hits,
+                                &mut only_hits,
                             );
                             if !kept.is_empty() {
                                 filtered_actions.push(reconciler::Action::Package(
@@ -1681,19 +1395,29 @@ pub(in crate::cli) fn filter_plan(
                     let mut kept: Vec<String> = Vec::new();
                     for member in ma.provisioned_managers() {
                         let path = format!("{}.{}", phase_name.as_str(), member);
-                        let matched_skip = skip
+                        let matching_skips: Vec<&String> = skip
                             .iter()
-                            .find(|s| pattern_matches_action(s, owner, &path));
-                        let passes_only = only.is_empty()
-                            || only.iter().any(|o| {
+                            .filter(|s| pattern_matches_action(s, owner, &path))
+                            .collect();
+                        for s in &matching_skips {
+                            skip_hits.record(s);
+                        }
+                        let matching_onlys: Vec<&String> = only
+                            .iter()
+                            .filter(|o| {
                                 pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
-                            });
-                        if matched_skip.is_none() && passes_only {
+                            })
+                            .collect();
+                        for o in &matching_onlys {
+                            only_hits.record(o);
+                        }
+                        let passes_only = only.is_empty() || !matching_onlys.is_empty();
+                        if matching_skips.is_empty() && passes_only {
                             kept.push(member.to_string());
                         } else {
                             // Filtered away, a provision strands the installs
                             // that needed the manager.
-                            removals.record(member, matched_skip.map(String::as_str));
+                            removals.record(member, matching_skips.first().map(|s| s.as_str()));
                         }
                     }
                     if let Some((first, rest)) = kept.split_first() {
@@ -1701,6 +1425,7 @@ pub(in crate::cli) fn filter_plan(
                             reconciler::ManagerAction::Provision {
                                 manager: first.clone(),
                                 via: via.clone(),
+                                declared: None,
                                 batched: rest.to_vec(),
                                 depends_on: depends_on.clone(),
                             },
@@ -1711,26 +1436,26 @@ pub(in crate::cli) fn filter_plan(
 
                 // Non-package actions: action-level filtering
                 let path = action_path(&phase_name, &action);
-                let matched_skip = skip
+                let matching_skips: Vec<&String> = skip
                     .iter()
-                    .find(|s| pattern_matches_action(s, owner, &path));
-                let passes_only = only.is_empty()
-                    || only.iter().any(|o| {
-                        pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
-                    });
-
-                if matched_skip.is_none() && passes_only {
-                    filtered_actions.push(action);
-                    continue;
+                    .filter(|s| pattern_matches_action(s, owner, &path))
+                    .collect();
+                for s in &matching_skips {
+                    skip_hits.record(s);
                 }
-                // The `Prerequisites` node that provisions the manager. Filtered
-                // away, it strands the installs that needed the manager.
-                if let reconciler::Action::Manager(reconciler::ManagerAction::Provision {
-                    manager,
-                    ..
-                }) = &action
-                {
-                    removals.record(manager, matched_skip.map(String::as_str));
+                let matching_onlys: Vec<&String> = only
+                    .iter()
+                    .filter(|o| {
+                        pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
+                    })
+                    .collect();
+                for o in &matching_onlys {
+                    only_hits.record(o);
+                }
+                let passes_only = only.is_empty() || !matching_onlys.is_empty();
+
+                if matching_skips.is_empty() && passes_only {
+                    filtered_actions.push(action);
                 }
             }
 
@@ -1763,6 +1488,130 @@ pub(in crate::cli) fn filter_plan(
     }
 
     warn_stranded_installs(plan, printer, registry, &removals);
+
+    let skip_missed =
+        warn_zero_match_tokens(plan, "skip", &skip_hits, &owners_present, known_modules);
+    let only_missed =
+        warn_zero_match_tokens(plan, "only", &only_hits, &owners_present, known_modules);
+    skip_missed || only_missed
+}
+
+/// Per-token match accounting for one `filter_plan` run's `--skip`/`--only`
+/// tokens — the SSOT every selector/filter surface in the CLI that can
+/// select zero of something routes through (directly, for `--skip`/`--only`;
+/// by the same shape, for a command's own miss check) rather than hand-rolling
+/// a second "matched nothing" message. Every supplied token starts at zero, so
+/// a token shadowed entirely by an earlier one is still reported as a miss —
+/// silence is never mistaken for coverage.
+pub(in crate::cli) struct TokenHits {
+    counts: std::collections::HashMap<String, usize>,
+    order: Vec<String>,
+}
+
+impl TokenHits {
+    pub(in crate::cli) fn new(tokens: &[String]) -> Self {
+        let mut counts = std::collections::HashMap::new();
+        let mut order = Vec::new();
+        for t in tokens {
+            if !counts.contains_key(t) {
+                order.push(t.clone());
+            }
+            counts.entry(t.clone()).or_insert(0);
+        }
+        Self { counts, order }
+    }
+
+    pub(in crate::cli) fn record(&mut self, token: &str) {
+        if let Some(c) = self.counts.get_mut(token) {
+            *c += 1;
+        }
+    }
+
+    /// Distinct supplied tokens that matched zero actions, in the order they
+    /// were first supplied.
+    pub(in crate::cli) fn misses(&self) -> Vec<&str> {
+        self.order
+            .iter()
+            .filter(|t| self.counts.get(t.as_str()).copied().unwrap_or(0) == 0)
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+/// Every module name cfgd already knows about — declared locally in
+/// `modules/`, or recorded in the source lockfile — read from disk ONCE by
+/// the caller before filtering starts. `filter_plan` previously took
+/// `config_dir` itself and re-read both the module tree and the lockfile
+/// inside `module_known_but_unresolved`, once per zero-match token, putting
+/// filesystem I/O behind a `&Path` threaded through every filter call site
+/// (~30 of them in tests alone) purely so this one hint could ask a question
+/// only it needed answered. A load failure (no `modules/`
+/// directory, no lockfile) contributes nothing rather than erroring — the
+/// hint degrades to "unknown", the same as it always did.
+pub(in crate::cli) fn known_module_names(config_dir: &Path) -> HashSet<String> {
+    let mut known = HashSet::new();
+    if let Ok(local) = modules::load_modules(config_dir) {
+        known.extend(local.into_keys());
+    }
+    if let Ok(lockfile) = modules::load_lockfile(config_dir) {
+        known.extend(lockfile.modules.into_iter().map(|entry| entry.name));
+    }
+    known
+}
+
+/// Is `name` a module cfgd already knows about (declared locally, or a remote
+/// module recorded in the lockfile), per the set [`known_module_names`]
+/// already read once for this run. Distinguishes a genuinely unknown module
+/// name (a typo) from a real module that simply is not part of THIS run's
+/// graph, which gets a more actionable hint (`--module <name>`) than the
+/// generic owner-token list. Pure lookup — no I/O — so it can be called once
+/// per zero-match token with no cost.
+fn module_known_but_unresolved(known_modules: &HashSet<String>, name: &str) -> bool {
+    known_modules.contains(name)
+}
+
+/// Warn on every token in `hits` that matched zero actions — the zero-match
+/// accounting every `--skip`/`--only` pass renders through. Pushed into
+/// [`reconciler::Plan::warnings`] rather than printed directly, the same
+/// route the undecidable-package-batch warning already takes: one producer
+/// (here), one render ([`reconciler::ApplyRun::header`], via `alert` so it
+/// stays visible at any depth and any verbosity — the same always-visible
+/// guarantee [`warn_stranded_installs`] gives itself directly), and one
+/// serialization (`build_plan_output`'s `warnings` field), so a `-o json`
+/// consumer sees the same miss a human reading the header does instead of an
+/// empty `phases` array with no explanation. Returns whether any token
+/// missed.
+fn warn_zero_match_tokens(
+    plan: &mut reconciler::Plan,
+    flag: &str,
+    hits: &TokenHits,
+    owners_present: &[String],
+    known_modules: &HashSet<String>,
+) -> bool {
+    let misses = hits.misses();
+    for token in &misses {
+        let hint = token
+            .strip_prefix("module:")
+            .filter(|name| module_known_but_unresolved(known_modules, name))
+            .map(|name| format!("to resolve a module outside the profile: --module {name}"))
+            .or_else(|| {
+                (!owners_present.is_empty())
+                    .then(|| format!("owners present: {}", owners_present.join(", ")))
+            });
+        // `escape_control_chars`: the token is echoed verbatim below and, on
+        // an interactive terminal, is untrusted input the user typed —
+        // without this a `\r`/`\x1b[2K` token could repaint or erase the
+        // very line describing it.
+        let message = format!(
+            "`--{flag} {}` matched no actions in this plan",
+            cfgd_core::escape_control_chars(token)
+        );
+        plan.warnings.push(match hint {
+            Some(hint) => format!("{message}; {hint}"),
+            None => message,
+        });
+    }
+    !misses.is_empty()
 }
 
 /// The bootstraps a filter removed, and the `--skip` pattern that removed each.
@@ -1828,7 +1677,7 @@ fn warn_stranded_installs(
             continue;
         }
         let available = registry
-            .package_managers
+            .package_managers()
             .iter()
             .any(|pm| pm.name() == manager && pm.is_available());
         if !available {
@@ -1858,7 +1707,9 @@ fn warn_stranded_installs(
     ));
 }
 
-/// Filter individual packages from an install/uninstall list based on skip/only patterns.
+/// Filter individual packages from an install/uninstall list based on skip/only
+/// patterns, recording each token's hits into `skip_hits`/`only_hits` as it goes.
+#[allow(clippy::too_many_arguments)]
 fn filter_package_list(
     phase: &str,
     owner: &reconciler::Owner,
@@ -1866,6 +1717,8 @@ fn filter_package_list(
     packages: &[String],
     skip: &[String],
     only: &[String],
+    skip_hits: &mut TokenHits,
+    only_hits: &mut TokenHits,
 ) -> Vec<String> {
     packages
         .iter()
@@ -1873,20 +1726,30 @@ fn filter_package_list(
             let pkg_path = format!("{}.{}.{}", phase, manager, pkg);
 
             // Check skip: pattern can target the specific package, manager, phase or owner
-            let pkg_skip = skip
+            let matching_skips: Vec<&String> = skip
                 .iter()
-                .any(|s| pattern_matches_action(s, owner, &pkg_path));
+                .filter(|s| pattern_matches_action(s, owner, &pkg_path))
+                .collect();
+            for s in &matching_skips {
+                skip_hits.record(s);
+            }
 
             // Check only: the pattern must cover this package.
             // "packages" covers "packages.brew.ripgrep" (broad → specific)
             // "packages.brew.ripgrep" covers "packages.brew.ripgrep" (exact)
             // But "packages.brew.ripgrep" does NOT cover "packages.brew.fd"
-            let pkg_only = only.is_empty()
-                || only.iter().any(|o| {
+            let matching_onlys: Vec<&String> = only
+                .iter()
+                .filter(|o| {
                     pattern_matches_action(o, owner, &pkg_path) || pattern_matches(&pkg_path, o)
-                });
+                })
+                .collect();
+            for o in &matching_onlys {
+                only_hits.record(o);
+            }
+            let pkg_only = only.is_empty() || !matching_onlys.is_empty();
 
-            !pkg_skip && pkg_only
+            matching_skips.is_empty() && pkg_only
         })
         .cloned()
         .collect()

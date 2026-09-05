@@ -177,7 +177,7 @@ fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint() {
         meta.message
     );
     assert!(
-        meta.hints.iter().any(|h| h.contains("chmod u+w")),
+        meta.hints.iter().any(|h| h.text.contains("chmod u+w")),
         "expected a chmod remediation hint, got: {:?}",
         meta.hints
     );
@@ -423,7 +423,7 @@ fn pick_profile_divergent_metadata_name_yields_resolvable_stem() {
         result, "work",
         "picker must yield the stem find_profile_path resolves, not metadata.name"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("metadata.name 'other'") && out.contains("using 'work'"),
         "picker path must surface the divergence warn; got: {out:?}"
@@ -824,8 +824,14 @@ fn clone_into_skips_if_already_cloned() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("already exists"),
-        "should report repo already exists, got: {output}"
+        output.contains("Skipped clone into"),
+        "should report the clone was skipped, got: {output}"
+    );
+    // A bare `.git` directory is no repository, so neither fact can be read and
+    // the row says only what it knows — it never invents the requested URL.
+    assert!(
+        !output.contains("https://example.com/nonexistent"),
+        "the skip arm must not echo the URL it did not clone, got: {output}"
     );
 }
 
@@ -973,6 +979,289 @@ fn cmd_init_with_from_local_path() {
         output.contains("Initialize") || output.contains("Initialized"),
         "should show init header, got: {output}"
     );
+}
+
+#[test]
+#[serial_test::serial]
+fn cmd_init_apply_module_prices_the_package_it_installs() {
+    // `cfgd init --apply-module` plans, so its install action is rendered AND
+    // persisted with the version its manager quoted — the same string the
+    // module's packages_hash folds. Planning over unpriced modules stores a
+    // hash over empty versions that the next `cfgd apply` then rewrites for a
+    // module nobody changed. No snapshot binary covers this command.
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("priced-init-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    // A package name no other test shares: the version memo is keyed by
+    // (manager, package) for the whole process.
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: priced-init-mod\nspec:\n  packages:\n    - name: qp4-init-tool\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["priced-init-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("priced-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a module apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        output.contains(&format!("({})", crate::cli::registry::FAKE_NATIVE_VERSION)),
+        "the install action must carry the version its manager quoted: {output}"
+    );
+}
+
+/// `cfgd init --apply-module` over a bare `- name: <tool>` that another
+/// available manager already holds plans NO install and still reports the
+/// machine converged: the resolver reads the run's own package context, so
+/// init's `Success` and the next `cfgd apply`'s plan are one picture. Before
+/// this, init resolved the entry to the platform default (which held nothing),
+/// reported Success over a plan it never priced, and the on-camera apply that
+/// followed installed the tool through apt for 79s and re-ran every postApply
+/// hook.
+#[test]
+#[serial_test::serial]
+fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("held-init-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: {}\n",
+            crate::cli::registry::HELD_BY_BREW
+        ),
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["held-init-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("held-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a module apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        !output.contains(&format!("install {}", crate::cli::registry::HELD_BY_BREW)),
+        "a tool brew already holds is not installed through the native manager: {output}"
+    );
+    assert!(
+        output.contains("Initialized"),
+        "init still reports the machine initialized: {output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {
+    // The sibling of the test above: naming a profile alongside the module
+    // takes `cfgd init`'s OTHER apply path, which builds its own resolved
+    // modules and plans over them. Both paths render and persist the same
+    // description, so both fill — one covered path would leave the other free
+    // to drift.
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("priced-profile-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: priced-profile-mod\nspec:\n  packages:\n    - name: qp4-profile-tool\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    std::fs::write(
+        target.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - priced-profile-mod\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["priced-profile-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("priced-profile-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: Some("default"),
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a profile apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        output.contains(&format!("({})", crate::cli::registry::FAKE_NATIVE_VERSION)),
+        "the install action must carry the version its manager quoted: {output}"
+    );
+}
+
+/// `init --apply-module <bogus>` (module-only path, no `--apply-profile`)
+/// must be the SAME typed `not_found` error `cfgd apply --module <bogus>`
+/// resolves to (exit 6), not a bare `anyhow::bail!` string (exit 1) — the two
+/// are documented siblings and must never diverge on what a missing name
+/// reports.
+#[test]
+fn cmd_init_apply_module_only_unknown_module_is_a_typed_not_found_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    std::fs::create_dir_all(target.join("modules")).unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, _cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["no-such-module".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("bogus-module-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let err = cmd_init_guarded(&printer, &args).unwrap_err();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("an unknown --apply-module name must carry the typed not_found CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "no-such-module");
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+        ),
+        cfgd_core::exit::ExitCode::NotFound,
+        "must be exit 6, the same as `cfgd apply --module <bogus>`"
+    );
+}
+
+/// The profile+`--apply-module` path's sibling of the test above: an unknown
+/// `--apply-module` name must fail the same typed way whether or not
+/// `--apply-profile` is also given.
+#[test]
+fn cmd_init_apply_profile_with_unknown_module_is_a_typed_not_found_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    std::fs::create_dir_all(target.join("modules")).unwrap();
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    std::fs::write(
+        target.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, _cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["no-such-module".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("bogus-module-profile-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: Some("default"),
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let err = cmd_init_guarded(&printer, &args).unwrap_err();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("an unknown --apply-module name must carry the typed not_found CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "no-such-module");
 }
 
 #[test]
@@ -1739,11 +2028,12 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     };
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -1752,6 +2042,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -1820,11 +2111,11 @@ fn check_prerequisites_with_test_printer() {
     let output = cap.human();
     assert!(!result, "should return false when git unavailable");
     assert!(
-        output.contains("git is not installed"),
+        output.contains("Git is not installed"),
         "should show error when git is missing, got: {output}"
     );
     assert!(
-        output.contains("Install with:"),
+        output.contains("Install with `"),
         "the install hint is the actionable half of the message: {output}"
     );
 }
@@ -2003,8 +2294,81 @@ fn clone_into_skips_existing_git_dir() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("already exists"),
-        "should report repo already exists, got: {output}"
+        output.contains("Skipped clone into"),
+        "should report the clone was skipped, got: {output}"
+    );
+}
+
+/// The surface that MINTS the checkout every later surface reports on names
+/// which origin it is, and at which revision — on the arm that creates it AND
+/// on the arms that find one already there. `Cloned to <dir>` named only the
+/// directory cfgd itself had chosen, so the one row about where the machine's
+/// config comes from carried no fact the reader could not have predicted; and
+/// its sibling `Repository already exists at <dir>, skipping clone` reported on
+/// a directory that may hold an entirely different remote without ever saying
+/// which.
+#[test]
+fn every_checkout_creating_verb_names_its_source_and_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1
+",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let head = repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap()
+        .to_string();
+    let short = cfgd_core::short_commit(&head).to_string();
+    let url = origin.display().to_string();
+
+    let target = dir.path().join("clone");
+    let (printer, cap) = Printer::for_test_doc();
+    clone_into(&target, &url, "master", &printer).unwrap();
+    drop(printer);
+    let created = cap.human();
+    assert!(
+        created.contains(&url) && created.contains(&short),
+        "the creating row names its origin and its revision, got: {created}"
+    );
+
+    // The same checkout, found rather than made: the facts come off the
+    // repository that is really there, not off the argument.
+    let (printer, cap) = Printer::for_test_doc();
+    clone_into(
+        &target,
+        "https://example.com/some-other-repo.git",
+        "master",
+        &printer,
+    )
+    .unwrap();
+    drop(printer);
+    let found = cap.human();
+    assert!(
+        found.contains(&url) && found.contains(&short),
+        "the found row names the checkout's own origin and revision, got: {found}"
+    );
+    assert!(
+        !found.contains("some-other-repo"),
+        "the found row must not echo the URL it did not clone, got: {found}"
+    );
+
+    // And the third arm, which declines even to look at `--from`.
+    let (printer, cap) = Printer::for_test_doc();
+    super::source::resolve_from(&url, Some(&target), "master", &printer).unwrap();
+    drop(printer);
+    let initialized = cap.human();
+    assert!(
+        initialized.contains("Already initialized at") && initialized.contains(&short),
+        "an already-initialized directory names the revision it holds, got: {initialized}"
     );
 }
 
@@ -2294,11 +2658,12 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
 
     apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: true,
             state_dir: Some(dir.path()),
@@ -2307,6 +2672,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     )
@@ -2357,11 +2723,12 @@ fn init_dry_run_never_copies_anything_aside() {
 
     apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: true,
             yes: true,
             state_dir: Some(dir.path()),
@@ -2370,6 +2737,7 @@ fn init_dry_run_never_copies_anything_aside() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     )
@@ -2418,11 +2786,12 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2431,6 +2800,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2458,7 +2828,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // path. With an empty registry the apply runs a no-op flow (no package
     // managers registered → no manager spawn), but the code path that's
     // covered is the post-prompt sequence: default_state_dir, acquire_apply_lock,
-    // reconciler.apply, render_apply_result. We assert the apply lock was
+    // reconciler.apply, render_apply_result. This asserts the apply lock was
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
@@ -2479,7 +2849,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
 
     // Build a plan whose only "action" is a no-op manager that doesn't exist
     // in the registry. The reconciler will surface a planning issue but apply
-    // will short-circuit gracefully — we care about the post-prompt branches
+    // will short-circuit gracefully — what matters is the post-prompt branches
     // executing, not the final outcome.
     let mut plan = cfgd_core::reconciler::Plan {
         phases: vec![cfgd_core::reconciler::Phase::from_actions(
@@ -2492,11 +2862,12 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2505,6 +2876,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2514,7 +2886,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
@@ -2547,6 +2919,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     };
 
     let module = cfgd_core::modules::ResolvedModule {
+        dep_pulled: false,
         name: "demo".to_string(),
         packages: Vec::new(),
         files: Vec::new(),
@@ -2584,11 +2957,12 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         std::slice::from_ref(&module),
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: true,
             state_dir: Some(&state_dir),
@@ -2597,6 +2971,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2656,11 +3031,12 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: false,
             yes: false,
             state_dir: None,
@@ -2669,6 +3045,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2678,7 +3055,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Skipped"),
         "Skipped notice must fire when prompt is declined: {output}"
@@ -2720,11 +3097,12 @@ fn apply_plan_dry_run_skips_apply() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
         ApplyPlanOpts {
+            sources: &[],
             dry_run: true,
             yes: false,
             state_dir: None,
@@ -2733,6 +3111,7 @@ fn apply_plan_dry_run_skips_apply() {
             state: &store,
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
         },
         &printer,
     );
@@ -2804,6 +3183,75 @@ fn cmd_init_from_git_source_with_explicit_target() {
     assert!(
         target.join("cfgd.yaml").exists(),
         "should clone to target dir"
+    );
+}
+
+#[test]
+fn init_heading_commits_before_the_clone_window_paints() {
+    // The clone runs inside a live output window, which paints beneath the
+    // last committed line. A heading still deferred to its first status is
+    // therefore written AFTER the clone output it introduces: the reader
+    // watches the clone spin under no heading, and "Initialize cfgd" appears
+    // only once the work is already done. The live-bars capture records every
+    // paint in order, so the assertion is on what the terminal showed first.
+    let dir = tempfile::tempdir().unwrap();
+
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: origin-cfg\nspec: {}\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+
+    let target = dir.path().join("my-target");
+    let (printer, buf) = Printer::for_test_with_live_bars();
+    let origin_str = origin.display().to_string();
+    let target_str = target.display().to_string();
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: Some(&origin_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let result = cmd_init_guarded(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "cmd_init with --from git should succeed: {:?}",
+        result.err()
+    );
+
+    let text = cfgd_core::test_helpers::captured_text(&buf);
+    let heading = text
+        .find("Initialize cfgd")
+        .expect("the section heading must render");
+    let clone = text
+        .find("Cloning")
+        .expect("the clone window must paint its label");
+    assert!(
+        heading < clone,
+        "the heading must be on screen before the clone window paints, got:\n{text}"
     );
 }
 
@@ -3367,29 +3815,33 @@ fn next_steps_lines_starts_with_checkin_then_apply() {
     let lines = super::next_steps_lines();
     assert_eq!(lines.len(), 4, "exactly four next-step suggestions");
     assert!(
-        lines[0].contains("cfgd checkin"),
+        lines[0].0.contains("cfgd checkin"),
         "first line: {}",
-        lines[0]
+        lines[0].0
     );
-    assert!(lines[1].contains("apply --dry-run"), "second: {}", lines[1]);
-    assert!(lines[2].contains("cfgd apply"), "third: {}", lines[2]);
-    assert!(lines[3].contains("daemon install"), "fourth: {}", lines[3]);
+    assert!(lines[1].0.contains("cfgd plan"), "second: {}", lines[1].0);
+    assert!(lines[2].0.contains("cfgd apply"), "third: {}", lines[2].0);
+    assert!(
+        lines[3].0.contains("daemon install"),
+        "fourth: {}",
+        lines[3].0
+    );
 }
 
 #[test]
 fn next_steps_lines_are_bare_commands_not_pre_indented() {
-    // The "Next Steps" Doc section renders each line as a bullet, which
-    // supplies its own indent and "- " prefix. The line strings must NOT
-    // carry leading whitespace or the bullet output would have two layers
-    // of indentation.
-    for line in super::next_steps_lines() {
+    // The "Next Steps" Doc section renders each pair through a
+    // `command_list`, which supplies its own indent and column alignment.
+    // The command half must NOT carry leading whitespace or hand-rolled
+    // padding of its own.
+    for (command, _description) in super::next_steps_lines() {
         assert!(
-            !line.starts_with(' ') && !line.starts_with('\t'),
-            "line must be a bare command, got: {line:?}"
+            !command.starts_with(' ') && !command.starts_with('\t'),
+            "command must be bare, got: {command:?}"
         );
         assert!(
-            line.starts_with("cfgd "),
-            "line must start with the cfgd command verb, got: {line:?}"
+            command.starts_with("cfgd "),
+            "command must start with the cfgd verb, got: {command:?}"
         );
     }
 }
@@ -3545,12 +3997,17 @@ mod enroll_mockito {
             let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
-                err.contains("no SSH key found"),
+                err.contains("no signing key found"),
                 "expected no-SSH-key bail, got: {err}"
             );
+            // The message states what happened; the hint is the ONE place the
+            // re-run naming a key appears, so neither restates the other.
+            let hint = super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
             assert!(
-                err.contains("--ssh-key") && err.contains("--gpg-key"),
-                "expected help text naming both flags, got: {err}"
+                hint.commands
+                    .iter()
+                    .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
+                "expected the hint to name both key flags, got: {hint:?}"
             );
         });
     }
@@ -3771,7 +4228,9 @@ mod enroll_mockito {
         assert_eq!(meta.name, "https://example.com");
         assert_eq!(meta.extras["serverMethod"], "token");
         assert!(
-            meta.hints.iter().any(|h| h.contains("bootstrap token")),
+            meta.hints
+                .iter()
+                .any(|h| h.text.contains("bootstrap token")),
             "method_mismatch hint must reference bootstrap token: {:?}",
             meta.hints
         );
@@ -3794,9 +4253,10 @@ mod enroll_mockito {
         assert_eq!(meta.error_kind, "no_key");
         assert_eq!(meta.extras["checked"], serde_json::json!(["ssh-agent"]));
         assert!(
-            meta.hints
+            meta.hints.iter().any(|h| h
+                .commands
                 .iter()
-                .any(|h| h.contains("--ssh-key") || h.contains("--gpg-key")),
+                .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key"))),
             "no_key hint must name both flag forms: {:?}",
             meta.hints
         );
@@ -3821,7 +4281,7 @@ mod enroll_mockito {
         assert!(
             meta.hints
                 .iter()
-                .any(|h| h.contains("signing key") || h.contains("signing tool")),
+                .any(|h| h.text.contains("signing key") || h.text.contains("signing tool")),
             "signing_failed hint must advise on tool/key accessibility: {:?}",
             meta.hints
         );
@@ -4627,6 +5087,16 @@ mod cmd_init_apply_orchestration {
                 msg.contains("ghost-module") && msg.contains("not found"),
                 "error should explain that ghost-module isn't found: {msg}"
             );
+            // Same typed error, exit 6, that `cfgd apply --module ghost-module`
+            // resolves to — an unknown `--apply-module` name is not a distinct
+            // failure mode from `apply --module`'s.
+            assert_eq!(
+                cfgd_core::exit::exit_code_for_error(
+                    err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                        .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+                ),
+                cfgd_core::exit::ExitCode::NotFound
+            );
         });
     }
 
@@ -4682,8 +5152,13 @@ mod cmd_init_apply_orchestration {
     /// no inherits / packages / modules). Mirror of the helper inside the
     /// sibling `cmd_init_from_local_bare` module — duplicated locally because
     /// Rust visibility forbids sharing a sibling-private helper across two
-    /// `#[cfg(unix)] mod` blocks without exposing it crate-wide.
-    fn make_bare_config_repo_with_default(tmp_root: &std::path::Path) -> std::path::PathBuf {
+    /// `#[cfg(unix)] mod` blocks without exposing it crate-wide. `extra_spec`
+    /// is appended to `spec:` verbatim, for a caller needing a declared field
+    /// the empty config carries none of.
+    fn make_bare_config_repo_with_default(
+        tmp_root: &std::path::Path,
+        extra_spec: &str,
+    ) -> std::path::PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
 
@@ -4691,7 +5166,9 @@ mod cmd_init_apply_orchestration {
         let src_repo = git2::Repository::init(&src).unwrap();
         std::fs::write(
             src.join("cfgd.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
+            ),
         )
         .unwrap();
         std::fs::create_dir_all(src.join("profiles")).unwrap();
@@ -4734,11 +5211,11 @@ mod cmd_init_apply_orchestration {
         // arm end-to-end:
         //   clone → resolve_profile → build_registry → reconciler.plan() →
         //   apply_plan(dry_run=true) → "Nothing to do" early return.
-        // The cloned profile is empty, so plan.total_actions() == 0 and we
-        // hit the apply_plan zero-action branch.
+        // The cloned profile is empty, so plan.total_actions() == 0, hitting
+        // the apply_plan zero-action branch.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
@@ -4782,6 +5259,64 @@ mod cmd_init_apply_orchestration {
         );
     }
 
+    /// `cfgd init --apply-profile` is the fourth surface that reports on a run
+    /// under a resolved profile, and its header comes from the same builder as
+    /// `status` / `diff` / `sync`. It cannot join the class pin's shared
+    /// fixture: `cmd_init` returns early on a directory that already holds a
+    /// `cfgd.yaml` unless `--from` names a checkout, so the only way to reach
+    /// its apply arm is to clone one. The source it declares is unreachable on
+    /// purpose — the row is read off `spec.sources[]`, never off what a fetch
+    /// put in the cache.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_names_the_sources_its_config_declares() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_config_repo_with_default(
+            tmp.path(),
+            "  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n        branch: main\n      subscription:\n        profile: shared\n",
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: true,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("--from + --apply-profile should succeed");
+        });
+
+        drop(printer);
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        let sources_at = out
+            .find("Sources  team (profile shared)")
+            .unwrap_or_else(|| panic!("init's header must name the declared source: {out}"));
+        let profile_at = out
+            .find("Profile  default")
+            .unwrap_or_else(|| panic!("init's header must name the profile: {out}"));
+        assert!(
+            sources_at < profile_at,
+            "the header reads outward in: what composed the config before what it resolved to: {out}"
+        );
+    }
+
     #[test]
     #[serial]
     fn cmd_init_from_url_with_apply_profile_flag_persists_profile_to_cfgd_yaml() {
@@ -4792,7 +5327,7 @@ mod cmd_init_apply_orchestration {
         //   3. run the profile-based apply (dry_run → zero-action exit)
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
@@ -4822,7 +5357,9 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = cap.human();
+        // "Set active profile" and its qualifier ("default") render in
+        // separate theme slots; strip SGR before matching content.
+        let out = cfgd_core::output::strip_ansi(&cap.human());
         assert!(
             out.contains("Set active profile: default"),
             "validated --apply-profile branch should announce profile selection: {out}"
@@ -5084,7 +5621,7 @@ mod cmd_init_apply_orchestration {
         // module_names with names passed in --apply-module that the profile
         // doesn't already list). With dry_run=true, the reconciler plan
         // bails at "Nothing to do" since the module declares nothing — what
-        // we're pinning is the *control flow*: profile validated + persisted
+        // this pins is the *control flow*: profile validated + persisted
         // + module name carried through into the plan.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
@@ -5151,7 +5688,7 @@ mod cmd_init_apply_orchestration {
         // bail test).
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
-        let bare = make_bare_config_repo_with_default(tmp.path());
+        let bare = make_bare_config_repo_with_default(tmp.path(), "");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
@@ -5185,6 +5722,14 @@ mod cmd_init_apply_orchestration {
                 msg.contains("ghost-extra") && msg.contains("not found"),
                 "error should name the missing module: {msg}"
             );
+            assert_eq!(
+                cfgd_core::exit::exit_code_for_error(
+                    err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                        .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+                ),
+                cfgd_core::exit::ExitCode::NotFound,
+                "must be exit 6, the same as the module-only branch and as `apply --module`"
+            );
         });
     }
 
@@ -5192,7 +5737,7 @@ mod cmd_init_apply_orchestration {
     // user systemd service install at install_systemd_service writes to
     // `$HOME/.config/systemd/user/cfgd.service`, so with HOME pointing at a
     // tempdir via with_test_home_guard, the install succeeds and the
-    // "Daemon service installed" success line fires. Pins the happy path.
+    // "Installed daemon service" success line fires. Pins the happy path.
     #[test]
     #[serial]
     #[cfg(target_os = "linux")]
@@ -5228,7 +5773,7 @@ mod cmd_init_apply_orchestration {
         let unit = tmp.path().join(".config/systemd/user/cfgd.service");
         if unit.exists() {
             assert!(
-                captured.contains("Daemon service installed"),
+                captured.contains("Installed daemon service"),
                 "success line should fire when systemd-user install succeeds: {captured}"
             );
             let content = std::fs::read_to_string(&unit).unwrap();
@@ -5287,7 +5832,7 @@ mod cmd_init_apply_orchestration {
             .join("Library/LaunchAgents/com.cfgd.daemon.plist");
         if plist.exists() {
             assert!(
-                captured.contains("Daemon service installed"),
+                captured.contains("Installed daemon service"),
                 "success line should fire when launchd install succeeds: {captured}"
             );
             let content = std::fs::read_to_string(&plist).unwrap();
@@ -5303,4 +5848,145 @@ mod cmd_init_apply_orchestration {
         }
         drop(home);
     }
+}
+
+/// Every row `init` prints about a config checkout spells its revision the one
+/// way. Three of the four already read `checkout_detail`; the clone row built
+/// its own detail and put a bare `27d1d2046c0a` in the slot every other detail
+/// of the run fills with a named unit — and it is the only one of the four a
+/// first-run user ever sees, so the bare spelling is the one in the GIF.
+#[test]
+fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
+    assert_eq!(
+        super::source::commit_detail("27d1d2046c0a"),
+        "at 27d1d2046c0a",
+        "`short_commit` owns the FORM; this owns the spelling"
+    );
+    assert!(
+        super::source::checkout_detail(std::path::Path::new("/nonexistent")).is_none(),
+        "a directory that is no checkout renders no revision at all"
+    );
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/init");
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("the init tree is readable") {
+        let path = entry.expect("readable entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs")
+            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+        {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("readable source");
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("checkout_facts(") || line.contains("fn checkout_facts(") {
+                continue;
+            }
+            // The one derivation is allowed to read the raw pair; anything else
+            // holding it must hand the revision to `commit_detail`.
+            let enclosing = lines[..n]
+                .iter()
+                .rev()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("fn ")
+                        .or(l.trim().strip_prefix("pub(super) fn "))
+                })
+                .unwrap_or("")
+                .to_string();
+            if enclosing.starts_with("checkout_detail") {
+                continue;
+            }
+            let window = lines[n..(n + 4).min(lines.len())].join(" ");
+            if window.contains("commit_detail(") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a row naming a checkout takes its revision spelling from \
+         `commit_detail`, never a bare hash:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `init --apply` records the same hashless rows `apply` does, and `apply`
+/// settles them before it returns; `init` did not, so the daemon's first tick
+/// on a freshly bootstrapped machine backfilled them and reported the backfill
+/// as deployed files having changed upstream. One seam for every verb that applies.
+#[test]
+#[cfg(unix)]
+fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("modules/nvim/files/init.lua");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "require('config')\n").unwrap();
+    let target = dir.path().join("home/.config/nvim/init.lua");
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let registry = super::build_registry_with_config(None);
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+    let mut module = cfgd_core::test_helpers::make_resolved_module("nvim");
+    module.packages.clear();
+    module.files = vec![cfgd_core::modules::ResolvedFile {
+        source,
+        target: target.clone(),
+        is_git_source: false,
+        strategy: Some(cfgd_core::config::FileStrategy::Symlink),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }];
+    let modules = vec![module];
+    let mut plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert!(!plan.is_empty(), "the module's link is work to do");
+
+    apply_plan(
+        &mut plan,
+        reconciler,
+        &resolved,
+        &modules,
+        dir.path(),
+        ApplyPlanOpts {
+            sources: &[],
+            dry_run: false,
+            yes: true,
+            state_dir: Some(dir.path()),
+            scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
+            module_cache: dir.path(),
+        },
+        &printer,
+    )
+    .unwrap();
+    assert!(target.is_symlink(), "the apply deployed the link");
+
+    let rows = store.managed_resources().unwrap();
+    let module_row = rows
+        .iter()
+        .find(|r| r.resource_type == "module" || r.resource_id.contains("nvim"))
+        .unwrap_or_else(|| panic!("the apply recorded the module's files row: {rows:?}"));
+    assert!(
+        module_row.last_hash.is_some(),
+        "init --apply must settle the row's hash before it returns, so the daemon's \
+         first tick has nothing to backfill: {module_row:?}"
+    );
 }

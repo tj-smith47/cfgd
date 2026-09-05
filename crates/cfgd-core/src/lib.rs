@@ -28,6 +28,7 @@ mod util;
 pub use util::*;
 
 pub use daemon::resolve_default_ipc_path;
+pub use modules::declared_modules_dir;
 pub use sources::{
     load_sources_lockfile, remove_source_lock_entry, save_sources_lockfile,
     update_source_lock_entry,

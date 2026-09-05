@@ -175,10 +175,12 @@ fn merge_env_override() {
                 EnvVar {
                     name: "editor".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "shell".into(),
                     value: "/bin/bash".into(),
+                    platforms: vec![],
                 },
             ],
             ..Default::default()
@@ -193,6 +195,7 @@ fn merge_env_override() {
             env: vec![EnvVar {
                 name: "editor".into(),
                 value: "code".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1176,7 +1179,7 @@ spec: {}
     let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
     let ai = config.spec.ai.unwrap_or_default();
     assert_eq!(ai.provider, "claude");
-    assert_eq!(ai.model, "claude-sonnet-4-6");
+    assert_eq!(ai.model, "claude-sonnet-5");
     assert_eq!(ai.api_key_env, "ANTHROPIC_API_KEY");
 }
 
@@ -1190,12 +1193,12 @@ metadata:
 spec:
   ai:
     provider: claude
-    model: claude-opus-4-6
+    model: claude-opus-5
     apiKeyEnv: MY_CLAUDE_KEY
 "#;
     let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
     let ai = config.spec.ai.unwrap_or_default();
-    assert_eq!(ai.model, "claude-opus-4-6");
+    assert_eq!(ai.model, "claude-opus-5");
     assert_eq!(ai.api_key_env, "MY_CLAUDE_KEY");
 }
 
@@ -1243,6 +1246,25 @@ fn three_level_inheritance() {
 }
 
 #[test]
+fn resolved_profile_inherits_chain_is_nearest_parent_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+
+    let shared = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shared\nspec:\n  inherits: []\n  modules: []\n";
+    let core = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: core\nspec:\n  inherits:\n    - shared\n  modules: []\n";
+    let base = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  inherits:\n    - core\n  modules: []\n";
+
+    std::fs::write(profiles.join("shared.yaml"), shared).unwrap();
+    std::fs::write(profiles.join("core.yaml"), core).unwrap();
+    std::fs::write(profiles.join("base.yaml"), base).unwrap();
+
+    let resolved = resolve_profile("base", &profiles).unwrap();
+
+    assert_eq!(resolved.inherits_chain(), vec!["core", "shared"]);
+}
+
+#[test]
 fn script_entry_deserialize_simple() {
     let yaml = r#""echo hello""#;
     let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
@@ -1261,12 +1283,12 @@ continueOnError: true
 "#;
     let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
     match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             run,
             timeout,
             continue_on_error,
             ..
-        } => {
+        }) => {
             assert_eq!(run, "scripts/check.sh");
             assert_eq!(timeout, Some("30s".to_string()));
             assert_eq!(continue_on_error, Some(true));
@@ -1545,6 +1567,52 @@ fn secret_spec_neither_target_nor_envs_fails_validation() {
         "unexpected error: {}",
         err_msg
     );
+}
+
+/// A `template` on a sops FILE source is refused: a decrypted file is content,
+/// not a value, so there is nothing for `${secret:value}` to stand for.
+#[test]
+fn secret_spec_template_is_refused_on_an_encrypted_file_source() {
+    let specs = vec![SecretSpec {
+        source: "secrets/api-key.enc".to_string(),
+        target: Some(std::path::PathBuf::from("~/.config/app/key")),
+        template: Some("key: ${secret:value}".to_string()),
+        backend: None,
+        envs: None,
+    }];
+    let err = validate_secret_specs(&specs).unwrap_err().to_string();
+    assert!(
+        err.contains("'template' applies only to a provider reference"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("op://"),
+        "the error names the accepted schemes: {err}"
+    );
+}
+
+/// A `template` without the placeholder would write the template and drop
+/// the secret on the floor; it is refused at validation instead.
+#[test]
+fn secret_spec_template_must_carry_the_value_placeholder() {
+    let specs = vec![SecretSpec {
+        source: "op://Work/GitHub/token".to_string(),
+        target: Some(std::path::PathBuf::from("~/.config/gh/token")),
+        template: Some("token: ${secret:token}".to_string()),
+        backend: None,
+        envs: None,
+    }];
+    let err = validate_secret_specs(&specs).unwrap_err().to_string();
+    assert!(
+        err.contains("must contain ${secret:value}"),
+        "unexpected error: {err}"
+    );
+
+    let ok = vec![SecretSpec {
+        template: Some("token: ${secret:value}".to_string()),
+        ..specs.into_iter().next().unwrap()
+    }];
+    validate_secret_specs(&ok).expect("a provider reference with the placeholder validates");
 }
 
 #[test]
@@ -2841,5 +2909,264 @@ fn load_config_rejects_oversized_file() {
     assert!(
         err.to_string().contains("too large"),
         "oversized config must be rejected with a size message, got: {err}"
+    );
+}
+
+// --- per-entry platform gating at the layer fold ---
+
+/// A tag no host can ever match, spelled the way the validator accepts: it is
+/// lowercase and unknown, which is exactly a distro cfgd does not name.
+const NOWHERE: &str = "nowhere_at_all";
+
+fn gated_layer(name: &str, env: Vec<EnvVar>, aliases: Vec<ShellAlias>) -> ProfileLayer {
+    ProfileLayer {
+        source: "local".into(),
+        profile_name: name.into(),
+        priority: 1000,
+        policy: LayerPolicy::Local,
+        spec: ProfileSpec {
+            env,
+            aliases,
+            ..Default::default()
+        },
+    }
+}
+
+fn tagged_env(name: &str, value: &str, platforms: &[&str]) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value: value.into(),
+        platforms: platforms.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_gated_out_entry_never_reaches_the_layer_merge() {
+    // The filter runs BEFORE the fold: reaching a last-writer-wins merge, a
+    // gated entry would displace the value that DOES apply here and then have
+    // to be un-displaced — and filtering afterwards deletes the base value.
+    let here = crate::platform::Platform::current().os.as_str().to_string();
+    let merged = merge_layers(&[
+        gated_layer(
+            "base",
+            vec![tagged_env("EDITOR", "vim", &[])],
+            vec![ShellAlias {
+                name: "ll".into(),
+                command: "ls -la".into(),
+                platforms: vec![],
+            }],
+        ),
+        gated_layer(
+            "work",
+            vec![
+                tagged_env("EDITOR", "elsewhere", &[NOWHERE]),
+                tagged_env("PAGER", "here", &[&here]),
+            ],
+            vec![ShellAlias {
+                name: "ll".into(),
+                command: "elsewhere".into(),
+                platforms: vec![NOWHERE.to_string()],
+            }],
+        ),
+    ]);
+
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .find(|e| e.name == "EDITOR")
+            .map(|e| &e.value),
+        Some(&"vim".to_string()),
+        "a gated-out overlay must not displace the value that applies here"
+    );
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .find(|e| e.name == "PAGER")
+            .map(|e| &e.value),
+        Some(&"here".to_string()),
+        "an entry naming this host's platform survives"
+    );
+    assert_eq!(
+        merged
+            .aliases
+            .iter()
+            .find(|a| a.name == "ll")
+            .map(|a| &a.command),
+        Some(&"ls -la".to_string()),
+        "the alias half is filtered on the same predicate"
+    );
+    // Absent, not annotated: an entry that does not apply here is no part of
+    // this host's desired state, exactly as a platform-filtered package is not.
+    assert!(
+        !merged.env.iter().any(|e| e.value == "elsewhere"),
+        "a gated-out entry reaches no surface: {:?}",
+        merged.env
+    );
+}
+
+#[test]
+fn a_gated_path_declaration_concatenates_only_where_it_applies() {
+    let here = crate::platform::Platform::current().os.as_str().to_string();
+    // The layer fold joins on the host's separator, so the declarations are
+    // written with it too: a `:`-joined value on Windows is one entry.
+    let sep = crate::PATH_LIST_SEPARATOR;
+    let merged = merge_layers(&[gated_layer(
+        "base",
+        vec![
+            tagged_env("PATH", &format!("/common/bin{sep}$PATH"), &[]),
+            tagged_env("PATH", &format!("/here/bin{sep}$PATH"), &[&here]),
+            tagged_env("PATH", &format!("/elsewhere/bin{sep}$PATH"), &[NOWHERE]),
+        ],
+        vec![],
+    )]);
+    let path = merged
+        .env
+        .iter()
+        .find(|e| e.name == "PATH")
+        .expect("a PATH entry survives");
+    assert_eq!(path.value, format!("/common/bin{sep}/here/bin{sep}$PATH"));
+    assert_eq!(
+        merged.env.iter().filter(|e| e.name == "PATH").count(),
+        1,
+        "however many declarations survive, one PATH entry comes out"
+    );
+    // The folded entry carries no gate of its own: its tags have done their
+    // work, and a later reader must not re-apply one to a value several
+    // declarations produced.
+    assert!(path.platforms.is_empty());
+}
+
+#[test]
+fn an_ungated_entry_serializes_exactly_as_it_did_before_the_field_existed() {
+    // Two things ride on this. `rewrite_user_yaml` round-trips every existing
+    // profile and module byte-identically, and a source decision is keyed on
+    // `sha256(serde_json::to_string(entry))` — a `platforms: []` on the wire
+    // would re-ask every recorded decision on the first upgrade.
+    let env = EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+        platforms: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&env).unwrap(),
+        r#"{"name":"EDITOR","value":"nvim"}"#
+    );
+    assert_eq!(
+        serde_yaml::to_string(&env).unwrap(),
+        "name: EDITOR\nvalue: nvim\n"
+    );
+
+    let alias = ShellAlias {
+        name: "ll".into(),
+        command: "ls -la".into(),
+        platforms: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&alias).unwrap(),
+        r#"{"name":"ll","command":"ls -la"}"#
+    );
+
+    // And a gated one carries the field, so the fingerprint moves exactly when
+    // the declaration does.
+    let gated = EnvVar {
+        platforms: vec!["macos".into()],
+        ..env.clone()
+    };
+    assert_eq!(
+        serde_json::to_string(&gated).unwrap(),
+        r#"{"name":"EDITOR","value":"nvim","platforms":["macos"]}"#
+    );
+    assert_ne!(env, gated, "a gate is part of what the entry declares");
+}
+
+/// A `deserialize_with` that WIDENS a field past its Rust type and the schema
+/// the derive reflects are two statements of one grammar, and must be minted
+/// together: `explain`'s Type column, its `Variants` section, `-o json`'s
+/// `type` and the SchemaStore-published `cfgd-profile` / `cfgd-source`
+/// schemas all read the reflection, and none of them can see serde. Without
+/// the paired `schema_with`, the published `BrewSpec` was a bare object that
+/// rejected `brew: [ripgrep, fzf]` — the form the rustdoc example used and
+/// `cfgd apply` accepted. Walks the source for every field on either union
+/// deserializer, then the live schema for both shapes.
+#[test]
+fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
+    )
+    .unwrap();
+    let lines: Vec<&str> = src.lines().collect();
+    let mut widened = Vec::new();
+    let mut unpaired = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let widening = line.contains("deserialize_with = \"list_or_struct\"")
+            || line.contains("deserialize_with = \"list_or_packages_vec\"");
+        if !widening {
+            continue;
+        }
+        // The field name is on the next `pub` line; the paired attribute sits
+        // between the two.
+        let mut m = n + 1;
+        let mut paired = false;
+        while m < lines.len() && !lines[m].trim_start().starts_with("pub ") {
+            paired |= lines[m].contains("schema_with");
+            m += 1;
+        }
+        let field = lines[m]
+            .trim_start()
+            .trim_start_matches("pub ")
+            .split(':')
+            .next()
+            .unwrap()
+            .to_string();
+        if !paired {
+            unpaired.push(format!("{field} (line {})", n + 1));
+        }
+        widened.push(field);
+    }
+    assert!(
+        widened.len() >= 18,
+        "the walk no longer reaches the union-deserialized package fields — it found {widened:?}"
+    );
+    assert!(
+        unpaired.is_empty(),
+        "a `deserialize_with` that accepts two shapes needs a `schema_with` that says so:\n{}",
+        unpaired.join("\n")
+    );
+
+    let schema = serde_json::to_value(schemars::schema_for!(super::PackagesSpec)).unwrap();
+    let props = schema["properties"]
+        .as_object()
+        .expect("PackagesSpec is an object");
+    let mut one_shaped = Vec::new();
+    for field in &widened {
+        let camel = {
+            let mut out = String::new();
+            let mut up = false;
+            for c in field.chars() {
+                if c == '_' {
+                    up = true;
+                } else if up {
+                    out.push(c.to_ascii_uppercase());
+                    up = false;
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let prop = &props[&camel];
+        let members = prop["anyOf"].as_array().cloned().unwrap_or_default();
+        let is_array = |m: &serde_json::Value| m["type"] == "array";
+        let is_object = |m: &serde_json::Value| m["type"] == "object" || m.get("$ref").is_some();
+        if !(members.iter().any(is_array) && members.iter().any(is_object)) {
+            one_shaped.push(format!("{camel}: {prop}"));
+        }
+    }
+    assert!(
+        one_shaped.is_empty(),
+        "a package field's schema must carry BOTH the list and the map shape its deserializer accepts:\n{}",
+        one_shaped.join("\n")
     );
 }

@@ -54,7 +54,7 @@ impl SkillProvider for CursorProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
         // `description` is the native `.mdc` frontmatter field Cursor reads; the
         // shared `frontmatter_envelope` appends the `cfgd-version` /
@@ -64,7 +64,7 @@ impl SkillProvider for CursorProvider {
         let contents = frontmatter_envelope(
             model,
             &[format!("description: {}", model.description)],
-            &render_skill_body(model),
+            &render_skill_body(model, scope),
         );
         Ok(RenderedSkill {
             relative_path: relative_rule_path(token),
@@ -83,7 +83,7 @@ mod tests {
     fn cursor_renders_mdc_with_description_frontmatter() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = CursorProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module.mdc"));
         assert!(r.contents.starts_with("---\n"));
@@ -109,7 +109,7 @@ mod tests {
     fn frontmatter_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = CursorProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.contents.contains(&format!(
             "cfgd-version: {}",

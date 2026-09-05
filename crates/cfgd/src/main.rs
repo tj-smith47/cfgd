@@ -1,6 +1,7 @@
 use clap::{CommandFactory, FromArgMatches};
 
 use cfgd::cli;
+use cfgd_core::canonical_bool_str;
 
 /// Examples block appended to `cfgd mcp --help`. brontes mints the `mcp`
 /// command without cfgd's help convention (every top-level command carries an
@@ -9,19 +10,6 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
     cfgd mcp start    # run the MCP server over stdio\n  \
     cfgd mcp tools    # list the tools the server exposes\n  \
     cfgd mcp stream   # stream events over the MCP transport";
-
-/// Map a raw `CFGD_YES` value to the canonical `"true"`/`"false"` that clap's
-/// `BoolishValueParser` accepts. Mirrors that parser's accept-set exactly
-/// (case-insensitive): TRUE = {1, y, yes, t, true, on}, FALSE = {0, n, no, f,
-/// false, off}. Returns `None` for anything else so genuinely-invalid values
-/// still surface clap's validation error rather than being silently coerced.
-fn canonical_bool_str(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "y" | "yes" | "t" | "true" | "on" => Some("true"),
-        "0" | "n" | "no" | "f" | "false" | "off" => Some("false"),
-        _ => None,
-    }
-}
 
 /// Global env vars bound to a `bool` clap arg. Their value-parser rejects
 /// shell-truthy spellings (`1`/`yes`/`on`/…), so each is rewritten to the
@@ -67,6 +55,56 @@ fn normalize_cfgd_verbose_env() {
     }
 }
 
+/// The `RUST_LOG`-style default the CLI's own flags ask for.
+///
+/// A command's default is `warn`, not `info`: an `info!` is cfgd narrating
+/// itself, and every user-facing thing it has to say is already a `Printer`
+/// line. What the tracing channel adds at that level is a second copy of the
+/// same sentence, written to a stream the live region repaints — the strand
+/// this and `LiveTracingWriter` close from opposite ends. The flags keep the
+/// meanings they document: `-v` is `debug` (which carries `info` with it) and
+/// `-vv` is `trace`, so only the no-flag default moves.
+///
+/// `cfgd daemon` keeps `info` as its floor, because there the log IS the
+/// output: a service under systemd or launchd prints its reconcile ticks,
+/// sync results and update installs to journald through this channel and to
+/// no other, so dropping to `warn` would leave an operator reading an empty
+/// journal.
+///
+/// `RUST_LOG` still outranks all of it: this is the fallback
+/// `tracing_env_filter` uses when the environment says nothing.
+fn tracing_filter_for(quiet: bool, verbose: u8, daemon: bool) -> &'static str {
+    if quiet {
+        return "error";
+    }
+    match verbose {
+        0 if daemon => "info",
+        0 => "warn",
+        1 => "debug",
+        _ => "trace",
+    }
+}
+
+/// Whether this invocation IS the reconcile loop, and so owes its operator a
+/// journal rather than a terminal.
+///
+/// Only `cfgd daemon` (bare, which defaults to `run`), `cfgd daemon run` and the
+/// SCM-launched `cfgd daemon service` are the loop. `daemon install`,
+/// `uninstall` and `status` are ordinary one-shot CLI commands that print their
+/// result through the `Printer` like every other command, so raising their
+/// tracing floor to `info` only gives them a second copy of what they already
+/// said — the exact duplication the default filter exists to stop.
+fn runs_reconcile_loop(command: &Option<cli::Command>) -> bool {
+    matches!(
+        command,
+        Some(cli::Command::Daemon {
+            command: None
+                | Some(cli::DaemonCommand::Run)
+                | Some(cli::DaemonCommand::Service { .. })
+        })
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     // Normalize boolish env vars before clap reads them (see fn docs).
     for var in BOOL_ENV_VARS {
@@ -99,7 +137,7 @@ fn main() -> anyhow::Result<()> {
     let assume_yes = std::env::var("CFGD_YES")
         .map(|v| v == "true")
         .unwrap_or(false)
-        || expanded.iter().any(|a| a == "--yes");
+        || expanded.iter().any(|a| a == "--yes" || a == "-y");
 
     let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
@@ -107,6 +145,9 @@ fn main() -> anyhow::Result<()> {
     let matches = augmented.clone().get_matches_from(&expanded);
 
     if let Some(("mcp", sub)) = matches.subcommand() {
+        // brontes turns SIGINT/SIGTERM into a clean server shutdown; the live
+        // region's cursor hook must not pre-empt it with the default disposition.
+        cfgd_core::output::claim_termination_signals();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -132,6 +173,7 @@ fn main() -> anyhow::Result<()> {
         state: dir_src(matches.value_source("state_dir")),
         cache: dir_src(matches.value_source("cache_dir")),
         runtime: dir_src(matches.value_source("runtime_dir")),
+        scope: dir_src(matches.value_source("scope_arg")),
     };
 
     // `--config` (a file OR dir, more specific) wins over `--config-dir`. Because
@@ -203,15 +245,12 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize tracing
-    let filter = if cli.quiet {
-        "error"
-    } else {
-        match cli.verbose {
-            0 => "info",
-            1 => "debug",
-            _ => "trace",
-        }
-    };
+    let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
+    let filter = tracing_filter_for(cli.quiet, cli.verbose, runs_reconcile_loop(&cli.command));
+    // Bound to the process printer once it exists, a few statements below.
+    // Built here because the subscriber has to be installed first: anything
+    // the printer's own construction logs would otherwise go nowhere.
+    let tracing_writer = cfgd_core::output::LiveTracingWriter::new();
     // The Windows Service path installs its OWN tracing subscriber (file +
     // Event Log sinks) inside `windows_service_main`. Claiming the global
     // subscriber slot here first would silently defeat it — its `try_init`
@@ -228,12 +267,24 @@ fn main() -> anyhow::Result<()> {
     );
     // Route tracing to stderr: stdout is reserved for `-o` machine output
     // (the `-o json` purity contract), mirroring Printer human-on-stderr.
+    // Through `LiveTracingWriter`, not `std::io::stderr`: an event written
+    // straight at the stream a live region repaints strands the region's last
+    // paint there permanently.
     if !is_windows_service {
         tracing_subscriber::fmt()
             .with_env_filter(cfgd_core::tracing_env_filter(filter))
             .with_target(false)
-            .without_time()
-            .with_writer(std::io::stderr)
+            // Stamped, because `cfgd daemon run >> daemon.log` is this
+            // subscriber's long-lived case: a reconcile every 30s and a sync
+            // every 5s are a cadence, and a cadence is unreadable in a log
+            // where no elapsed time is representable.
+            .with_timer(cfgd_core::output::LocalTimeOfDay)
+            // The writer folds every event, and the fold strips ANSI: colours the
+            // formatter emitted would be eaten anyway, and left on they would
+            // also paint SGR into a redirected stderr, which the formatter
+            // decides without asking whether anything is a terminal.
+            .with_ansi(false)
+            .with_writer(tracing_writer.clone())
             .init();
     }
 
@@ -246,21 +297,18 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    // Try loading config for theme settings; fall back to default theme if
-    // unavailable. The whole block travels, not just its name: `overrides`
-    // is a documented field, and a printer built from the name alone drops it.
-    let theme_config = std::path::Path::new(&cli.config)
-        .exists()
-        .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
-        .flatten()
-        .and_then(|c| c.spec.theme);
+    let theme_config =
+        cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
+    let hints_enabled = cli::resolve_hints_enabled(std::path::Path::new(&cli.config), cli.no_hints);
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
         output_format,
         color_choice,
     )
-    .with_list_envelope(cli.list_envelope);
+    .with_list_envelope(cli.list_envelope)
+    .with_hints_enabled(hints_enabled);
+    tracing_writer.attach(&printer);
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and
@@ -287,7 +335,6 @@ fn main() -> anyhow::Result<()> {
     // location (or pin XDG_CONFIG_HOME). No-op off macOS and in non-interactive
     // sessions; re-resolve the config path when the dir was moved. Skipped for
     // the daemon, which must never block on a prompt when run in the foreground.
-    let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
     if !is_daemon
         && let Some(new_config) =
             cli::config_migration::maybe_migrate_macos_config(&printer, explicit_config, assume_yes)
@@ -327,56 +374,71 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_bool_str, normalize_boolish_env, normalize_cfgd_verbose_env};
+    use super::{
+        cli, normalize_boolish_env, normalize_cfgd_verbose_env, runs_reconcile_loop,
+        tracing_filter_for,
+    };
     use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
 
+    /// The tracing channel is quiet by default and opens one level per `-v`.
+    ///
+    /// `info` used to be the default, which put a second copy of lines the
+    /// Printer already prints onto the stream the live region repaints.
     #[test]
-    fn canonical_bool_str_accepts_truthy_spellings() {
-        for raw in [
-            "1", "y", "yes", "t", "true", "on", "YES", "Yes", "ON", "True",
+    fn a_command_defaults_to_warn_and_keeps_the_documented_flag_levels() {
+        assert_eq!(tracing_filter_for(false, 0, false), "warn");
+        assert_eq!(tracing_filter_for(false, 1, false), "debug");
+        assert_eq!(tracing_filter_for(false, 2, false), "trace");
+        assert_eq!(tracing_filter_for(false, 9, false), "trace");
+    }
+
+    /// The daemon's log is its only output, so its floor stays `info` — and
+    /// the flags still open the levels above it.
+    #[test]
+    fn the_daemon_keeps_info_as_its_floor() {
+        assert_eq!(tracing_filter_for(false, 0, true), "info");
+        assert_eq!(tracing_filter_for(false, 1, true), "debug");
+        assert_eq!(tracing_filter_for(false, 2, true), "trace");
+    }
+
+    /// The floor belongs to the reconcile loop, not to the word "daemon":
+    /// `install` / `uninstall` / `status` are one-shot commands that report
+    /// through the `Printer`, so an `info` floor would only duplicate them.
+    #[test]
+    fn only_the_reconcile_loop_claims_the_daemon_floor() {
+        for command in [None, Some(cli::DaemonCommand::Run)] {
+            assert!(runs_reconcile_loop(&Some(cli::Command::Daemon { command })));
+        }
+        assert!(runs_reconcile_loop(&Some(cli::Command::Daemon {
+            command: Some(cli::DaemonCommand::Service {
+                enable_event_log: false
+            })
+        })));
+
+        for command in [
+            cli::DaemonCommand::Install,
+            cli::DaemonCommand::Uninstall,
+            cli::DaemonCommand::Status,
         ] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                Some("true"),
-                "{raw:?} should normalize to true"
+            assert!(
+                !runs_reconcile_loop(&Some(cli::Command::Daemon {
+                    command: Some(command)
+                })),
+                "a one-shot daemon subcommand is not the loop"
             );
         }
+
+        assert!(!runs_reconcile_loop(&None));
     }
 
+    /// `--quiet` outranks any `-v` count clap collected alongside it, and the
+    /// daemon is not exempt: an operator who asked for silence gets it.
     #[test]
-    fn canonical_bool_str_accepts_falsey_spellings() {
-        for raw in ["0", "n", "no", "f", "false", "off", "NO", "Off", "FALSE"] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                Some("false"),
-                "{raw:?} should normalize to false"
-            );
-        }
-    }
-
-    #[test]
-    fn canonical_bool_str_trims_surrounding_whitespace() {
-        assert_eq!(canonical_bool_str("  1  "), Some("true"));
-        assert_eq!(canonical_bool_str("\toff\n"), Some("false"));
-    }
-
-    #[test]
-    fn canonical_bool_str_passes_through_canonical_values() {
-        assert_eq!(canonical_bool_str("true"), Some("true"));
-        assert_eq!(canonical_bool_str("false"), Some("false"));
-    }
-
-    #[test]
-    fn canonical_bool_str_rejects_unrecognized_values() {
-        // Unrecognized values return None so they remain untouched and clap's
-        // bool parser still rejects them, preserving validation.
-        for raw in ["garbage", "", "2", "tru", "yess", "10"] {
-            assert_eq!(
-                canonical_bool_str(raw),
-                None,
-                "{raw:?} should not be recognized as boolish"
-            );
+    fn quiet_reports_errors_only_whatever_the_verbose_count_is() {
+        for verbose in [0, 1, 4] {
+            assert_eq!(tracing_filter_for(true, verbose, false), "error");
+            assert_eq!(tracing_filter_for(true, verbose, true), "error");
         }
     }
 

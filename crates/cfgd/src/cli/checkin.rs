@@ -14,29 +14,33 @@ pub fn cmd_checkin(
 ) -> anyhow::Result<()> {
     printer.heading("Checkin");
 
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let config_dir = ctx.config_dir();
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the checkin
     // payload reflects the same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
-        None,
+    let mut desired = resolve_desired_state(
+        &ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Report,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    let mut registry = desired.take_registry(cfg);
     let resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    let mut registry = build_registry_with_profile(&resolved.merged.packages);
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        &config_dir,
+        config_dir,
         &resolved,
-        Some((printer, &cli.config)),
+        Some(&ctx),
     )?));
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
@@ -53,20 +57,35 @@ pub fn cmd_checkin(
         serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
+    // The machine is diffed ONCE per checkin, and not until someone asks. Both
+    // consumers read from this cell: the compliance snapshot's system checks
+    // below, and the drift report sent after the gateway answers. Sharing it
+    // also fixes the order the two used to disagree on — every drift is now in
+    // effective-system-map order, the same order compliance records it in.
+    // Lazily, because the diff shells out to every configurator the profile
+    // declares: a checkin whose gateway call fails must not have paid for a
+    // scan of the machine nobody will read.
+    let system_diffs: std::cell::OnceCell<Vec<cfgd_core::compliance::SystemDiff>> =
+        std::cell::OnceCell::new();
+    let diff_system = || {
+        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry)
+    };
+
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
         if compliance_cfg.enabled {
             let profile_name = cfg.active_profile().unwrap_or("unknown");
-            let checkin_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+            let checkin_state = ctx.state()?;
             match cfgd_core::compliance::collect_snapshot(
                 profile_name,
                 &resolved.merged,
                 &resolved_modules,
-                &config_dir,
+                config_dir,
                 &registry,
                 &compliance_cfg.scope,
                 &[],
                 printer,
-                &checkin_state,
+                checkin_state,
+                Some(system_diffs.get_or_init(diff_system)),
             ) {
                 Ok(snapshot) => {
                     printer.kv(
@@ -93,31 +112,54 @@ pub fn cmd_checkin(
     };
 
     let resp = {
-        let sp = printer.spinner("Posting to gateway");
+        // `client.checkin` narrates through the bare `&Printer` it's handed
+        // (`status_simple("Checking in with device gateway")`) rather than a
+        // bound `SectionGuard`, so it needs a real section to inherit depth
+        // from — without one that line renders at depth 0 whatever else this
+        // command has already printed.
+        //
+        // No bar of its own: the round-trip is narrated one layer down under
+        // the same label, and two spinners animating for one request read as
+        // two requests. What this section owns is the VERDICT.
+        let gateway_sec = printer.section("Gateway");
+        let _inherit = printer.depth_inheritance();
         let result = client
             .checkin(&config_hash, compliance_summary, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
-                sp.finish_ok(format!("server status: {}", resp.status));
+                // The VERDICT of the round-trip, with the server's own status
+                // string as its detail: that string is what the round-trip
+                // PRODUCED, stated once, on the row that produced it. The
+                // detail slot folds through `cursor_safe` at the renderer, so
+                // a response cannot repaint the line describing it; the
+                // `-o json` payload below carries it verbatim.
+                gateway_sec.status(Role::Ok, "Checked in").detail(format!(
+                    "server status {}, config {}",
+                    resp.status,
+                    if resp.config_changed {
+                        "changed"
+                    } else {
+                        "unchanged"
+                    }
+                ));
             }
             Err(e) => {
-                sp.finish_fail("Checkin failed").detail(format!("{e:#}"));
+                gateway_sec
+                    .status(Role::Fail, "Checkin failed")
+                    .detail(format!("{e:#}"));
             }
         }
         result?
     };
 
-    printer.kv("Server status", &resp.status);
-    printer.kv("Config changed", resp.config_changed.to_string());
-
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
-        let push_sec = printer.section("Server config");
+        let push_sec = printer.section("Server Config");
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
                 push_sec.status_simple(Role::Ok, format!("Saved to {}", path.posix()));
-                push_sec.status_simple(Role::Info, MSG_RUN_APPLY);
+                push_sec.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");
@@ -129,37 +171,48 @@ pub fn cmd_checkin(
         }
     }
 
-    let mut all_drifts = Vec::new();
-    let available = registry.available_system_configurators();
-    for configurator in &available {
-        let key = configurator.name();
-        let desired = match system.get(key) {
-            Some(v) => v,
-            None => continue,
-        };
-        if let Ok(drifts) = configurator.diff(desired) {
-            all_drifts.extend(drifts);
-        }
-    }
+    let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
+    // The section names the CLASS this command can report, because that is all
+    // the walk above collects: `system_drifts` pairs the answers of the
+    // available system CONFIGURATORS with their reporters and gathers nothing
+    // else. A package, file or env finding never reaches the gateway, so a
+    // section headed `Drift` promised the fleet a machine-wide verdict this
+    // payload has never carried.
     let drift_status = if !all_drifts.is_empty() {
-        let sp = printer.spinner("Reporting drift");
+        // Same reasoning as the gateway checkin above, both halves:
+        // `client.report_drift` narrates through the bare `&Printer` it's
+        // handed and so needs a real section to inherit depth from, and the
+        // wait itself is narrated one layer down, so this section writes only
+        // the outcome.
+        let drift_sec = printer.section("System Settings");
+        let _inherit = printer.depth_inheritance();
         let res = client
             .report_drift(&all_drifts, printer)
-            .context("drift report to gateway failed");
+            .context("system settings drift report to gateway failed");
         match &res {
             Ok(()) => {
-                sp.finish_ok(format!("{} drift items reported", all_drifts.len()));
+                drift_sec.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Reported {}",
+                        cfgd_core::pluralize(all_drifts.len(), "drifted system setting")
+                    ),
+                );
             }
             Err(e) => {
-                sp.finish_fail("Drift report failed")
+                drift_sec
+                    .status(Role::Fail, "System settings drift report failed")
                     .detail(format!("{e:#}"));
             }
         }
         res?;
         "drift_reported"
     } else {
-        printer.status_simple(Role::Info, "No drift to report");
+        // Inside the same section as the reported branch: which section a fact
+        // lands in cannot depend on whether the fact is empty.
+        let drift_sec = printer.section("System Settings");
+        drift_sec.status_simple(Role::Info, "No system settings drift to report");
         "no_drift"
     };
 
@@ -420,7 +473,10 @@ spec: {}
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: Some(state_dir.to_path_buf()),
             config_dir: None,
             cache_dir: None,
@@ -428,6 +484,296 @@ spec: {}
             scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
+    }
+
+    // Linux-only because the fixture's drift source is the `gsettings`
+    // configurator, which the registry registers only on Linux — on macOS
+    // the declared drift has nothing to diff it, so the drift POST this
+    // test counts never fires.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn checkin_diffs_the_machine_once_for_both_its_compliance_snapshot_and_its_drift_report() {
+        // `gsettings` stands in for every keyed configurator: the seam makes it
+        // available and answers its bulk read, so the shim's log is the count
+        // of times checkin asked the machine anything at all.
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-checkin color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+             profile: default\n  compliance:\n    enabled: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-checkin:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        // The declared value differs from what the shim reports, so the drift
+        // report is REQUIRED — both consumers of the diff run in this test.
+        let drift = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"/api/v1/devices/.*/drift".to_string()),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+        drift.assert();
+        assert_eq!(
+            cap.json().expect("should emit structured Doc")["driftCount"].as_u64(),
+            Some(1),
+            "the drift report must carry the drift the compliance scan found"
+        );
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-checkin"),
+            vec!["list-recursively org.gnome.cfgd-checkin"],
+            "the compliance snapshot and the drift report share one diff pass"
+        );
+    }
+
+    /// Every string in a gateway response is remote input, and this command
+    /// echoes `status` verbatim into a kv row. An `ESC[2K` in it erases the
+    /// line it is written on, so what a user reads is not what the gateway
+    /// sent. The assertion covers the whole rendered command rather than one
+    /// line of it, so a second slot that starts echoing the same string
+    /// unfolded is caught here too.
+    #[test]
+    #[serial_test::serial]
+    fn a_gateway_status_carrying_escapes_cannot_repaint_the_terminal() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"\u001b[2Kok\u001b[31m","configChanged":false}"#)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+
+        let human = cap.human();
+        assert!(
+            !human.contains("\x1b[2K") && !human.contains("\x1b[31m"),
+            "a gateway escape reached the terminal: {human:?}"
+        );
+        let plain = cfgd_core::output::strip_ansi(&human);
+        // Pin the VALUE against its own row: a bare `contains("ok")` matches
+        // any line in the render carrying those two letters, so it would pass
+        // with the status dropped entirely.
+        let row = plain
+            .lines()
+            .map(str::trim)
+            .find(|l| l.contains("Checked in"))
+            .unwrap_or_else(|| panic!("the verdict row must still render: {plain:?}"));
+        assert!(
+            row.ends_with("server status ok, config unchanged"),
+            "the row's detail is the status, with the escapes gone: {row:?}"
+        );
+    }
+
+    /// `client.report_drift` narrates through a bare `&Printer`, so its
+    /// drift spinner used to render at depth 0 unconditionally. It now runs
+    /// inside a real `printer.section("System Settings")` plus
+    /// `depth_inheritance()`, so its settled line nests one level deeper than the
+    /// section header instead of sitting flush with it. The section names the
+    /// class rather than `Drift`, because the gateway is only ever told about
+    /// system settings. Linux-only: the fixture's drift source is the
+    /// `gsettings` configurator, registered only on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_drift_settle_line_nests_under_the_system_settings_section_header() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-checkin color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+             profile: default\n  compliance:\n    enabled: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-checkin:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        let drift = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"/api/v1/devices/.*/drift".to_string()),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+        let _ = shim;
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+        drift.assert();
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        crate::cli::test_support::assert_nests_under(
+            &human,
+            "System Settings",
+            "Reported 1 drifted system setting",
+        );
+    }
+
+    // Linux-only like the drift tests above: the "never scanned" negative is
+    // judged on the gsettings shim's log, and on a host that never registers
+    // the gsettings configurator it would pass vacuously.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn a_checkin_whose_gateway_call_fails_never_diffs_the_machine() {
+        // Compliance is off, so the only consumer of the diff is the drift
+        // report that runs AFTER the gateway answers. A 500 means it never
+        // does — and the machine must not have been scanned for a report
+        // nobody will read.
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-lazy color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-lazy:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        // The client retries a 5xx, so the count is "at least one attempt".
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("boom")
+            .expect_at_least(1)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_err(), "a 500 must fail the checkin");
+        checkin.assert();
+        assert!(
+            shim.argv_lines_naming("org.gnome.cfgd-lazy").is_empty(),
+            "the machine was scanned for a report the failed gateway call never sent: {}",
+            shim.argv_log()
+        );
     }
 
     #[test]
@@ -461,8 +807,8 @@ spec: {}
 
         let human = cap.human();
         assert!(
-            human.contains("Server status"),
-            "should print 'Server status', got: {human}"
+            human.contains("Checked in") && human.contains("server status ok"),
+            "the gateway's answer rides on the Checked in row, got: {human}"
         );
 
         let json = cap.json().expect("should emit structured Doc");
@@ -481,6 +827,44 @@ spec: {}
             Some(false),
             "no desired_config in response: {json}"
         );
+    }
+
+    /// `client.checkin` narrates through a bare `&Printer`
+    /// (`status_simple`), so its gateway spinner used to render at depth 0
+    /// unconditionally. It now runs inside a real `printer.section("Gateway")`
+    /// plus `depth_inheritance()`, so its settled line nests one level
+    /// deeper than the section header instead of sitting flush with it.
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_gateway_settle_line_nests_under_the_gateway_section_header() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        mock.assert();
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        crate::cli::test_support::assert_nests_under(&human, "Gateway", "Checked in");
     }
 
     #[test]

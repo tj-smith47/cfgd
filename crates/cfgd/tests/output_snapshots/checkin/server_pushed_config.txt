@@ -1,11 +1,13 @@
 Checkin
-  Server status   ok
-  Config changed  true
+
+Gateway
+  ✓ Checked in — server status ok, config changed
 
 ⚠ Server pushed desired config
 
-Server config
+Server Config
   ✓ Saved to <PATH>
-  ⊙ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+  → Run 'cfgd plan' to preview changes, then 'cfgd apply'
 
-⊙ No drift to report
+System Settings
+  ◉ No system settings drift to report

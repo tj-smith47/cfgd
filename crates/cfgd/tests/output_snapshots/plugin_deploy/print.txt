@@ -1,0 +1,13 @@
+◉ Pinned registry.example.com/myapp/server:abc123 → registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+spec:
+  containers:
+  - name: app
+    image: registry.example.com/base:v1
+  volumes:
+  - name: app
+    image:
+      reference: registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd

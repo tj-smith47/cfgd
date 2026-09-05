@@ -252,7 +252,7 @@ async fn fleet_events_combined() {
         .expect("checkin failed");
     db.record_drift_event(
         "dev-1",
-        r#"[{"field":"pkg","expected":"vim","actual":"missing"}]"#,
+        r#"[{"field":"net.ipv4.ip_forward","expected":"1","actual":"0"}]"#,
     )
     .await
     .expect("drift failed");
@@ -859,58 +859,101 @@ async fn checkin_is_atomic_across_get_update_record() {
     );
 }
 
-/// With the split-pool model, N concurrent readers should run truly in
-/// parallel (WAL supports unlimited concurrent readers) and should NOT
-/// serialize a concurrent writer. Pre-refactor, every call serialized
-/// on a single `tokio::sync::Mutex<ServerDb>`.
+/// With the split-pool model, readers holding OPEN read transactions must not
+/// serialize a concurrent writer. Pre-refactor, every call serialized on a
+/// single `tokio::sync::Mutex<ServerDb>`, so a held reader stalled every write.
+///
+/// No clocks: readers park INSIDE `with_read_tx` on a condvar after signalling
+/// entry, so when the write is issued they verifiably hold live read
+/// transactions. Under the old shared-mutex shape the write can never complete
+/// while they are parked; the timeout is a deadlock escape, never a timing
+/// assertion — the assertion is on the write's result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_readers_do_not_block_writer() {
     let (db, _tmp) = test_db();
-    for i in 0..50 {
-        db.register_device(&format!("d{i}"), "h", "linux", "x86_64", "x", None)
-            .await
-            .expect("seed");
-    }
-
-    // Baseline: time a single writer op with no contention.
-    let t0 = std::time::Instant::now();
-    db.register_device("baseline", "h", "linux", "x86_64", "x", None)
+    db.register_device("d0", "h", "linux", "x86_64", "x", None)
         .await
-        .expect("baseline write");
-    let baseline = t0.elapsed();
+        .expect("seed");
 
-    // Launch 16 concurrent reader loops.
-    let mut reader_handles = Vec::new();
-    for i in 0..16 {
-        let db_c = db.clone();
-        reader_handles.push(tokio::spawn(async move {
-            for _ in 0..10 {
-                let _ = db_c.get_device(&format!("d{}", i % 50)).await;
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    #[allow(clippy::type_complexity)]
+    let release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)> =
+        Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+
+    // Releases the parked readers on EVERY exit path, including a panic in any
+    // assertion below: the readers park on blocking-pool threads, and dropping
+    // the test runtime waits for those threads, so an unreleased panic path
+    // turns a red test into a harness hang.
+    struct ReleaseOnDrop(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let (lock, cvar) = &*self.0;
+            if let Ok(mut go) = lock.lock() {
+                *go = true;
             }
+            cvar.notify_all();
+        }
+    }
+    let release_guard = ReleaseOnDrop(release.clone());
+
+    let mut reader_handles = Vec::new();
+    for _ in 0..4 {
+        let db_c = db.clone();
+        let entered = entered_tx.clone();
+        let release = release.clone();
+        reader_handles.push(tokio::spawn(async move {
+            db_c.with_read_tx(move |tx| {
+                let count: i64 =
+                    tx.query_row("SELECT count(*) FROM devices", [], |row| row.get(0))?;
+                let _ = entered.send(());
+                let (lock, cvar) = &*release;
+                let mut go = lock.lock().expect("release lock");
+                while !*go {
+                    go = cvar.wait(go).expect("release wait");
+                }
+                Ok(count)
+            })
+            .await
         }));
     }
 
-    // Give readers a moment to saturate the reader pool.
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-
-    // Time a writer while readers are active.
-    let t_write = std::time::Instant::now();
-    db.register_device("contended", "h", "linux", "x86_64", "x", None)
-        .await
-        .expect("contended write");
-    let write_elapsed = t_write.elapsed();
-
-    for h in reader_handles {
-        h.await.expect("reader join");
+    // All four readers are inside open read transactions before the write.
+    // The timeout is a deadlock escape, not a timing assertion: if readers
+    // serialize on a shared connection, the parked first reader blocks the
+    // other three from ever entering, and without the escape this wait hangs
+    // the harness instead of failing.
+    for _ in 0..4 {
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered_rx.recv())
+            .await
+            .expect("a reader never entered its read transaction — readers are serializing on a shared connection")
+            .expect("reader entered");
     }
 
-    // Allow up to 10× baseline as a lenient bound — anything worse would
-    // mean readers are blocking the writer (the very bug this removes).
-    // In practice this runs well under 3× on a reasonable machine.
+    let write = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        db.register_device("contended", "h", "linux", "x86_64", "x", None),
+    )
+    .await;
+    let write_ok = write.is_ok();
+
+    drop(release_guard);
+    for h in reader_handles {
+        let count = h
+            .await
+            .expect("reader join")
+            .expect("read tx while writer ran");
+        assert!(count >= 1, "reader saw the seeded device");
+    }
+
     assert!(
-        write_elapsed < baseline * 10 + std::time::Duration::from_millis(50),
-        "writer took {write_elapsed:?}, baseline {baseline:?} — readers are blocking writer"
+        write_ok,
+        "writer deadlocked behind held read transactions — readers are blocking the writer"
     );
+    write
+        .expect("checked above")
+        .expect("contended write succeeds");
+    let d = db.get_device("contended").await.expect("get contended");
+    assert_eq!(d.id, "contended");
 }
 
 /// `writer_wait_seconds` histogram must record observations when the
@@ -973,18 +1016,24 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
         .expect("register");
 
     // Hold the single reader in a blocking sleep inside a read tx.
+    let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
     let db_hold = db.clone();
     let hold = tokio::spawn(async move {
         db_hold
-            .with_read_tx(|_tx| {
+            .with_read_tx(move |_tx| {
+                let _ = acquired_tx.send(());
+                // sleep-ok: deliberately holds the reader past the pool's timeout to exercise the PoolExhausted path — the hold duration is the subject under test
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 Ok(())
             })
             .await
     });
 
-    // Give the holder time to acquire.
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    // Wait for the holder to actually acquire the reader connection before
+    // racing the second reader against it — no fixed-duration guess.
+    acquired_rx
+        .await
+        .expect("holder signals after acquiring the reader");
 
     // Second reader must time out on pool acquisition.
     let r = db.get_device("d").await;
@@ -1037,10 +1086,12 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()
+        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(writer)
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();
     tracing::subscriber::with_default(subscriber, f);
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
 }

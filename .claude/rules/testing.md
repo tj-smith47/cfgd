@@ -56,16 +56,40 @@ through exactly one guard — `output::printer::ColorGlobalOn`, which restores t
 values on drop including on unwind — and only to reproduce the flags being ON as the
 reported condition: `a_flipped_colour_global_cannot_style_a_capture` proves a capture
 stays unstyled anyway, `a_colourless_printer_draws_a_colourless_progress_bar` proves
-indicatif's own template resolution does not leak colour past `--no-color`, and
+indicatif's own template resolution leaks NO escape past `--color never` — a style
+token is one whatever it names, so the colourless template carries none and the
+filled/empty contrast comes from `progress_chars` instead — and
 `derived_printers_inherit_the_colour_decision` proves a derived printer does not re-read
 them. Never hand-roll a second save/restore struct; pair the guard with
 `serial_test::serial`.
 
+The same pairing is the rule for the environment itself: a test that mutates a
+process-global env var — through `EnvVarGuard`, `EditorGuard::set`,
+`with_test_env_var`, `ProbePath::containing`, any `install_named_path_shim*`,
+either tool shim, or a raw `env::set_var` / `remove_var`, in its own body or in a
+same-file helper it calls — carries `#[serial_test::serial…]`, because edition 2024 makes
+an unserialized write in a live-threaded harness undefined behaviour rather than
+a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
+for one, and `// serial-ok: <why>` hatches a mutation that cannot race (a
+per-child `Command::env(…)` handoff is not one of them and is never matched).
+
+Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
+gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
+`false` gets bare text: bold, dim, italic, underline and OSC 8 are withheld with the
+foreground, because an attribute is styling too and `docs/cli-reference.md` promises
+`--color never` / `NO_COLOR` / a non-terminal stdout withhold every escape. An indicatif
+template is a second escape writer and answers to the same decision. Pinned by
+`no_escape_reaches_a_stream_the_printer_decided_against`, the bar pin above, and the walk
+beside them, `every_styled_span_reaches_bytes_through_the_one_gate` — whose `WRITES` list
+is the CLASS (every literal notation, the raw byte, `ProgressStyle::with_template`,
+`console::Style`), whose `GATED` needle is `apply_to` itself, and whose escape hatch is
+`// style-gate-ok: <why>` read off the whole comment block above the line.
+
 Strip anyway when the assertion is about TEXT: `captured_text` is still the ONE read of
-a capture buffer, because `for_test_with_theme_colored` really does emit escapes and an
-attribute-carrying slot emits SGR even with colour off (NO_COLOR governs colour only).
-Read the buffer raw only when the assertion is ABOUT the escapes; to assert the colour
-DECISION call `colors_must_be_disabled(&format)` and render nothing.
+a capture buffer, because `for_test_with_theme_colored` deliberately forces styling ON
+and really does emit escapes. Read the buffer raw only when the assertion is ABOUT the
+escapes; to assert the colour DECISION call `colors_must_be_disabled(&format)` and
+render nothing.
 
 Goldens are captured through a path where all three are pinned — `assert_human_snapshot*`
 strips for its caller, while the raw `assert_snapshot_at` does not, so a caller reaching
@@ -74,6 +98,35 @@ hand-edited.
 
 Verify both ways before calling a test suite green; a suite only ever observed one way is
 how all of this shipped.
+
+## A fail-without-fix probe never mutates the shared working tree
+
+Proving a test fails without its fix means breaking the production code and watching
+the test go red. Doing that **in place** — edit, `cargo test`, restore — leaves the
+repository holding deliberately broken code for the length of a compile, and anything
+else reading the tree in that window (a second agent, a watch build, a full-workspace
+run someone else started) compiles the broken revision and reports failures that
+describe nothing anybody wrote.
+
+That is not hypothetical: two daemon advisory-restatement tests were reported failing
+under a full `--test-threads=16` workspace run, with counts (`0 of 3` and `1 of 3`)
+that exactly reproduced an in-tree probe of `CachedConfig::advisories_to_restate`
+returning `&[]`. Six later runs of the same binary at the same thread count were green,
+and the failure was never a concurrency defect at all — it was a probe window.
+
+Copy the tree first — **excluding `target/`**, which is tens of GB and duplicating it
+filled the shared VM's root filesystem to 100% mid-CI — and give the copy its own
+target dir:
+
+```bash
+rsync -a --exclude=/target /opt/repos/cfgd/ ~/.cache/cfgd-debug/probe/
+CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
+  cargo test --manifest-path ~/.cache/cfgd-debug/probe/Cargo.toml -p cfgd-core --features test-helpers --lib <filter>
+```
+
+The evidence is identical and no other reader can see the mutation. Scratch goes under
+`~/.cache/`, never `/tmp`, and the probe tree AND its target dir are deleted as soon as
+the probe's red run is captured — never left standing for a later probe to reuse.
 
 ## Fixture versions: use the 9.9.x sentinel range
 

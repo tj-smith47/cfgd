@@ -1,0 +1,4 @@
+Rollback Copies
+◉ Nothing to roll back
+
+→ A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts

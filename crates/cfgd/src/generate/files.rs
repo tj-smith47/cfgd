@@ -52,7 +52,7 @@ pub struct DirectoryEntry {
 /// - Verify the path string doesn't match any BLOCKED_PATTERNS substring.
 fn is_path_allowed(path: &Path, home: &Path, repo_root: &Path) -> Result<(), CfgdError> {
     // Canonicalize and check containment.
-    // We try home first, then repo_root. If both fail we reject.
+    // Home is tried first, then repo_root. Rejected if both fail.
     let in_home = cfgd_core::validate_path_within(path, home).is_ok();
     let in_repo = cfgd_core::validate_path_within(path, repo_root).is_ok();
 
@@ -167,7 +167,7 @@ pub fn list_directory(
 
         let name = item.file_name().to_string_lossy().into_owned();
 
-        // Use symlink_metadata so we classify symlinks as "symlink" rather than
+        // Use symlink_metadata to classify symlinks as "symlink" rather than
         // following them and reporting the target type.
         let meta = std::fs::symlink_metadata(item.path()).map_err(|e| {
             CfgdError::Generate(GenerateError::FileAccessDenied {

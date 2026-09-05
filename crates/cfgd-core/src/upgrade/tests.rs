@@ -513,7 +513,7 @@ fn cache_ttl_boundary_just_expired() {
 
 #[test]
 fn version_cache_deserialization_from_known_json() {
-    // Ensure we can deserialize a known JSON payload (simulates reading from disk)
+    // Ensure a known JSON payload deserializes (simulates reading from disk)
     let json = r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#;
     let cache: VersionCache = serde_json::from_str(json).expect("deserialize known JSON");
     assert_eq!(cache.checked_at_secs, 1700000000);
@@ -650,7 +650,7 @@ fn find_asset_no_matching_platform() {
         }],
     };
     let result = find_asset_for_platform(&release);
-    // Unless we're running on mips, this should fail
+    // Unless running on mips, this should fail
     if std::env::consts::ARCH != "mips" {
         let err = result.unwrap_err();
         let msg = err.to_string();
@@ -1033,12 +1033,12 @@ fn record_check_at_updates_timestamp_on_existing_cache() {
 }
 
 #[test]
-fn restart_daemon_if_running_returns_false_when_no_daemon() {
+fn terminate_daemon_if_running_returns_false_when_no_daemon() {
     // In test environments, no daemon is running, so this should return false
-    let result = restart_daemon_if_running();
+    let result = terminate_daemon_if_running();
     assert!(
         !result,
-        "restart_daemon_if_running should return false when no daemon is running"
+        "terminate_daemon_if_running should return false when no daemon is running"
     );
 }
 
@@ -1417,9 +1417,9 @@ fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
 
 #[test]
 fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
-    // Printer present when the API returns an error status — spinner is created
-    // but never finished (the early return happens before finish_ok). This
-    // exercises the error path with printer != None.
+    // Printer present when the API returns an error status — `github_get`
+    // settles the spinner itself via `finish_fail` before propagating the
+    // error, so this exercises the error path with printer != None.
     let mut server = mockito::Server::new();
     let mock = server
         .mock("GET", "/repos/test/repo/releases/latest")
@@ -1434,6 +1434,47 @@ fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
     assert!(
         result.is_err(),
         "502 with printer must still surface as Err"
+    );
+}
+
+/// Representative of the "match-once" shape shared by
+/// `upgrade/mod.rs`'s three spinner sites (`github_get`, the checksum-verify
+/// spinner in `download_and_install_to`, and its extract spinner — same
+/// reasoning at each). `github_get` used to run its request under the
+/// caller's early `?`, so a request failure abandoned an already-running
+/// spinner; it now matches its inner result exactly once and always settles
+/// via `finish_fail`, never via Drop.
+#[test]
+fn fetch_latest_release_from_failure_settles_via_finish_fail_not_drop() {
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .with_status(502)
+        .with_body("Bad Gateway")
+        .create();
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    drop(printer);
+    mock.assert();
+
+    assert!(
+        result.is_err(),
+        "502 with printer must still surface as Err"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("Failed to fetch release information"),
+        "the finish_fail line must be committed: {out}"
+    );
+    assert_eq!(
+        out.matches("Failed to fetch release information").count(),
+        1,
+        "the failure must settle exactly once, never twice: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a spinner settled by finish_fail must never also settle via Drop: {out}"
     );
 }
 
@@ -1977,8 +2018,19 @@ fn download_to_file_binary_content() {
 #[test]
 fn sha256_file_empty_file() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    // Write nothing (empty file)
-    let hash = sha256_file(tmp.path()).unwrap();
+    // Write nothing (empty file). On Windows a scanner (Defender, the indexer)
+    // can briefly hold a just-created file so the read-back open is denied;
+    // retry the open, since the claim here is the hash, not scanner timing.
+    let mut hash = sha256_file(tmp.path());
+    for _ in 0..1000 {
+        if hash.is_ok() {
+            break;
+        }
+        // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        hash = sha256_file(tmp.path());
+    }
+    let hash = hash.unwrap();
     // SHA256 of empty string
     assert_eq!(
         hash,
@@ -2610,7 +2662,7 @@ mod download_and_install_to {
         let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
-        // Mockito does not set Content-Length unless we ask, so download_to_file
+        // Mockito does not set Content-Length unless asked, so download_to_file
         // takes the (Some(p), None) spinner arm — exactly the branch the
         // None-printer happy_path test cannot reach.
         let _m_archive = server
@@ -3089,9 +3141,9 @@ mod download_and_install_to {
             VerificationMode::Sha256Only,
             "no bundle → Sha256Only so caller falls back to SHA256-only"
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("no cosign bundle attached"),
+            captured.contains("No cosign bundle attached"),
             "warning text must surface so operators see the trust downgrade: {captured}"
         );
     }
@@ -3140,7 +3192,7 @@ mod download_and_install_to {
         )
         .expect("missing cosign CLI is graceful-degrade, not Err");
         assert_eq!(outcome, VerificationMode::Sha256Only);
-        let captured = buf.lock().unwrap().clone();
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("cosign CLI is not installed"),
             "warning must point operators at the install hint: {captured}"
@@ -4672,4 +4724,85 @@ fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
         msg.contains("create cache dir"),
         "error message must name the failing step: {msg}"
     );
+}
+
+/// `download_with_progress_bar` (the arm of
+/// `download_to_file` that runs when a `content-length` is known) used to
+/// run its chunked read/write loop under two early `?`s, so an IO failure
+/// mid-download abandoned `pb` to `Drop` — the error detail never reached a
+/// `finish_fail`-equivalent line, and the reader saw only
+/// `— <url> (interrupted)`. The loop is now `stream_chunks_to_file`, matched
+/// once by `download_with_progress_bar`, whose failure arm emits `Role::Fail`
+/// on the printer itself (a `ProgressBar` has no `finish_fail`, unlike
+/// `Spinner`) before `?` propagates.
+///
+/// A `Read` that errors partway through is the direct, deterministic way to
+/// exercise this: it needs no HTTP transport at all, and it fails inside the
+/// loop rather than before `download_with_progress_bar` is even called.
+struct FailAfter {
+    remaining_ok_bytes: usize,
+}
+
+impl std::io::Read for FailAfter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining_ok_bytes == 0 {
+            return Err(std::io::Error::other("connection reset mid-download"));
+        }
+        let n = buf.len().min(self.remaining_ok_bytes);
+        buf[..n].fill(0xEE);
+        self.remaining_ok_bytes -= n;
+        Ok(n)
+    }
+}
+
+#[test]
+fn download_with_progress_bar_failure_settles_via_status_fail_not_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut reader = FailAfter {
+        remaining_ok_bytes: 16,
+    };
+    let url = "https://example.com/cfgd-x86_64.tar.gz";
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result = download_with_progress_bar(&printer, url, 1024, &mut reader, &mut tmp);
+    drop(printer);
+
+    assert!(result.is_err(), "a read error mid-download must surface");
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains(&format!("Failed to download {url}")),
+        "the failure detail must reach a committed status line: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a progress bar settled explicitly on failure must never also \
+         settle via Drop: {out}"
+    );
+}
+
+/// The success half, proving `download_with_progress_bar` still writes
+/// every byte and settles with no failure status when the reader never
+/// errors — the counterpart that keeps the failure test above from passing
+/// vacuously (e.g. if the arm stopped writing on every call).
+#[test]
+fn download_with_progress_bar_success_writes_all_bytes_and_settles_silently() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let body = vec![0xABu8; 4096];
+    let mut reader = std::io::Cursor::new(body.clone());
+    let url = "https://example.com/cfgd-x86_64.tar.gz";
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result =
+        download_with_progress_bar(&printer, url, body.len() as u64, &mut reader, &mut tmp);
+    drop(printer);
+
+    assert!(result.is_ok(), "a fully-readable stream must succeed");
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.is_empty(),
+        "success settles the bar silently, with no status line of its own: {out}"
+    );
+    assert_eq!(std::fs::read(tmp.path()).unwrap(), body);
 }

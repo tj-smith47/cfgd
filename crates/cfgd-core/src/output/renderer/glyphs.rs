@@ -1,6 +1,6 @@
 use crate::output::component::StatusLabel;
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Theme, strip_ansi};
+use crate::output::{Role, Theme, cursor_safe};
 
 /// Compose a `subject` with a trailing styled `label`, separated by one ASCII
 /// space. The label always lands at end-of-subject so the inner SGR reset
@@ -10,8 +10,32 @@ use crate::output::{Role, Theme, strip_ansi};
 /// (buffered Doc tree) so the two paths stay byte-identical.
 fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel) -> String {
     let (_, style) = role_glyph(theme, label.role);
-    let styled = style.apply_to(&label.text).to_string();
+    // Folded before the renderer's own style wraps it, same ordering as the
+    // qualifier below: the text is a caller's (an owner token built from a
+    // drift event's source name), and a foreign reset inside it would close
+    // the span the renderer opened around it.
+    let styled = style.apply_to(cursor_safe(&label.text)).to_string();
     format!("{subject} {styled}")
+}
+
+/// Compose a `subject` with a trailing `": " qualifier` (`curl: missing`) —
+/// three slots: the subject keeps whatever role-slot styling the status line
+/// already carries (untouched here), the colon is always `Role::Warn`, and
+/// the qualifier text is always `theme.muted`, matching `TitleLabel`'s
+/// separator/value split rather than taking a per-call role the way `label`
+/// does. Landed at end-of-subject, same reasoning as
+/// `compose_subject_with_label`: the inner SGR reset closing the qualifier's
+/// color cannot be followed by outer-role-styled text.
+fn compose_subject_with_qualifier(theme: &Theme, subject: &str, qualifier: &str) -> String {
+    let (_, colon_style) = role_glyph(theme, Role::Warn);
+    // `qualifier` is as untrusted as `subject` — both can carry a captured
+    // error string — so it gets the same sanitation before it is wrapped in
+    // the renderer-owned muted span, or a foreign `\x1b[0m` inside it closes
+    // the span early and everything the renderer writes after paints in
+    // whatever colour the foreign escape last set.
+    let sanitized_qualifier = cursor_safe(qualifier);
+    let muted = theme.muted.apply_to(format!(" {sanitized_qualifier}"));
+    format!("{subject}{}{muted}", colon_style.apply_to(":"))
 }
 
 /// Compose a `subject` behind a leading styled `marker` (`postApply:`),
@@ -23,7 +47,7 @@ fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel)
 /// and the body is not, which is the whole of the mapping.
 fn compose_subject_with_marker(theme: &Theme, subject: &str, marker: &StatusLabel) -> String {
     let (_, style) = role_glyph(theme, marker.role);
-    let styled = style.apply_to(&marker.text).to_string();
+    let styled = style.apply_to(cursor_safe(&marker.text)).to_string();
     format!("{styled} {subject}")
 }
 
@@ -32,19 +56,52 @@ fn compose_subject_with_marker(theme: &Theme, subject: &str, marker: &StatusLabe
 /// The subject may carry foreign ANSI from a captured error string
 /// (`format!("sync failed for {url}: {e}")`); a stray `\x1b[0m` would
 /// prematurely close the role styling at the inner reset, and foreign color
-/// escapes would paint trailing characters until the next reset. Strip ANSI
-/// from the subject FIRST, then add the legitimate (renderer-controlled)
-/// segments so they survive sanitation.
+/// escapes would paint trailing characters until the next reset — and a bare
+/// `\r` no escape sequence introduced would repaint the line the subject is
+/// written on. [`cursor_safe`] closes both. Fold the subject FIRST, then add
+/// the legitimate (renderer-controlled) segments so they survive sanitation.
 pub(crate) fn finalize_subject(
     theme: &Theme,
     subject: &str,
     marker: Option<&StatusLabel>,
+    qualifier: Option<&str>,
     label: Option<&StatusLabel>,
 ) -> String {
-    let sanitized = strip_ansi(subject);
+    wrap_subject(theme, cursor_safe(subject), marker, qualifier, label)
+}
+
+/// [`finalize_subject`] for a subject the renderer PAINTS from typed parts.
+///
+/// The paint is the renderer's own, so it stands in for the sanitize-then-wrap
+/// step rather than layering on top of it: a [`crate::output::PaintedSubject`]
+/// folds each of its slots through [`cursor_safe`] itself, and folding the
+/// composed string a second time would eat the SGR the renderer just put
+/// there. The row carries `ThemedStyle::plain()` as its subject style so the
+/// role coat does not repaint it; every width is measured with the escapes
+/// stripped, so padding is unaffected.
+pub(crate) fn finalize_painted_subject(
+    theme: &Theme,
+    painted: &crate::output::PaintedSubject,
+    qualifier: Option<&str>,
+    label: Option<&StatusLabel>,
+) -> String {
+    wrap_subject(theme, painted.styled(theme), None, qualifier, label)
+}
+
+fn wrap_subject(
+    theme: &Theme,
+    subject: String,
+    marker: Option<&StatusLabel>,
+    qualifier: Option<&str>,
+    label: Option<&StatusLabel>,
+) -> String {
+    let qualified = match qualifier {
+        Some(q) => compose_subject_with_qualifier(theme, &subject, q),
+        None => subject,
+    };
     let labelled = match label {
-        Some(lbl) => compose_subject_with_label(theme, &sanitized, lbl),
-        None => sanitized,
+        Some(lbl) => compose_subject_with_label(theme, &qualified, lbl),
+        None => qualified,
     };
     match marker {
         Some(mk) => compose_subject_with_marker(theme, &labelled, mk),
@@ -70,6 +127,39 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
     }
 }
 
+/// Whether a role says the work on this action row is not going to happen.
+///
+/// The ONE emphasis mapping every action row reads, and the reason it is a
+/// mapping rather than a per-surface choice: the plan tree and the apply tree
+/// draw the SAME pre-skipped action one beat apart, and painting it each way
+/// makes a reader flipping between them read a change that did not happen.
+///
+/// On a withholding row the subject is the thing that will not happen and the
+/// detail is the REASON — the only new information on the line — so the
+/// subject keeps its dim role style and the reason renders bright. Every other
+/// role reverses it: the subject is what happened, and the trailing detail is
+/// metadata.
+fn role_withholds_action(role: Role) -> bool {
+    matches!(role, Role::Pending | Role::Skipped)
+}
+
+/// The style an action row's SUBJECT takes, per [`role_withholds_action`].
+/// `None` leaves the subject on its role style, which is what a withholding
+/// row wants and what a plain `status` would have rendered anyway.
+pub(crate) fn action_subject_style(theme: &Theme, role: Role) -> Option<ThemedStyle> {
+    (!role_withholds_action(role))
+        .then(|| theme.primary.clone())
+        .flatten()
+}
+
+/// Whether an action row's trailing detail renders muted. `muted` is what the
+/// CALLER asked for — a fact about the detail, an `unchanged` aside being
+/// metadata where an error is not — and a withholding row overrides it,
+/// because there the detail carries the row.
+pub(crate) fn action_detail_is_muted(role: Role, muted: bool) -> bool {
+    muted && !role_withholds_action(role)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,10 +171,75 @@ mod tests {
     }
 
     #[test]
+    fn qualifier_composes_subject_colon_space_qualifier() {
+        let t = Theme::default();
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), None);
+        assert_eq!(crate::output::strip_ansi(&composed), "curl: missing");
+    }
+
+    /// The colon is always `Role::Warn` and the qualifier text always
+    /// `theme.muted`, whatever role the status LINE itself carries — the
+    /// "role slot / warning colon / muted qualifier" split composes fixed
+    /// styling for the trailing two slots, not a per-call choice the way
+    /// `label`'s role parameter is.
+    #[test]
+    fn qualifier_colon_is_warn_and_text_is_muted() {
+        let t = Theme::default().with_colors(true);
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), None);
+        let colon = role_glyph(&t, Role::Warn).1.apply_to(":").to_string();
+        let text = t.muted.apply_to(" missing").to_string();
+        assert!(
+            composed.contains(&colon),
+            "colon not styled Warn; got: {composed:?}"
+        );
+        assert!(
+            composed.contains(&text),
+            "qualifier text not styled muted; got: {composed:?}"
+        );
+    }
+
+    /// A qualifier built from a captured error string can carry foreign SGR
+    /// (a colour-emitting child process's own escapes). It must be stripped
+    /// exactly like `subject` is — a raw `\x1b[0m` surviving inside the
+    /// muted span would close it early and leave everything the renderer
+    /// writes afterward painted in whatever colour the foreign escape last
+    /// set.
+    #[test]
+    fn qualifier_carrying_foreign_ansi_is_stripped_before_composing() {
+        let t = Theme::default().with_colors(true);
+        let composed = finalize_subject(&t, "curl", None, Some("\x1b[31mmissing\x1b[0m"), None);
+        // The foreign red-fg code and reset must be gone — only the
+        // renderer's own muted styling may remain, proven by round-tripping
+        // through `strip_ansi` back to the plain text.
+        assert!(
+            !composed.contains("\x1b[31m"),
+            "foreign colour escape survived inside the composed qualifier: {composed:?}"
+        );
+        assert_eq!(crate::output::strip_ansi(&composed), "curl: missing");
+    }
+
+    /// Qualifier lands ahead of `label` — both are trailing, at-end-of-subject
+    /// segments, and the qualifier reads as part of what the subject IS about
+    /// while the label is a separate trailing annotation (an owner token).
+    #[test]
+    fn qualifier_lands_before_label() {
+        let t = Theme::default();
+        let label = StatusLabel {
+            role: Role::Secondary,
+            text: "[team-config]".into(),
+        };
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), Some(&label));
+        assert_eq!(
+            crate::output::strip_ansi(&composed),
+            "curl: missing [team-config]"
+        );
+    }
+
+    #[test]
     fn info_uses_its_theme_icon_and_style() {
         let t = Theme::default();
         let (icon, style) = role_glyph(&t, Role::Info);
-        assert_eq!(icon, Some("⊙"));
+        assert_eq!(icon, Some("◉"));
         assert_eq!(style_repr(&style), style_repr(&t.info));
         assert_ne!(style_repr(&style), style_repr(&ThemedStyle::plain()));
         // The ASCII preset downgrades it like every other glyph.
@@ -107,6 +262,13 @@ mod tests {
             "dracula",
             "solarized-dark",
             "solarized-light",
+            "nord",
+            "monokai",
+            "adventure-time",
+            "catppuccin-mocha",
+            "gruvbox-dark",
+            "tokyo-night",
+            "one-dark",
             "minimal",
         ] {
             let t = Theme::from_preset(preset);
@@ -155,5 +317,70 @@ mod tests {
         let t = Theme::default();
         assert!(role_glyph(&t, Role::Accent).0.is_none());
         assert!(role_glyph(&t, Role::Secondary).0.is_none());
+    }
+
+    /// The whole `Role` population, walked so a role added later has to state
+    /// which side of the withholding split it lands on.
+    const EVERY_ROLE: [Role; 9] = [
+        Role::Ok,
+        Role::Warn,
+        Role::Fail,
+        Role::Pending,
+        Role::Running,
+        Role::Skipped,
+        Role::Info,
+        Role::Accent,
+        Role::Secondary,
+    ];
+
+    /// Exactly two roles withhold the work, and both halves of the emphasis
+    /// follow from that one answer — so no surface can dim a subject while
+    /// another brightens it for the same role.
+    #[test]
+    fn every_role_takes_one_emphasis_on_both_halves_of_an_action_row() {
+        // A preset that HAS a palette foreground: `Theme::default` answers
+        // `None` for every role, which would pass the subject half vacuously.
+        let t = Theme::from_preset("dracula");
+        for role in EVERY_ROLE {
+            // Exhaustive by construction: a new `Role` fails to compile here
+            // until it declares whether it withholds the work.
+            let withholds = match role {
+                Role::Pending | Role::Skipped => true,
+                Role::Ok
+                | Role::Warn
+                | Role::Fail
+                | Role::Running
+                | Role::Info
+                | Role::Accent
+                | Role::Secondary => false,
+            };
+            assert_eq!(
+                action_subject_style(&t, role).is_none(),
+                withholds,
+                "{role:?} paints its action subject against its withholding answer"
+            );
+            assert_eq!(
+                action_detail_is_muted(role, true),
+                !withholds,
+                "{role:?} mutes a metadata detail against its withholding answer"
+            );
+            assert!(
+                !action_detail_is_muted(role, false),
+                "{role:?} must not mute a detail the caller asked to render plain"
+            );
+        }
+    }
+
+    /// Anti-vacuity: the walk above proves nothing unless the split has a
+    /// member on each side, and unless `theme.primary` is a style at all —
+    /// a palette answering `None` would make every role's subject "dim".
+    #[test]
+    fn the_withholding_split_has_a_member_on_each_side() {
+        let t = Theme::from_preset("dracula");
+        assert!(action_subject_style(&t, Role::Ok).is_some());
+        assert!(action_subject_style(&t, Role::Skipped).is_none());
+        assert!(action_subject_style(&t, Role::Pending).is_none());
+        assert!(EVERY_ROLE.iter().any(|r| role_withholds_action(*r)));
+        assert!(EVERY_ROLE.iter().any(|r| !role_withholds_action(*r)));
     }
 }

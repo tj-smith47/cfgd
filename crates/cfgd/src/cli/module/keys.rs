@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
     if let Err(msg) = cfgd_core::require_tool_with_seam(
@@ -55,11 +55,12 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
         let priv_path = format!("{}/cosign.key", dir);
         let pub_path = format!("{}/cosign.pub", dir);
         printer.kv_block([
-            ("Private key", priv_path.clone()),
-            ("Public key", pub_path.clone()),
+            ("Private Key", priv_path.clone()),
+            ("Public Key", pub_path.clone()),
         ]);
-        printer.hint("Sign with: cfgd module push --sign --key cosign.key ...");
-        printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");
+        printer.hint(super::success_next_step(super::Mutation::KeysGenerated {
+            dir,
+        }));
         private_key = Some(priv_path);
         public_key = Some(pub_path);
     }
@@ -117,7 +118,7 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
     if entries.is_empty() {
         doc = doc
             .status(Role::Info, "No signing keys found")
-            .hint("Generate with: cfgd module keys generate");
+            .hint_commands("Generate with:", &["cfgd module keys generate"]);
     } else {
         let pairs: Vec<(String, String)> = entries
             .iter()
@@ -157,7 +158,7 @@ pub fn cmd_module_keys_rotate(
             key_dir,
             "key_not_found",
             format!(
-                "No existing cosign.key found in {} — generate one first with: cfgd module keys generate",
+                "No existing cosign.key found in {} — generate one first with: `cfgd module keys generate`",
                 key_dir
             ),
             serde_json::json!({ "dir": key_dir }),
@@ -202,39 +203,43 @@ pub fn cmd_module_keys_rotate(
             && let Err(e) = std::fs::rename(&backup_key, &old_key)
         {
             restore_failures.push(format!(
-                "{} → {}: {}",
+                "{} {} {}: {}",
                 backup_key.posix(),
+                ICON_ARROW,
                 old_key.posix(),
                 e
             ));
-            printer.status_simple(
-                Role::Fail,
-                format!(
-                    "Failed to restore private key from {}: {} — backup remains at {}",
-                    backup_key.posix(),
-                    e,
-                    backup_key.posix()
-                ),
-            );
+            printer
+                .status(
+                    Role::Fail,
+                    format!(
+                        "Failed to restore private key from {}: {}",
+                        backup_key.posix(),
+                        e
+                    ),
+                )
+                .detail(format!("backup remains at {}", backup_key.posix()));
         }
         if backup_pub.exists()
             && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
         {
             restore_failures.push(format!(
-                "{} → {}: {}",
+                "{} {} {}: {}",
                 backup_pub.posix(),
+                ICON_ARROW,
                 old_pub.posix(),
                 e
             ));
-            printer.status_simple(
-                Role::Fail,
-                format!(
-                    "Failed to restore public key from {}: {} — backup remains at {}",
-                    backup_pub.posix(),
-                    e,
-                    backup_pub.posix()
-                ),
-            );
+            printer
+                .status(
+                    Role::Fail,
+                    format!(
+                        "Failed to restore public key from {}: {}",
+                        backup_pub.posix(),
+                        e
+                    ),
+                )
+                .detail(format!("backup remains at {}", backup_pub.posix()));
         }
 
         let (bail_msg, json_extra) = if restore_failures.is_empty() {
@@ -275,7 +280,7 @@ pub fn cmd_module_keys_rotate(
     let new_key_path = Path::new(key_dir).join("cosign.key");
     let mut resigned: Vec<String> = Vec::new();
     for artifact in artifacts {
-        let sp = printer.spinner(format!("Re-signing {artifact}..."));
+        let sp = printer.spinner(format!("Re-signing {artifact}"));
         match cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string())) {
             Ok(()) => {
                 sp.finish_ok(format!("Re-signed {artifact}"));
@@ -297,12 +302,6 @@ pub fn cmd_module_keys_rotate(
         }
     }
 
-    if artifacts.is_empty() {
-        printer.hint(
-            "No artifacts specified — re-sign manually with: cfgd module push --sign --key cosign.key ...",
-        );
-    }
-
     let backup_pub_path = if old_pub.exists() || backup_pub.exists() {
         Some(backup_pub.display().to_string())
     } else {
@@ -310,7 +309,11 @@ pub fn cmd_module_keys_rotate(
     };
     printer.emit(
         Doc::new()
-            .status(Role::Ok, "Key rotation complete")
+            .status(Role::Ok, "Rotated key")
+            .hint(super::success_next_step(super::Mutation::KeysRotated {
+                dir: key_dir,
+                resigned: !artifacts.is_empty(),
+            }))
             .with_data(serde_json::json!({
                 "dir": key_dir,
                 "backupPrivateKey": backup_key.display().to_string(),
@@ -500,11 +503,11 @@ mod tests {
         std::fs::write(tmp.path().join("cosign.pub"), "old-public-key").expect("write old pub");
 
         // Make the directory read-only AFTER the cosign shim runs but BEFORE
-        // restore. We can't intercept exactly there, so instead approximate
+        // restore. That point cannot be intercepted exactly, so instead approximate
         // by relying on the shim's behavior: with_exit(1) means the shim
         // exits non-zero before writing keys, so the backups exist and rename
         // back will be attempted on a writable dir. To force restore-failure,
-        // we replace the target path with a directory so the rename errors.
+        // this replaces the target path with a directory so the rename errors.
         std::fs::remove_file(tmp.path().join("cosign.key")).expect("remove old key");
         std::fs::create_dir(tmp.path().join("cosign.key.placeholder"))
             .expect("create placeholder dir to occupy a sibling path");
@@ -660,7 +663,7 @@ mod tests {
             .expect("handler returns CliErrorMeta");
         assert_eq!(meta.error_kind, "tool_missing");
         assert_eq!(meta.name, "cosign");
-        // Old key must remain — we bailed before any rename.
+        // Old key must remain — this bailed before any rename.
         assert!(
             tmp.path().join("cosign.key").exists(),
             "old key should remain when cosign is missing"
@@ -695,8 +698,8 @@ mod tests {
             "no backup pub should exist because there was no old pub to rename"
         );
         // The doc records the rotation completed; backupPrivateKey path is
-        // always set, backupPublicKey may or may not be — we don't pin its
-        // shape beyond rotation success.
+        // always set, backupPublicKey may or may not be — its shape is not pinned
+        // beyond rotation success.
         let json = cap.json().expect("doc should have json payload");
         assert_eq!(json["dir"], dir_str, "doc must record key dir");
         assert!(
@@ -716,7 +719,7 @@ mod tests {
         // No cosign.key — exercises the priv_path.exists()==false arm.
 
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
-        // Redirect HOME so we don't accidentally pick up a real ~/.cfgd/cosign.pub.
+        // Redirect HOME to avoid accidentally picking up a real ~/.cfgd/cosign.pub.
         let _home = with_test_home_guard(tmp.path());
 
         let (printer, cap) = Printer::for_test_doc();

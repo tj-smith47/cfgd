@@ -1,0 +1,9 @@
+Sync
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Local Repo
+  ⚠ Pull failed — find remote: remote 'origin' does not exist
+  → Add the remote with `git remote add origin <url>`, then re-run `cfgd sync`
+
+⚠ Sync incomplete — local repo not pulled

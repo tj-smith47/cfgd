@@ -1,8 +1,20 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
+    run_source_add(cli, printer, args, true)
+}
+
+/// The body of `cfgd source add`. `closing` is whether this add is the whole
+/// command: a `source replace` runs one inside its own report and closes on its
+/// own verdict, so the next-step hint belongs to the caller's last line, not to
+/// a `Subscribed` row mid-screen.
+pub(super) fn run_source_add(
+    cli: &Cli,
+    printer: &Printer,
+    args: &SourceAddArgs,
+    closing: bool,
+) -> anyhow::Result<()> {
     // Resolve the reference before anything reads the URL, so the inferred name,
     // the clone, and the persisted `spec.sources[].origin` all carry one string.
     // An existing local path stays itself (and is then refused by `load_source`
@@ -23,7 +35,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
-    printer.heading(format!("Add {}", Owner::source(&source_name).token()));
+    printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
 
     // A pin selects its own git ref (tag or commit), so an explicit branch is
     // meaningless and contradictory — reject the combination before any clone.
@@ -57,7 +69,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                 &source_name,
                 "already_exists",
                 format!(
-                    "Source '{}' already exists. Use 'cfgd source update' to refresh.",
+                    "Source '{}' already exists. Use `cfgd source update` to refresh.",
                     source_name
                 ),
                 serde_json::json!({}),
@@ -68,17 +80,10 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     // Clone and parse the source
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    if config_path.exists()
-        && let Ok(existing_cfg) = config::load_config(&config_path)
-    {
-        mgr.set_allow_unsigned(
-            existing_cfg
-                .spec
-                .security
-                .as_ref()
-                .is_some_and(|s| s.allow_unsigned),
-        );
-    }
+    let allow_unsigned = config_path.exists()
+        && config::load_config(&config_path)
+            .is_ok_and(|c| c.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(allow_unsigned);
     let mut spec = SourceManager::build_source_spec(&source_name, url, profile);
     if let Some(b) = branch {
         spec.origin.branch = b.to_string();
@@ -88,14 +93,31 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     if let Some(pin) = pin_version {
         spec.sync.pin_version = Some(pin.to_string());
     }
+    // Set BEFORE the clone, unlike `source update`'s counterpart: there is no
+    // prior fetch this demand could be read as describing, so a subscription
+    // that demands a signature is verified by the very fetch that establishes
+    // it rather than accepting an unsigned HEAD once and refusing it later.
+    spec.subscription.require_signed_commits = args.require_signed_commits;
+    spec.subscription.allow_scripts = args.allow_scripts;
     // Surface lib-side load failure with the same {"error": "load_failed", ...}
     // structured shape as the "Ok-but-no-cache-entry" fallback below, so both
     // load-failure paths look identical to structured consumers.
-    if let Err(e) = mgr.load_source(&spec, printer) {
+    // The clone is the wait. It retires silently on both arms because the
+    // failure below is already worded as its own line.
+    let load = printer.narrate_silent(format!("Fetching source:{source_name}"), |_| {
+        mgr.load_source(&spec, printer)
+    });
+    if let Err(e) = load {
         return Err(crate::cli::cli_error(
             &source_name,
             "load_failed",
-            format!("Failed to load source '{}': {}", source_name, e),
+            // The cause, not the whole sentence: this line already names the
+            // source, and the wrapped error names it again.
+            format!(
+                "Failed to load source '{}': {}",
+                source_name,
+                super::source_failure_detail(&e)
+            ),
             serde_json::json!({ "url": url }),
         ));
     }
@@ -112,9 +134,25 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         }
     };
 
-    // Display source manifest info
+    // What the source IS, through the same composer `cfgd source show` renders
+    // afterwards: the policy is EFFECTIVE for the subscription about to be
+    // written, since `spec` already carries the two subscriber knobs
+    // (`--require-signed-commits`, `--allow-scripts`) that combine with the
+    // manifest's constraints.
     let manifest = &cached.manifest;
-    let provided_profiles = display_source_manifest(printer, manifest);
+    let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
+    let profiles_dir = mgr.source_profiles_dir(&source_name).ok();
+    let policy = super::show::effective_source_policy(
+        Some(&spec),
+        &manifest.spec.policy.constraints,
+        allow_unsigned,
+    );
+    printer.emit(super::show::source_manifest_doc_sections(
+        Doc::new(),
+        manifest,
+        Some(&policy),
+        profiles_dir.as_deref(),
+    ));
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive
     let auto_detected_profile =
@@ -203,11 +241,12 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                     if lines.is_empty() {
                         // Role::Ok marks the conflict-check step as having passed cleanly
                         // (consistent with other clean-state preview steps).
+                        // verdict-row-ok: a comparison verdict, not an act cfgd performed
                         printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
                         let conflicts_sec = printer.section("Conflicts with Current Config");
                         for line in &lines {
-                            conflicts_sec.status_simple(Role::Warn, line.trim_start().to_string());
+                            conflicts_sec.status_simple(Role::Warn, line.clone());
                         }
                     }
                 }
@@ -246,6 +285,8 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     }
     source_spec.subscription.accept_recommended = accept_recommended;
     source_spec.subscription.priority = resolved_priority;
+    source_spec.subscription.require_signed_commits = args.require_signed_commits;
+    source_spec.subscription.allow_scripts = args.allow_scripts;
     if !opt_in.is_empty() {
         source_spec.subscription.opt_in = opt_in.to_vec();
     }
@@ -264,14 +305,15 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
 
     // Update state store
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    state.upsert_config_source(
-        &source_name,
-        url,
-        &spec.origin.branch,
-        cached.last_commit.as_deref(),
-        manifest.metadata.version.as_deref(),
-        None,
-    )?;
+    state.upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+        name: &source_name,
+        origin_url: url,
+        origin_branch: &spec.origin.branch,
+        last_commit: cached.last_commit.as_deref(),
+        source_version: manifest.metadata.version.as_deref(),
+        pinned_version: None,
+        last_commit_signed: cached.head_signed,
+    })?;
 
     // Record the resolved commit SHA in the sources lockfile so composition
     // is bit-reproducible across machines.
@@ -293,17 +335,25 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         }
     }
 
-    let mut doc = Doc::new().status(Role::Ok, "subscribed");
-    if let Some(ref p) = selected_profile {
-        doc = doc.kv("Profile", p);
+    // No `Profile` row: the manifest render above already showed the profile
+    // this subscription activates, under its own `profile:<name>` owner, and a
+    // headingless key/value pair restating it cannot be read on its own. The
+    // payload below still carries the field.
+    let mut doc = Doc::new().status(Role::Ok, "Subscribed");
+    if closing {
+        doc = doc.hint(super::success_next_step(super::Mutation::SourceSubscribed));
     }
-    doc = doc.hint(MSG_RUN_APPLY).with_data(serde_json::json!({
+    let doc = doc.with_data(serde_json::json!({
         "name": source_name,
         "url": url,
         "branch": source_spec.origin.branch,
         "commit": cached.last_commit.clone().unwrap_or_default(),
         "profile": selected_profile,
         "priority": resolved_priority,
+        // Additive: the same manifest object `source show` carries, so a
+        // consumer scripting a subscription reads what it subscribed TO
+        // without a second `source show` call.
+        "manifest": super::show::source_manifest_output(manifest),
     }));
     printer.emit(doc);
 
@@ -328,6 +378,8 @@ mod tests {
             auto_apply: false,
             pin_version: None,
             yes: true,
+            require_signed_commits: false,
+            allow_scripts: false,
         }
     }
 
@@ -342,7 +394,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -507,12 +562,23 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn add_hands_the_expanded_shorthand_to_the_source_load() {
         // The shorthand has to be expanded before `build_source_spec`, or the
         // subscription is recorded against a string git cannot clone. The
         // `load_failed` payload reports the URL that reached the load, so
         // dropping the expansion flips this assertion.
+        //
+        // `acme/dev` is resolved against the process CWD, which is global and
+        // which its negative sibling below moves into a directory holding a
+        // real `acme/dev`. Unserialized, the two overlap and this test reads
+        // the other one's world: the shorthand resolves to a local path, no
+        // expansion happens, and a correct build goes red. Both the guard and
+        // the `serial` are the fix — a guard alone only excludes other serial
+        // tests, and `serial` alone leaves the answer to whatever the suite was
+        // started from.
         let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
         let cli = cli_with_unusable_cache(dir.path(), dir.path().join("cfgd.yaml"));
         let (printer, _cap) = Printer::for_test_doc();
 

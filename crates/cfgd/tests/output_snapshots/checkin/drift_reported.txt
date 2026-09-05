@@ -1,5 +1,7 @@
 Checkin
-  Server status   ok
-  Config changed  false
 
-✓ 3 drift items reported
+Gateway
+  ✓ Checked in — server status ok, config unchanged
+
+System Settings
+  ✓ Reported 3 drifted system settings

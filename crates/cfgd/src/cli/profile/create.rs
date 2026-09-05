@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 pub fn cmd_profile_create(
     cli: &Cli,
@@ -23,7 +23,7 @@ pub fn cmd_profile_create(
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Create Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Create Profile", name));
 
     let config_dir = config_dir(cli);
     let pdir = config_dir.join("profiles");
@@ -86,39 +86,73 @@ pub fn cmd_profile_create(
 
         (inh, mods, Vec::new(), Vec::new(), Vec::new())
     } else {
-        let known = super::known_manager_names();
-        let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-        let default_mgr = Platform::detect().native_manager().to_string();
+        let default_mgr = Platform::current().native_manager().to_string();
+        // The new profile declares no `custom[]` of its own, but it INHERITS
+        // every one its parents' chains resolve to, so those names are legal
+        // prefixes here — resolved through the same chain resolver `profile
+        // show` reads, never a second parse. A name a schema path already
+        // claims is dropped: the parser resolves those first, so a custom
+        // manager spelled `brew` is unreachable through this branch anyway.
+        let inherited_custom: Vec<(String, String)> = inherits
+            .iter()
+            .filter_map(|p| {
+                cfgd_core::config::resolve_profile(p, &pdir)
+                    .ok()
+                    .map(|r| (p.clone(), r))
+            })
+            .flat_map(|(parent, r)| {
+                r.merged
+                    .packages
+                    .custom
+                    .into_iter()
+                    .map(move |c| (c.name, parent.clone()))
+            })
+            .filter(|(m, _)| cfgd_core::config::package_schema_path(m).is_none())
+            .collect();
+        let custom_managers: Vec<String> =
+            inherited_custom.iter().map(|(m, _)| m.clone()).collect();
         let pkgs = pkg_list
             .iter()
-            .map(|s| {
-                let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
-                (mgr.unwrap_or_else(|| default_mgr.clone()), pkg)
-            })
-            .collect::<Vec<_>>();
+            .map(|s| super::parse_package_flag(s, &custom_managers, &default_mgr))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // A custom manager IS the commands under its `custom[]` entry, and this
+        // profile declares none. Writing the package here would mean copying the
+        // parent's definition, and the child wins the scalar merge — so a later
+        // edit to the parent's install command would silently never reach this
+        // machine. Name the profile that owns the manager instead.
+        for pkg in &pkgs {
+            if let Some((mgr, parent)) = inherited_custom
+                .iter()
+                .find(|(m, _)| Some(m.as_str()) == pkg.manager.as_deref())
+            {
+                anyhow::bail!(
+                    "'{mgr}' is declared by profile '{parent}', not by '{name}'; add the package \
+                     there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
+                     {mgr} under spec.packages.custom in this profile",
+                    pkg.name
+                );
+            }
+        }
         let vars = var_list.to_vec();
         let sys = sys_list.to_vec();
         (inherits.to_vec(), module_list.to_vec(), pkgs, vars, sys)
     };
 
     // Warn about modules that don't exist locally (could be remote)
-    let modules_dir = config_dir.join("modules");
+    let modules_dir = cfgd_core::declared_modules_dir(&config_dir);
     for m in &mods {
         if !modules_dir.join(m).join("module.yaml").exists() {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Module '{}' not found locally — make sure it exists or is a remote module",
-                    m
-                ),
-            );
+            printer
+                .status(Role::Warn, format!("Module '{}' not found locally", m))
+                .detail("make sure it exists or is a remote module");
         }
     }
 
     // Build packages spec
     let mut packages_spec = config::PackagesSpec::default();
-    for (mgr, pkg) in &pkgs_parsed {
-        packages::add_package(mgr, pkg, &mut packages_spec)?;
+    let native = Platform::current().native_manager();
+    for pkg in &pkgs_parsed {
+        packages::add_package(pkg.slot_or(native), &pkg.name, &mut packages_spec)?;
     }
     let has_packages = !pkgs_parsed.is_empty();
 
@@ -255,18 +289,42 @@ pub fn cmd_profile_create(
         &serde_yaml::to_string(&doc)?,
     )?;
 
-    let mut out = Doc::new().status(
-        Role::Ok,
-        format!("Created profile '{}' at {}", name, profile_path.posix()),
-    );
+    let mut out = Doc::new().status(Role::Ok, format!("Created at {}", profile_path.posix()));
+    // One block, so the two rows share a key column.
+    let mut rows = Vec::new();
     if !doc.spec.inherits.is_empty() {
-        out = out.kv("Inherits", doc.spec.inherits.join(", "));
+        rows.push(cfgd_core::output::KvPair::new(
+            "Inherits",
+            doc.spec.inherits.join(", "),
+        ));
     }
-    if !doc.spec.modules.is_empty() {
-        out = out.kv("Modules", doc.spec.modules.join(", "));
-    }
+    // header-row-ok: a profile just scaffolded, not one resolved — the verdict
+    // row above names the file, nothing has been composed, and the modules are
+    // the list this command wrote.
+    rows.extend(cfgd_core::output::config_header_rows(
+        &cfgd_core::output::ConfigHeader {
+            config_path: None,
+            sources: &[],
+            profile: None,
+            profile_inherits: &[],
+            arrow: printer.arrow(),
+            modules: &doc
+                .spec
+                .modules
+                .iter()
+                .map(|name| cfgd_core::output::HeaderModule {
+                    name: name.clone(),
+                    platform_skip_reason: None,
+                    dep_pulled: false,
+                })
+                .collect::<Vec<_>>(),
+        },
+    ));
+    out = out.kv_rows(rows);
     out = out
-        .hint(format!("Activate with: cfgd profile switch {}", name))
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::ProfileCreated { name },
+        ))
         .with_data(serde_json::json!({
             "name": name,
             "path": cfgd_core::to_posix_string(&profile_path),

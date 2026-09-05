@@ -131,6 +131,68 @@ fn source_replace_happy_human() {
     );
 }
 
+/// A re-home carries the WHOLE subscription block, not just the six knobs
+/// `SourceAddArgs` can express: `overrides` and `reject` have no flag and are
+/// written back afterwards. Every field is set to a non-default value first,
+/// so nothing can survive by accident.
+#[test]
+#[serial]
+fn source_replace_carries_every_subscription_field() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir) = source_test_config_setup();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare_old = make_bare_source_repo(bare_root.path(), "carry-old", None);
+    let bare_new = make_bare_source_repo(bare_root.path(), "carry-new", None);
+    let url_old = cfgd_core::test_helpers::file_url(&bare_old);
+    let url_new = cfgd_core::test_helpers::file_url(&bare_new);
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (add_printer, _add_cap) = Printer::for_test_doc();
+    let mut args = source_add_args(url_old);
+    args.name = Some("carry-old".into());
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
+
+    // Populate every field of the subscription block on disk.
+    let config_path = cli.config.clone();
+    let mut raw: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
+            .expect("parse config");
+    let populated: serde_yaml::Value = serde_yaml::from_str(
+        "profile: default\npriority: 700\nacceptRecommended: true\noptIn:\n  - tmux\nallowScripts: true\nrequireSignedCommits: true\noverrides:\n  env:\n    EDITOR: vim\nreject:\n  packages:\n    - htop\n",
+    )
+    .expect("parse subscription");
+    raw["spec"]["sources"][0]["subscription"] = populated.clone();
+    // The knob being carried is `requireSignedCommits: true`, and the fixture
+    // repo's commits are unsigned — `allowUnsigned` lets the re-home's fetch
+    // succeed without weakening what the block records.
+    raw["spec"]["security"] = serde_yaml::from_str("allowUnsigned: true\n").expect("security");
+    std::fs::write(
+        &config_path,
+        serde_yaml::to_string(&raw).expect("serialize config"),
+    )
+    .expect("write config");
+
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_source_replace(&cli, &printer, "carry-old", &url_new).expect("replace");
+    drop(printer);
+
+    let after: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
+            .expect("parse config");
+    let block = after["spec"]["sources"][0]["subscription"]
+        .as_mapping()
+        .expect("re-homed source carries a subscription block");
+    for (key, value) in populated.as_mapping().expect("mapping") {
+        assert_eq!(
+            block.get(key),
+            Some(value),
+            "field {key:?} was dropped by the re-home"
+        );
+    }
+    assert_eq!(after["spec"]["sources"][0]["origin"]["url"], url_new);
+}
+
 #[test]
 fn source_replace_not_found_human() {
     let (config_dir, state_dir) = source_test_config_setup();

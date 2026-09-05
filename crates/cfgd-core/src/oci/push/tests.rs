@@ -165,13 +165,7 @@ fn push_module_inner_uploads_blobs_and_manifest() {
         .build()
         .new_agent();
 
-    let result = push_module_inner(
-        &agent,
-        module_dir.path(),
-        &oci_ref,
-        None,
-        Some("linux/amd64"),
-    );
+    let result = push_module_inner(&agent, module_dir.path(), &oci_ref, None, "linux/amd64");
     assert!(
         result.is_ok(),
         "push_module_inner failed: {:?}",
@@ -196,7 +190,7 @@ fn push_module_inner_rejects_missing_module_yaml() {
     };
 
     let agent = ureq::Agent::config_builder().build().new_agent();
-    let result = push_module_inner(&agent, dir.path(), &oci_ref, None, None);
+    let result = push_module_inner(&agent, dir.path(), &oci_ref, None, "linux/amd64");
     assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
 }
 
@@ -254,10 +248,69 @@ fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
         "push_module wrapper should succeed: {:?}",
         result.err()
     );
-    let digest = result.unwrap();
+    let outcome = result.unwrap();
     assert!(
-        digest.starts_with("sha256:"),
-        "manifest digest must be sha256-prefixed: {digest}"
+        outcome.digest.starts_with("sha256:"),
+        "manifest digest must be sha256-prefixed: {}",
+        outcome.digest
+    );
+    assert_eq!(
+        outcome.platform, "linux/amd64",
+        "the outcome reports the platform the push annotated the manifest with"
+    );
+    manifest_mock.assert();
+}
+
+/// With no `--platform`, the annotation written and the platform reported are
+/// one resolution of this host — the caller has no second derivation to make.
+#[test]
+fn push_module_with_no_platform_reports_the_host_platform_it_annotated() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let module_dir = create_test_module_dir();
+
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/defaulted/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/test/defaulted/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/test/defaulted/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/test/defaulted/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+    let manifest_mock = server
+        .mock("PUT", "/v2/test/defaulted/manifests/v1")
+        .with_status(201)
+        .match_body(mockito::Matcher::PartialJsonString(format!(
+            r#"{{"annotations":{{"{}":"{}"}}}}"#,
+            crate::OCI_ANNOTATION_PLATFORM,
+            crate::oci::current_platform()
+        )))
+        .create();
+
+    let artifact_ref = format!("{}/test/defaulted:v1", registry);
+    let outcome = push_module(module_dir.path(), &artifact_ref, None, None)
+        .expect("defaulted push must succeed");
+    assert_eq!(
+        outcome.platform,
+        crate::oci::current_platform(),
+        "a push given no platform reports the host it resolved"
     );
     manifest_mock.assert();
 }
@@ -308,7 +361,7 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
     assert!(result.is_err(), "500 from registry must surface as Err");
     printer.flush();
 
-    let rendered = buf.lock().unwrap().clone();
+    let rendered = crate::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("Failed to push module"),
         "spinner must finish_fail with a push-failure subject, got: {rendered}"
@@ -457,7 +510,7 @@ fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
     assert!(result.is_err(), "index 500 must surface as Err");
     printer.flush();
 
-    let rendered = buf.lock().unwrap().clone();
+    let rendered = crate::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("Failed to push multi-platform module"),
         "spinner must finish_fail with a push-failure subject, got: {rendered}"

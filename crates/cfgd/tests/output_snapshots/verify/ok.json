@@ -7,14 +7,16 @@
       "expected": "installed",
       "matches": true,
       "resourceId": "curl",
-      "resourceType": "package"
+      "resourceType": "package",
+      "unmanaged": false
     },
     {
       "actual": "installed",
       "expected": "installed",
       "matches": true,
       "resourceId": "ripgrep",
-      "resourceType": "package"
+      "resourceType": "package",
+      "unmanaged": false
     }
   ]
 }

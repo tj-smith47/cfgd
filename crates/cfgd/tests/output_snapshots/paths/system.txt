@@ -1,0 +1,24 @@
+cfgd Directories
+  Scope  system
+
+Config
+  Directory  /etc/cfgd
+  Source     default
+  File       /etc/cfgd/cfgd.yaml
+
+State
+  Directory   /var/lib/cfgd
+  Source      default
+  Database    /var/lib/cfgd/state.db
+  Apply Lock  /var/lib/cfgd/apply.lock
+
+Cache
+  Directory  /var/cache/cfgd
+  Source     default
+  Sources    /var/cache/cfgd/sources
+  Modules    /var/cache/cfgd/modules
+
+Runtime
+  Directory  /run/cfgd
+  Source     default
+  Socket     /run/cfgd/cfgd.sock

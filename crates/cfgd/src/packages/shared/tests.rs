@@ -81,6 +81,43 @@ fn extract_caveats_brew_section() {
     assert!(notes[0].message.contains("Restart terminal."));
 }
 
+/// A brew caveat's role is read off its body: `⚠` means "act on this", and a
+/// "here is where it went" report is `◉` whatever section it was scraped
+/// from. Every other manager's caveat is a line the tool itself labelled a
+/// warning, and keeps that severity.
+#[test]
+fn a_brew_caveat_is_a_warning_only_when_it_asks_the_reader_to_act() {
+    let report = test_cmd_output(
+        "==> Caveats\nBash completion has been installed to:\n  /home/linuxbrew/.linuxbrew/etc/bash_completion.d\n",
+        "",
+    );
+    let notes = extract_caveats("brew", &report);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].role,
+        Role::Info,
+        "a side-effect report wears the info glyph: {:?}",
+        notes[0].message
+    );
+
+    for body in [
+        "To start postgresql now and restart at login:\n  brew services start postgresql",
+        "If you need to have openssl first in your PATH, run:\n  echo 'export PATH=...' >> ~/.zshrc",
+        "The formula built, but is not symlinked into /usr/local\nYou can try again using:\n  brew link foo",
+        "Add to PATH: /opt/homebrew/bin\nRestart terminal.",
+    ] {
+        let output = test_cmd_output(&format!("==> Caveats\n{body}\n"), "");
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 1, "{body:?}");
+        assert_eq!(notes[0].role, Role::Warn, "an instruction warns: {body:?}");
+    }
+
+    let npm = test_cmd_output("", "npm warn deprecated foo@1.0\n");
+    assert_eq!(extract_caveats("npm", &npm)[0].role, Role::Warn);
+    let pip = test_cmd_output("WARNING: pip is out of date\n", "");
+    assert_eq!(extract_caveats("pip", &pip)[0].role, Role::Warn);
+}
+
 #[test]
 fn extract_caveats_brew_no_caveats() {
     let output = test_cmd_output("==> Installing ripgrep\n==> Summary\nDone.", "");
@@ -348,6 +385,97 @@ fn extract_caveats_pip_in_both_streams() {
     assert_eq!(notes.len(), 2);
 }
 
+/// No registered manager may emit a caveat with nothing in it: a blank body
+/// paints a lone warning glyph beside the manager tag and tells the reader
+/// nothing. Walked over every manager name so a new extractor arm is covered
+/// by being registered, and driven with the shapes that produced one — a
+/// header with only spacer lines under it, and a self-tag with no text.
+#[test]
+fn no_manager_can_emit_an_empty_caveat() {
+    let blank_shapes = [
+        "==> Caveats\n\n\n==> Summary\n",
+        "npm warn \nnpm warn install-scripts\nnpm warn install-scripts\n",
+        "WARNING:\n",
+        "warning:   \n",
+        "Caveat:\n",
+        "note:\n",
+        "\n\n",
+    ];
+    for manager in cfgd_core::config::ALL_MANAGER_NAMES {
+        for shape in blank_shapes {
+            for output in [test_cmd_output(shape, ""), test_cmd_output("", shape)] {
+                for note in extract_caveats(manager, &output) {
+                    assert!(
+                        !note.message.trim().is_empty(),
+                        "{manager} emitted an empty caveat from {shape:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A caveat already labelled by the tool that printed it is double-tagged by
+/// the time it renders: the owner group names the manager and the note carries
+/// its `[manager]` tag, so `⚠ [npm] npm warn deprecated …` says npm three
+/// times. Every extractor strips the tool's own label.
+#[test]
+fn no_manager_repeats_its_own_label_inside_a_caveat() {
+    let cases = [
+        ("npm", "npm warn deprecated glob@7: no longer supported\n"),
+        ("pipx", "WARNING: pipx is not on PATH\n"),
+        ("pip", "WARNING: pip is out of date\n"),
+        ("cargo", "warning: cargo-audit is unmaintained\n"),
+        ("winget", "Note: restart required\n"),
+    ];
+    for (manager, line) in cases {
+        let notes = extract_caveats(manager, &test_cmd_output(line, line));
+        assert!(!notes.is_empty(), "{manager} dropped its caveat: {line:?}");
+        for note in &notes {
+            let lowered = note.message.to_lowercase();
+            for tag in ["npm warn", "warning:", "note:", "warn:", "caveat:"] {
+                assert!(
+                    !lowered.starts_with(tag),
+                    "{manager} kept its own {tag:?} label: {:?}",
+                    note.message
+                );
+            }
+        }
+    }
+}
+
+/// One npm advisory is one caveat however many physical lines npm wrapped it
+/// over, and the code it repeats on every line is said once.
+#[test]
+fn npm_wraps_one_advisory_into_one_caveat() {
+    let output = test_cmd_output(
+        "npm warn deprecated inflight@1.0.6: This module is not supported\n\
+         npm warn deprecated \n\
+         npm warn deprecated Use lru-cache instead\n",
+        "",
+    );
+    let notes = extract_caveats("npm", &output);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0]
+            .message
+            .starts_with("deprecated: inflight@1.0.6: This module is not supported"),
+        "{:?}",
+        notes[0].message
+    );
+    assert!(
+        notes[0].message.contains("\n  Use lru-cache instead"),
+        "the wrapped line reads as a continuation: {:?}",
+        notes[0].message
+    );
+    assert_eq!(
+        notes[0].message.matches("deprecated").count(),
+        1,
+        "the repeated code is said once: {:?}",
+        notes[0].message
+    );
+}
+
 #[test]
 fn extract_caveats_npm_warn_uppercase_and_lowercase() {
     let output = test_cmd_output("npm warn old-dep\nnpm WARN peer issue\n", "");
@@ -476,13 +604,9 @@ fn strip_arch_suffix_with_dots_in_name() {
 fn extract_caveats_brew_caveats_only_blank_lines() {
     let output = test_cmd_output("==> Caveats\n\n\n==> Summary\n", "");
     let notes = extract_caveats("brew", &output);
-    // Blank lines are captured, joined, then trimmed — result is empty string
-    // but caveat_lines is non-empty so an ActionNote with empty message is produced
-    assert_eq!(notes.len(), 1);
-    assert!(
-        notes[0].message.is_empty(),
-        "message should be empty after trim"
-    );
+    // A caveat block holding nothing but blank lines says nothing. Emitted, it
+    // paints a lone warning glyph beside the manager tag.
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 #[test]
@@ -1067,7 +1191,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
         "expected caveat message, got: {:?}",
         drained[0].message
     );
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("Post-install notes"),
         "the note travels back to the reconciler; nothing prints here: {captured}"
@@ -1095,7 +1219,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
         "install",
     )
     .expect("shim exits 0");
-    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let standalone = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
         1,
@@ -1113,7 +1237,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
         "install",
     )
     .expect("shim exits 0");
-    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    let owned = cfgd_core::test_helpers::captured_text(&owned_buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&owned).len(),
         0,
@@ -1151,7 +1275,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
         Err(e) => e,
         Ok(_) => panic!("shim exits 1"),
     };
-    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let standalone = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
         1,
@@ -1171,7 +1295,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
         Err(e) => e,
         Ok(_) => panic!("shim exits 1"),
     };
-    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    let owned = cfgd_core::test_helpers::captured_text(&owned_buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&owned).len(),
         0,
@@ -1233,7 +1357,7 @@ fn a_failed_caller_owned_batch_install_carries_every_cause() {
         "a status subject may not carry an embedded newline: {message:?}"
     );
 
-    let transcript = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let transcript = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&transcript).len(),
         0,
@@ -2011,4 +2135,185 @@ fn every_package_manager_spawn_wrapper_hands_the_child_the_bootstrapped_dirs() {
     )
     .expect("the probe exits 0");
     leads(out.stdout.as_bytes(), "pkg_run");
+}
+
+/// The demo's `cargo install stylua` failure: forty lines of download progress,
+/// then the one sentence that says why.
+fn cargo_style_stderr() -> String {
+    let mut lines = vec!["Updating crates.io index".to_string()];
+    lines.extend((0..40).map(|i| format!("Downloaded crate-{i} v1.0.0")));
+    lines.push("error: feature `edition2024` is required".to_string());
+    lines.join("\n")
+}
+
+#[test]
+fn a_failed_commands_reason_is_bounded_and_keeps_the_diagnosis() {
+    let reason = command_failure_reason(&test_cmd_output("", &cargo_style_stderr()));
+    let lines: Vec<&str> = reason.lines().collect();
+    assert!(
+        lines.len() <= 5,
+        "a manager's stderr reaches one action row; it may not be 42 lines of it: {reason:?}"
+    );
+    assert!(
+        reason.ends_with("error: feature `edition2024` is required"),
+        "cargo, npm, pip and brew all put the diagnosis last: {reason:?}"
+    );
+    assert!(
+        !reason.contains("Downloaded crate-0 "),
+        "the progress the reader does not need must be elided: {reason:?}"
+    );
+    assert!(
+        !reason.contains(" — "),
+        "the row's subject/detail separator may not double as the glue between \
+         a child's own lines: {reason:?}"
+    );
+}
+
+#[test]
+fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message() {
+    // Every line under `packages/` mentioning a captured stderr, and what it is
+    // allowed to be: a `Command` builder, a PARSE that selects specific lines,
+    // or the one bounded fold. Anything else is a new unbounded dump in a row.
+    let hatched = [
+        ("Stdio::null()", "stdio configuration, nothing captured"),
+        (
+            "output.stdout, output.stderr",
+            "extract_caveat_bodies parses the combined capture; each note it \
+             selects is one line",
+        ),
+        (
+            "output.stderr.lines()",
+            "the generic caveat arm, same parse by line",
+        ),
+        (
+            "captured_output_detail(",
+            "the ONE bounded fold from a captured child's output to a rendered slot",
+        ),
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("packages tree is readable") {
+            let path = entry.expect("readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+            {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).expect("readable source");
+            for (n, line) in body.lines().enumerate() {
+                if !line.contains(".stderr") {
+                    continue;
+                }
+                if hatched.iter().any(|(shape, _)| line.contains(shape)) {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a package manager's captured stderr reaches a rendered slot only through \
+         `command_failure_reason`, which bounds it; hatch a parse in this test's \
+         table with its reason:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every banner shape a manager in this crate prints yields its dotted
+/// version and nothing else: the prefix (`v`, `go`), the trailing punctuation
+/// and the words around it are not the fact.
+#[test]
+fn parse_tool_version_reads_every_managers_banner_shape() {
+    for (banner, expected) in [
+        ("Homebrew 4.6.3", Some("4.6.3")),
+        (
+            "Homebrew 4.6.3\nHomebrew/homebrew-core (git revision abc)",
+            Some("4.6.3"),
+        ),
+        ("11.4.2", Some("11.4.2")),
+        ("go version go1.24.1 linux/amd64", Some("1.24.1")),
+        ("v1.8.1911", Some("1.8.1911")),
+        ("apt 2.8.3 (amd64)", Some("2.8.3")),
+        ("apk-tools 2.14.4, compiled for x86_64.", Some("2.14.4")),
+        ("nix (Nix) 2.24.9", Some("2.24.9")),
+        ("cargo 1.89.0 (c24e10642 2025-06-23)", Some("1.89.0")),
+        ("pipx 1.7.1", Some("1.7.1")),
+        ("snap    2.70\nsnapd   2.70", Some("2.70")),
+        ("Flatpak 1.16.0", Some("1.16.0")),
+        (
+            "Current Scoop version:\nv0.5.2 - Released at 2024-10-30",
+            Some("0.5.2"),
+        ),
+        ("Chocolatey v2.4.3", Some("2.4.3")),
+        ("usage: nothing here", None),
+        ("", None),
+    ] {
+        assert_eq!(
+            super::parse_tool_version(banner).as_deref(),
+            expected,
+            "banner: {banner:?}"
+        );
+    }
+}
+
+/// A probe that spawns on its own (`tool_version_from`, and through it every
+/// provision's settled version) hands the child the directories this run
+/// bootstrapped, exactly as `pkg_run` does: a manager's `--version` shells out
+/// to siblings its shim finds through the PATH it inherits, and the one cfgd
+/// started with cannot name a prefix that did not exist then.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_version_probe_reaches_a_sibling_the_manager_shim_finds_through_the_bootstrapped_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    write("sibling", "#!/bin/sh\necho 'Sibling 1.2.3'\n");
+    let shim = write("mgr", "#!/bin/sh\nexec sibling --version\n");
+    cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir.path())]);
+
+    assert_eq!(
+        tool_version_from(&mut Command::new(&shim)).as_deref(),
+        Some("1.2.3"),
+        "the shim's sibling resolves only through the dirs this run bootstrapped"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn upgrade_each_spawns_the_built_command_once_per_held_package() {
+    let notes = NoteSink::default();
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPGRADE_BIN", 0, "", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    upgrade_each(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &["ripgrep".to_string(), "fd".to_string()],
+        "test-mgr upgrade",
+        |pkg| {
+            let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPGRADE_BIN").unwrap());
+            cmd.arg(pkg);
+            cmd
+        },
+    )
+    .expect("upgrade_each must spawn every held package and succeed");
+    let argv = _shim.argv_log();
+    assert!(argv.contains("ripgrep"), "argv must name ripgrep: {argv}");
+    assert!(argv.contains("fd"), "argv must name fd: {argv}");
 }

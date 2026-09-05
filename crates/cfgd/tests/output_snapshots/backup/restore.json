@@ -3,7 +3,8 @@
   "name": "docs",
   "restored": true,
   "restoredTo": "<SOURCE>",
-  "safetySnapshot": "<STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>",
+  "safetyCopy": "<SOURCE>.cfgd-backup",
+  "safetyCopyReused": false,
   "sizeBytes": 12,
   "snapshot": "notes.txt.<TIMESTAMP>"
 }

@@ -1,27 +1,44 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::providers::{FileAction, PackageAction, PackageManagerExt, SecretAction};
+use crate::providers::{
+    FileAction, PackageAction, PackageManager, PackageManagerExt, SecretAction,
+};
 
+use super::env::EnvPlanOutcome;
 use super::restore::content_hash_if_exists;
 use super::types::{
     Action, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ReconcileContext,
     ScriptAction, ScriptPhase, SystemAction,
 };
 
+/// Actions tagged with the phase each is routed to.
+pub(super) type RoutedActions = Vec<(PhaseName, Action)>;
+
+/// The per-manager sort key `plan_modules` orders a module's package batches
+/// by: (availability class, family, source-registering managers first within
+/// the family, name), with the registry's resolved manager carried alongside
+/// so the elision below never re-walks the registry.
+type ManagerOrder<'a> = (
+    u8,
+    &'a str,
+    bool,
+    &'a String,
+    Option<&'a dyn PackageManager>,
+);
+
 /// The phase a module action belongs to.
 ///
-/// Total: every variant returns a phase and nothing panics. `Skip` is the one
-/// kind whose phase the *emit site* decides — `plan_modules` emits a
-/// platform-gated skip and a file-encryption skip from different places and
-/// only `plan_modules` can tell them apart — and its arm here answers with the
-/// meta phase, the answer that is correct for the only `Skip` a caller could
-/// route through this function by mistake.
+/// Total, and the ONE answer: every variant returns a phase and nothing panics,
+/// so no emit site names a phase of its own. The two refusals used to share a
+/// variant whose phase only `plan_modules` could tell apart, which is how a
+/// refused file deploy inherited the meta phase's "counted nowhere" treatment.
 fn phase_for_module_kind(kind: &ModuleActionKind) -> PhaseName {
     match kind {
         ModuleActionKind::RunScript { phase, .. } => match phase {
@@ -39,25 +56,18 @@ fn phase_for_module_kind(kind: &ModuleActionKind) -> PhaseName {
         },
         ModuleActionKind::InstallPackages { .. } => PhaseName::Packages,
         ModuleActionKind::DeployFiles { .. } => PhaseName::Files,
+        // The refusal is FILE work withheld, so it stays attached to the phase
+        // that work belongs to; a module the host declined whole names the meta
+        // phase rather than the phase of any work it would have done.
+        ModuleActionKind::FilesRefused { .. } => PhaseName::Files,
         ModuleActionKind::Skip { .. } => PhaseName::Modules,
     }
 }
 
 /// Build a module action tagged with the phase its kind routes to.
 fn routed(module: &ResolvedModule, kind: ModuleActionKind) -> (PhaseName, Action) {
-    routed_to(module, phase_for_module_kind(&kind), kind)
-}
-
-/// Build a module action tagged with an explicitly named phase — the emit-site
-/// form, for the two `Skip` shapes whose phase only the emit site can tell
-/// apart.
-fn routed_to(
-    module: &ResolvedModule,
-    phase: PhaseName,
-    kind: ModuleActionKind,
-) -> (PhaseName, Action) {
     (
-        phase,
+        phase_for_module_kind(&kind),
         Action::Module(ModuleAction::with_origin(
             module.name.clone(),
             kind,
@@ -76,13 +86,73 @@ impl<'a> super::Reconciler<'a> {
         module_actions: Vec<ResolvedModule>,
         context: ReconcileContext,
     ) -> Result<Plan> {
+        self.plan_observed(
+            resolved,
+            file_actions,
+            pkg_actions,
+            module_actions,
+            context,
+            &mut |_| {},
+        )
+    }
+
+    /// [`super::Reconciler::plan`], reporting each phase to `observe` as that phase's
+    /// contents are computed.
+    ///
+    /// The seam exists so a command can narrate a plan while it is being built
+    /// instead of standing silent until the whole tree is ready. `observe` fires
+    /// at real computation boundaries, in COMPUTATION order rather than render
+    /// order — the two differ because the phases are not independent: no bucket
+    /// is final until module work has been routed into it, `Prerequisites` is
+    /// planned from the package work that survived dedup, and the caller hands
+    /// `file_actions` in already computed. Two phases therefore never fire.
+    /// `Files` fires for the conflict sweep that hashes every declared source,
+    /// which is the only file work this function does; `PostScripts` fires not
+    /// at all, because profile post-scripts are computed in the same pass as
+    /// pre-scripts and a module's own are computed under `Modules`.
+    ///
+    /// Observation changes nothing about the plan: the `Plan` this returns is
+    /// the one [`super::Reconciler::plan`] returns for the same inputs.
+    pub fn plan_observed(
+        &self,
+        resolved: &ResolvedProfile,
+        file_actions: Vec<FileAction>,
+        pkg_actions: Vec<PackageAction>,
+        module_actions: Vec<ResolvedModule>,
+        context: ReconcileContext,
+        observe: &mut dyn FnMut(PhaseName),
+    ) -> Result<Plan> {
         // Conflict detection: check for multiple sources targeting the same path
+        observe(PhaseName::Files);
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
+
+        // A module file declaring a source that does not exist is a broken
+        // declaration, refused while the plan is read — the moment the
+        // profile file path refuses it — so a fresh home cannot settle
+        // "unchanged" over files that were never written. `Patch` entries
+        // need no source, and an absent `private` source already resolved
+        // to nothing.
+        for module in &module_actions {
+            // A platform-gated module plans a single Skip and deploys
+            // nothing, so its declarations are not judged on this host.
+            if module.platform_skip_reason.is_some() {
+                continue;
+            }
+            for file in &module.files {
+                if file.patch.is_none() && !file.source.exists() {
+                    return Err(crate::errors::FileError::SourceNotFound {
+                        path: file.source.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
 
         // The profile is the document the user edited, so every action derived
         // from the merged profile is owned by its leaf profile name.
         let profile = Owner::profile(resolved.profile_name());
 
+        observe(PhaseName::PreScripts);
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
 
@@ -91,13 +161,16 @@ impl<'a> super::Reconciler<'a> {
         // in a bucket of their own. Packages are grouped with system/native
         // managers first, then bootstrappable managers, so build deps are
         // installed before packages that need them.
-        let mut module_routed = self.plan_modules(&module_actions, context);
+        observe(PhaseName::Modules);
+        let (mut module_routed, env_gated_hooks) =
+            self.plan_modules(&module_actions, resolved.profile_name(), context);
 
         // Cross-scope package dedup: a (manager, resolved_name) declared in both a
         // module and the profile (or in two modules) installs once. Module installs
         // win because module-owned package work is dispatched first (Rule P's
         // tier 0) and a module's postApply may need the package present; among
         // modules the earlier one wins (module-order walk).
+        observe(PhaseName::Packages);
         let claimed = Self::dedup_module_packages(&mut module_routed);
 
         // Profile-level packages are applied after module packages so module
@@ -114,8 +187,36 @@ impl<'a> super::Reconciler<'a> {
         // consumer left in this run and must not mint a node — a converged
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
-        let manager_actions =
-            super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+        observe(PhaseName::Prerequisites);
+        // Read once, from the resolution that already applied every `prefer`
+        // and `aliases` the module wrote, and BEFORE the elision below drops
+        // the entries those routes were minted from.
+        let declared_routes = super::managers::declared_manager_routes(&module_routed);
+        let mut manager_actions = super::managers::plan_managers_with_routes(
+            self.registry,
+            &profile_packages,
+            &module_routed,
+            &declared_routes,
+            &[],
+        );
+        // A tool this plan's own cascade provisions as a MANAGER is already
+        // the run's statement about that tool; a bare module entry naming it
+        // under the platform default is a second, weaker one and would land a
+        // second copy through a manager that never delivered the first. Judged
+        // by the one elision predicate, with the plan's provisions in the
+        // slot the apply fills from what actually landed. Dropping an entry
+        // can retire a manager's last consumer, so the nodes are planned
+        // again over what survived.
+        if let Some(relied_on) = self.elide_provisioned_tools(&mut module_routed, &manager_actions)
+        {
+            manager_actions = super::managers::plan_managers_with_routes(
+                self.registry,
+                &profile_packages,
+                &module_routed,
+                &declared_routes,
+                &relied_on,
+            );
+        }
 
         // The env file publishes where a manager's binaries live, so it has to
         // know about a manager this very run is about to provision, not only
@@ -127,9 +228,10 @@ impl<'a> super::Reconciler<'a> {
             &manager_actions,
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
         );
-        let (env_actions, warnings) = self.plan_env(
+        let env_plan = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
             resolved.merged.env_scope,
             &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
@@ -138,12 +240,41 @@ impl<'a> super::Reconciler<'a> {
             &super::env::recorded_managed_env_files(self.state),
         );
 
+        // The env-gated hooks deferred by `plan_modules`: a module's hooks
+        // revive off the env surface only when its OWN env/alias entries
+        // moved between the deployed primary env file and the content this
+        // plan writes — another layer rewriting the shared surface is that
+        // layer's work, not this module's, so its hooks stay dropped. No
+        // planned primary rewrite means no declared entry moved (every entry
+        // renders into that file), so nothing revives; an unanswerable
+        // baseline fails OPEN and revives. Safe to fold in this late —
+        // `dedup_module_packages` and `plan_managers` above read only
+        // `InstallPackages` actions, and hooks are none.
+        let EnvPlanOutcome {
+            actions: env_actions,
+            warnings,
+            primary_write,
+        } = env_plan;
+        for (module_name, hooks) in env_gated_hooks {
+            let revive = primary_write.as_ref().is_some_and(|w| {
+                module_actions
+                    .iter()
+                    .find(|m| m.name == module_name)
+                    .is_none_or(|m| w.module_env_moved(&m.env, &m.aliases))
+            });
+            if revive {
+                module_routed.extend(hooks);
+            }
+        }
+
         let package_actions = profile_packages
             .into_iter()
             .map(Action::Package)
             .collect::<Vec<_>>();
 
+        observe(PhaseName::System);
         let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
+        observe(PhaseName::Secrets);
         let secret_actions = self.plan_secrets(&resolved.merged);
 
         let mut buckets: Vec<(PhaseName, Vec<Action>)> = vec![
@@ -260,7 +391,11 @@ impl<'a> super::Reconciler<'a> {
 
         let mut actions = Vec::new();
 
-        for configurator in self.registry.available_system_configurators() {
+        // One sweep for both loops below: the second asks which keys no
+        // available configurator claims, which is the same population.
+        let available = self.registry.available_system_configurators();
+
+        for configurator in &available {
             if let Some(desired) = system.get(configurator.name()) {
                 let drifts = configurator.diff(desired)?;
                 for drift in drifts {
@@ -283,14 +418,13 @@ impl<'a> super::Reconciler<'a> {
         // can't run it" from "cfgd has no such configurator" — a registered-but-
         // unavailable configurator (e.g. systemdUnits where systemctl is absent)
         // must not masquerade as "not registered".
-        let available = self.registry.available_system_configurators();
         for key in system.keys() {
             if available.iter().any(|c| c.name() == key) {
                 continue;
             }
             let registered = self
                 .registry
-                .system_configurators
+                .system_configurators()
                 .iter()
                 .any(|c| c.name() == key);
             let reason = if registered {
@@ -339,6 +473,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
+                            template: secret.template.clone(),
                             origin: LOCAL_LAYER.to_string(),
                         }));
                     }
@@ -349,6 +484,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
+                            template: secret.template.clone(),
                             origin: LOCAL_LAYER.to_string(),
                         }));
                     }
@@ -460,12 +596,22 @@ impl<'a> super::Reconciler<'a> {
         (pre_actions, post_actions)
     }
 
+    /// Returns the module-routed actions plus the lifecycle hooks whose "does
+    /// this module have work" question only the env plan can answer: a module
+    /// whose packages and files all converged but which declares env/aliases
+    /// has work exactly when its OWN env/alias contribution moves, and that
+    /// surface is planned later, as a unit, by `plan_env`. The deferred hooks
+    /// are grouped under the declaring module's name so the caller can revive
+    /// each module's hooks per [`super::env::PrimaryEnvWrite::module_env_moved`]
+    /// instead of reviving all of them whenever any env action was planned.
     pub(super) fn plan_modules(
         &self,
         modules: &[ResolvedModule],
+        profile_name: &str,
         context: ReconcileContext,
-    ) -> Vec<(PhaseName, Action)> {
+    ) -> (RoutedActions, Vec<(String, RoutedActions)>) {
         let mut actions = Vec::new();
+        let mut env_gated_hooks = Vec::new();
 
         for module in modules {
             // Platform-gated module: surface a single visible Skip and emit no
@@ -474,9 +620,8 @@ impl<'a> super::Reconciler<'a> {
             // whole module that is gated off this host, so it names the meta
             // phase rather than the phase of any work it would have done.
             if let Some(reason) = &module.platform_skip_reason {
-                actions.push(routed_to(
+                actions.push(routed(
                     module,
-                    PhaseName::Modules,
                     ModuleActionKind::Skip {
                         reason: reason.clone(),
                     },
@@ -500,16 +645,11 @@ impl<'a> super::Reconciler<'a> {
                 ),
             };
 
-            // Pre-scripts for this module
-            for script in pre_scripts {
-                actions.push(routed(
-                    module,
-                    ModuleActionKind::RunScript {
-                        script: script.clone(),
-                        phase: pre_phase.clone(),
-                    },
-                ));
-            }
+            // The module's own body, buffered so the lifecycle hooks can be
+            // gated on whether any of it survived elision: hooks exist to
+            // bracket work, and a converged module performs none.
+            let mut body: Vec<(PhaseName, Action)> = Vec::new();
+            let mut work = 0usize;
 
             // Packages: group by manager for efficient batch install
             let mut by_manager: HashMap<String, Vec<crate::modules::ResolvedPackage>> =
@@ -528,37 +668,74 @@ impl<'a> super::Reconciler<'a> {
             // a bootstrappable manager's action from overlapping an available
             // one's is the dispatcher's serial gate around any action whose
             // manager is not currently available.
-            let mut manager_order: Vec<&String> = by_manager.keys().collect();
-            // `(class, name)`, not `class` alone: `sort_by_key` is stable, so a
-            // key that ties on `class` falls back to `HashMap::keys()`'s
-            // arbitrary, per-process order. Two managers in the same class
-            // (`cargo` and `npm`, both `0`) would then emit their
-            // `InstallPackages` actions in a different relative order on every
-            // run — the plan tree's bullet order, the `-o json` payload order,
-            // the journal `action_index`, and the phase's execution offer
-            // order all read from this `Vec`.
-            manager_order.sort_by_key(|mgr| {
-                let class = match self
-                    .registry
-                    .package_managers
-                    .iter()
-                    .find(|m| m.name() == mgr.as_str())
-                {
-                    Some(m) if m.is_available() => 0, // available (native) first
-                    // Bootstrappable second — a manager with a plan to provision it.
-                    Some(m) if m.can_bootstrap() => 1,
-                    _ => 2, // unknown last
-                };
-                (class, mgr.as_str())
-            });
+            // The class is computed once PER MANAGER, ahead of the sort, rather
+            // than inside the comparator: `is_available()` is a PATH probe, and
+            // a comparator runs it O(n log n) times per module.
+            // The resolved manager travels WITH its class: the elision below
+            // needs the very `&dyn PackageManager` this lookup already found,
+            // and re-`find`ing it there walked the registry a second time per
+            // manager per module.
+            let mut manager_order: Vec<ManagerOrder<'_>> = by_manager
+                .keys()
+                .map(|mgr| {
+                    let found = self
+                        .registry
+                        .package_managers()
+                        .iter()
+                        .find(|m| m.name() == mgr.as_str());
+                    let class = match found {
+                        Some(m) if m.is_available() => 0, // available (native) first
+                        // Bootstrappable second — a manager with a plan to provision it.
+                        Some(m) if m.can_bootstrap() => 1,
+                        _ => 2, // unknown last
+                    };
+                    // A source-registering manager's installs go ahead of
+                    // its OWN family: a formula may only exist in the tap
+                    // being added by this very run. The family bound is
+                    // the point — a tap has nothing to say about another
+                    // family's packages, so it does not jump those.
+                    let sources_last = !found.is_some_and(|m| m.registers_family_sources());
+                    (
+                        class,
+                        crate::manager_family(mgr),
+                        sources_last,
+                        mgr,
+                        found.map(|m| m.as_ref()),
+                    )
+                })
+                .collect();
+            // `(class, family, sources, name)`, not `class` alone: a key that
+            // ties on `class` would otherwise fall back to
+            // `HashMap::keys()`'s arbitrary, per-process order. Two managers
+            // in the same class (`cargo` and `npm`, both `0`) would then emit
+            // their `InstallPackages` actions in a different relative order on
+            // every run — the plan tree's bullet order, the `-o json` payload
+            // order, the journal `action_index`, and the phase's execution
+            // offer order all read from this `Vec`.
+            manager_order
+                .sort_by(|a, b| (a.0, a.1, a.2, a.3.as_str()).cmp(&(b.0, b.1, b.2, b.3.as_str())));
 
-            for mgr_name in manager_order {
-                let resolved = &by_manager[mgr_name];
-                actions.push(routed(
+            for (class, _, _, mgr_name, mgr) in manager_order {
+                let mut resolved = by_manager[mgr_name].clone();
+                // Only an AVAILABLE manager (class 0) can be asked what it
+                // holds; a bootstrappable or unknown one is planned in full,
+                // exactly as the profile-level planner does for the same case.
+                if class == 0
+                    && let Some(mgr) = mgr
+                {
+                    self.retain_uninstalled(mgr, &mut resolved);
+                }
+                // Nothing left to install is nothing to plan: the module has
+                // already converged under this manager, and emitting the action
+                // anyway is what made every plan re-list the whole declared set
+                // and every apply re-shell to the manager for it.
+                if resolved.is_empty() {
+                    continue;
+                }
+                work += 1;
+                body.push(routed(
                     module,
-                    ModuleActionKind::InstallPackages {
-                        resolved: resolved.clone(),
-                    },
+                    ModuleActionKind::InstallPackages { resolved },
                 ));
             }
 
@@ -575,12 +752,9 @@ impl<'a> super::Reconciler<'a> {
                                     | crate::config::FileStrategy::Hardlink
                             )
                         {
-                            // This module's FILE work cannot proceed — the skip
-                            // stays attached to the phase that work belongs to.
-                            actions.push(routed_to(
+                            body.push(routed(
                                 module,
-                                PhaseName::Files,
-                                ModuleActionKind::Skip {
+                                ModuleActionKind::FilesRefused {
                                     reason: format!(
                                         "encryption mode Always incompatible with {:?} for {}",
                                         strategy,
@@ -595,25 +769,23 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    actions.push(routed_to(
+                                    let source = file.source.posix();
+                                    let backend = &enc.backend;
+                                    let reason = format!(
+                                        "file {source} requires encryption \
+                                         (backend: {backend}) but is not encrypted"
+                                    );
+                                    body.push(routed(
                                         module,
-                                        PhaseName::Files,
-                                        ModuleActionKind::Skip {
-                                            reason: format!(
-                                                "file {} requires encryption (backend: {}) but is not encrypted",
-                                                file.source.posix(),
-                                                enc.backend
-                                            ),
-                                        },
+                                        ModuleActionKind::FilesRefused { reason },
                                     ));
                                     encryption_ok = false;
                                     break;
                                 }
                                 Err(e) => {
-                                    actions.push(routed_to(
+                                    body.push(routed(
                                         module,
-                                        PhaseName::Files,
-                                        ModuleActionKind::Skip {
+                                        ModuleActionKind::FilesRefused {
                                             reason: format!(
                                                 "encryption check failed for {}: {}",
                                                 file.source.posix(),
@@ -629,28 +801,466 @@ impl<'a> super::Reconciler<'a> {
                     }
                 }
                 if encryption_ok {
-                    actions.push(routed(
-                        module,
-                        ModuleActionKind::DeployFiles {
-                            files: module.files.clone(),
-                        },
-                    ));
+                    // Diff each declared file against its deployed target and
+                    // plan only the entries a run would really write — the
+                    // file counterpart of `retain_uninstalled` above. A
+                    // converged entry is elided; all-converged elides the
+                    // action entirely, which is what lets a settled machine
+                    // read "nothing to do" instead of re-deploying (and
+                    // re-hooking) the same six files on every run.
+                    //
+                    // Elision requires the manifest to already OWN the row:
+                    // `cfgd status <module>` and `profile remove-module` read
+                    // `module_file_manifest`, and its only writer is the
+                    // DeployFiles apply arm — a target that happened to match
+                    // its source before cfgd ever deployed it would never be
+                    // recorded, so it would be invisible to both. A state-read failure elides
+                    // nothing: planning (and re-recording) a converged file is
+                    // harmless, an unrecorded owned file is not.
+                    let recorded: std::collections::HashSet<String> = self
+                        .state
+                        .module_deployed_files(&module.name)
+                        .map(|rows| rows.into_iter().map(|r| r.file_path).collect())
+                        .unwrap_or_default();
+                    // A `Patch` entry's convergence is a function of the live
+                    // target plus the patch script's environment, which only a
+                    // caller holding the config dir can complete. Built once
+                    // per module, and only when a Patch entry exists to ask
+                    // about — the binding snapshots the script env eagerly.
+                    let binding = self.config_dir.as_deref().and_then(|dir| {
+                        module
+                            .files
+                            .iter()
+                            .any(|f| {
+                                f.strategy.unwrap_or(self.registry.default_file_strategy)
+                                    == crate::config::FileStrategy::Patch
+                            })
+                            .then(|| {
+                                super::patch::PatchBinding::module(
+                                    dir,
+                                    profile_name,
+                                    context,
+                                    module,
+                                )
+                            })
+                    });
+                    let declared_total = module.files.len();
+                    let files: Vec<crate::modules::ResolvedFile> = module
+                        .files
+                        .iter()
+                        .filter_map(|file| {
+                            let target = expand_tilde(&file.target);
+                            let strategy =
+                                file.strategy.unwrap_or(self.registry.default_file_strategy);
+                            (!(recorded.contains(&crate::to_posix_fs_key(&target))
+                                && super::modules::planned_file_converged(
+                                    file,
+                                    &target,
+                                    strategy,
+                                    binding.as_ref(),
+                                )))
+                            .then(|| {
+                                // Settle the configured default INTO the action:
+                                // the executor, the manifest and the plan tree's
+                                // child rows all read the action, and a reader
+                                // resolving a strategy-less entry for itself is
+                                // how the tree once said `symlink` for a file a
+                                // `fileStrategy: Copy` run copied.
+                                let mut file = file.clone();
+                                file.strategy = Some(strategy);
+                                file
+                            })
+                        })
+                        .collect();
+                    if !files.is_empty() {
+                        work += 1;
+                        body.push(routed(
+                            module,
+                            ModuleActionKind::DeployFiles {
+                                files,
+                                declared_total,
+                            },
+                        ));
+                    }
                 }
             }
 
-            // Post-scripts for this module
-            for script in post_scripts {
-                actions.push(routed(
-                    module,
-                    ModuleActionKind::RunScript {
-                        script: script.clone(),
-                        phase: post_phase.clone(),
-                    },
-                ));
+            // Lifecycle hooks bracket the module's work, so they are planned
+            // only when some of it survived elision. A module that DECLARES
+            // packages or files and planned none of them is converged, and a
+            // converged module runs no hooks and renders nothing — the same
+            // rule the render states as "nothing to do". A module declaring
+            // no packages and no files keeps its scripts: they are the whole
+            // of its content, and there is nothing for it to converge against.
+            //
+            // Declared env/aliases are a work surface too, but one this
+            // planner cannot diff: the env surface is generated as a unit by
+            // `plan_env`, later. A module that declares packages or files AND
+            // env, all of whose diffable work converged, routes its hooks
+            // through `env_gated_hooks` — revived when the module's OWN
+            // env/alias entries move between the deployed primary env file
+            // and the planned content, dropped when they hold (another
+            // layer's change to the shared surface is that layer's work).
+            // An unanswerable comparison fails OPEN and revives.
+            //
+            // "Declares no work" deliberately reads packages/files ALONE, not
+            // env: a module with scripts and env but no packages or files
+            // keeps its hooks unconditionally, because the scripts are the
+            // whole of its content — env-gating it would make the module
+            // inert on every run whose env surface happened to converge.
+            let declares_work = !module.packages.is_empty() || !module.files.is_empty();
+            let declares_env = !module.env.is_empty() || !module.aliases.is_empty();
+            let hooks_now = work > 0 || !declares_work;
+            let hooks_env_gated = !hooks_now && declares_env;
+            let route_hooks = |scripts: &[crate::config::ScriptEntry], phase: &ScriptPhase| {
+                scripts
+                    .iter()
+                    .map(|script| {
+                        routed(
+                            module,
+                            ModuleActionKind::RunScript {
+                                script: script.clone(),
+                                phase: phase.clone(),
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut gated: RoutedActions = Vec::new();
+            if hooks_now {
+                actions.extend(route_hooks(pre_scripts, &pre_phase));
+            } else if hooks_env_gated {
+                gated.extend(route_hooks(pre_scripts, &pre_phase));
+            }
+            actions.append(&mut body);
+            if hooks_now {
+                actions.extend(route_hooks(post_scripts, &post_phase));
+            } else if hooks_env_gated {
+                gated.extend(route_hooks(post_scripts, &post_phase));
+            }
+            if !gated.is_empty() {
+                env_gated_hooks.push((module.name.clone(), gated));
             }
         }
 
-        actions
+        (actions, env_gated_hooks)
+    }
+
+    /// Drop the entries `mgr` already reports installed, leaving the ones a
+    /// run would really install.
+    ///
+    /// A no-op when the caller wired no installed-state reader, and fail-OPEN on
+    /// a manager that cannot be queried: a machine cfgd could not observe is one
+    /// whose packages must still be planned, never one whose work is silently
+    /// dropped. Entries are compared through
+    /// [`crate::providers::PackageManager::package_identity`] — the identity
+    /// space the profile planner diffs in, and the space
+    /// [`crate::providers::InstalledPackages`] folds its listing into — so a
+    /// case-insensitive manager or a `go`-style install-vs-listed name split
+    /// agrees across both halves of the run.
+    ///
+    /// A declared `minVersion` is a SECOND question the name comparison cannot
+    /// answer. Resolution checked the floor against what the manager currently
+    /// OFFERS, never against what the machine holds, so a host carrying an
+    /// older copy is installed-by-name and short of the floor at once. Such an
+    /// entry is KEPT — but only that one: an entry whose floor or whose
+    /// reported version cannot be READ is a check the verify pass could not
+    /// run, not work an apply could settle, so the fail-open of the
+    /// unreadable-manager arm stops at the manager.
+    fn retain_uninstalled(
+        &self,
+        mgr: &dyn PackageManager,
+        packages: &mut Vec<crate::modules::ResolvedPackage>,
+    ) {
+        let Some(cx) = self.installed else {
+            return;
+        };
+        match cx.installed_for(mgr) {
+            Ok(installed) => {
+                let provisioned = self.provisioned.borrow();
+                packages.retain(|pkg| {
+                    Self::package_survives_elision(mgr, &installed, pkg, &provisioned)
+                });
+            }
+            Err(e) => {
+                // The apply-side twin's reasoning, on the plan side: a warn
+                // here lands at column 0 inside `cfgd plan`'s own tree and
+                // restates the row the planner is composing.
+                tracing::debug!(
+                    manager = mgr.name(),
+                    error = %e,
+                    "cannot read installed packages; planning the module's declared set in full"
+                );
+            }
+        }
+    }
+
+    /// Drop every module entry a `ManagerAction::Provision` in
+    /// `manager_actions` already delivers, emptying and removing the install
+    /// actions that held nothing else. `Some` when anything was dropped,
+    /// naming both ends of every route the elision relied on: the mediator
+    /// the pair was installed through AND the managers of the node that
+    /// delivered it — the membership a re-plan must keep, see
+    /// [`super::managers::plan_managers_with_routes`]. Naming only the
+    /// mediator left the delivering node free to retire on the second pass
+    /// when the elision also took ITS last consumer, so the dropped package
+    /// was delivered by nothing again and the mediator was provisioned for
+    /// nobody.
+    ///
+    /// Two shapes, because a provision delivers a tool under two different
+    /// names. An undeclared entry naming the provisioned MANAGER's own
+    /// canonical tool is the plan-time reading of
+    /// [`Self::package_survives_elision`]'s provisioned arm, over an EMPTY
+    /// listing so only that arm can speak: the installed arm already ran in
+    /// `Self::plan_modules`. An entry naming a PACKAGE the provision installs
+    /// — the module's own route (`provision pipx via brew` IS the entry's
+    /// `brew install pipx`) or the cascade's mediated package (`provision npm
+    /// via brew` IS a `brew install node`) — is judged by
+    /// [`Self::delivered_by_this_run`] over
+    /// [`super::managers::provision_delivered_packages`], the same pair the
+    /// apply records at a provision's settle. `manager_declared` does not
+    /// enter it: the provision row above already names the package and
+    /// installs it through the entry's own installer, so a `Packages` row
+    /// naming it again promises an install the run never performs and left the
+    /// hero's `brew install …` naming the `node` and `pipx` the two rows above
+    /// it had landed.
+    ///
+    /// That second shape is asked of BOTH of the entry's names. A declared
+    /// route carries the module's own alias (`route.package` IS the entry's
+    /// `resolved_name`), while a cascade delivers the MANAGER's literal
+    /// (`mediated_packages("brew") == ["node"]`), which an entry writing
+    /// `aliases: {brew: nodejs}` does not spell — so the canonical name the
+    /// alias resolves to is asked too, and the aliased entry is elided like
+    /// the plain one instead of returning the hero's two-rows-one-tool shape.
+    fn elide_provisioned_tools(
+        &self,
+        module_routed: &mut Vec<(PhaseName, Action)>,
+        manager_actions: &[Action],
+    ) -> Option<Vec<String>> {
+        // Both ends of one provision's route: what the node delivers, and the
+        // managers it delivers them AS.
+        struct Route {
+            managers: Vec<String>,
+            packages: Vec<(String, String)>,
+        }
+        let mut provisions: Vec<String> = Vec::new();
+        let mut delivered: Vec<Route> = Vec::new();
+        for action in manager_actions {
+            let Action::Manager(node @ super::ManagerAction::Provision { manager, .. }) = action
+            else {
+                continue;
+            };
+            provisions.push(manager.clone());
+            let pairs = super::managers::provision_delivered_packages(self.registry, node);
+            if !pairs.is_empty() {
+                let managers = node
+                    .provisioned_managers()
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect();
+                delivered.push(Route {
+                    managers,
+                    packages: pairs,
+                });
+            }
+        }
+        if provisions.is_empty() {
+            return None;
+        }
+        let none = crate::providers::InstalledPackages::default();
+        let mut dropped = false;
+        let mut relied_on: Vec<String> = Vec::new();
+        module_routed.retain_mut(|(_, action)| {
+            let Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { resolved },
+                ..
+            }) = action
+            else {
+                return true;
+            };
+            let before = resolved.len();
+            resolved.retain(|pkg| {
+                let deliverer = delivered.iter().find_map(|route| {
+                    let pairs = &route.packages;
+                    Self::delivering_installer(pairs, &pkg.manager, &pkg.resolved_name)
+                        .or_else(|| {
+                            Self::delivering_installer(pairs, &pkg.manager, &pkg.canonical_name)
+                        })
+                        .map(|installer| (installer, &route.managers))
+                });
+                if let Some((installer, managers)) = deliverer {
+                    for name in
+                        std::iter::once(installer).chain(managers.iter().map(String::as_str))
+                    {
+                        if !relied_on.iter().any(|m| m == name) {
+                            relied_on.push(name.to_string());
+                        }
+                    }
+                    return false;
+                }
+                self.registry
+                    .package_managers()
+                    .iter()
+                    .find(|m| m.name() == pkg.manager)
+                    .is_none_or(|mgr| {
+                        Self::package_survives_elision(mgr.as_ref(), &none, pkg, &provisions)
+                    })
+            });
+            dropped |= resolved.len() != before;
+            !resolved.is_empty()
+        });
+        dropped.then_some(relied_on)
+    }
+
+    /// Whether `pkg` survives the installed-state elision: not installed under
+    /// `mgr`'s identity fold, or installed short of its declared `minVersion`
+    /// floor, and not the canonical tool a manager node of THIS run already
+    /// delivered (`provisioned`, see [`Self::provisioned`]). The ONE predicate
+    /// [`Self::retain_uninstalled`], [`Self::fill_planned_versions`] and the
+    /// execute-time re-read in `PackageExec::install_module_packages` all
+    /// read, so a package can never be planned-but-unpriced,
+    /// priced-but-elided, or installed by the `Packages` phase after the
+    /// `Prerequisites` phase already landed it.
+    ///
+    /// The provisioned arm is the in-run twin of the resolver's own rule
+    /// (`modules::resolve_package`): a bare entry is satisfied by whichever
+    /// available manager already holds the tool, but a tool the run's own
+    /// cascade delivers lands AFTER resolution read the listings, and its
+    /// entry then still stands as a default-manager install of the same
+    /// toolchain. Keyed on the canonical name's FAMILY, the unit a lane and
+    /// every other exclusion check agree on. An entry whose author NAMED the
+    /// manager is never elided this way: a declared route provisions through
+    /// that very manager (`declared_manager_routes`), so its own listing
+    /// reports the tool and the installed arm applies.
+    ///
+    /// An installed entry is retained for its floor on exactly one answer from
+    /// [`crate::reconciler::package_version_floor`] — `Below` — so the plan and
+    /// the verify pass read ONE predicate. Every other answer that comparator
+    /// gives is a check that could not run: a floor the manager cannot parse,
+    /// a listing that states no version (`apk`, `pacman` and `zypper` name
+    /// packages without one), a reported version its own comparator cannot
+    /// judge (`HEAD-a1b2c3d`, a cask's `latest`). Retaining on those re-planned
+    /// an install on every run of a machine that already held the package, and
+    /// no apply could ever settle it; the report belongs to the verify pass.
+    /// An `Unreadable` verdict elides the package too: a comparator that could
+    /// not run must not drive an install, and the check error is what the run
+    /// reports.
+    pub(super) fn package_survives_elision(
+        mgr: &dyn PackageManager,
+        installed: &crate::providers::InstalledPackages,
+        pkg: &crate::modules::ResolvedPackage,
+        provisioned: &[String],
+    ) -> bool {
+        if !pkg.manager_declared
+            && provisioned
+                .iter()
+                .any(|m| crate::manager_family(m) == crate::manager_family(&pkg.canonical_name))
+        {
+            return false;
+        }
+        let identity = mgr.package_identity(&pkg.resolved_name);
+        if !installed.contains(&identity) {
+            return true;
+        }
+        matches!(
+            crate::reconciler::package_version_floor(
+                mgr,
+                installed,
+                &pkg.resolved_name,
+                pkg.min_version.as_deref(),
+            ),
+            crate::reconciler::VersionFloor::Below { .. }
+        )
+    }
+
+    /// Whether `package`, installed through `manager`, is one THIS run's own
+    /// provisions put on the machine: the pair is in
+    /// [`Self::provisioned_packages`], judged by the installer's FAMILY (the
+    /// unit a lane and every exclusion check agree on) and the package name.
+    /// The one predicate both install executors word their shortfall by, so
+    /// `already installed` is reserved for state the run did not create.
+    pub(super) fn delivered_by_this_run(
+        provisioned_packages: &[(String, String)],
+        manager: &str,
+        package: &str,
+    ) -> bool {
+        Self::delivering_installer(provisioned_packages, manager, package).is_some()
+    }
+
+    /// WHICH of `provisioned_packages` delivered it, for a caller that has to
+    /// name the mediator rather than only know there was one.
+    /// [`Self::delivered_by_this_run`] is the `is_some()` view, so the family
+    /// fold is written once.
+    pub(super) fn delivering_installer<'p>(
+        provisioned_packages: &'p [(String, String)],
+        manager: &str,
+        package: &str,
+    ) -> Option<&'p str> {
+        provisioned_packages
+            .iter()
+            .find(|(installer, name)| {
+                crate::manager_family(installer) == crate::manager_family(manager)
+                    && name == package
+            })
+            .map(|(installer, _)| installer.as_str())
+    }
+
+    /// Price the packages this run's plan will actually surface, and no others.
+    ///
+    /// The survivor-gated form of [`crate::modules::fill_available_versions`],
+    /// and what every planning path calls in its place: a package the manager
+    /// already reports installed is elided by `Self::plan_modules`, so it
+    /// renders no description, persists no string, and its version query buys
+    /// nothing — pricing a converged machine's whole declared set per
+    /// invocation was a multi-second silent wait before every plan and apply.
+    /// A package that DOES survive is priced through the same memoized query,
+    /// so a planned `InstallPackages` renders and persists strings
+    /// byte-identical to the unconditional fill's, and the module's recorded
+    /// packages hash is unchanged for planned work.
+    ///
+    /// Elision is judged through `Self::package_survives_elision` against
+    /// the same enumeration `Self::retain_uninstalled` reads. On the success
+    /// path both cost one memoized listing per manager; this pass additionally
+    /// holds a FAILED read for its whole run, since the memo caches successes
+    /// only. It fails OPEN everywhere the planner does: no
+    /// installed-state reader wired, or a manager that cannot be queried,
+    /// prices the declared set in full exactly as the planner plans it in
+    /// full. `cfgd doctor` and `cfgd module show` render a version per
+    /// DECLARED package without planning and keep the unconditional fill.
+    pub fn fill_planned_versions(
+        &self,
+        modules: &mut [ResolvedModule],
+        managers: &HashMap<String, &dyn PackageManager>,
+    ) {
+        // One installed listing per manager, a FAILED read held too:
+        // `installed_for` memoizes successes only, so retrying per package
+        // turns one unreadable manager into one failing subprocess per
+        // declared package.
+        let mut listings: HashMap<String, Option<Arc<crate::providers::InstalledPackages>>> =
+            HashMap::new();
+        for module in modules.iter_mut() {
+            for pkg in module.packages.iter_mut() {
+                let Some(mgr) = crate::modules::priceable_manager(pkg, managers) else {
+                    continue;
+                };
+                if let Some(cx) = self.installed {
+                    let listing = listings
+                        .entry(mgr.name().to_string())
+                        .or_insert_with(|| cx.installed_for(mgr).ok());
+                    if let Some(installed) = listing
+                        && !Self::package_survives_elision(
+                            mgr,
+                            installed,
+                            pkg,
+                            &self.provisioned.borrow(),
+                        )
+                    {
+                        continue;
+                    }
+                }
+                crate::modules::price_package(pkg, mgr);
+            }
+        }
     }
 
     /// Dedupe module `InstallPackages` actions in place, keeping the first-seen

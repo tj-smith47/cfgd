@@ -1,3 +1,22 @@
+//! Spawning external commands, and knowing what resolves on this machine.
+//!
+//! # The 30-second memo convention
+//!
+//! Four process-scoped memos sit at a 30s ceiling — [`command_path`]'s,
+//! `ENUMERATION_MEMO_TTL`, `AVAILABLE_VERSION_MEMO_TTL` and `REPO_REFRESH_TTL`
+//! — and a fifth picks the same number rather than inventing one. The rule the
+//! number encodes: a memo whose FIRST bound is
+//! [`command_resolution_generation`] (everything cfgd itself does) needs a
+//! second bound for the changes cfgd cannot see — a package a human installed
+//! by hand, a tag someone pushed — and 30s is short enough that a long-lived
+//! daemon notices within one tick and long enough that a single CLI invocation
+//! never pays the question twice.
+//!
+//! Each keeps its OWN named constant: they answer four different questions, and
+//! one shared constant would make tuning any of them move the other three.
+//! Every one is pinnable from tests by its own RAII guard, and every one caps
+//! its entry count so its size is independent of how long the process runs.
+
 use super::fs_perms::is_executable;
 
 /// Grace period between SIGTERM and SIGKILL when a watchdog kills a child.
@@ -23,7 +42,7 @@ pub struct CommandOutcome {
     pub timed_out: bool,
 }
 
-/// Run a [`Command`] with a timeout, surfacing whether the timeout fired.
+/// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
 /// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
@@ -42,7 +61,7 @@ pub struct CommandOutcome {
 /// pipes open, so `wait_with_output` would block past the timeout it exists to
 /// enforce — a shell-wrapped command (`run_guard_command`, a user `run:` body)
 /// backgrounding a daemon is enough to trigger it. Readers get
-/// [`PIPE_DRAIN_GRACE`] after child exit to reach EOF; past that they are
+/// `PIPE_DRAIN_GRACE` after child exit to reach EOF; past that they are
 /// abandoned and whatever they captured so far is returned.
 pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
@@ -162,7 +181,7 @@ fn take_pipe_buffer(buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> Vec<u
     std::mem::take(&mut *buffer.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Run a [`Command`] with a timeout, discarding the timeout signal.
+/// Run a [`std::process::Command`] with a timeout, discarding the timeout signal.
 ///
 /// Thin wrapper over [`command_output_with_timeout_outcome`] for callers that
 /// only need the captured output. Callers that must distinguish a hang from a
@@ -188,8 +207,8 @@ pub fn terminate_process(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     // SAFETY: `OpenProcess` is always sound to call with valid flags; it
-    // returns NULL on failure (checked below) or a valid handle we own. We
-    // call `TerminateProcess` and `CloseHandle` only with that owned
+    // returns NULL on failure (checked below) or a valid owned handle.
+    // `TerminateProcess` and `CloseHandle` are called only with that owned
     // handle, and `CloseHandle` runs exactly once per successful open, so
     // there is no double-close or use-after-close.
     unsafe {
@@ -300,14 +319,36 @@ pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
 /// a caller can then launch the shim correctly (a native `Command::new("scoop")`
 /// only ever finds `scoop.exe`). On Unix, resolves the bare name against the exec
 /// bit. Returns `None` when nothing on `$PATH` matches.
+///
+/// The answer is memoized per command name, keyed to the exact `PATH` value and
+/// the [`command_resolution_generation`] it was computed under, because the walk
+/// is one `stat` per candidate directory (times five extensions on Windows) and
+/// the callers are loops: the apply dispatcher asks whether a manager is
+/// available once per dispatch iteration per slot, the module planner asks
+/// inside a sort key, and the secret planner asks once per declared reference.
+/// A miss is the expensive case — it stats every directory on `PATH` before
+/// answering — so negative answers are memoized too.
 pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
+    let path_env = std::env::var_os("PATH");
+    let generation = command_resolution_generation();
+    if let Some(memoized) = memoized_command_path(cmd, path_env.as_deref(), generation) {
+        return memoized;
+    }
+    let resolved = walk_for_command(cmd, path_env.as_deref());
+    remember_command_path(cmd, path_env.as_deref(), generation, &resolved);
+    resolved
+}
+
+/// The uncached walk behind [`command_path`]: every `PATH` entry first, then
+/// every directory a bootstrap registered this run.
+fn walk_for_command(cmd: &str, path_env: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     let extensions: &[&str] = if cfg!(windows) {
         &[".exe", ".com", ".ps1", ".cmd", ".bat"]
     } else {
         &[""]
     };
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
+    if let Some(paths) = path_env {
+        for dir in std::env::split_paths(paths) {
             if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
                 return Some(hit);
             }
@@ -319,6 +360,167 @@ pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// One command name's resolution, plus everything it was resolved under.
+///
+/// The key travels with the entry rather than sitting on the map as a whole,
+/// which costs a copy of `PATH` per command name and buys two things: a lookup
+/// under a different `PATH` cannot evict an entry it merely disagrees with (the
+/// test suite changes `PATH` on one thread while another asks about it), and a
+/// value is only ever returned to a caller whose exact key produced it.
+struct MemoizedPath {
+    /// The `PATH` this was resolved against. `None` is a real value, distinct
+    /// from an empty string: an unset `PATH` contributes no directories at all,
+    /// while `""` splits into one empty entry that POSIX reads as the current
+    /// directory.
+    path: Option<std::ffi::OsString>,
+    generation: u64,
+    computed: std::time::Instant,
+    resolved: Option<std::path::PathBuf>,
+}
+
+static COMMAND_PATH_MEMO: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, MemoizedPath>>,
+> = std::sync::OnceLock::new();
+
+/// How long a memoized resolution stands before it is recomputed, bounding the
+/// staleness cfgd cannot see coming: the generation counter covers every install
+/// cfgd performs itself, but a daemon runs for weeks beside a user who installs
+/// things with their own hands, and an answer pinned for the process's lifetime
+/// would never notice.
+const COMMAND_PATH_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Millisecond override of [`COMMAND_PATH_MEMO_TTL`], or [`u64::MAX`] for "no
+/// override". It exists so a test never depends on wall time: a test asserting
+/// that a memoized answer STANDS pins the TTL out of reach, and one asserting
+/// that it expires pins it to zero. Both claims are then about the mechanism
+/// rather than about how long two adjacent statements happened to take.
+#[cfg(any(test, feature = "test-helpers"))]
+static COMMAND_PATH_MEMO_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long a memoized resolution stands, honouring the test override.
+fn command_path_memo_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = COMMAND_PATH_MEMO_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    COMMAND_PATH_MEMO_TTL
+}
+
+/// Pin the memo TTL, or hand back the default with `None`. Returns what was
+/// pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::CommandPathMemoTtlGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_command_path_memo_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = COMMAND_PATH_MEMO_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
+}
+
+/// Entry ceiling before the map is dropped wholesale. Command names come from a
+/// closed set of provider and tool names, so this is never reached in practice;
+/// it exists so a long-lived daemon cannot grow the map without bound if one
+/// day they come from config.
+const COMMAND_PATH_MEMO_CAP: usize = 1024;
+
+fn command_path_memo()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<String, MemoizedPath>> {
+    // A poisoned lock still holds usable resolutions: a panic in another thread
+    // is no reason to stop answering where a binary lives.
+    COMMAND_PATH_MEMO
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The memoized answer for `cmd`, or `None` when it has to be walked for.
+///
+/// The lock is released before that walk — it is never held across a filesystem
+/// probe, a spawn, or a `PATH_ENV_LOCK` acquisition.
+fn memoized_command_path(
+    cmd: &str,
+    path_env: Option<&std::ffi::OsStr>,
+    generation: u64,
+) -> Option<Option<std::path::PathBuf>> {
+    let memo = command_path_memo();
+    let entry = memo.get(cmd)?;
+    if entry.generation != generation
+        || entry.path.as_deref() != path_env
+        || entry.computed.elapsed() >= command_path_memo_ttl()
+    {
+        return None;
+    }
+    Some(entry.resolved.clone())
+}
+
+/// Record what the walk found, under the exact key it was computed for.
+fn remember_command_path(
+    cmd: &str,
+    path_env: Option<&std::ffi::OsStr>,
+    generation: u64,
+    resolved: &Option<std::path::PathBuf>,
+) {
+    let mut memo = command_path_memo();
+    if memo.len() >= COMMAND_PATH_MEMO_CAP {
+        memo.clear();
+    }
+    memo.insert(
+        cmd.to_string(),
+        MemoizedPath {
+            path: path_env.map(std::ffi::OsStr::to_os_string),
+            generation,
+            computed: std::time::Instant::now(),
+            resolved: resolved.clone(),
+        },
+    );
+}
+
+/// Bumped by everything that can change what a command name resolves to: a
+/// bootstrap that put a manager on the machine, an install that landed a binary
+/// in a directory already on `PATH`, a lifecycle script that ran an installer of
+/// its own, and every registration of a bootstrapped directory.
+///
+/// It is the shared key behind both memos — [`command_path`]'s and
+/// `ProviderRegistry`'s availability sweep — so one bump makes both re-ask, and
+/// a mid-apply bootstrap still flips "unavailable" to "available" on the very
+/// next question instead of on the next process.
+static COMMAND_RESOLUTION_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The current value of the resolution generation. A memo stamps its entries
+/// with this and recomputes whenever it has moved.
+pub fn command_resolution_generation() -> u64 {
+    COMMAND_RESOLUTION_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Declare that something may have changed what commands resolve to.
+///
+/// Call it from any path that installs, provisions, or otherwise puts a binary
+/// on the machine — the cost is one atomic increment, and the cost of missing
+/// one is a manager that stays "not available" for the rest of the run after the
+/// bootstrap that installed it succeeded.
+///
+/// A path that TAKES a binary off the machine bumps it for the mirror reason: a
+/// memo still answering `Some(path)` for something the run just deleted has the
+/// next tick plan against a tool that is gone. Every path of either shape calls
+/// it — the package install and uninstall arms, a manager provision (BEFORE the
+/// outcome propagates, since a cascade that failed at its last step may still
+/// have installed the manager), lifecycle script execution (a `preApply` hook
+/// installing a toolchain is the one effect cfgd cannot predict), and the
+/// orphaned-package prune (unconditionally and before its outcome is matched, a
+/// partial failure having already removed whatever it removed). Registering a
+/// bootstrapped PATH directory bumps it too, from
+/// [`register_bootstrapped_path_dirs`].
+pub fn invalidate_command_resolution() {
+    COMMAND_RESOLUTION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// First `dir/cmd{ext}` that is a real, executable file, in `extensions` order.
@@ -372,6 +574,10 @@ pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
             guard.push(path);
         }
     }
+    drop(guard);
+    // The directories are searched by `command_path`, so anything it already
+    // answered was answered without them.
+    invalidate_command_resolution();
 }
 
 /// Compose a `PATH` value whose leading entries are `dirs`, followed by
@@ -457,6 +663,9 @@ pub fn restore_bootstrapped_path_dirs(dirs: Vec<std::path::PathBuf>) {
     *BOOTSTRAPPED_PATH_DIRS
         .write()
         .unwrap_or_else(|e| e.into_inner()) = dirs;
+    // Rewinding the registry changes what `command_path` resolves exactly as
+    // registering does, so the memo built over the old list has to go too.
+    invalidate_command_resolution();
 }
 
 /// Check if a command is available on the system via PATH lookup.
@@ -475,6 +684,51 @@ pub fn command_available(cmd: &str) -> bool {
 pub fn tracing_env_filter(default: &str) -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default))
+}
+
+/// Read an environment variable, falling back to `default` when it is unset or
+/// not valid UTF-8.
+///
+/// The one spelling of that read for the two server binaries, which configure
+/// themselves entirely from the environment: `cfgd-csi` and `cfgd-operator`
+/// each carried a byte-identical copy.
+pub fn env_or(var: &str, default: &str) -> String {
+    std::env::var(var).unwrap_or_else(|_| default.to_string())
+}
+
+/// Which stop request arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownRequest {
+    /// Ctrl-C / SIGINT.
+    Interrupt,
+    /// SIGTERM — how a container runtime and a service manager ask.
+    Terminate,
+}
+
+/// Resolve when this process is asked to stop, reporting which request arrived.
+///
+/// The ONE registration-and-select for the two server binaries; a caller adds
+/// its own logging and error type around it. Reporting WHICH request arrived is
+/// what lets a caller keep a per-signal log line without owning the select.
+///
+/// The daemon's own `ShutdownSignals` is deliberately not folded in: it warns
+/// and keeps running when a handler cannot be registered (so a daemon that can
+/// hear one signal stays responsive to the other) and answers with a POSIX
+/// `128 + signum` exit code. A server that cannot install its handler has no
+/// such half-working state to preserve, so this reports the failure instead.
+///
+/// Unix-only, like the two copies it replaced: both callers are Linux server
+/// binaries, and a Windows arm nobody runs would be an unproven code path.
+#[cfg(unix)]
+pub async fn await_shutdown_request() -> std::io::Result<ShutdownRequest> {
+    // The live region's cursor hook must leave the signal to this select.
+    crate::output::claim_termination_signals();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| std::io::Error::other(format!("failed to register SIGTERM handler: {e}")))?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(ShutdownRequest::Interrupt),
+        _ = sigterm.recv() => Ok(ShutdownRequest::Terminate),
+    }
 }
 
 /// Check that a CLI tool is available on PATH, returning a unified error
@@ -570,8 +824,27 @@ pub fn systemctl_cmd() -> std::process::Command {
 }
 
 /// Whether `systemctl` resolves, honoring [`SYSTEMCTL_BIN_ENV`].
+///
+/// Never `command_available("systemctl")` at a call site: that answers from
+/// `PATH` while the spawn answers from the seam, so a test that redirected the
+/// binary reads "unavailable" and skips the very branch it installed the shim
+/// for.
 pub fn systemctl_available() -> bool {
     command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl")
+}
+
+/// Test-seam env var for every `reg` invocation in the workspace.
+///
+/// Named here for the same reason as [`SYSTEMCTL_BIN_ENV`]: the Windows
+/// registry is read and written from two places — the user-session environment
+/// refresh (`util/env_session.rs`) and the `windowsRegistry` configurator — and
+/// a test can only redirect both when they agree on the spelling. The registry
+/// is not a path, so redirecting the binary is the only sandbox a test has.
+pub const REG_BIN_ENV: &str = "CFGD_REG_BIN";
+
+/// Build a `Command` for `reg`, honoring [`REG_BIN_ENV`].
+pub fn reg_cmd() -> std::process::Command {
+    tool_cmd(REG_BIN_ENV, "reg")
 }
 
 /// Like [`command_available`] but also returns true when the env-var seam
@@ -591,6 +864,11 @@ mod tests {
 
     #[test]
     fn a_signal_killed_child_is_named_by_its_signal_not_by_a_code_it_never_returned() {
+        // These spawn `sh` by bare name, so they resolve it through `PATH` and
+        // belong under the read guard like every other production reader —
+        // without it the spawn fails outright while another test holds `PATH`
+        // pointed at a tempdir of its own.
+        let _path = crate::test_helpers::path_env_read_guard();
         let ok = std::process::Command::new("sh")
             .args(["-c", "exit 7"])
             .status()
@@ -706,6 +984,146 @@ mod tests {
             crate::test_helpers::EnvVarGuard::set("PATH", &on_path.path().to_string_lossy());
 
         assert_eq!(command_path(stem).as_deref(), Some(preferred.as_path()));
+    }
+
+    /// `u64::MAX` millis is the "no override" sentinel. A pin asking for a
+    /// ceiling that large means "out of reach", so it must not fold back into
+    /// the 30s default the caller pinned to escape.
+    #[test]
+    #[serial]
+    fn a_command_path_ceiling_pinned_at_the_sentinel_is_still_a_pin() {
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::pinned(
+            std::time::Duration::from_millis(u64::MAX),
+        );
+        assert!(command_path_memo_ttl() > COMMAND_PATH_MEMO_TTL);
+    }
+
+    /// A memoized answer is reused until something declares it may have moved.
+    ///
+    /// The observation is the filesystem changing under a resolution already
+    /// made: without a memo the second lookup finds the file the first one
+    /// missed, so this test cannot pass on an uncached walk. It also pins the
+    /// two halves of the contract that make that safe — a miss is memoized (the
+    /// expensive case in the dispatcher's hot loop), and an invalidation is
+    /// enough on its own, with no `PATH` change and no directory registered.
+    #[test]
+    #[serial]
+    fn a_memoized_miss_stands_until_something_invalidates_it() {
+        // Declared before the `EnvVarGuard`s below so it drops last, bracketing
+        // the whole window in which `PATH` is this test's tempdir.
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        // "Still stands" is the claim, so the TTL must not be able to retire the
+        // entry between two adjacent statements on a stalled runner.
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::never_expires();
+        let stem = "cfgd-probe-memoized-miss";
+
+        // Each attempt gets its own directory, so a retry memoizes its own miss
+        // rather than reading one an abandoned attempt already recorded.
+        let (dir, expected, memoized) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path =
+                    crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+                assert!(
+                    command_path(stem).is_none(),
+                    "nothing named {stem} exists yet"
+                );
+                let expected = write_probe_tool(dir.path(), stem);
+                let memoized = command_path(stem);
+                drop(path);
+                (dir, expected, memoized)
+            });
+
+        assert!(
+            memoized.is_none(),
+            "the memoized miss must answer without re-walking PATH"
+        );
+
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+        invalidate_command_resolution();
+
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "an invalidation must make the next lookup walk again"
+        );
+    }
+
+    /// The TTL is the only thing that retires an answer nothing in cfgd caused
+    /// to change — a binary a human installed by hand beside a running daemon.
+    /// Pinned to zero, every entry is expired the moment it is stored, so the
+    /// second lookup finds a file written after the first one missed. With the
+    /// expiry arm removed the memoized miss answers instead.
+    #[test]
+    #[serial]
+    fn an_expired_memo_entry_is_walked_for_again() {
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+        let stem = "cfgd-probe-memo-expiry";
+
+        assert!(
+            command_path(stem).is_none(),
+            "nothing named {stem} exists yet"
+        );
+        let expected = write_probe_tool(dir.path(), stem);
+
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "an expired entry must be walked for again, with nothing invalidated"
+        );
+    }
+
+    /// A memoized answer belongs to the `PATH` it was computed under, so a
+    /// changed `PATH` is recomputed with no invalidation call at all — which is
+    /// what keeps every `ProbePath` / `EnvVarGuard` fixture in the suite honest.
+    #[test]
+    #[serial]
+    fn a_changed_path_is_resolved_again_without_an_invalidation() {
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let empty = tempfile::tempdir().expect("tempdir");
+        let holding = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-path-rekey";
+        let expected = write_probe_tool(holding.path(), stem);
+
+        let first = crate::test_helpers::EnvVarGuard::set("PATH", &empty.path().to_string_lossy());
+        assert!(command_path(stem).is_none());
+        drop(first);
+
+        let _second =
+            crate::test_helpers::EnvVarGuard::set("PATH", &holding.path().to_string_lossy());
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "a lookup under a different PATH must not read the old PATH's answer"
+        );
+    }
+
+    /// The generation is what a bootstrap moves, and it moves for BOTH memos:
+    /// registering a directory is one way, and a bare invalidation — what an
+    /// install landing a binary in a directory already on `PATH` reports — is
+    /// the other.
+    #[test]
+    #[serial]
+    fn registering_a_directory_moves_the_resolution_generation() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let before = command_resolution_generation();
+
+        register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+        let after_register = command_resolution_generation();
+        assert!(
+            after_register > before,
+            "registering a directory changes what command_path resolves"
+        );
+
+        invalidate_command_resolution();
+        assert!(command_resolution_generation() > after_register);
     }
 
     #[test]
@@ -956,6 +1374,12 @@ mod tests {
     fn force_kill_process_signals_sigkill() {
         // Spawn a SIGTERM-trapping child, force_kill_process it, assert it exits
         // with SIGKILL (signal 9).
+        //
+        // The spawn resolves `sh` off the process-global `PATH`, so it is a
+        // successful resolution and takes the read guard: a concurrent test
+        // emptying `PATH` to drive a not-found branch otherwise fails this one
+        // with `NotFound` on a claim that has nothing to do with lookup.
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut child = std::process::Command::new("sh")
             .arg("-c")
             .arg("trap '' TERM; sleep 30")
@@ -1123,6 +1547,48 @@ mod tests {
             composed, "/opt/a",
             "an unset PATH contributes no entries — least of all the empty one \
              `split_paths` invents, which POSIX reads as the current directory"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_falls_back_only_when_the_variable_is_unset() {
+        let _g = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_ENV_OR_UNSET");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_UNSET", "fallback"), "fallback");
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_reads_the_variable_when_it_is_set() {
+        let _g = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_ENV_OR_SET", "explicit");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_SET", "fallback"), "explicit");
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_keeps_an_explicitly_empty_value() {
+        // Set-to-empty is a deliberate caller action and is distinct from
+        // unset: a server that reads "" must see the operator's own clearing,
+        // not the default it was configured away from.
+        let _g = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_ENV_OR_EMPTY", "");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_EMPTY", "fallback"), "");
+    }
+
+    /// Drive the wait against a 50 ms timer with no signal sent. The timeout is
+    /// the expected arm — what the test proves is that handler registration
+    /// runs without panicking or erroring, and the hard deadline keeps a
+    /// never-resolving future from blocking the suite.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_shutdown_request_registers_its_handlers() {
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            await_shutdown_request(),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "no signal was sent, so the timeout must be what fires"
         );
     }
 }

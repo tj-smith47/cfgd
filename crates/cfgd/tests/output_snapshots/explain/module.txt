@@ -1,16 +1,19 @@
-Module (Module)
-⊙ A reusable unit of packages, files, scripts, and environment.
+Explain: Module
+  A reusable unit of packages, files, scripts, and environment.
 
-apiVersion  cfgd.io/v1alpha1
-kind        Module
-location    modules/<name>/module.yaml
+  apiVersion  cfgd.io/v1alpha1
+  kind        Module
+  Location    modules/<name>/module.yaml
+  Docs        https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/module.md#fields
 
-FIELDS (under spec)
-  ⊙ aliases <[]object> [+]  — 
-  ⊙ depends <[]string>      — 
-  ⊙ env <[]object> [+]      — 
-  ⊙ files <[]object> [+]    — 
-  ⊙ packages <[]object> [+] — 
-  ⊙ platforms <[]string>    — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.
-  ⊙ scripts <object> [+]    — 
-  ⊙ system <object>         — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.
+Fields (under spec)
+  aliases    <[]ShellAlias>         [+] — Shell aliases this module contributes.
+  depends    <[]string>                 — Names of other modules this one requires; cfgd resolves and applies them first.
+  env        <[]EnvVar>             [+] — Environment variables this module contributes.
+  files      <[]ModuleFileEntry>    [+] — Files this module deploys.
+  packages   <[]ModulePackageEntry> [+] — Packages this module installs.
+  platforms  <[]string>                 — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.
+  scripts    <ScriptSpec>           [+] — Lifecycle scripts (`preApply`, `postApply`, …) this module runs.
+  system     <object>                   — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.
+
+→ `cfgd explain module.<field>` expands a field marked [+]

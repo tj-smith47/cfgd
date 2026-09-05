@@ -275,7 +275,7 @@ fn pack_image_descriptor_digests_match_blob_bytes() {
         &opts,
     );
 
-    // The manifest descriptor digests must equal the digests we computed from
+    // The manifest descriptor digests must equal the digests computed from
     // the actual bytes — proving the manifest won't reference a blob it doesn't have.
     assert_eq!(
         manifest.config.digest, expected_config_digest,
@@ -343,7 +343,7 @@ fn pack_image_wire_bytes_hash_to_manifest_descriptor_digests() {
         .create();
 
     // Blob PUT: record body under the digest carried in the query string so
-    // we can later match it against the config/layer descriptors.
+    // this can later be matched against the config/layer descriptors.
     let blob_capture = Arc::clone(&blob_bodies);
     server
         .mock(
@@ -913,7 +913,7 @@ fn pack_image_base_index_selects_matching_platform_manifest() {
     let dir = create_test_pack_dir();
 
     // Index with two platform entries. The arm64 entry's manifest digest is
-    // the one we expect pack_image to GET next.
+    // the one pack_image is expected to GET next.
     let amd64_manifest_digest =
         "sha256:aaaa000000000000000000000000000000000000000000000000000000000000";
     let arm64_manifest_digest =
@@ -1074,7 +1074,7 @@ fn pack_image_base_index_no_matching_platform_errors() {
     let registry = registry_from_url(&server.url());
     let dir = create_test_pack_dir();
 
-    // Index has only an amd64 entry; we request linux/arm64.
+    // Index has only an amd64 entry; the request is for linux/arm64.
     let index = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": MEDIA_TYPE_OCI_INDEX,

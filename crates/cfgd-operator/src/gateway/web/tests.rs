@@ -106,7 +106,7 @@ async fn dashboard_stat_cards_reflect_device_statuses() {
     let html = result.unwrap().0;
     // Total = 2, Healthy = 1, Drifted = 1, Offline = 0
     // The stat cards are: total, healthy, drifted, offline in that order
-    // We check the stat card structure
+    // Checks the stat card structure
     assert!(html.contains(r#"<div class="stat-card total">"#));
     assert!(html.contains(r#"<div class="stat-card healthy">"#));
     assert!(html.contains(r#"<div class="stat-card drifted">"#));
@@ -174,7 +174,7 @@ async fn device_detail_existing_device() {
     // Breadcrumb navigation
     assert!(html.contains("Fleet Dashboard"));
     // No drift/checkin events by default
-    assert!(html.contains("No drift events recorded"));
+    assert!(html.contains("No system settings drift reported by this device."));
     assert!(html.contains("No check-in events recorded"));
     // Push config section
     assert!(html.contains("Push Configuration"));
@@ -203,20 +203,21 @@ async fn device_detail_with_drift_events() {
         .db
         .record_drift_event(
             "dev-1",
-            r#"[{"field":"packages","expected":"vim","actual":"missing"}]"#,
+            r#"[{"field":"kernelModules.overlay","expected":"loaded","actual":"absent"}]"#,
         )
         .await
         .expect("drift");
     let result = device_detail(State(state), Path("dev-1".to_string())).await;
     let html = result.unwrap().0;
-    // Should not say "no drift events"
-    assert!(!html.contains("No drift events recorded"));
-    // Should contain parsed drift detail fields
-    assert!(html.contains("packages"));
-    assert!(html.contains("vim"));
-    assert!(html.contains("missing"));
-    // Drift events count
-    assert!(html.contains("Drift Events (1)"));
+    // Should not say "no drift"
+    assert!(!html.contains("No system settings drift reported by this device."));
+    // Distinctive operands: a bare "1"/"0" would also match the page's own
+    // ids, CSS and timestamps, so the assertion could not fail.
+    assert!(html.contains("kernelModules.overlay"));
+    assert!(html.contains("loaded"));
+    assert!(html.contains("absent"));
+    // The section names the class of drift a device reports, and counts it
+    assert!(html.contains("System Settings Drift (1)"));
 }
 
 #[tokio::test]
@@ -591,7 +592,7 @@ async fn auth_middleware_rejects_unknown_session_cookie() {
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
-    // Regression: we must NOT accept the raw CFGD_API_KEY as a cfgd_session value.
+    // Regression: the raw CFGD_API_KEY must NOT be accepted as a cfgd_session value.
     unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
 
     let (state, _tmp) = test_state();

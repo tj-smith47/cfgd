@@ -4,14 +4,15 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, sudo_cmd_with_seam, system_manager_arms, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, partition_already_installed,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam,
+    system_manager_arms, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct SnapManager;
@@ -37,11 +38,19 @@ impl PackageManager for SnapManager {
         "snap"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("refresh")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(snap_cmd().arg("version"))
+    }
+
     fn is_available(&self) -> bool {
         snap_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // snap is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
         // On non-Linux platforms it is never available. `snapd` puts the client
         // on the system PATH, so the plan creates no directory of its own.
@@ -49,10 +58,11 @@ impl PackageManager for SnapManager {
         {
             // `None` rather than a hopeful name when no system manager can run
             // it: the method a plan carries is binding at execution.
-            detect_system_method().map(BootstrapPlan::new)
+            detect_system_method(delivered).map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = delivered;
             None
         }
     }
@@ -69,8 +79,20 @@ impl PackageManager for SnapManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd("snap", snap_cmd().args(["list"]), "list")?;
+        // A listing read tolerates a nonzero exit rather than erroring — the
+        // same treatment every other manager's read side gets.
+        let output = run_pkg_query("snap", snap_cmd().args(["list"]))?;
         Ok(parse_snap_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_query("snap", snap_cmd().args(["list"]))?;
+        Ok(parse_snap_list_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(
@@ -78,8 +100,9 @@ impl PackageManager for SnapManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
+        let (held, fresh) = partition_already_installed(self, packages, cx);
         // Snap requires individual install commands for --classic flag per package
-        for pkg in packages {
+        for pkg in &fresh {
             let label = format!("snap install {}", pkg);
             let result = run_pkg_cmd_live(
                 cx,
@@ -104,6 +127,13 @@ impl PackageManager for SnapManager {
                 }
             }
         }
+        // `snap install` no-ops on a snap already held; raising it takes
+        // `snap refresh`.
+        upgrade_each(cx, "snap", &held, "snap refresh", |pkg| {
+            let mut cmd = sudo_cmd_with_seam("snap");
+            cmd.arg("refresh").arg(pkg);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -128,12 +158,7 @@ impl PackageManager for SnapManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // snap info <pkg> → parse "latest/stable:" or first channel line for version
-        let output = snap_cmd().args(["info", package]).output().map_err(|e| {
-            PackageError::CommandFailed {
-                manager: "snap".into(),
-                source: e,
-            }
-        })?;
+        let output = run_pkg_query("snap", snap_cmd().args(["info", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -146,14 +171,33 @@ impl PackageManager for SnapManager {
 ///
 /// `snap list` emits a header row (`Name Version Rev Tracking Publisher Notes`)
 /// followed by one row per snap; the first whitespace-separated token in each
-/// data row is the snap name. We unconditionally skip the first line — empty
-/// installations still emit a header (or an empty stdout, in which case the
-/// `skip(1)` no-op is safe).
+/// data row is the snap name. The first line is unconditionally skipped —
+/// empty installations still emit a header (or an empty stdout, in which
+/// case the `skip(1)` no-op is safe).
 pub(super) fn parse_snap_list(stdout: &str) -> HashSet<String> {
     stdout
         .lines()
         .skip(1)
         .filter_map(|l| l.split_whitespace().next().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Parse `snap list` stdout into `(name, version)` pairs — the same header
+/// skip as [`parse_snap_list`], reading the second whitespace-separated
+/// column instead of just the first.
+pub(super) fn parse_snap_list_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let mut fields = l.split_whitespace();
+            let name = fields.next()?.to_string();
+            let version = fields
+                .next()
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
+                .to_string();
+            Some(cfgd_core::providers::PackageInfo { name, version })
+        })
         .collect()
 }
 
@@ -179,6 +223,7 @@ pub(super) fn parse_snap_info_version(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 
@@ -409,6 +454,28 @@ fd        9.0.0    100    latest/stable  -             -
         assert!(pkgs.contains("core22"));
     }
 
+    // --- parse_snap_list_versions ---
+
+    #[test]
+    fn parse_snap_list_versions_real_world() {
+        let stdout = "\
+Name      Version  Rev    Tracking       Publisher     Notes
+core22    20240124 1100   latest/stable  canonical**   base
+ripgrep   14.1.0   234    latest/stable  burntsushi    classic
+";
+        let pkgs = parse_snap_list_versions(stdout);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "core22");
+        assert_eq!(pkgs[0].version, "20240124");
+        assert_eq!(pkgs[1].name, "ripgrep");
+        assert_eq!(pkgs[1].version, "14.1.0");
+    }
+
+    #[test]
+    fn parse_snap_list_versions_empty_input_yields_empty_set() {
+        assert!(parse_snap_list_versions("").is_empty());
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_SNAP_BIN ToolShim. The seam wires
     // through sudo_cmd_with_seam: when CFGD_SNAP_BIN is set, the install /
@@ -436,7 +503,8 @@ fd        9.0.0    100    latest/stable  -             -
             SnapManager
                 .install(&["ripgrep".into(), "fd".into()], &cx)
                 .expect("Ok");
-            assert_eq!(s.invocation_count(), 2);
+            // 1 `list` (partitioning held vs fresh) + 2 `install`.
+            assert_eq!(s.invocation_count(), 3);
             let argv = s.argv_log();
             assert!(
                 argv.contains("install ripgrep"),
@@ -450,13 +518,46 @@ fd        9.0.0    100    latest/stable  -             -
 
         #[test]
         #[serial]
+        fn snap_install_raises_a_held_snap_via_snap_refresh_not_install() {
+            // The listing already carries `ripgrep`, so `install` partitions
+            // it into `held` and raises it through `snap refresh ripgrep`
+            // instead of re-running `snap install ripgrep`, which would
+            // no-op; `fd` is unheld and still installs.
+            let listing = "Name    Version  Rev  Tracking  Publisher  Notes\nripgrep 14.1.0   123  stable    canonical  -\n";
+            let s = ToolShim::install(SHIM_ENV, 0, listing, "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            SnapManager
+                .install(&["ripgrep".into(), "fd".into()], &cx)
+                .expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("refresh ripgrep"),
+                "held snap must be raised via `snap refresh`: {argv}"
+            );
+            assert!(
+                argv.contains("install fd"),
+                "unheld snap must still install: {argv}"
+            );
+            assert!(
+                !argv.contains("install ripgrep"),
+                "held snap must not be re-run through `snap install`: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
         fn snap_install_retries_with_classic_when_first_attempt_complains_classic() {
             // Shim exits non-zero with stderr containing "classic" → the
             // install branch's `e.to_string().contains("classic")` matches
             // (because run_pkg_cmd_live now surfaces stderr in the error
             // message) and a second attempt is fired with `--classic`. The
             // shim is the same for both attempts, so the second also fails
-            // — we only assert that both argvs landed.
+            // — only that both argvs landed is asserted here. The partitioning
+            // `list` call also fails on this shim, which fails held/fresh
+            // open (fresh = every package), so it does not change the retry
+            // shape — just adds one more invocation.
             let s = ToolShim::install(
                 SHIM_ENV,
                 1,
@@ -469,7 +570,7 @@ fd        9.0.0    100    latest/stable  -             -
             let _ = SnapManager.install(&["ripgrep".into()], &cx);
             assert_eq!(
                 s.invocation_count(),
-                2,
+                3,
                 "retry must fire on classic-confinement stderr; got argv: {}",
                 s.argv_log()
             );
@@ -545,6 +646,21 @@ ripgrep   14.1.0   234   latest/stable  burntsushi   classic
             let pkgs = SnapManager.installed_packages(&cx).expect("Ok");
             assert!(pkgs.contains("core22"));
             assert!(pkgs.contains("ripgrep"));
+        }
+
+        #[test]
+        #[serial]
+        fn snap_installed_packages_nonzero_exit_is_empty_not_error() {
+            // A listing read tolerates a nonzero exit (`run_pkg_query`, not
+            // `run_pkg_cmd`) the same way flatpak's and scoop's do.
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no snaps installed\n");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = SnapManager
+                .installed_packages(&cx)
+                .expect("nonzero exit must be Ok(empty), not Err");
+            assert!(pkgs.is_empty());
         }
 
         #[test]

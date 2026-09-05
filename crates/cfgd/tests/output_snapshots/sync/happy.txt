@@ -1,14 +1,14 @@
 Sync
   Config   <CONFIG_DIR>/cfgd.yaml
+  Sources  team-a, team-b
   Profile  tiny
-
-Local repo
-  ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
 
 Sources
   source:team-a
-    ✓ synced — commit: <COMMIT>
+    ✓ Synced — commit: <COMMIT>
   source:team-b
-    ✓ synced — commit: <COMMIT>
+    ✓ Synced — commit: <COMMIT>
 
-⊙ Sources updated. Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+✓ Synced — 2 sources
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

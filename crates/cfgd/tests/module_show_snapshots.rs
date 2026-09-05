@@ -5,7 +5,7 @@
 //!   - `module_list/empty.txt`        — empty list (status + hint shape)
 //!   - `module_show/happy.{txt,json}` — populated module with remote lock,
 //!     state, packages (mix of Resolved/Skipped/Unresolved), files, env,
-//!     aliases, post-apply scripts
+//!     aliases, lifecycle scripts
 //!   - `module_show/not_found.txt`    — error path (status + hint)
 //!
 //! Goldens live under `tests/output_snapshots/`. Regenerate with:
@@ -18,10 +18,16 @@ use cfgd::cli::module::list_show::{
     PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
-use cfgd_core::config::{EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ShellAlias};
+use cfgd_core::config::{
+    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias,
+};
 use cfgd_core::output::Printer;
 use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
+
+/// Two hours after the fixture's `installed_at`, so a rendered `Last Applied`
+/// age reads a fixed `2h ago` in the goldens below.
+const NOW: &str = "2026-05-14T12:00:00Z";
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -31,7 +37,7 @@ fn happy_entries() -> Vec<ModuleListEntry> {
             name: "base".into(),
             active: true,
             source: "local".into(),
-            status: "applied".into(),
+            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
             packages: 3,
             files: 5,
             depends: 0,
@@ -73,7 +79,7 @@ fn happy_show_output() -> ModuleShowOutput {
             packages_hash: "abc123def456".into(),
             files_hash: "789ghi012jkl".into(),
             git_sources: None,
-            status: "applied".into(),
+            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
         }),
         spec: ModuleSpec {
             depends: vec!["base".into()],
@@ -103,23 +109,40 @@ fn happy_show_output() -> ModuleShowOutput {
                 EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "GH_TOKEN".into(),
                     value: "ghp_secret_token_value".into(),
+                    platforms: vec![],
                 },
             ],
             aliases: vec![
                 ShellAlias {
                     name: "gs".into(),
                     command: "git status".into(),
+                    platforms: vec![],
                 },
                 ShellAlias {
                     name: "ll".into(),
                     command: "ls -la".into(),
+                    platforms: vec![],
                 },
             ],
-            scripts: None,
+            // Declared out of run order on purpose: the Scripts section
+            // reports the order the hooks RUN in, and every declaring hook —
+            // not just `postApply` — has to appear.
+            scripts: Some(ScriptSpec {
+                post_apply: vec![
+                    ScriptEntry::Simple("echo 'post-apply hook ran'".into()),
+                    ScriptEntry::Simple("systemctl --user daemon-reload".into()),
+                ],
+                pre_apply: vec![ScriptEntry::Simple("mkdir -p ~/.config/dev-tools".into())],
+                on_drift: vec![ScriptEntry::Simple(
+                    "notify-send 'dev-tools drifted'".into(),
+                )],
+                ..Default::default()
+            }),
             system: Default::default(),
         },
     }
@@ -155,11 +178,50 @@ fn happy_packages() -> Vec<PackageDisplay> {
     ]
 }
 
-fn happy_post_apply() -> Vec<String> {
-    vec![
-        "echo 'post-apply hook ran'".into(),
-        "systemctl --user daemon-reload".into(),
-    ]
+/// Every hook that declares something gets a row, labelled with the hook it
+/// runs in and ordered by when it runs — the section used to render `postApply`
+/// bodies alone, so a module's `preApply` and `onDrift` scripts were invisible.
+///
+/// No drift engine ever watches a hook body, so every row is a bare
+/// declaration through `command_list` (hook name as the key, `" — "` glue) —
+/// never a `status` row wearing a role glyph (`◉`/`✓`/…) for a check that
+/// never ran, the same doctrine `cfgd status <module>`'s Scripts section
+/// codifies (`no_declared_inventory_row_wears_a_verdict_glyph`).
+#[test]
+fn module_show_renders_every_declaring_hook_in_execution_order() {
+    let output = happy_show_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        &[],
+        false,
+        printer.arrow(),
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    let rows: Vec<String> = human
+        .lines()
+        .skip_while(|l| l.trim() != "Scripts")
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            "preApply  — mkdir -p ~/.config/dev-tools",
+            "postApply — echo 'post-apply hook ran'",
+            "postApply — systemctl --user daemon-reload",
+            "onDrift   — notify-send 'dev-tools drifted'",
+        ],
+        "every declaring hook, in execution order, as a bare declaration: {human}"
+    );
+    assert!(
+        !rows.iter().any(|r| r.contains('◉') || r.contains('✓')),
+        "a hook body has no check standing behind it and must not wear a verdict glyph: {rows:?}"
+    );
 }
 
 #[test]
@@ -202,14 +264,14 @@ fn module_show_happy_human() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
     let pkgs = happy_packages();
-    let post = happy_post_apply();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
         &pkgs,
-        &post,
         false,
+        printer.arrow(),
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.txt");
@@ -220,14 +282,14 @@ fn module_show_happy_json() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
     let pkgs = happy_packages();
-    let post = happy_post_apply();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
         &pkgs,
-        &post,
         false,
+        printer.arrow(),
+        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();

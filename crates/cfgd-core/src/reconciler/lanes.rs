@@ -73,11 +73,12 @@ use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{PackageError, Result, StateError};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
-use crate::providers::{ActionNote, NoteSink, PackageStateStore, ProviderRegistry};
+use crate::providers::{ActionNote, NoteSink, PackageAction, PackageStateStore, ProviderRegistry};
 
 use super::apply::ActionOutcome;
 use super::format::{
-    action_display_subject, format_action_description, parse_resource_from_description,
+    action_display_head, action_display_subject_within, format_action_description,
+    parse_resource_from_description,
 };
 use super::live_tree::{Held, PhaseTree, Wait};
 use super::packages::{ModuleInstallContext, PackageExec, action_manager};
@@ -104,6 +105,19 @@ pub(super) struct LaneRun<'x> {
     pub(super) plan_index_base: usize,
     /// Depth an action's line — and so its lane's window — renders at.
     pub(super) action_depth: usize,
+    /// Managers an EARLIER phase of this run already failed to provision, as
+    /// they stood when this phase opened: see `Reconciler::unprovisioned`. A
+    /// snapshot rather than a live view because the coordinator keeps recording
+    /// into that list while these workers run, and a failure inside THIS phase
+    /// is `fail_dependents`' to withhold, not this list's.
+    pub(super) unprovisioned: &'x [String],
+    /// Managers an EARLIER phase of this run already PUT on the machine, taken
+    /// with the snapshot above and for the same reason: see
+    /// `Reconciler::provisioned`.
+    pub(super) provisioned: &'x [String],
+    /// The `(installer, package)` pairs those provisions installed, the same
+    /// snapshot: see `Reconciler::provisioned_packages`.
+    pub(super) provisioned_packages: &'x [(String, String)],
 }
 
 /// Where a finished action goes: through the caller's settle, which journals
@@ -117,20 +131,20 @@ pub(super) struct LaneCollector<'a, 'p, 'g> {
     /// Returns the line to render, and `None` when the caller kept it — off a
     /// TTY the phase's tree is written at close, in plan order, and nothing
     /// settles here.
-    settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+    settle: &'a mut dyn FnMut(&'p Owner, &'p Action, LaneCollected) -> Option<ActionOutcome>,
     tree: &'a mut PhaseTree<'p, 'g>,
 }
 
 impl<'a, 'p, 'g> LaneCollector<'a, 'p, 'g> {
     pub(super) fn new(
-        settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+        settle: &'a mut dyn FnMut(&'p Owner, &'p Action, LaneCollected) -> Option<ActionOutcome>,
         tree: &'a mut PhaseTree<'p, 'g>,
     ) -> Self {
         Self { settle, tree }
     }
 
     fn finished(&mut self, owner: &'p Owner, action: &'p Action, collected: LaneCollected) {
-        if let Some(outcome) = (self.settle)(action, collected) {
+        if let Some(outcome) = (self.settle)(owner, action, collected) {
             self.tree.settled(owner, action, outcome);
         }
     }
@@ -139,7 +153,7 @@ impl<'a, 'p, 'g> LaneCollector<'a, 'p, 'g> {
 /// One finished action, as the coordinator collected it.
 pub(super) struct LaneCollected {
     pub(super) journal_id: Option<i64>,
-    pub(super) result: Result<(String, bool)>,
+    pub(super) result: Result<super::apply::ActionRun>,
     pub(super) elapsed: Duration,
     pub(super) notes: Vec<ActionNote>,
     /// The lane's captured child output. Empty whenever a live window already
@@ -167,7 +181,7 @@ enum LaneMessage {
 
 struct LaneFinished {
     slot: usize,
-    result: Result<(String, bool)>,
+    result: Result<super::apply::ActionRun>,
     elapsed: Duration,
     notes: Vec<ActionNote>,
     body: Vec<String>,
@@ -253,25 +267,72 @@ struct Slot<'p> {
     /// Read off the plan rather than re-derived, so the scheduler cannot
     /// disagree with the edges the preview showed. Empty for package work.
     depends_on: &'p [String],
+    /// Whether this action INSTALLS through a manager that registers sources
+    /// for its family (`brew-tap`). The dispatcher offers these ahead of the
+    /// tier barrier and holds the family's other installs behind them: a
+    /// formula may only exist in the tap being added by this very run, and
+    /// tier order alone would run a module's brew installs before a
+    /// profile-declared tap. Install-shaped actions only — that reason does
+    /// not apply to a removal, so an untap neither crosses the barrier nor
+    /// holds its family. Always `false` for a `Prerequisites` node, whose
+    /// ordering is the DAG's.
+    registers_sources: bool,
     state: SlotState,
 }
 
-/// The ONE wait-line grammar: `<head> · waiting on <thing>`.
+/// What holds a waiting row, and so which sentence its reason slot carries.
 ///
-/// One sentence for every cardinality — the tier in flight for a blocked
-/// group, the family lane for a blocked package action, the node ahead of it
-/// for a blocked manager node — because they are the same statement at
-/// different levels and reading them side by side is the point.
+/// The verb names the RELATION, never the mechanism. A row behind an EDGE —
+/// a node it depends on, or the tier barrier ahead of its group — is waiting
+/// for that thing to finish before it can start at all: `waiting on <row>`.
+/// A row behind its family's SOURCE registration is waiting on it too: the
+/// hoist-and-hold in [`registers_family_sources`] exists because the formula
+/// may only exist in the repository the tap adds, a dependency expressed as
+/// lane precedence rather than as a DAG edge — so it takes the dependency's
+/// verb, whether the tap is running or merely hoisted ahead. A row behind its
+/// family LANE for any other reason depends on nothing the occupant produces;
+/// it is next in line for the lane the occupant is in: `queued behind <row>`
+/// (`brew-cask install firefox` behind `brew install neovim`). Reading the
+/// mechanism instead had `brew install gum — queued behind brew-tap install`
+/// deny the one dependency the tap exists to satisfy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Hold<'a> {
+    /// A DAG edge or tier barrier the row has not cleared, named by the row
+    /// or tier word ahead of it.
+    Edge(&'a str),
+    /// The family's source registration the row installs from, named by that
+    /// occupant — running, or hoisted ahead and not yet started.
+    Source(&'a str),
+    /// The family lane something unrelated occupies, named by that occupant.
+    Lane(&'a str),
+}
+
+/// The ONE wait-line reason, one sentence per [`Hold`] kind.
 ///
-/// The head is what is being held: the blocked action's own display subject,
-/// in the row that action will start in. It is omitted entirely for a line
-/// standing for a whole GROUP, whose heading sits directly above it and is
-/// already the head — a group line naming its owner would print the same token
-/// twice, one line apart.
-fn wait_subject(head: Option<&str>, thing: &str) -> String {
-    match head {
-        Some(head) => format!("{head} · waiting on {thing}"),
-        None => format!("waiting on {thing}"),
+/// Within a kind, one sentence for every cardinality — the tier in flight for
+/// a blocked group, the row ahead of it for a blocked manager node — because
+/// they are the same statement at different levels and reading them side by
+/// side is the point. A row is named by its own display subject
+/// ([`node_subject`], [`lane_occupant`]), so the bright half of the line is a
+/// head the reader can find above it; only a tier has no row and is named by
+/// its word.
+///
+/// It is a REASON, so it fills the row's detail slot, beside the blocked
+/// action's own display subject in the subject slot. Fused into one string it
+/// was one slot, and a withheld role deliberately mutes the subject and
+/// brightens the detail (`renderer::action_subject_style` /
+/// `action_detail_is_muted`) — so the half a reader is looking for rendered
+/// muted, and the ` · ` glue stood where the renderer's own ` — ` belonged.
+///
+/// A line standing for a whole GROUP has no subject to hold back: its heading
+/// sits directly above it and is already the head, and a row naming its owner
+/// would print the same token twice one line apart. That row carries the
+/// reason in the subject slot, an empty subject beside a detail rendering as a
+/// leading em-dash.
+pub(super) fn wait_reason(hold: Hold<'_>) -> String {
+    match hold {
+        Hold::Edge(thing) | Hold::Source(thing) => format!("waiting on {thing}"),
+        Hold::Lane(occupant) => format!("queued behind {occupant}"),
     }
 }
 
@@ -300,7 +361,11 @@ fn tier_index(tier: Tier) -> usize {
 struct GroupWait<'p> {
     owner: &'p Owner,
     tier: Tier,
-    /// The group still has an action that has not been dispatched.
+    /// The group still has an undispatched action held BEHIND the tier
+    /// barrier. A source registration does not count: it is offered across
+    /// the barrier, gets its own specific row when blocked, and counting it
+    /// here would render its wait twice — once as the coarse tier row and
+    /// once as the per-slot row.
     pending: bool,
 }
 
@@ -321,7 +386,7 @@ fn tier_waits<'g>(groups: &[GroupWait<'g>], in_flight: Option<Tier>) -> Vec<(&'g
     groups
         .iter()
         .filter(|g| g.pending && g.tier > in_flight)
-        .map(|g| (g.owner, wait_subject(None, word)))
+        .map(|g| (g.owner, wait_reason(Hold::Edge(word))))
         .collect()
 }
 
@@ -361,7 +426,7 @@ fn transitive_depends(modules: &[ResolvedModule]) -> HashMap<&str, HashSet<&str>
 /// sense and so drains nothing.
 fn drains_phase(registry: &ProviderRegistry, manager: &str) -> bool {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .any(|pm| pm.name() == manager && !pm.is_available())
 }
@@ -397,11 +462,46 @@ impl<'p> Slot<'p> {
     /// Ordering against the delivered manager's later work needs no lane: a
     /// package install depends on its manager's provision by DAG edge.
     fn lane(&self) -> Option<&str> {
-        if let Action::Manager(ManagerAction::Provision { via, .. }) = self.action {
-            return Some(crate::manager_family(via));
-        }
-        self.manager.as_deref().map(crate::manager_family)
+        action_lane(self.action)
     }
+}
+
+/// The lane `action` would occupy — [`Slot::lane`]'s derivation, stated once
+/// so the report's allowance and the dispatcher agree about which rows can
+/// contend for a lane and so be named by a `queued behind` reason.
+fn action_lane(action: &Action) -> Option<&str> {
+    if let Action::Manager(ManagerAction::Provision { via, .. }) = action {
+        return Some(crate::manager_family(via));
+    }
+    super::packages::action_manager(action).map(crate::manager_family)
+}
+
+/// Whether `action` INSTALLS through a manager that registers sources for its
+/// family — the derivation behind [`Slot::registers_sources`].
+///
+/// Install-shaped arms only: the hoist-and-hold exists because a formula may
+/// only exist in the repository the tap adds, and that reason does not apply
+/// to a removal — an untap hoisted across the barrier would run BEFORE the
+/// installs that still resolve through the tap it removes. A `Prerequisites`
+/// node is excluded by shape (neither arm matches), keeping its ordering the
+/// DAG's.
+fn registers_family_sources(action: &Action, registry: &ProviderRegistry) -> bool {
+    if !matches!(
+        action,
+        Action::Package(PackageAction::Install { .. })
+            | Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { .. },
+                ..
+            })
+    ) {
+        return false;
+    }
+    action_manager(action).is_some_and(|manager| {
+        registry
+            .package_managers()
+            .iter()
+            .any(|pm| pm.name() == manager && pm.registers_family_sources())
+    })
 }
 
 /// Whether every action of `slot`'s module's transitive dependencies has
@@ -470,16 +570,111 @@ fn blocking_node<'s, 'p>(slots: &'s [Slot<'p>], index: usize) -> Option<&'s Slot
         .max_by_key(|slot| (slot.state == SlotState::Waiting, slot.plan_index))
 }
 
-/// What a node is CALLED on the line of a node it takes down.
+/// What a node is CALLED on the line of a node it holds up or takes down:
+/// the ROW the reader can see, its own display subject.
 ///
-/// A prerequisite is named by its TOOL rather than by the manager running the
-/// install: `apt install curl` failing is curl not arriving, and curl is what
-/// the dependent was waiting for. Everything else is named by its manager.
-fn node_subject(action: &Action) -> Option<&str> {
+/// A blocker is named by the row that is in the way, never by a token no row
+/// is headed with. Named by its manager, npm's wait line read `provision npm
+/// via apt — waiting on apt` beside a row called `refresh apt index`: the one
+/// bright span on the line repeated the muted half's last word and sent the
+/// reader looking for a row called `apt` that does not exist.
+///
+/// A prerequisite is the one narrowing, named by its TOOL rather than by
+/// `apt install curl — required by npm`: curl not arriving is what the
+/// dependent was waiting for, and its tool is the head of that row already.
+fn node_subject(action: &Action, budget: Option<usize>, arrow: &str) -> Option<String> {
     match action {
-        Action::Manager(ManagerAction::Prerequisite { tool, .. }) => Some(tool.as_str()),
-        Action::Manager(node) => Some(node.manager()),
+        Action::Manager(ManagerAction::Prerequisite { tool, .. }) => Some(tool.clone()),
+        Action::Manager(_) => {
+            Some(action_display_subject_within(action, budget, arrow).to_string())
+        }
         _ => None,
+    }
+}
+
+/// What a wait line calls the row in its way.
+///
+/// A blocker with an operand list is named by its HEAD
+/// ([`action_display_head`]): the row it points at is on the same screen with
+/// every operand spelled out, so a reason repeating them puts one install's
+/// package list on two rows. Every other shape's subject is already its own
+/// head.
+fn blocker_subject(action: &Action, budget: Option<usize>, arrow: &str) -> String {
+    action_display_head(action)
+        .unwrap_or_else(|| action_display_subject_within(action, budget, arrow).to_string())
+}
+
+/// Every wait reason a phase holding `actions` can put on a row, worded as
+/// the dispatcher would word it — and no other. A reason names a DAG node
+/// some other action of the phase depends on (`waiting on <node>`,
+/// [`node_subject`]) or a lane occupant another action of the phase contends
+/// with (`queued behind <occupant>`, [`lane_occupant`] over [`action_lane`]),
+/// and nothing else. What `report_trailing_allowance` prices a report's wait
+/// rows over: priced over every action, it reserved for `queued behind deploy
+/// <two absolute paths>` — a sentence no code path emits — and refused the
+/// whole report its column.
+pub(super) fn phase_wait_reasons(
+    actions: &[&Action],
+    budget: Option<usize>,
+    arrow: &str,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for (at, action) in actions.iter().enumerate() {
+        if let Action::Manager(node) = action {
+            let id = node.node_id();
+            let depended_on = actions.iter().any(|other| match other {
+                Action::Manager(dependent) => dependent.depends_on().contains(&id),
+                _ => false,
+            });
+            if depended_on && let Some(subject) = node_subject(action, budget, arrow) {
+                reasons.push(wait_reason(Hold::Edge(&subject)));
+            }
+        }
+        if let Some(lane) = action_lane(action)
+            && actions
+                .iter()
+                .enumerate()
+                .any(|(other_at, other)| other_at != at && action_lane(other) == Some(lane))
+        {
+            reasons.push(wait_reason(Hold::Lane(&blocker_subject(
+                action, budget, arrow,
+            ))));
+        }
+    }
+    reasons
+}
+
+/// The slot occupying `lane`, for a wait line held by the lane rather than by
+/// an edge: the action running in it, else the dispatchable tap holding it
+/// for its family. `None` for a lane the dispatcher reports busy with no row
+/// of its own to show for it.
+fn lane_occupant<'s, 'p>(slots: &'s [Slot<'p>], lane: &str) -> Option<&'s Slot<'p>> {
+    slots
+        .iter()
+        .find(|s| s.state == SlotState::Running && s.lane() == Some(lane))
+        .or_else(|| {
+            slots.iter().find(|s| {
+                s.state == SlotState::Waiting && s.registers_sources && s.lane() == Some(lane)
+            })
+        })
+}
+
+/// The wait reason for a row held by its family lane: [`Hold::Source`] when
+/// the occupant is the family's source registration, [`Hold::Lane`]
+/// otherwise. Named by [`blocker_subject`] for the same reason
+/// [`node_subject`] narrows a prerequisite; the bare lane name is the
+/// fallback when no row occupies it.
+fn lane_hold_reason(slots: &[Slot<'_>], lane: &str, budget: Option<usize>, arrow: &str) -> String {
+    match lane_occupant(slots, lane) {
+        Some(occupant) => {
+            let name = blocker_subject(occupant.action, budget, arrow);
+            if occupant.registers_sources {
+                wait_reason(Hold::Source(&name))
+            } else {
+                wait_reason(Hold::Lane(&name))
+            }
+        }
+        None => wait_reason(Hold::Lane(lane)),
     }
 }
 
@@ -560,9 +755,8 @@ fn fail_dependents<'p>(
     let Some(root_node) = slots[root].node.clone() else {
         return;
     };
-    let cause = node_subject(root_action)
-        .unwrap_or(root_node.as_str())
-        .to_string();
+    let cause = node_subject(root_action, None, crate::output::theme::ICON_ARROW)
+        .unwrap_or_else(|| root_node.clone());
     let mut failed: Vec<String> = vec![root_node];
     loop {
         let mut progressed = false;
@@ -618,6 +812,33 @@ struct DispatchState<'a> {
     running: usize,
 }
 
+/// The lanes whose next occupant must be a source registration: a family
+/// with a dispatchable tap waiting refuses its installs until the tap has
+/// run, because a formula may only exist in the repository the tap adds.
+/// Judged on depends/dag alone — fail OPEN: a tap held by a module
+/// dependency edge does not hold its family, or the edge and the family
+/// could each be waiting on the other.
+///
+/// Shared by [`pick_next`] (the hold itself) and [`held_waits`] (the row
+/// saying so), so the dispatcher and the renderer can never disagree about
+/// which families are held.
+fn source_held_lanes<'s>(
+    slots: &'s [Slot<'_>],
+    deps: &HashMap<&str, HashSet<&str>>,
+) -> HashSet<&'s str> {
+    slots
+        .iter()
+        .enumerate()
+        .filter(|(index, slot)| {
+            slot.state == SlotState::Waiting
+                && slot.registers_sources
+                && depends_satisfied(slots, *index, deps)
+                && dag_satisfied(slots, *index)
+        })
+        .filter_map(|(_, slot)| slot.lane())
+        .collect()
+}
+
 /// The next action to dispatch, or `None` when nothing may start right now.
 fn pick_next(
     slots: &[Slot<'_>],
@@ -641,9 +862,34 @@ fn pick_next(
     // while a lone owner still fills every lane in the phase.
     let mut owner_busy: Option<usize> = None;
 
-    for (index, slot) in slots.iter().enumerate() {
-        if slot.state != SlotState::Waiting || slot.tier != in_flight {
+    let source_held = source_held_lanes(slots, deps);
+
+    // Two passes over plan order: source registrations first, across BOTH
+    // tiers — the tier barrier orders module work before profile work, and a
+    // profile-declared tap serviced in tier order would run after the module
+    // brew installs whose formulas it delivers. Everything else keeps the
+    // tier gate.
+    let scan = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.registers_sources)
+        .chain(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| !slot.registers_sources),
+        );
+    for (index, slot) in scan {
+        if slot.state != SlotState::Waiting {
             continue;
+        }
+        if !slot.registers_sources {
+            if slot.tier != in_flight {
+                continue;
+            }
+            if slot.lane().is_some_and(|l| source_held.contains(l)) {
+                continue;
+            }
         }
         if !depends_satisfied(slots, index, deps) {
             continue;
@@ -657,6 +903,16 @@ fn pick_next(
             // later action would resolve a binary through a PATH the bootstrap
             // has not finished populating. Returning here rather than falling
             // through to `owner_busy` is what makes it a hard stop.
+            if slot.registers_sources && slot.tier != in_flight {
+                // A barrier-crossing tap whose manager needs bootstrapping
+                // must not quiesce the tiers ahead of it: its own family is
+                // already held (`source_held`), so only that family waits,
+                // and the tap still starts only on a quiet phase.
+                if state.running == 0 {
+                    return Some(index);
+                }
+                continue;
+            }
             return (state.running == 0).then_some(index);
         }
         if slot.lane().is_some_and(|l| state.lanes_busy.contains(l)) {
@@ -684,6 +940,12 @@ struct WaitInputs<'a, 'p> {
     groups: &'a [(&'p Owner, Tier)],
     deps: &'a HashMap<&'a str, HashSet<&'a str>>,
     lanes_busy: &'a HashSet<String>,
+    /// The tree's subject budget, so a wait line names its subject — and the
+    /// row it waits on — exactly as their own rows do.
+    budget: Option<usize>,
+    /// The theme's arrow glyph, for a wait row whose blocker is a Secret or
+    /// System action naming a value change.
+    arrow: &'a str,
 }
 
 /// Every distinct owner in the phase, in the order the dispatch offers them,
@@ -757,6 +1019,7 @@ impl super::Reconciler<'_> {
                     Action::Manager(node) => node.depends_on(),
                     _ => &[],
                 },
+                registers_sources: registers_family_sources(action, self.registry),
                 state: SlotState::Waiting,
             })
             .collect();
@@ -929,6 +1192,8 @@ impl super::Reconciler<'_> {
                         groups: &groups,
                         deps: &deps,
                         lanes_busy: &lanes_busy,
+                        budget: collect.tree.subject_budget(),
+                        arrow: collect.tree.arrow(),
                     }));
                 }
                 // Nothing new dispatches after an abort, so no refresh follows
@@ -1118,15 +1383,25 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         .map(|(owner, tier)| GroupWait {
             owner,
             tier: *tier,
-            pending: slots
-                .iter()
-                .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token()),
+            pending: slots.iter().any(|s| {
+                s.state == SlotState::Waiting
+                    && !s.registers_sources
+                    && s.owner.token() == owner.token()
+            }),
         })
         .collect();
-    let pending_owners: Vec<String> = waits
+    // Sealing counts EVERY waiting slot, source registrations included: the
+    // tap's group must stay open to gain and settle the tap's own row, even
+    // when the tap is the only work the group has left.
+    let pending_owners: Vec<String> = inputs
+        .groups
         .iter()
-        .filter(|g| g.pending)
-        .map(|g| g.owner.token())
+        .filter(|(owner, _)| {
+            slots
+                .iter()
+                .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token())
+        })
+        .map(|(owner, _)| owner.token())
         .collect();
     // A `Vec` throughout, never a `HashMap`: the order these are built in IS
     // the top-to-bottom order the tree draws new rows in, and collecting
@@ -1137,12 +1412,23 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
             owner,
             action: None,
             subject,
+            reason: None,
         })
         .collect();
 
+    let source_held = source_held_lanes(slots, inputs.deps);
+
     // `slots` is walked in plan order, so the rows built from it keep it.
     for (index, slot) in slots.iter().enumerate() {
-        if slot.state != SlotState::Waiting || Some(slot.tier) != in_flight {
+        if slot.state != SlotState::Waiting {
+            continue;
+        }
+        // A source registration is exempt from the tier filter for the same
+        // reason `pick_next` offers it across the barrier: a profile-declared
+        // tap can be blocked while the module tier is in flight, and filtering
+        // it out here would leave the one action holding a whole family absent
+        // from the live region for the length of its wait.
+        if Some(slot.tier) != in_flight && !slot.registers_sources {
             continue;
         }
         if !depends_satisfied(slots, index, inputs.deps) {
@@ -1154,12 +1440,12 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         // even have one yet — so naming the lane there would name a blocker
         // that is not in the way, and saying nothing at all would leave the
         // node absent from the live region for the whole of its wait.
-        let on = match blocking_node(slots, index) {
+        let reason = match blocking_node(slots, index) {
             Some(blocker) => {
                 // Only a manager node carries edges, so a blocker always has a
                 // name. If that ever stops holding, say nothing rather than
                 // "waiting on " with the claim's object missing.
-                let named = node_subject(blocker.action);
+                let named = node_subject(blocker.action, inputs.budget, inputs.arrow);
                 debug_assert!(
                     named.is_some(),
                     "a node is blocked by an action with no subject to name"
@@ -1167,7 +1453,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 let Some(on) = named else {
                     continue;
                 };
-                on.to_string()
+                wait_reason(Hold::Edge(&on))
             }
             None => {
                 // An owner mid-action in another lane still gets this line:
@@ -1175,19 +1461,32 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // the whole point of the grammar, and the window it describes
                 // — a module holding brew while another holds apt — is the one
                 // the wait line exists for.
-                let Some(lane) = slot.lane().filter(|lane| inputs.lanes_busy.contains(*lane))
-                else {
+                // A busy lane, or one held for a dispatchable tap: an install
+                // refused because its family's next occupant must be a source
+                // registration is waiting on that family exactly as it would
+                // be on a running action — with nothing in `lanes_busy` at
+                // all, its wait was otherwise invisible. The tap itself is
+                // exempt from the second half: it IS the hold, and would name
+                // itself as its own blocker.
+                let Some(lane) = slot.lane().filter(|lane| {
+                    inputs.lanes_busy.contains(*lane)
+                        || (!slot.registers_sources && source_held.contains(*lane))
+                }) else {
                     continue;
                 };
-                // The lane, not the registered name: an action for `brew-cask`
-                // held back by a running `brew` is waiting on brew.
-                lane.to_string()
+                // The lane's occupant, not the registered name: an action for
+                // `brew-cask` held back by a running `brew install neovim` is
+                // queued behind that row, and one held for its family's tap
+                // is waiting on it.
+                lane_hold_reason(slots, lane, inputs.budget, inputs.arrow)
             }
         };
         rows.push(Wait {
             owner: slot.owner,
             action: Some(slot.action),
-            subject: wait_subject(Some(&action_display_subject(slot.action).to_string()), &on),
+            subject: action_display_subject_within(slot.action, inputs.budget, inputs.arrow)
+                .to_string(),
+            reason: Some(reason),
         });
     }
     Held {
@@ -1198,7 +1497,7 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
 
 /// What a worker hands back.
 struct LaneWorkerResult {
-    result: Result<(String, bool)>,
+    result: Result<super::apply::ActionRun>,
     elapsed: Duration,
     notes: Vec<ActionNote>,
     bootstrapped: Vec<super::packages::BootstrapRecord>,
@@ -1227,9 +1526,12 @@ fn run_one_action(
     // below to still see them. Moving construction inside the guarded
     // closure, as it once did, drops `exec` along with the panic and loses
     // every bootstrap the action performed just before failing.
-    let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
+    let exec = PackageExec::new(registry, &proxy, run.printer, &notes)
+        .in_lane(lane)
+        .withholding_managers(run.unprovisioned)
+        .delivered_by(run.provisioned_packages);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
-        Action::Package(pkg) => exec.apply_package_action(pkg).map(|desc| (desc, true)),
+        Action::Package(pkg) => exec.apply_package_action(pkg),
         Action::Manager(node) => exec.apply_manager_action(node),
         Action::Module(
             module @ ModuleAction {
@@ -1247,12 +1549,17 @@ fn run_one_action(
                 shell_override: run.shell_override,
                 abort: run.abort,
                 path_dirs,
+                provisioned: run.provisioned,
+                provisioned_packages: run.provisioned_packages,
             },
         ),
         // The dispatched set holds only package and manager work by
         // construction (`phase_for_module_kind` routes module work, and the
         // caller partitions the phase), so this arm exists for totality.
-        other => Ok((format_action_description(other), false)),
+        other => Ok(super::apply::ActionRun::new(
+            format_action_description(other),
+            false,
+        )),
     }));
     let result = match executed {
         Ok(result) => result,
@@ -1277,6 +1584,111 @@ mod tests {
     use super::*;
     use crate::output::SectionGuard;
     use crate::output::lane::LaneHandle;
+
+    /// `Printer::subject_budget` reserves exactly the columns the widest hold
+    /// wording spends between two subjects, so a subject filled to the budget
+    /// and a wait reason naming another filled subject share one line by
+    /// construction. Every hold kind is bound here, so a fourth is priced
+    /// before it compiles.
+    #[test]
+    fn the_subject_budget_reserves_exactly_the_wait_framing() {
+        let widest = [Hold::Edge(""), Hold::Source(""), Hold::Lane("")]
+            .into_iter()
+            .map(|hold| {
+                // Exhaustive on purpose: a new variant lands here first.
+                match hold {
+                    Hold::Edge(_) | Hold::Source(_) | Hold::Lane(_) => {}
+                }
+                crate::output::measure_width(" — ")
+                    + crate::output::measure_width(&wait_reason(hold))
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            widest,
+            crate::output::renderer::status::WAIT_FRAMING_WIDTH,
+            "the budget's reservation is the widest hold wording's framing"
+        );
+    }
+
+    /// A wait reason names a DAG node another action depends on, or a lane
+    /// occupant another action contends with, and nothing else; the report's
+    /// allowance prices exactly that population.
+    #[test]
+    fn a_wait_reason_is_priced_only_over_rows_it_can_name() {
+        let deploy = Action::Module(ModuleAction::local(
+            "nvim",
+            ModuleActionKind::DeployFiles {
+                files: Vec::new(),
+                declared_total: 0,
+            },
+        ));
+        let write_env = Action::Env(crate::reconciler::types::EnvAction::WriteEnvFile {
+            path: std::path::PathBuf::from("/home/u/.cfgd.env"),
+            content: String::new(),
+            vars: 1,
+            aliases: 0,
+        });
+        let provision = |manager: &str, via: &str, depends_on: Vec<String>| {
+            Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                declared: None,
+                batched: Vec::new(),
+                depends_on,
+            })
+        };
+        let install = |manager: &str, package: &str| {
+            Action::Package(crate::providers::PackageAction::Install {
+                manager: manager.to_string(),
+                packages: vec![package.to_string()],
+                origin: "local".to_string(),
+            })
+        };
+        let brew = provision("brew", "homebrew installer", Vec::new());
+        let npm = provision("npm", "brew", vec![ManagerAction::provision_node("brew")]);
+        let pipx = provision("pipx", "brew", vec![ManagerAction::provision_node("brew")]);
+        let apt = install("apt", "jq");
+        let gum = install("brew", "gum");
+        let tap = install("brew-tap", "charmbracelet/tap");
+
+        // Nothing contends and nothing depends: no reason at all.
+        assert!(
+            phase_wait_reasons(
+                &[&deploy, &write_env, &brew, &apt],
+                None,
+                crate::output::theme::ICON_ARROW
+            )
+            .is_empty()
+        );
+        // The depended-on node and the two contenders for one lane, each
+        // worded as the dispatcher words it; the sole apt occupant, the deploy
+        // and the env write are named by nothing.
+        let mut reasons = phase_wait_reasons(
+            &[&brew, &npm, &pipx, &apt, &deploy, &write_env],
+            None,
+            crate::output::theme::ICON_ARROW,
+        );
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "queued behind provision npm via brew".to_string(),
+                "queued behind provision pipx via brew".to_string(),
+                "waiting on provision brew via homebrew installer".to_string(),
+            ]
+        );
+        // Two package rows of one family contend by FAMILY, the unit a lane is.
+        let mut reasons = phase_wait_reasons(&[&gum, &tap], None, crate::output::theme::ICON_ARROW);
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "queued behind brew install".to_string(),
+                "queued behind brew-tap install".to_string(),
+            ]
+        );
+    }
 
     /// The wait lines the live region would show, in the order given, each
     /// paired with the group it belongs under — the sentence no longer names
@@ -1382,20 +1794,166 @@ mod tests {
         );
     }
 
+    /// Every manager node names itself on a wait line, or a swept
+    /// dependent's error, by the row the reader can see — its own display
+    /// subject — with `Prerequisite` the one deliberate narrowing (its tool,
+    /// the head of that row). Matched exhaustively, so a new variant is
+    /// classified here before it can be named some third way.
+    #[test]
+    fn every_blocker_is_named_by_the_row_the_reader_can_see() {
+        let variants = vec![
+            ManagerAction::RefreshIndex {
+                manager: "apt".into(),
+            },
+            ManagerAction::Provision {
+                manager: "brew".into(),
+                via: "homebrew installer".into(),
+                declared: None,
+                batched: vec![],
+                depends_on: vec![],
+            },
+            ManagerAction::Prerequisite {
+                tool: "curl".into(),
+                installer: "apt".into(),
+                required_by: vec!["brew".into()],
+                depends_on: vec![],
+            },
+            ManagerAction::Refuse {
+                manager: "nix".into(),
+                reason: "curl is missing".into(),
+            },
+        ];
+        for node in variants {
+            let action = Action::Manager(node);
+            let named = node_subject(&action, None, crate::output::theme::ICON_ARROW)
+                .expect("a manager node has a subject");
+            let rendered = crate::reconciler::action_display_subject(
+                &action,
+                crate::output::theme::ICON_ARROW,
+            )
+            .to_string();
+            let Action::Manager(node) = &action else {
+                unreachable!()
+            };
+            match node {
+                ManagerAction::Prerequisite { tool, .. } => {
+                    assert_eq!(&named, tool);
+                    assert!(
+                        rendered.contains(tool),
+                        "the tool must be readable on the row it narrows to: {rendered}"
+                    );
+                }
+                ManagerAction::RefreshIndex { .. }
+                | ManagerAction::Provision { .. }
+                | ManagerAction::Refuse { .. } => assert_eq!(
+                    named, rendered,
+                    "a blocker is named by the row the reader can see"
+                ),
+            }
+        }
+        assert!(
+            node_subject(&probe_action(), None, crate::output::theme::ICON_ARROW).is_none(),
+            "only a manager node is ever a blocker"
+        );
+    }
+
     #[test]
     fn both_wait_line_cardinalities_share_one_grammar() {
         // The blocked-action line and the blocked-group line are the same
         // sentence at two levels; they are built by one function so they
         // cannot drift apart.
         assert_eq!(
-            wait_subject(Some("apt install git"), "apt"),
-            "apt install git · waiting on apt",
-            "the blocked-action cardinality names what is held"
+            wait_reason(Hold::Edge("apt")),
+            "waiting on apt",
+            "the blocked-action cardinality names what it is held by"
         );
         assert_eq!(
-            wait_subject(None, Tier::Modules.wait_word().unwrap_or_default()),
+            wait_reason(Hold::Edge(Tier::Modules.wait_word().unwrap_or_default())),
             "waiting on modules",
             "the blocked-group cardinality is headed by the group's own heading"
+        );
+    }
+
+    /// A row held by its family LANE is not waiting for the occupant to
+    /// produce anything; it is queued for the lane the occupant is in. Read
+    /// with one verb, `brew install neovim — waiting on brew-tap install`
+    /// claimed a dependency no edge declared. Each hold kind is
+    /// bound without a wildcard, so a new one is worded before this compiles.
+    #[test]
+    fn every_hold_kind_carries_its_own_wording() {
+        // Three holds, two relations: an edge and a source registration are
+        // both something the waiter NEEDS, a lane turn is not. The verb is
+        // the relation's, so the two dependency holds share one and the lane
+        // hold has its own.
+        let kinds = [Hold::Edge("x"), Hold::Source("x"), Hold::Lane("x")];
+        let mut verbs = std::collections::BTreeSet::new();
+        for hold in kinds {
+            let expected = match hold {
+                Hold::Edge(_) | Hold::Source(_) => "waiting on x",
+                Hold::Lane(_) => "queued behind x",
+            };
+            let worded = wait_reason(hold);
+            assert_eq!(worded, expected);
+            verbs.insert(worded.split(" x").next().unwrap_or_default().to_string());
+        }
+        assert_eq!(
+            verbs.len(),
+            2,
+            "two relations, two sentences; a hold whose occupant produces what the waiter \
+             needs reads `waiting on`, a lane turn behind unrelated work `queued behind`: {verbs:?}"
+        );
+    }
+
+    /// A formula held behind its family's tap is waiting ON the tap — the
+    /// hoist exists because the formula may only exist in the repository the
+    /// tap adds — whether the tap is running (`lanes_busy`) or merely hoisted
+    /// ahead of it (`source_held`). A `brew-cask` row behind an unrelated
+    /// `brew install` stays `queued behind`.
+    #[test]
+    fn a_row_held_by_its_familys_source_registration_says_waiting_on() {
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "gum");
+        let tap = install("brew-tap", "charmbracelet/tap");
+        let expected = (
+            "module:nvim".to_string(),
+            "brew install gum — waiting on brew-tap install".to_string(),
+        );
+
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+        let hoisted = held(&slots, &groups, &HashMap::new(), &HashSet::new());
+        assert!(
+            rows(&hoisted).contains(&expected),
+            "a tap hoisted ahead of the formula is a dependency: {:?}",
+            rows(&hoisted)
+        );
+
+        slots[1].state = SlotState::Running;
+        let running = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
+        assert!(
+            rows(&running).contains(&expected),
+            "a tap running in the lane is the same dependency: {:?}",
+            rows(&running)
+        );
+
+        let neovim = probe_action();
+        let cask = install("brew-cask", "firefox");
+        let mut unrelated = vec![
+            slot(&profile, Tier::Rest, "brew", &neovim),
+            slot(&profile, Tier::Rest, "brew-cask", &cask),
+        ];
+        unrelated[0].state = SlotState::Running;
+        let groups = groups_of(&unrelated);
+        let turn = held(&unrelated, &groups, &HashMap::new(), &busy(&["brew"]));
+        assert_eq!(
+            lines(&turn),
+            vec!["brew-cask install firefox — queued behind brew install"],
+            "a lane turn behind unrelated work is not a dependency"
         );
     }
 
@@ -1413,6 +1971,7 @@ mod tests {
                 .map(ToString::to_string),
             node: None,
             depends_on: &[],
+            registers_sources: false,
             state: SlotState::Waiting,
         }
     }
@@ -1433,19 +1992,31 @@ mod tests {
             groups,
             deps,
             lanes_busy,
+            budget: None,
+            arrow: crate::output::theme::ICON_ARROW,
         })
+    }
+
+    /// One wait row as the tree paints it: the two slots joined by the
+    /// renderer's own separator, so an expectation reads as a screen line
+    /// while the row itself stays split.
+    fn painted(w: &Wait<'_>) -> String {
+        match &w.reason {
+            Some(reason) => format!("{} \u{2014} {reason}", w.subject),
+            None => w.subject.clone(),
+        }
     }
 
     /// Every wait line, in the order the tree would draw new rows in.
     fn lines(held: &Held<'_>) -> Vec<String> {
-        held.waits.iter().map(|w| w.subject.clone()).collect()
+        held.waits.iter().map(painted).collect()
     }
 
     /// Every wait line paired with the group whose heading it sits under.
     fn rows(held: &Held<'_>) -> Vec<(String, String)> {
         held.waits
             .iter()
-            .map(|w| (w.owner.token(), w.subject.clone()))
+            .map(|w| (w.owner.token(), painted(w)))
             .collect()
     }
 
@@ -1462,6 +2033,228 @@ mod tests {
     }
 
     #[test]
+    fn a_dispatchable_tap_is_offered_across_the_tier_barrier_and_holds_its_family() {
+        // A profile-declared tap delivers the repositories a module's
+        // formulas resolve from, and the tier barrier alone would run the
+        // module's brew installs first — so the tap leapfrogs the barrier,
+        // and its family refuses other work until it has run.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let unrelated = install("apt", "git");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&nvim, Tier::Modules, "apt", &unrelated),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[2].registers_sources = true;
+        let registry = ProviderRegistry::new();
+        let deps = HashMap::new();
+        let no_lanes = HashSet::new();
+        let no_owners = HashMap::new();
+
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 0,
+                },
+            ),
+            Some(2),
+            "the tap dispatches ahead of the tier in flight"
+        );
+
+        // The tap's owner is mid-action elsewhere: its family stays held —
+        // the module's brew install may not overtake it — while another
+        // family's work proceeds.
+        let profile_busy = HashMap::from([(profile.token(), 1usize)]);
+        let held = DispatchState {
+            lanes_busy: &no_lanes,
+            owners_busy: &profile_busy,
+            draining: false,
+            running: 1,
+        };
+        assert_eq!(
+            pick_next(&slots, &registry, &deps, &held),
+            Some(1),
+            "an unrelated family is not held by the tap"
+        );
+        slots[1].state = SlotState::Done;
+        assert_eq!(
+            pick_next(&slots, &registry, &deps, &held),
+            Some(2),
+            "with nothing else ready the owner-held tap is the pick, never the formula"
+        );
+    }
+
+    #[test]
+    fn a_draining_tap_quiets_only_its_own_family_not_the_phase() {
+        // The tap's manager needs bootstrapping, so it starts only on a quiet
+        // phase — but quiescing the tiers ahead of it would serialize work the
+        // tap cannot affect. Its own family is already held; the rest of the
+        // phase keeps moving.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let unrelated = install("apt", "git");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&nvim, Tier::Modules, "apt", &unrelated),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[2].registers_sources = true;
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("brew-tap").unavailable(),
+        ));
+        let deps = HashMap::new();
+        let no_lanes = HashSet::new();
+        let no_owners = HashMap::new();
+
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 1,
+                },
+            ),
+            Some(1),
+            "module-tier work outside the tap's family proceeds while the draining tap waits"
+        );
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 0,
+                },
+            ),
+            Some(2),
+            "on a quiet phase the draining tap is the pick"
+        );
+    }
+
+    #[test]
+    fn only_an_install_derives_the_source_registration_flag() {
+        // The hoist-and-hold exists so installs can resolve from the tap
+        // being added; an untap delivers no repository, so it gets neither
+        // the hoist nor the hold.
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("brew-tap").registering_family_sources(),
+        ));
+
+        assert!(registers_family_sources(
+            &install("brew-tap", "acme/tools"),
+            &registry
+        ));
+        let untap = Action::Package(PackageAction::Uninstall {
+            manager: "brew-tap".to_string(),
+            packages: vec!["acme/tools".to_string()],
+            origin: "local".to_string(),
+        });
+        assert!(
+            !registers_family_sources(&untap, &registry),
+            "an untap neither crosses the tier barrier nor holds its family"
+        );
+        assert!(
+            !registers_family_sources(&install("brew", "neovim"), &registry),
+            "an install through a non-registering manager stays behind the barrier"
+        );
+    }
+
+    #[test]
+    fn an_install_held_for_a_dispatchable_tap_names_its_family_lane() {
+        // Nothing is running, so `lanes_busy` is empty — the hold is the tap
+        // itself, and without this row the formula would be absent from the
+        // live region for the whole of its wait.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+
+        let held = held(&slots, &groups, &HashMap::new(), &HashSet::new());
+
+        assert!(
+            rows(&held).contains(&(
+                "module:nvim".to_string(),
+                "brew install neovim — waiting on brew-tap install".to_string()
+            )),
+            "a source-held install names the tap holding its family's lane: {:?}",
+            rows(&held)
+        );
+        assert!(
+            !rows(&held)
+                .iter()
+                .any(|(owner, subject)| owner == "profile:work" && subject.contains("brew-tap")),
+            "the tap is the hold, never its own blocker: {:?}",
+            rows(&held)
+        );
+    }
+
+    #[test]
+    fn a_barrier_crossing_tap_blocked_by_a_running_family_gets_a_row() {
+        // The tap sits in the Rest tier while modules are in flight; the tier
+        // filter must not hide the one action holding the whole brew family.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let running = probe_action();
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &running),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[0].state = SlotState::Running;
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
+
+        assert!(
+            rows(&held).contains(&(
+                "profile:work".to_string(),
+                "brew-tap install acme/tools — queued behind brew install".to_string()
+            )),
+            "the tier filter does not hide a barrier-crossing tap: {:?}",
+            rows(&held)
+        );
+        // One row per wait: the tap crossed the barrier, so its owner is not
+        // also "waiting on modules" — the coarse tier row would say the same
+        // wait twice.
+        assert!(
+            !rows(&held).contains(&("profile:work".to_string(), "waiting on modules".to_string())),
+            "the coarse tier row never doubles the tap's specific row: {:?}",
+            rows(&held)
+        );
+        assert!(
+            held.pending_owners.contains(&"profile:work".to_string()),
+            "the tap's group stays open to settle the tap's own row"
+        );
+    }
+
+    #[test]
     fn a_blocked_action_gets_a_bar_while_its_own_owner_holds_another_lane() {
         // The spec's worked example, at the rendering level: `nvim` is running
         // on brew and waiting on apt, which `tmux` holds. Suppressing the line
@@ -1470,11 +2263,12 @@ mod tests {
         let nvim = Owner::module("nvim");
         let tmux = Owner::module("tmux");
         let running = probe_action();
+        let running_apt = install("apt", "tmux");
         let blocked = install("apt", "git");
         let mut slots = vec![
             slot(&nvim, Tier::Modules, "brew", &running),
             slot(&nvim, Tier::Modules, "apt", &blocked),
-            slot(&tmux, Tier::Modules, "apt", &running),
+            slot(&tmux, Tier::Modules, "apt", &running_apt),
         ];
         slots[0].state = SlotState::Running;
         slots[2].state = SlotState::Running;
@@ -1486,7 +2280,7 @@ mod tests {
             rows(&held),
             vec![(
                 "module:nvim".to_string(),
-                "apt install git · waiting on apt".to_string()
+                "apt install git — queued behind apt install".to_string()
             )]
         );
     }
@@ -1509,7 +2303,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["brew-cask install firefox · waiting on brew"]
+            vec!["brew-cask install firefox — queued behind brew install"]
         );
     }
 
@@ -1523,16 +2317,19 @@ mod tests {
         // what makes three lines behind one lane readable.
         let profile = Owner::profile("work");
         let running = probe_action();
+        let running_apt = install("apt", "tmux");
         let tap = install("brew-tap", "homebrew/cask-fonts");
         let cask = install("brew-cask", "firefox");
         let apt = install("apt", "git");
         let mut slots = vec![
             slot(&profile, Tier::Rest, "brew", &running),
+            slot(&profile, Tier::Rest, "apt", &running_apt),
             slot(&profile, Tier::Rest, "brew-tap", &tap),
             slot(&profile, Tier::Rest, "brew-cask", &cask),
             slot(&profile, Tier::Rest, "apt", &apt),
         ];
         slots[0].state = SlotState::Running;
+        slots[1].state = SlotState::Running;
         let groups = groups_of(&slots);
 
         let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew", "apt"]));
@@ -1540,9 +2337,9 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "brew-tap install homebrew/cask-fonts · waiting on brew",
-                "brew-cask install firefox · waiting on brew",
-                "apt install git · waiting on apt",
+                "brew-tap install homebrew/cask-fonts — queued behind brew install",
+                "brew-cask install firefox — queued behind brew install",
+                "apt install git — queued behind apt install",
             ]
         );
     }
@@ -1584,6 +2381,7 @@ mod tests {
             module: None,
             node: Some(node.node_id()),
             depends_on: node.depends_on(),
+            registers_sources: false,
             state: SlotState::Waiting,
         }
     }
@@ -1592,6 +2390,7 @@ mod tests {
         Action::Manager(ManagerAction::Provision {
             manager: manager.to_string(),
             via: via.to_string(),
+            declared: None,
             batched: vec![],
             depends_on: depends_on.to_vec(),
         })
@@ -1665,8 +2464,8 @@ mod tests {
         assert_eq!(
             lines(&held),
             vec![
-                "provision pipx via brew · waiting on brew",
-                "provision poetry via pipx · waiting on pipx",
+                "provision pipx via brew — queued behind brew",
+                "provision poetry via pipx — waiting on provision pipx via brew",
             ],
             "a node held by an edge is in the live region for the whole of its wait"
         );
@@ -1718,7 +2517,9 @@ mod tests {
         let held = held(&slots, &groups, &HashMap::new(), &busy(&[]));
 
         assert!(
-            lines(&held).contains(&"provision poetry via pipx · waiting on pipx".to_string()),
+            lines(&held).contains(
+                &"provision poetry via pipx — waiting on provision pipx via brew".to_string()
+            ),
             "{:?}",
             lines(&held)
         );
@@ -1752,7 +2553,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["provision brew via curl · waiting on curl"]
+            vec!["provision brew via curl — waiting on curl"]
         );
     }
 
@@ -1766,6 +2567,7 @@ mod tests {
         let brew_cask = Action::Manager(ManagerAction::Provision {
             manager: "brew-cask".to_string(),
             via: "brew".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![ManagerAction::provision_node("brew")],
         });
@@ -1780,7 +2582,7 @@ mod tests {
 
         assert_eq!(
             lines(&held),
-            vec!["provision brew-cask via brew · waiting on brew"],
+            vec!["provision brew-cask via brew — waiting on provision brew via curl"],
             "one blocker, one line"
         );
     }
@@ -1823,7 +2625,7 @@ mod tests {
     #[test]
     fn an_action_line_is_withdrawn_once_its_lane_frees() {
         let profile = Owner::profile("work");
-        let running = probe_action();
+        let running = install("apt", "tmux");
         let blocked = install("apt", "git");
         let mut slots = vec![
             slot(&profile, Tier::Rest, "apt", &running),
@@ -1835,7 +2637,7 @@ mod tests {
 
         assert_eq!(
             lines(&held(&slots, &groups, &deps, &busy(&["apt"]))),
-            vec!["apt install git · waiting on apt"]
+            vec!["apt install git — queued behind apt install"]
         );
 
         slots[0].state = SlotState::Done;
@@ -2009,7 +2811,7 @@ mod tests {
         let mut tree = PhaseTree::new(&printer, None, None, 0, 0);
         // Scoped so the closure's borrow of `answered` ends before it is read.
         {
-            let mut record = |_action: &Action, collected: LaneCollected| {
+            let mut record = |_owner: &Owner, _action: &Action, collected: LaneCollected| {
                 let message = collected
                     .result
                     .as_ref()
@@ -2048,7 +2850,7 @@ mod tests {
 
         let mut again = 0;
         {
-            let mut count = |_action: &Action, _collected: LaneCollected| {
+            let mut count = |_owner: &Owner, _action: &Action, _collected: LaneCollected| {
                 again += 1;
                 None
             };
@@ -2094,8 +2896,10 @@ mod tests {
         // Mirrors `apply.rs`'s live settle closure closely enough to prove
         // the wiring: every finished action becomes a `Fail`-role outcome
         // carrying the real error `fail_dependents` produced.
-        let mut record = |action: &Action, collected: LaneCollected| {
-            let subject = action_display_subject(action).to_string();
+        let mut record = |_owner: &Owner, action: &Action, collected: LaneCollected| {
+            let subject =
+                crate::reconciler::action_display_subject(action, crate::output::theme::ICON_ARROW)
+                    .to_string();
             let mut outcome = ActionOutcome::for_test(&subject, Duration::ZERO);
             outcome.role = crate::output::Role::Fail;
             outcome.duration = None;
@@ -2113,7 +2917,7 @@ mod tests {
                     journal_id: None,
                     result: Err(PackageError::BootstrapFailed {
                         manager: "brew".to_string(),
-                        message: "brew still not available after bootstrap".to_string(),
+                        message: "brew still not on PATH after the curl bootstrap".to_string(),
                     }
                     .into()),
                     elapsed: Duration::ZERO,
@@ -2182,14 +2986,24 @@ mod tests {
         );
         tree.finish();
 
-        let scrollback = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let scrollback = crate::test_helpers::captured_text(&buf);
+        // A swept row's own error names the ROOT row that took it down, so
+        // the root's subject recurs in the detail of every dependent; only
+        // the row heads are counted.
         for subject in [
             "provision brew via curl",
             "provision npm via brew",
             "provision pnpm via npm",
         ] {
             assert_eq!(
-                scrollback.matches(subject).count(),
+                scrollback
+                    .lines()
+                    .filter(|line| {
+                        line.trim_start()
+                            .split_once(' ')
+                            .is_some_and(|(_glyph, rest)| rest.trim_start().starts_with(subject))
+                    })
+                    .count(),
                 1,
                 "{subject} did not reach the scrollback exactly once: {scrollback}"
             );

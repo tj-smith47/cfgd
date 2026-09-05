@@ -120,9 +120,6 @@ const DESTRUCTIVE: &[&str] = &[
     "secret decrypt",
     "skill remove",
     "source remove",
-    // Drops managed-resource rows, so a later apply no longer knows it owns
-    // what those rows tracked — irreversible without a re-apply.
-    "state forget-prefix",
 ];
 
 /// Commands that routinely run for minutes, or wait on a remote. Handed back
@@ -240,10 +237,16 @@ pub fn config() -> Config {
     cfg = cfg.annotation("backup run", write(true, false, true));
 
     // `backup restore` overwrites live data with a snapshot of it, is not
-    // idempotent (each call takes a fresh safety backup and prunes), and runs
+    // idempotent (each call leaves a fresh safety copy beside the source), and runs
     // the same arbitrary `preBackup`/`postBackup` hooks. Same hint set as
     // `backup run`, for the same three reasons.
     cfg = cfg.annotation("backup restore", write(true, false, true));
+
+    // `backup rollback` overwrites live data with the sidecar a displacement
+    // left beside the source, is not idempotent (it copies the contents it
+    // displaces aside, so a second call puts THOSE back), and runs the same
+    // arbitrary hooks. Same hint set as its two siblings, for the same reasons.
+    cfg = cfg.annotation("backup rollback", write(true, false, true));
 
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);

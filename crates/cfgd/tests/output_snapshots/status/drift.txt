@@ -1,25 +1,28 @@
 Status
   Config   /etc/cfgd/cfgd.yaml
   Profile  default
+  Modules  shell-config
 
 Last Apply
-  Time     2026-05-14T11:30:00Z
+  Result   Success
   Profile  default
-  Result   success
+  Age      35m
 
-Drift
-  ⚠ file ~/.zshrc — want: hash-desired, have: hash-actual
-  ⚠ package ripgrep — want: 14.1.0, have: 13.0.0 source:team-config
+Sources
+  Name         Source                          Priority  Status  Commit        Last Sync  Signed  Requires Signed
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  team-config  https://github.com/team/config  100       Active  abc123456789  1h ago     yes     yes            
 
-Config Sources
-  Source       Status  Version  Last Fetched        
-  ──────────────────────────────────────────────────
-  team-config  synced  3.1.0    2026-05-14T09:00:00Z
-
-Pending Decisions
+Pending Decisions (1 item)
   source:team-config
-    ⊙ 1 pending item
-    ⊙ recommended package/curl — install curl 8.5.0 (install)
+    ◉ Recommended package/curl
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
 
-Modules
-  ✓ module:shell-config — 0 pkgs, 4 files, installed
+Component Health (checked 6m ago)
+  ⚠ profile:default — Drifted (1 package, 1 file)
+    file ~/.zshrc — content differs
+    package ripgrep source:team-config — version mismatch
+  ✓ module:shell-config — Synced (4 files)
+
+→ `cfgd diff` checks the live machine for drift

@@ -12,19 +12,38 @@ use crate::errors::{ConfigError, Result};
 
 // --- Module ---
 
+/// A `module.yaml` document: a reusable, named bundle of packages/files/env/
+/// aliases/scripts/system settings a profile pulls in by name.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: Module
+/// metadata:
+///   name: nvim
+/// spec:
+///   packages:
+///     - name: neovim
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleDocument {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`.
     pub api_version: String,
+    /// Document kind. Always `Module` for this file.
     pub kind: String,
+    /// Identifying metadata for this module.
     pub metadata: ModuleMetadata,
+    /// The module's declared surface.
     pub spec: ModuleSpec,
 }
 
+/// `metadata`: identifying information for a module.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleMetadata {
+    /// The module's name, referenced from a profile's `modules:` list.
     pub name: String,
+    /// A one-line human summary shown in `cfgd module list` / `cfgd module show`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The module's own release version, as `MAJOR.MINOR.PATCH` with optional
@@ -84,32 +103,44 @@ fn module_version_error(value: &str) -> Option<String> {
     ))
 }
 
+/// `spec`: the declared surface of a module — everything it contributes to a
+/// profile that includes it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSpec {
+    /// Names of other modules this one requires; cfgd resolves and applies them
+    /// first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
 
     /// Platform tags gating the whole module. When non-empty and the current
     /// platform matches none of them, the module is skipped entirely (it
-    /// appears as a Skipped action rather than vanishing). Tags are matched
-    /// against OS / distro / arch via `Platform::matches_any`; the canonical
-    /// macOS token is `macos`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// appears as a skipped action rather than vanishing). Tags are matched
+    /// against the machine's OS, distro, and arch; use `macos` for macOS.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
     pub platforms: Vec<String>,
 
+    /// Packages this module installs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<ModulePackageEntry>,
 
+    /// Files this module deploys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ModuleFileEntry>,
 
+    /// Environment variables this module contributes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvVar>,
 
+    /// Shell aliases this module contributes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<ShellAlias>,
 
+    /// Lifecycle scripts (`preApply`, `postApply`, …) this module runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<ScriptSpec>,
 
@@ -120,21 +151,39 @@ pub struct ModuleSpec {
     pub system: SystemSettings,
 }
 
+/// One entry of `spec.packages[]`: a package this module installs.
+///
+/// ```yaml
+/// packages:
+///   - name: neovim
+///     minVersion: "0.9"
+///     prefer: [brew, apt]
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulePackageEntry {
+    /// The package name as the chosen manager knows it.
     #[serde(default)]
     pub name: String,
 
+    /// Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+    /// A version below this is treated as not satisfying the module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_version: Option<String>,
 
+    /// Manager preference order for this package, overriding the profile's
+    /// default manager priority (e.g. `[brew, apt]`, or `[script]` to force
+    /// this entry's own `script`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
 
+    /// Manager-specific package name aliases (e.g. `{apt: "neovim", brew:
+    /// "neovim"}`) for a package named differently across managers.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub aliases: HashMap<String, String>,
 
+    /// Shell script to run instead of a manager install, selected via
+    /// `prefer: [script]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 
@@ -158,22 +207,40 @@ pub struct ModulePackageEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creates: Option<String>,
 
+    /// Package managers to never use for this package, even if otherwise
+    /// available and preferred by the profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Platform tags gating this package alone. Empty means install on every
+    /// platform the module itself is not already gated off of.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
     pub platforms: Vec<String>,
 }
 
+/// One entry of `spec.files[]`: a file this module deploys.
+///
+/// ```yaml
+/// files:
+///   - source: files/init.lua
+///     target: ~/.config/nvim/init.lua
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
-    /// Not required when `strategy` is `Patch`; required otherwise
-    /// (enforced by `validate_module_file_entries`, not the JSON schema).
+    /// Path to the source file, relative to the module directory. Not
+    /// required when `strategy` is `Patch`; required otherwise.
     #[serde(default)]
     pub source: String,
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory.
     pub target: String,
-    /// Per-file deployment strategy override. If None, uses the global default.
+    /// Per-file deployment strategy override. Omitted, the module-wide default
+    /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<FileStrategy>,
     /// When true, the source file is local-only: auto-added to .gitignore,
@@ -187,14 +254,13 @@ pub struct ModuleFileEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
     /// Structured merge or script configuration for `strategy: Patch`.
-    /// Required when `strategy` is `Patch`, rejected otherwise (enforced by
-    /// `validate_module_file_entries`, not the JSON schema).
+    /// Required when `strategy` is `Patch`, rejected otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<PatchSpec>,
 }
 
 /// Validate the `patch` strategy shape of every module file entry
-/// (`spec.files`). See [`validate_file_patch_shape`].
+/// (`spec.files`). See `validate_file_patch_shape`.
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
     for entry in entries {
         validate_file_patch_shape(
@@ -232,65 +298,92 @@ case_insensitive_enum!(ScriptShell {
     "cmd" => ScriptShell::Cmd,
 });
 
+/// A lifecycle script entry: either a bare command string, or a mapping for
+/// one that needs a timeout, shell, or guard condition.
+///
+/// ```yaml
+/// preApply: "echo starting"
+/// # or
+/// postApply:
+///   run: brew update
+///   timeout: 2m
+///   onlyIf: command -v brew
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ScriptEntry {
+    /// A bare command string, run with the platform's default shell and no
+    /// timeout/guard.
     Simple(String),
-    Full {
-        run: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timeout: Option<String>,
-        /// Kill the script if it produces no stdout/stderr output for this duration.
-        /// Prevents scripts from silently hanging on unresponsive resources.
-        /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            rename = "idleTimeout"
-        )]
-        idle_timeout: Option<String>,
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            rename = "continueOnError"
-        )]
-        continue_on_error: Option<bool>,
-        /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        #[serde(default, skip_serializing_if = "is_shell_auto")]
-        shell: ScriptShell,
-        /// Run the script only if this command exits zero. A non-zero exit skips
-        /// the script (the condition for running was not met). Evaluated with the
-        /// same shell, working directory, and environment as the body.
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
-        only_if: Option<String>,
-        /// Run the script only if this command exits NON-zero. A zero exit
-        /// (success) skips the script (the guarded state already holds).
-        /// Evaluated with the same shell, working directory, and environment as
-        /// the body.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        unless: Option<String>,
-        /// Skip the script if this path already exists. A leading `~` expands to
-        /// the home directory; a relative path resolves against the script's
-        /// working directory. Existence follows symlinks.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        creates: Option<String>,
-        /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
-        /// no spinner, no output capture, no idle timeout) so it can prompt the
-        /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
-        /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-        /// script is skipped with a warning rather than hanging on instant EOF.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        interactive: bool,
-        /// Working directory for the script. By default every lifecycle script
-        /// runs in the user's home directory — never the config source tree — so
-        /// a relative write can't pollute the user's GitOps repo. Set `workdir`
-        /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
-        /// against the script environment (which always carries `$CFGD_MODULE_DIR`
-        /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
-        /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workdir: Option<String>,
-    },
+    /// The mapping form, carrying the body and its knobs.
+    // A named type rather than an inline variant so `cfgd explain` shows a
+    // reader `<(string | ScriptCommand)>` — a name they can look up — instead
+    // of `<(string | object)>`.
+    Full(ScriptCommand),
+}
+
+/// The mapping form of a script entry: a command with a timeout, shell,
+/// guard condition or working directory.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ScriptCommand {
+    /// The command or script body to run.
+    pub run: String,
+    /// Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+    /// Unset means no timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+    /// Kill the script if it produces no stdout/stderr output for this duration.
+    /// Prevents scripts from silently hanging on unresponsive resources.
+    /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "idleTimeout"
+    )]
+    pub idle_timeout: Option<String>,
+    /// Treat a non-zero exit as success and continue reconciliation instead
+    /// of failing the run. Default: `false`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "continueOnError"
+    )]
+    pub continue_on_error: Option<bool>,
+    /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+    #[serde(default, skip_serializing_if = "is_shell_auto")]
+    pub shell: ScriptShell,
+    /// Run the script only if this command exits zero. A non-zero exit skips
+    /// the script (the condition for running was not met). Evaluated with the
+    /// same shell, working directory, and environment as the body.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
+    pub only_if: Option<String>,
+    /// Run the script only if this command exits NON-zero. A zero exit
+    /// (success) skips the script (the guarded state already holds).
+    /// Evaluated with the same shell, working directory, and environment as
+    /// the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unless: Option<String>,
+    /// Skip the script if this path already exists. A leading `~` expands to
+    /// the home directory; a relative path resolves against the script's
+    /// working directory. Existence follows symlinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creates: Option<String>,
+    /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
+    /// no spinner, no output capture, no idle timeout) so it can prompt the
+    /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+    /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+    /// script is skipped with a warning rather than hanging on instant EOF.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
+    /// Working directory for the script. By default every lifecycle script
+    /// runs in the user's home directory — never the config source tree — so
+    /// a relative write can't pollute the user's GitOps repo. Set `workdir`
+    /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+    /// against the script environment (which always carries `$CFGD_MODULE_DIR`
+    /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+    /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 fn is_shell_auto(s: &ScriptShell) -> bool {
@@ -302,7 +395,7 @@ impl ScriptEntry {
     pub fn run_str(&self) -> &str {
         match self {
             ScriptEntry::Simple(s) => s,
-            ScriptEntry::Full { run, .. } => run,
+            ScriptEntry::Full(ScriptCommand { run, .. }) => run,
         }
     }
 }
@@ -320,6 +413,7 @@ impl std::fmt::Display for ScriptEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockfile {
+    /// Every locked remote module, one per module resolved from a registry.
     #[serde(default)]
     pub modules: Vec<ModuleLockEntry>,
 }
@@ -351,7 +445,11 @@ pub struct ModuleLockEntry {
 pub struct ModuleRegistryEntry {
     /// Short name / alias for this source (defaults to GitHub org name).
     pub name: String,
-    /// Git URL of the source repository.
+    /// Git URL of the registry repository, in any form git accepts — an HTTPS
+    /// or SSH clone URL, or a GitHub `owner/repo` shorthand cfgd expands to the
+    /// full URL. Required. The repository is cloned into the local cache and
+    /// scanned for `modules/<name>/module.yaml` entries, which is what
+    /// `cfgd module search` and `cfgd module add` resolve against.
     pub url: String,
 }
 
@@ -370,6 +468,18 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
     validate_module_file_entries(&doc.spec.files)?;
 
     Ok(doc)
+}
+
+impl crate::platform::PlatformGated for ModuleSpec {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+}
+
+impl crate::platform::PlatformGated for ModulePackageEntry {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
 }
 
 #[cfg(test)]
@@ -690,7 +800,7 @@ shell: zsh
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { shell, run, .. } => {
+            ScriptEntry::Full(ScriptCommand { shell, run, .. }) => {
                 assert_eq!(shell, ScriptShell::Zsh);
                 assert_eq!(run, "echo hello");
             }
@@ -705,7 +815,7 @@ run: echo hello
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { shell, .. } => {
+            ScriptEntry::Full(ScriptCommand { shell, .. }) => {
                 assert_eq!(shell, ScriptShell::Auto);
             }
             other => panic!("expected Full variant, got: {other:?}"),
@@ -729,7 +839,7 @@ shell: ruby
 
     #[test]
     fn script_shell_roundtrip_serialization() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "make build".into(),
             timeout: None,
@@ -740,7 +850,7 @@ shell: ruby
             unless: None,
             creates: None,
             interactive: false,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             yaml.contains("shell: bash"),
@@ -753,7 +863,7 @@ shell: ruby
 
     #[test]
     fn script_shell_auto_not_serialized() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "echo hi".into(),
             timeout: None,
@@ -764,7 +874,7 @@ shell: ruby
             unless: None,
             creates: None,
             interactive: false,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             !yaml.contains("shell"),
@@ -780,7 +890,7 @@ workdir: ~/.local/share/clift
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full { workdir, .. } => {
+            ScriptEntry::Full(ScriptCommand { workdir, .. }) => {
                 assert_eq!(workdir.as_deref(), Some("~/.local/share/clift"));
             }
             other => panic!("expected Full variant, got {other:?}"),
@@ -802,12 +912,12 @@ creates: ~/.local/bin/thing
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full {
+            ScriptEntry::Full(ScriptCommand {
                 only_if,
                 unless,
                 creates,
                 ..
-            } => {
+            }) => {
                 assert_eq!(only_if.as_deref(), Some("test -d /opt"));
                 assert_eq!(unless.as_deref(), Some("command -v thing"));
                 assert_eq!(creates.as_deref(), Some("~/.local/bin/thing"));
@@ -831,12 +941,12 @@ creates: ~/.local/bin/thing
         let yaml = "run: echo hi\n";
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match &entry {
-            ScriptEntry::Full {
+            ScriptEntry::Full(ScriptCommand {
                 only_if,
                 unless,
                 creates,
                 ..
-            } => {
+            }) => {
                 assert!(only_if.is_none());
                 assert!(unless.is_none());
                 assert!(creates.is_none());
@@ -924,7 +1034,7 @@ interactive: true
 "#;
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { interactive, .. } => assert!(interactive),
+            ScriptEntry::Full(ScriptCommand { interactive, .. }) => assert!(interactive),
             other => panic!("expected Full variant, got: {other:?}"),
         }
     }
@@ -934,7 +1044,7 @@ interactive: true
         let yaml = "run: echo hi\n";
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
-            ScriptEntry::Full { interactive, .. } => assert!(!interactive),
+            ScriptEntry::Full(ScriptCommand { interactive, .. }) => assert!(!interactive),
             other => panic!("expected Full variant, got: {other:?}"),
         }
         // Default-false must not serialize.
@@ -947,7 +1057,7 @@ interactive: true
 
     #[test]
     fn script_interactive_roundtrip_serialization() {
-        let entry = ScriptEntry::Full {
+        let entry = ScriptEntry::Full(ScriptCommand {
             workdir: None,
             run: "echo hi; read".into(),
             timeout: None,
@@ -958,7 +1068,7 @@ interactive: true
             unless: None,
             creates: None,
             interactive: true,
-        };
+        });
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             yaml.contains("interactive: true"),

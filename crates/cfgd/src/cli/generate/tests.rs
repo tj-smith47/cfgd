@@ -23,14 +23,14 @@ fn generate_args_default() {
 fn generate_args_with_model_override() {
     let args = GenerateArgs {
         target: None,
-        model: Some("claude-opus-4-20250514".into()),
+        model: Some("claude-opus-5".into()),
         provider: Some("claude".into()),
         yes: true,
         scan_only: false,
         shell: None,
         home: None,
     };
-    assert_eq!(args.model.as_deref(), Some("claude-opus-4-20250514"));
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
     assert_eq!(args.provider.as_deref(), Some("claude"));
     assert!(args.yes);
 }
@@ -189,9 +189,9 @@ fn cmd_generate_scan_only_defaults_shell_to_zsh_when_shell_env_unset() {
         "scan_only default-shell path must succeed: {:?}",
         result.err()
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning zsh config"),
+        output.contains("Scanning zsh Config"),
         "should default to zsh when $SHELL is unset, got: {output}"
     );
 }
@@ -221,13 +221,13 @@ fn cmd_generate_scan_only_data_payload_has_expected_keys() {
         "scan_only should succeed: {:?}",
         result.err()
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should print completion line, got: {output}"
     );
     assert!(
-        output.contains("Scanning zsh config"),
+        output.contains("Scanning zsh Config"),
         "should print zsh scanning header, got: {output}"
     );
 }
@@ -253,9 +253,9 @@ fn cmd_generate_scan_only_path_additions_reported() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete") || output.contains("PATH additions"),
+        output.contains("Scanned this host") || output.contains("PATH Additions"),
         "should complete scan, got: {output}"
     );
 }
@@ -323,7 +323,7 @@ fn cmd_generate_scan_only_entries_count_in_data_payload() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Entries"),
         "should report dotfile entry count, got: {output}"
@@ -382,9 +382,9 @@ fn cmd_generate_scan_only_with_aliases_count_in_payload() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should complete scan: {output}"
     );
     assert!(
@@ -413,9 +413,9 @@ fn cmd_generate_scan_only_exports_count_in_payload() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should complete scan: {output}"
     );
     assert!(
@@ -452,7 +452,7 @@ fn cmd_generate_scan_only_scan_complete_message_present() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("use without --scan-only to generate config"),
         "completion hint must be present, got: {output}"
@@ -475,7 +475,7 @@ fn cmd_generate_scan_only_with_shell_flag_overrides_env() {
     };
     let result = cmd_generate_scan_only(&printer, &args);
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("bash"),
         "explicit --shell flag must select the bash scanner, got: {output}"
@@ -689,14 +689,14 @@ fn cmd_generate_scan_only_with_empty_home() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning dotfiles"),
+        output.contains("Scanning Dotfiles"),
         "should show scanning header, got: {output}"
     );
     assert!(
-        output.contains("Scan complete"),
-        "should show scan complete, got: {output}"
+        output.contains("Scanned this host"),
+        "should show the scan verdict, got: {output}"
     );
 }
 
@@ -729,13 +729,13 @@ fn cmd_generate_scan_only_with_shell_configs() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning dotfiles"),
+        output.contains("Scanning Dotfiles"),
         "should scan dotfiles, got: {output}"
     );
     assert!(
-        output.contains("Scanning bash config"),
+        output.contains("Scanning bash Config"),
         "should scan bash config, got: {output}"
     );
 }
@@ -771,9 +771,9 @@ fn cmd_generate_scan_only_with_dotfiles() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("dotfile"),
+        output.contains("Dotfile"),
         "should report dotfile entries, got: {output}"
     );
 }
@@ -799,12 +799,12 @@ fn cmd_generate_scan_only_default_shell_is_zsh() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Should detect shell from $SHELL env or default to zsh
     if let Some(ref shell) = original_shell {
         let shell_name = shell.rsplit('/').next().unwrap_or("zsh");
         assert!(
-            output.contains(&format!("Scanning {} config", shell_name)),
+            output.contains(&format!("Scanning {shell_name} Config")),
             "should detect shell from env, got: {output}"
         );
     }
@@ -839,7 +839,7 @@ fn cmd_generate_scan_only_shell_with_aliases_and_exports() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // The scanner should find aliases and exports
     assert!(
         output.contains("aliases") || output.contains("exports") || output.contains("PATH"),
@@ -892,7 +892,7 @@ fn handle_present_yaml_shows_header_and_syntax() {
     let result = handle_present_yaml(&printer, "tool-456", &input, true);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Module") || output.contains("My module"),
         "should show kind/description in header, got: {output}"
@@ -939,9 +939,9 @@ fn cmd_generate_scan_only_with_fish_shell() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning fish config"),
+        output.contains("Scanning fish Config"),
         "should scan fish config, got: {output}"
     );
 }
@@ -965,7 +965,7 @@ fn cmd_generate_scan_only_no_dotfiles_reports_none() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No dotfiles found") || output.contains("dotfile"),
         "should report on dotfiles, got: {output}"
@@ -993,10 +993,10 @@ fn cmd_generate_scan_only_detects_tool_from_dotfiles() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Scanner should detect tmux and vim from the dotfiles
     assert!(
-        output.contains("Detected tools") || output.contains("dotfile"),
+        output.contains("Detected Tools") || output.contains("dotfile"),
         "should detect tools from dotfiles, got: {output}"
     );
 }
@@ -1025,12 +1025,12 @@ fn cmd_generate_scan_only_with_plugin_manager() {
     let result = cmd_generate_scan_only(&printer, &args);
     result.expect("command should succeed");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Should detect oh-my-zsh as plugin manager
     assert!(
-        output.contains("Plugin manager")
+        output.contains("Plugin Manager")
             || output.contains("oh-my-zsh")
-            || output.contains("Scan complete"),
+            || output.contains("Scanned this host"),
         "should complete scan, got: {output}"
     );
 }
@@ -1041,7 +1041,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
 // above don't reach): consent skip via yes=true, AiConfig fallback when
 // no cfgd.yaml exists, AnthropicClient construction with the
 // CFGD_ANTHROPIC_URL test seam, the conversation loop body, token-usage
-// tally, and the final "Run 'cfgd apply --dry-run'" hint. The mock
+// tally, and the final "Run 'cfgd plan'" hint. The mock
 // returns a text-only response (no tool_use) so the loop breaks after
 // one iteration.
 
@@ -1055,7 +1055,9 @@ mod cmd_generate_mockito {
         super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
+                show_values: false,
             }),
             config: config_path,
             config_explicit: false,
@@ -1066,7 +1068,10 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -1120,7 +1125,7 @@ mod cmd_generate_mockito {
             .expect("cmd_generate should succeed against the text-only mock");
 
         mock.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         // The assistant text from the mock should land in the printed output.
         assert!(
             output.contains("I'll help generate your cfgd configuration."),
@@ -1133,8 +1138,8 @@ mod cmd_generate_mockito {
         );
         // The final hint always renders.
         assert!(
-            output.contains("cfgd apply --dry-run"),
-            "should point user at dry-run: {output}"
+            output.contains("cfgd plan"),
+            "should point user at the canonical preview command: {output}"
         );
     }
 
@@ -1263,7 +1268,7 @@ mod cmd_generate_mockito {
         turn1.assert();
         turn2.assert();
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         // Turn-2 text lands in the output.
         assert!(
             output.contains("Got it — platform detected."),
@@ -1353,7 +1358,7 @@ mod cmd_generate_mockito {
         turn1.assert();
         turn2.assert();
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         // The "Generated <kind> — <description>" header from
         // handle_present_yaml lands in the output.
         assert!(
@@ -1373,8 +1378,8 @@ mod cmd_generate_mockito {
         // Drives the consent-disclosure branch with yes=false. The
         // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
         // mode (via non_interactive_err) → `let proceed = ...?` propagates
-        // the Err out of cmd_generate. The user-facing contract is that we
-        // never hit the API.
+        // the Err out of cmd_generate. The user-facing contract is that the API
+        // is never hit.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
@@ -1383,7 +1388,7 @@ mod cmd_generate_mockito {
         let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
 
         // A mock that MUST NOT fire — if the consent path failed open and
-        // an HTTP call went out, this would record a hit. We assert below
+        // an HTTP call went out, this would record a hit. This asserts below
         // that it never matched, proving the abort happened before /v1/messages.
         let must_not_fire = server
             .mock("POST", "/v1/messages")
@@ -1416,9 +1421,9 @@ mod cmd_generate_mockito {
         // Either:
         //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
         //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
-        // Both are acceptable contracts — what we pin is that NO API call
+        // Both are acceptable contracts — what this pins is that NO API call
         // went out and the consent-warning text printed to the user.
-        let output = buf.lock().unwrap().clone();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
             output.contains("sends file contents and system information"),
@@ -1434,7 +1439,7 @@ mod cmd_generate_mockito {
             }
             Err(e) => {
                 let msg = e.to_string();
-                // Non-interactive prompt error — fine, just confirm we didn't
+                // Non-interactive prompt error — fine, just confirm it didn't
                 // mention any API-side problem.
                 assert!(
                     !msg.contains("API") && !msg.contains("api"),
@@ -1561,7 +1566,9 @@ mod cmd_generate_mockito {
         let cli = super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
+                show_values: false,
             }),
             config: repo_root.join("cfgd.yaml"),
             config_explicit: false,
@@ -1572,7 +1579,10 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -1595,9 +1605,9 @@ mod cmd_generate_mockito {
         turn1.assert();
         turn2.assert();
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Generated files") || output.contains("Generated 1 file"),
+            output.contains("Generated Files") || output.contains("Generated 1 file"),
             "must surface the generated-files summary: {output}"
         );
         assert!(
@@ -1650,7 +1660,7 @@ mod cmd_generate_mockito {
 
         cmd_generate(&cli, &printer, &args).expect("profile-target one-turn loop must succeed");
         mock.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Profile sketch ready."),
             "assistant text must print for profile target: {output}"
@@ -1720,7 +1730,7 @@ mod cmd_generate_mockito {
             .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
         turn1.assert();
         turn2.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Acknowledged tool error."),
             "final text must print after tool-error round-trip: {output}"
@@ -1763,7 +1773,7 @@ mod cmd_generate_mockito {
         cmd_generate(&cli, &printer, &args)
             .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
         must_not_fire.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Aborted."),
             "declined-consent must print 'Aborted.': {output}"
@@ -1850,7 +1860,9 @@ mod cmd_generate_mockito {
         let cli = super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
+                show_values: false,
             }),
             config: repo_root.join("cfgd.yaml"),
             config_explicit: false,
@@ -1861,7 +1873,10 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -1890,7 +1905,7 @@ mod cmd_generate_mockito {
 
         turn1.assert();
         turn2.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Changes committed.") || output.contains("Generated"),
             "user-confirmed commit path must surface the commit notice: {output}"
@@ -1969,7 +1984,7 @@ mod cmd_generate_mockito {
             .expect("declining commit must still return Ok and just skip the commit");
         turn1.assert();
         turn2.assert();
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !output.contains("Changes committed."),
             "no commit notice must appear when user declined commit prompt: {output}"

@@ -1,10 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+/// `spec.theme`: the active output preset and any per-color/icon overrides.
+///
+/// Accepts either a bare string (the preset name) or a mapping:
+///
+/// ```yaml
+/// theme: dracula
+/// # or
+/// theme:
+///   name: dracula
+///   overrides:
+///     header: "#ff0000"
+///     iconOk: "Y"
+/// ```
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
+    /// Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`,
+    /// `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`,
+    /// `tokyo-night`, `one-dark`, `minimal`). Default: `default`.
     #[serde(default = "default_theme_name")]
     pub name: String,
+    /// Per-color and per-icon overrides applied on top of the named preset.
     #[serde(default, skip_serializing_if = "ThemeOverrides::is_empty")]
     pub overrides: ThemeOverrides,
 }
@@ -74,32 +91,56 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
-    // Style overrides (13) — hex colors applied on top of the active preset.
-    /// Fills `Theme::primary`, the style an action subject at the deepest level
-    /// of the run tree is painted with. Presets that carry no palette
-    /// foreground of their own leave it unset.
+    // Style overrides (14) — hex colors applied on top of the active preset.
+    /// Color for action lines at the deepest nesting level of a run. Hex color
+    /// (`"#ff0000"`). Presets that carry no palette foreground of their own
+    /// leave it unset.
     pub primary: Option<String>,
+    /// Color for a top-level heading. Hex color (`"#ff0000"`).
     pub header: Option<String>,
+    /// Color for success status lines. Hex color.
     pub success: Option<String>,
+    /// Color for warning status lines. Hex color.
     pub warning: Option<String>,
+    /// Color for failure status lines. Hex color.
     pub error: Option<String>,
+    /// Color for informational status lines. Hex color.
     pub info: Option<String>,
+    /// Color for de-emphasized text (hints, notes, qualifiers). Hex color.
     pub muted: Option<String>,
+    /// Color for in-progress status lines and spinner labels. Hex color.
     pub running: Option<String>,
+    /// Color for an added diff line. Hex color.
     pub diff_add: Option<String>,
+    /// Color for a removed diff line. Hex color.
     pub diff_remove: Option<String>,
+    /// Color for an unchanged diff context line. Hex color.
     pub diff_context: Option<String>,
+    /// Color for accent status lines: attention without alarm. Hex color.
     pub accent: Option<String>,
+    /// Color for secondary status lines: structural pivots, labels, and
+    /// identifiers. Hex color.
     pub secondary: Option<String>,
+    /// Color for schema type annotations in explain output. Hex color
+    /// (`"#8be9fd"`).
+    pub type_hint: Option<String>,
 
     // Icon overrides (8) — single glyphs (or short strings) for status roles.
+    /// Glyph for success status lines. Default varies by preset (e.g. `✓`).
     pub icon_ok: Option<String>,
+    /// Glyph for warning status lines. Default varies by preset (e.g. `⚠`).
     pub icon_warn: Option<String>,
+    /// Glyph for failure status lines. Default varies by preset (e.g. `✗`).
     pub icon_fail: Option<String>,
+    /// Glyph for pending status lines. Default varies by preset.
     pub icon_pending: Option<String>,
+    /// Glyph for in-progress status lines. Default varies by preset.
     pub icon_running: Option<String>,
+    /// Glyph for skipped status lines. Default varies by preset.
     pub icon_skipped: Option<String>,
+    /// Glyph rendered for an `old -> new` relationship (e.g. `→`).
     pub icon_arrow: Option<String>,
+    /// Glyph for informational status lines. Default varies by preset.
     pub icon_info: Option<String>,
 }
 
@@ -118,6 +159,7 @@ impl ThemeOverrides {
             && self.diff_context.is_none()
             && self.accent.is_none()
             && self.secondary.is_none()
+            && self.type_hint.is_none()
             && self.icon_ok.is_none()
             && self.icon_warn.is_none()
             && self.icon_fail.is_none()

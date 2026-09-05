@@ -124,7 +124,7 @@ fn write_schema<T: JsonSchema>(
     let mut value = serde_json::to_value(&schema)?;
     if meta.dialect == DRAFT_07 {
         // schemars 1.x emits the draft-2020-12 idiom (`$defs` + `#/$defs/` refs).
-        // For documents we declare as draft-07, downgrade to the draft-07 idiom
+        // For documents declared as draft-07, downgrade to the draft-07 idiom
         // (`definitions` + `#/definitions/`) so the dialect declaration and the
         // keywords agree — what SchemaStore's draft-07 meta-validation wants. The
         // 2020-12 document needs no rewrite: schemars already emits its idiom.
@@ -261,6 +261,10 @@ mod tests {
             "permissions",
             "encryption",
             "envs",
+            // `env[].platforms` / `aliases[].platforms`: a profile has no
+            // platform gate of its own, so the only way this key reaches the
+            // profile schema is the per-entry one.
+            "platforms",
         ] {
             assert!(p.contains(field), "cfgd-profile schema missing {field}");
         }

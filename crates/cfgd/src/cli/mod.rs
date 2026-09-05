@@ -28,17 +28,20 @@ pub mod profile;
 pub mod pull;
 mod registry;
 pub mod rollback;
+mod run_context;
 pub mod secret;
 pub mod skill;
 pub mod source;
-pub mod state_cmd;
 pub mod status;
 pub mod sync;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod upgrade;
 pub mod validate;
 pub mod verify;
 pub mod workflow;
 
+pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
@@ -50,11 +53,12 @@ pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
+pub(in crate::cli) use run_context::RunContext;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
-    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
+    count_policy_items, format_conflict_preview_lines, infer_source_name, parse_priority_input,
+    remove_source_from_config, resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
     build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
@@ -73,22 +77,367 @@ use crate::packages;
 use crate::secrets;
 use cfgd_core::composition::{self, CompositionInput, SubscriptionConfig};
 use cfgd_core::config::{self, CfgdConfig, MergedProfile, ResolvedProfile};
+use cfgd_core::daemon::{PullFailure, PullFailureKind};
 use cfgd_core::modules;
+use cfgd_core::output::HintCommands;
 use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-// `MSG_NOTHING_TO_DO` is imported rather than restated: the run skeleton owns
-// the wording, so the CLI's verdict and the daemon's cannot drift apart.
+// The in-sync verdict is imported rather than restated: the run skeleton owns
+// both the wording and the role, so the CLI's verdict and the daemon's cannot
+// drift apart, and no surface can call a machine up to date while a decision
+// it just listed is still unanswered.
 use cfgd_core::reconciler::{
-    self, MSG_NOTHING_TO_DO, PhaseFilter, PhaseName, ReconcileContext, Reconciler,
+    self, PhaseFilter, PhaseName, ReconcileContext, Reconciler, nothing_to_do_verdict,
 };
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
-const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
+const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
-fn default_config_file() -> PathBuf {
+/// What a pull over a directory under no version control comes to. Not a
+/// failure: there is no remote to be out of date with.
+const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is not a git repository";
+
+/// What a reader DOES about a local config repository a pull could not move —
+/// the local-layer twin of
+/// [`source::source_failure_next_step`],
+/// which words the same beat per error kind for a subscribed source. The
+/// repository is the reader's own, so the fix is theirs.
+///
+/// Branched on the producer's own [`PullFailureKind`], never on libgit2's
+/// prose or on a prefix parsed back out of it: the kind names which step
+/// refused, so the advice cannot drift with a libgit2 message and a new step
+/// does not compile until its fix is written. One wording per kind — a missing
+/// `origin` and a diverged branch have nothing to do with each other, and
+/// "resolve it by hand" told the reader neither. A shared arm is for the steps
+/// whose only honest advice IS the general one.
+///
+/// `command` is the verb that just reported the refusal, so the re-run names
+/// the command the reader actually ran.
+pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str) -> HintCommands {
+    match failure.kind {
+        PullFailureKind::FindRemote => {
+            format!("Add the remote with `git remote add origin <url>`, then re-run `{command}`")
+                .into()
+        }
+        PullFailureKind::Diverged => format!(
+            "Reconcile the diverged branch with `git pull --rebase` in the config directory, then re-run `{command}`"
+        )
+        .into(),
+        PullFailureKind::Fetch => format!(
+            "Check the remote is reachable and your credentials are current, then re-run `{command}`"
+        )
+        .into(),
+        // A `git init` with nothing committed has no HEAD to fast-forward, and
+        // the fix is a first commit rather than anything about the remote.
+        PullFailureKind::GetHead => HintCommands::new(
+            "Make the first commit in the config directory:",
+            ["git add -A && git commit -m 'initial'".to_string(), command.to_string()],
+        ),
+        PullFailureKind::OpenRepo
+        | PullFailureKind::BranchName
+        | PullFailureKind::FindFetchHead
+        | PullFailureKind::ResolveFetchHead
+        | PullFailureKind::MergeAnalysis
+        | PullFailureKind::FindRef
+        | PullFailureKind::SetTarget
+        | PullFailureKind::SetHead
+        | PullFailureKind::Checkout => {
+            format!("Inspect the config directory with `git status`, then re-run `{command}`").into()
+        }
+    }
+}
+
+/// What a mutating `source` or `module` verb just did, for
+/// [`success_next_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cli) enum Mutation<'a> {
+    /// `source add` recorded a subscription.
+    SourceSubscribed,
+    /// `source update` fetched, or wrote a subscription knob. `trust_changed`
+    /// is the `requireSignedCommits` knob — the one edit whose effect lands on
+    /// the NEXT FETCH rather than the next apply.
+    SourceUpdated { trust_changed: bool },
+    /// `source remove` took a subscription out of the composition.
+    SourceRemoved,
+    /// `source replace` re-homed a subscription.
+    SourceReplaced,
+    /// `source override` set or rejected one of the source's recommendations.
+    SourceOverridden,
+    /// `source priority` re-ranked a subscription's layer.
+    SourceReprioritized,
+    /// `module create` scaffolded a module no profile lists yet.
+    ModuleCreated { name: &'a str },
+    /// `module update` / `module edit` changed a module the composition may
+    /// already carry.
+    ModuleUpdated,
+    /// `module add` / `module upgrade` locked a remote module in
+    /// `modules.lock`.
+    ModuleLocked,
+    /// `module build` produced an OCI-ready directory nothing has pushed.
+    ModuleBuilt { output: &'a str },
+    /// `module push` (or `module build --artifact`) put an artifact in a
+    /// registry; `applied` names the Module resource a `--apply` registered.
+    ///
+    /// Deliberately NOT the directory or the artifact reference: the hint
+    /// once recomposed the push from those two, which dropped `--sign --key`,
+    /// `--platform` and `--attest` on the floor — following it re-pushed a
+    /// fresh digest the cosign signature did not cover — and handed the
+    /// CLIENT's registry address (`localhost:5001/…`) to a Module resource
+    /// the CLUSTER resolves by its own. A completed invocation is never
+    /// re-spelled, and a reference resolved on this side of the network is
+    /// never interpolated into an instruction for the other.
+    ///
+    /// Nor does it name a file this verb CONSUMES. `kubectl apply -f
+    /// <module>.yaml` substitutes to `module.yaml` — this verb's own required
+    /// input, `kind: Module` with the pushed module's `metadata.name`, and on
+    /// screen two lines above the hint. Applying it succeeds and replaces the
+    /// Module with one carrying no `ociArtifact` and no signature, silently
+    /// undoing the push and the signing the rows above just reported. The
+    /// resource to register is one the reader still has to write — that is
+    /// what `--apply` is for — so the placeholder is
+    /// `<module-resource>.yaml`, which substitutes to a name this verb reads
+    /// nothing from, while `-f` keeps the invocation runnable as printed: bare
+    /// `kubectl apply` exits 1 on `must specify one of -f and -k` without ever
+    /// contacting a cluster. The qualifier hangs off the MODULE (which points
+    /// at the address) rather than off `Register` (which happens at the API
+    /// server).
+    ModulePushed { applied: Option<&'a str> },
+    /// `module pull` extracted a module; `name` is what its manifest said,
+    /// when it had one.
+    ModulePulled { name: Option<&'a str> },
+    /// `module registry add` recorded a registry.
+    RegistryAdded,
+    /// `module keys generate` wrote a cosign key pair into `dir`.
+    KeysGenerated { dir: &'a str },
+    /// `module keys rotate` replaced the pair in `dir`; `resigned` is whether
+    /// it re-signed the artifacts it was given.
+    KeysRotated { dir: &'a str, resigned: bool },
+    /// `profile create` scaffolded a profile nothing has switched to.
+    ProfileCreated { name: &'a str },
+    /// `profile update` / `profile edit` changed a composition the machine may
+    /// already be running.
+    ProfileUpdated,
+    /// `profile switch` pointed `spec.profile` at another composition.
+    ProfileSwitched,
+    /// `secret init` wrote the age key and `.sops.yaml`; nothing is encrypted
+    /// yet.
+    SecretsInitialized,
+    /// `secret encrypt` encrypted a file no profile references yet.
+    SecretEncrypted,
+    /// `secret edit` changed the plaintext behind a secret the composition may
+    /// already deploy.
+    SecretEdited,
+    /// `rollback` restored the machine to an earlier apply, which is the one
+    /// mutation that moves the MACHINE away from the config rather than the
+    /// config towards the machine — so its next step reads the divergence it
+    /// just created, and never `cfgd apply`, which would undo it.
+    RolledBack,
+    /// `backup rollback` put a unit's pre-restore contents back over its
+    /// source, and what it put back was held only by the sidecar the
+    /// rollback's own safety copy just displaced — `cfgd diff` never reaches
+    /// `spec.backups[].source`, so it reports nothing about the unit, and the
+    /// rollback stays recoverable only until something else displaces that
+    /// sidecar. `unit` is the `spec.backups[]` name to snapshot.
+    BackupRolledBack { unit: &'a str },
+}
+
+/// The next step a mutating `source`, `module`, `profile`, `secret` or
+/// `rollback` verb closes on when it SUCCEEDS — one composer for every family,
+/// so a verb cannot drift from its siblings hint by hint.
+///
+/// `source update --require-signed-commits` ended on `√ Updated 1 source` and
+/// the prompt, on the one command in the take whose effect is on the next
+/// fetch, while every other mutating beat said what to type next; `module
+/// push` ended on `√ Signed artifact with cosign` and the operator hand-typed
+/// the `kubectl apply` that `--apply` performs; `profile update` ended on
+/// `√ 3 changes written` — the one composition verb `module create`'s own hint
+/// routes the reader INTO — and taught nothing about how those changes reach
+/// the machine. A trust edit points at `cfgd sync`, where the demand is met;
+/// every edit to the COMPOSITION points at the preview and the apply that
+/// settle it; a verb that produced an ARTIFACT somebody else consumes names the
+/// consumer; a verb that moved the MACHINE names what now reads the difference.
+pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands {
+    match mutation {
+        Mutation::SourceUpdated {
+            trust_changed: true,
+        } => "Run `cfgd sync` to fetch under the new policy".into(),
+        Mutation::SourceSubscribed
+        | Mutation::SourceUpdated {
+            trust_changed: false,
+        }
+        | Mutation::SourceRemoved
+        | Mutation::SourceReplaced
+        | Mutation::SourceOverridden
+        | Mutation::SourceReprioritized
+        | Mutation::ModuleUpdated
+        | Mutation::ModuleLocked
+        | Mutation::ModulePulled { name: None }
+        | Mutation::ProfileUpdated
+        | Mutation::ProfileSwitched
+        | Mutation::SecretEdited => MSG_RUN_APPLY.into(),
+        Mutation::ProfileCreated { name } => {
+            format!("Activate it with `cfgd profile switch {name}`").into()
+        }
+        Mutation::SecretsInitialized => "Encrypt a file with `cfgd secret encrypt <file>`".into(),
+        Mutation::SecretEncrypted => {
+            "Reference it with `cfgd profile update <profile> --secret <file>:<target>`".into()
+        }
+        Mutation::RolledBack => {
+            "Run `cfgd diff` to see how the machine now differs from your config".into()
+        }
+        Mutation::BackupRolledBack { unit } => {
+            format!("Run `cfgd backup run {unit}` to take a snapshot of what was just put back")
+                .into()
+        }
+        Mutation::ModuleCreated { name } => {
+            format!("Add it to a profile with `cfgd profile update <profile> --module {name}`")
+                .into()
+        }
+        Mutation::ModuleBuilt { output } => {
+            format!("Push it with `cfgd module push {output} --artifact <registry>/<name>:<tag>`")
+                .into()
+        }
+        Mutation::ModulePushed {
+            applied: Some(name),
+            ..
+        } => format!("Check it with `kubectl get module {name}`").into(),
+        Mutation::ModulePushed { applied: None } => HintCommands::new(
+            "Register it as a Module pointing at the cluster's registry address \
+             (or pass --apply next time):",
+            ["kubectl apply -f <module-resource>.yaml"],
+        ),
+        Mutation::ModulePulled { name: Some(name) } => {
+            format!("Review it with `cfgd module show {name}`, then run `cfgd apply`").into()
+        }
+        Mutation::RegistryAdded => "Search for modules with `cfgd module search <query>`".into(),
+        Mutation::KeysGenerated { dir } => format!(
+            "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
+        )
+        .into(),
+        Mutation::KeysRotated {
+            dir,
+            resigned: true,
+        } => format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into(),
+        Mutation::KeysRotated {
+            dir,
+            resigned: false,
+        } => format!(
+            "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
+        )
+        .into(),
+    }
+}
+
+/// The next step a drift report offers once it has FOUND drift, scoped the way
+/// the report was.
+///
+/// Every verdict surface — `diff`, `diff --module`, `status`,
+/// `status --module`, either of those with `--scan`, `verify` — described the
+/// divergence and then stopped, leaving the reader to know on their own which
+/// command heals it. One wording, one home, so the whole-machine and
+/// per-module forms cannot drift apart. Distinct from [`MSG_RUN_APPLY`], which
+/// invites a preview of changes the reader has not seen yet: here they have
+/// just read them.
+///
+/// What earns it is that the report SHOWS unresolved drift a standing check
+/// backs, not that this run did the checking: a recorded finding under a scan
+/// stamp fresher than the reconcile interval is pending work the reader can
+/// act on, and only once that evidence goes stale does the invitation to look
+/// again outrank the heal.
+pub(in crate::cli) fn heal_drift_hint(module: Option<&str>) -> String {
+    match module {
+        Some(module) => format!("Run `cfgd apply --module {module}` to reconcile"),
+        None => "Run `cfgd apply` to reconcile".to_string(),
+    }
+}
+
+/// How a preview was SCOPED, for [`perform_preview_hint`] to re-state on the
+/// command that performs it.
+///
+/// Every field is a flag `plan` and `apply --dry-run` share, so one struct
+/// serves both; `init --apply --dry-run` exposes none of them and takes
+/// [`PreviewScope::unscoped`].
+#[derive(Clone, Copy, Default)]
+pub(in crate::cli) struct PreviewScope<'a> {
+    pub module: &'a [String],
+    pub with_profile: bool,
+    pub phase: Option<&'a PhaseArg>,
+    pub only: &'a [String],
+    pub skip: &'a [String],
+    pub skip_scripts: bool,
+}
+
+impl PreviewScope<'_> {
+    /// A preview no scoping flag could have narrowed.
+    pub(in crate::cli) fn unscoped() -> Self {
+        Self::default()
+    }
+
+    /// The flags as they would be typed again, in the order `--help` lists
+    /// them. Empty when nothing narrowed the preview.
+    fn flags(&self) -> String {
+        let mut parts = Vec::new();
+        for name in self.module {
+            parts.push(format!("--module {name}"));
+        }
+        if self.with_profile {
+            parts.push("--with-profile".to_string());
+        }
+        if let Some(phase) = self.phase {
+            parts.push(format!("--phase {phase}"));
+        }
+        for path in self.only {
+            parts.push(format!("--only {path}"));
+        }
+        for path in self.skip {
+            parts.push(format!("--skip {path}"));
+        }
+        if self.skip_scripts {
+            parts.push("--skip-scripts".to_string());
+        }
+        parts.join(" ")
+    }
+}
+
+/// The next step a PREVIEW closes on, once it has listed work the machine has
+/// not done yet.
+///
+/// The third of three next-step wordings, split by what the reader has just
+/// seen. [`MSG_RUN_APPLY`] invites a preview of changes they have NOT seen (a
+/// mutating verb just edited the config out from under them).
+/// [`heal_drift_hint`] follows a report that FOUND drift. This one follows the
+/// preview itself, so it neither re-offers the preview that just ran nor
+/// claims a drift check was made.
+///
+/// Scoped exactly as the preview was, because a bare `cfgd apply` after
+/// `cfgd plan --only packages` performs work the reader was never shown — the
+/// one way a next step can be worse than none.
+pub(in crate::cli) fn perform_preview_hint(scope: &PreviewScope<'_>) -> String {
+    let flags = scope.flags();
+    if flags.is_empty() {
+        "Run `cfgd apply` to make these changes".to_string()
+    } else {
+        format!("Run `cfgd apply {flags}` to make these changes")
+    }
+}
+
+/// Collapse a `--flag` / `--no-flag` pair into the edit it asks for. `None` is
+/// "the caller said nothing", which must stay distinct from `Some(false)` — a
+/// stored `true` has to survive an invocation that never mentioned the knob.
+/// clap's `conflicts_with` rejects both halves at once, so the pair can never
+/// arrive contradicting itself.
+fn paired_flag(set: bool, unset: bool) -> Option<bool> {
+    match (set, unset) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
+
+pub fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
 }
 
@@ -102,7 +451,10 @@ fn builtin_aliases() -> HashMap<String, String> {
 /// argv slot as its value (space form: `--flag value` or `-x value`).
 ///
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
-/// `ArgAction::Count` / `bool`. The short-flag-glued form (`-oVALUE`) is not
+/// `ArgAction::Count` / `bool`. `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator`
+/// walks the clap definition against this list and its inline sibling, so a
+/// new global flag that forgets them fails there rather than by reading its
+/// value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
 /// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
 /// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
 /// via the same helpers used for long flags — no dedicated short-flag branch.
@@ -118,6 +470,9 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--config-dir"
             | "--cache-dir"
             | "--runtime-dir"
+            | "--scope"
+            | "--theme"
+            | "--color"
     )
 }
 
@@ -135,6 +490,9 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--config-dir=",
         "--cache-dir=",
         "--runtime-dir=",
+        "--scope=",
+        "--theme=",
+        "--color=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -274,6 +632,77 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     }
 }
 
+/// Read the `spec.theme` block every entry point builds its printer from.
+///
+/// Best-effort by design: a missing, unreadable or malformed config falls back
+/// to the default theme rather than failing, because a printer has to exist
+/// before there is anything to report the failure ON.
+///
+/// The whole block travels, not just its name — `overrides` is a documented
+/// field, and a printer built from the preset name alone drops it. Shared by
+/// the primary CLI and the kubectl plugin for the same reason
+/// [`resolve_color_choice`] is: the plugin rendered the default palette on a
+/// themed machine for as long as it resolved this itself, by not resolving it
+/// at all.
+///
+/// `preset` is the `--theme` / `CFGD_THEME` override. It replaces the block's
+/// `name` and nothing else, so the flag means exactly what `cfgd config set
+/// theme.name <preset>` would have persisted: the config's `overrides` still
+/// layer on top. With no config to read it stands alone as the whole block.
+pub fn resolve_theme_config(
+    config_path: &Path,
+    preset: Option<&str>,
+) -> Option<cfgd_core::config::ThemeConfig> {
+    let stored = config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.theme);
+    match preset {
+        None => stored,
+        Some(name) => {
+            let mut theme = stored.unwrap_or_default();
+            theme.name = name.to_string();
+            Some(theme)
+        }
+    }
+}
+
+/// Resolve whether closing `→` usage hints render, folding `--no-hints`,
+/// `CFGD_USAGE_HINTS` and `spec.usageHints` into the one decision every
+/// entry point's printer is built from (`Printer::with_hints_enabled`).
+/// Precedence: the flag beats the env var beats the config field beats the
+/// default (hints render).
+///
+/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
+/// unreadable or malformed config renders hints rather than failing, because
+/// a printer has to exist before there is anything to report a load failure
+/// through.
+///
+/// `CFGD_USAGE_HINTS` is read directly here rather than bound to `--no-hints`
+/// via `#[arg(env = …)]`: the two spellings have OPPOSITE polarity (a set
+/// `--no-hints` suppresses; a set `CFGD_USAGE_HINTS=false` also suppresses,
+/// but `CFGD_USAGE_HINTS=true` does NOT set `no_hints`), and clap has no
+/// shape for negating a bool flag from a positively-named env var short of a
+/// second hidden field. Boolish spellings are accepted through the same
+/// table every other `CFGD_*` boolean env var uses.
+pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
+    if no_hints_flag {
+        return false;
+    }
+    if let Ok(raw) = std::env::var("CFGD_USAGE_HINTS")
+        && let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
+    {
+        return canonical == "true";
+    }
+    let stored = config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.usage_hints);
+    stored.unwrap_or(true)
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
@@ -375,6 +804,10 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
+    /// Skip confirmation prompts (answer yes to every question)
+    #[arg(long, short, global = true, env = "CFGD_YES")]
+    pub yes: bool,
+
     /// Disable colored output (alias for --color never)
     #[arg(long, global = true)]
     pub no_color: bool,
@@ -389,6 +822,16 @@ pub struct Cli {
     )]
     pub color: ColorWhen,
 
+    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        env = "CFGD_THEME",
+        value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+    )]
+    pub theme: Option<String>,
+
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     pub output: OutputFormatArg,
@@ -396,6 +839,13 @@ pub struct Cli {
     /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind: List, items})
     #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
     pub list_envelope: bool,
+
+    /// Suppress closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=false`
+    /// and `spec.usageHints: false` do the same thing persistently; this flag wins
+    /// over both. No env attached here: `CFGD_USAGE_HINTS` has the OPPOSITE polarity
+    /// (it names what stays ON) and is read directly in `resolve_hints_enabled`.
+    #[arg(long = "no-hints", global = true)]
+    pub no_hints: bool,
 
     /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
     #[arg(long, global = true, hide = true)]
@@ -448,11 +898,12 @@ impl Cli {
         cfgd_core::daemon::DaemonDirOverrides {
             runtime_dir: self.runtime_dir.clone(),
             state_dir: self.state_dir.clone(),
+            cache_dir: self.cache_dir.clone(),
         }
     }
 
-    /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`Scope::System`]
-    /// for `system`, [`Scope::User`] otherwise. Threaded into every directory
+    /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`cfgd_core::Scope::System`]
+    /// for `system`, [`cfgd_core::Scope::User`] otherwise. Threaded into every directory
     /// resolver so the whole CLI surface agrees on one root.
     pub fn scope(&self) -> cfgd_core::Scope {
         self.scope_arg.into()
@@ -475,7 +926,7 @@ pub struct ApplyArgs {
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
     /// Skip confirmation prompt
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
@@ -483,9 +934,16 @@ pub struct ApplyArgs {
     /// Apply only items matching dot-notation paths (e.g., packages, files)
     #[arg(long)]
     pub only: Vec<String>,
-    /// Apply only the specified module and its dependencies
+    /// Resolve and apply ONLY the named module and its dependencies, isolated
+    /// from the active profile (repeatable: --module a --module b applies the
+    /// union of both). Pair with --with-profile to apply the full profile
+    /// PLUS this module instead of isolating it.
     #[arg(long)]
-    pub module: Option<String>,
+    pub module: Vec<String>,
+    /// Compose the --module names WITH the full active profile instead of
+    /// isolating them. Meaningless — and rejected — without --module.
+    #[arg(long)]
+    pub with_profile: bool,
     /// Skip all script hooks (pre/post/onChange)
     #[arg(long)]
     pub skip_scripts: bool,
@@ -541,9 +999,16 @@ pub struct PlanArgs {
     /// Plan only items matching dot-notation paths (e.g., packages, files)
     #[arg(long)]
     pub only: Vec<String>,
-    /// Plan only the specified module and its dependencies
+    /// Resolve and plan ONLY the named module and its dependencies, isolated
+    /// from the active profile (repeatable: --module a --module b plans the
+    /// union of both). Pair with --with-profile to plan the full profile
+    /// PLUS this module instead of isolating it.
     #[arg(long)]
-    pub module: Option<String>,
+    pub module: Vec<String>,
+    /// Compose the --module names WITH the full active profile instead of
+    /// isolating them. Meaningless — and rejected — without --module.
+    #[arg(long)]
+    pub with_profile: bool,
     /// Skip all script hooks (pre/post/onChange)
     #[arg(long)]
     pub skip_scripts: bool,
@@ -591,15 +1056,19 @@ pub enum Command {
         dry_run: bool,
 
         /// Skip all confirmation prompts (used with --apply)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
 
         /// Install daemon service after init
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme name (default, dracula, solarized-dark, solarized-light, minimal)
-        #[arg(long)]
+        /// Theme preset to write into the new config's spec.theme
+        #[arg(
+            long,
+            value_name = "NAME",
+            value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+        )]
         theme: Option<String>,
 
         /// Activate and apply a specific profile (errors if not found)
@@ -617,27 +1086,33 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools                                    # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools               # several modules\n  cfgd apply --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --module nettools                                     # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff).\n--exit-code instead performs a live, read-only drift scan so CI gating works\neven on a host with no daemon and no prior scan:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases, scripts),\neach row carrying its own verdict. --show-values renders those same inventories with\nthe declared values (and each script's full body), so it implies `-o wide`.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
         #[arg(long)]
         module: Option<String>,
-        /// Exit 5 when drift is detected (for CI gating)
+        /// Perform a live, read-only drift scan and fold its findings into the display
+        #[arg(long)]
+        scan: bool,
+        /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
+        /// With --module: itemize the inventories and show declared values and full script bodies (implies -o wide)
+        #[arg(long)]
+        show_values: bool,
     },
 
     /// Show detailed diffs
@@ -718,7 +1193,7 @@ pub enum Command {
 
     /// Check system health and dependencies
     #[command(
-        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
+        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
     )]
     Doctor,
 
@@ -739,7 +1214,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source list\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source add team/config --require-signed-commits            # demand a signed HEAD\n  cfgd source list\n  cfgd source update team --require-signed-commits               # start demanding one\n  cfgd source update team --no-require-signed-commits            # stop demanding one\n  cfgd source update team --allow-scripts\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
     )]
     Source {
         #[command(subcommand)]
@@ -748,7 +1223,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -773,12 +1248,12 @@ pub enum Command {
 
     /// Accept or reject pending source decisions
     #[command(
-        long_about = "Accept or reject pending decisions from subscribed sources.\n\nExamples:\n  cfgd decide accept packages.brew.ripgrep\n  cfgd decide reject --source team\n  cfgd decide accept --all"
+        long_about = "Accept or reject pending decisions from subscribed sources.\n\nWith no arguments, lists the pending decisions without resolving anything.\n\nExamples:\n  cfgd decide\n  cfgd decide accept packages.brew.ripgrep\n  cfgd decide reject --source team\n  cfgd decide accept --all"
     )]
     Decide {
-        /// Action: accept or reject
+        /// Action: accept or reject. Omit to list pending decisions
         #[arg(value_enum)]
-        action: DecideAction,
+        action: Option<DecideAction>,
 
         /// Resource path to decide on (e.g. packages.brew.k9s). Omit for batch operations.
         #[arg(conflicts_with_all = ["source", "all"])]
@@ -939,7 +1414,7 @@ pub enum Command {
 
     /// AI-guided configuration generation
     #[command(
-        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate                    # scan system and propose full structure\n  cfgd generate module kubectl\n  cfgd generate profile laptop --model claude-opus-4-6\n  cfgd generate --scan-only --shell zsh --home ~/\n  cfgd generate --yes              # skip confirmation prompts"
+        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate                    # scan system and propose full structure\n  cfgd generate module kubectl\n  cfgd generate profile laptop --model claude-opus-5\n  cfgd generate --scan-only --shell zsh --home ~/\n  cfgd generate --yes              # skip confirmation prompts"
     )]
     Generate(generate::GenerateArgs),
 
@@ -948,21 +1423,12 @@ pub enum Command {
         long_about = "Restore files to their pre-apply state using captured backups.\n\nExamples:\n  cfgd log\n  cfgd rollback 42 --yes"
     )]
     Rollback {
-        /// Apply ID to roll back (from 'cfgd log')
+        /// Apply ID to roll back (from `cfgd log`)
         apply_id: i64,
 
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
-    },
-
-    /// Inspect or reset cfgd's own persisted decisions
-    #[command(
-        long_about = "Manage state cfgd persists about itself, separate from managed-resource state (see 'cfgd log'/'cfgd rollback').\n\nExamples:\n  cfgd state forget-prefix npm"
-    )]
-    State {
-        #[command(subcommand)]
-        command: StateCommand,
     },
 
     /// Start MCP server for AI editor integration
@@ -1056,7 +1522,10 @@ pub enum ComplianceCommand {
         #[arg(long)]
         since: Option<String>,
     },
-    /// Show diff between two snapshots
+    /// Compare two recorded compliance snapshots
+    #[command(
+        long_about = "Compare two recorded compliance snapshots.\n\nCompares snapshot history out of the state store — it reads nothing off the machine. Run `cfgd diff` to compare the machine against its declared config.\n\nExamples:\n  cfgd compliance diff 42 47\n  cfgd compliance diff 42 47 -o json"
+    )]
     Diff {
         /// Base snapshot ID (the reference to compare against)
         #[arg(value_name = "BASE_ID")]
@@ -1064,23 +1533,6 @@ pub enum ComplianceCommand {
         /// Target snapshot ID (the snapshot being compared)
         #[arg(value_name = "TARGET_ID")]
         target_id: i64,
-    },
-}
-
-/// Subcommands for `cfgd state`.
-#[derive(Subcommand)]
-pub enum StateCommand {
-    /// Forget a package manager's persisted global-install prefix decision
-    ///
-    /// Deletes the row `cfgd` recorded the last time it resolved MANAGER's
-    /// writable global-install prefix, forcing the next install/uninstall/list
-    /// to derive it fresh instead of reusing the cached decision. Automatic
-    /// revalidation already catches a persisted prefix that itself became
-    /// unwritable; this is for the case where a BETTER prefix is now available
-    /// (e.g. permissions were fixed after cfgd fell back).
-    ForgetPrefix {
-        /// Package manager name (e.g. npm, pipx)
-        manager: String,
     },
 }
 
@@ -1114,14 +1566,25 @@ pub struct SourceAddArgs {
     /// Sync interval (e.g., "30m", "1h", "6h")
     #[arg(long)]
     pub sync_interval: Option<String>,
-    /// Automatically apply changes on sync
+    /// Reconcile and apply immediately after a refresh that changed this
+    /// source, regardless of `daemon.reconcile.driftPolicy`. The decision
+    /// policy still applies: an item awaiting a decision stays withheld
     #[arg(long)]
     pub auto_apply: bool,
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
     #[arg(long = "pin-version")]
     pub pin_version: Option<String>,
+    /// Demand that this source's HEAD commit carry a valid GPG/SSH signature.
+    /// Only ever adds strictness — a source whose own manifest already demands
+    /// signatures is verified either way
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_signed_commits: bool,
+    /// Let this source's lifecycle scripts run even when its own
+    /// `constraints.noScripts` would reject them
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub allow_scripts: bool,
     /// Skip confirmation prompt
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 }
 
@@ -1155,7 +1618,7 @@ pub enum SourceCommand {
         remove_all: bool,
 
         /// Skip confirmation prompt (defaults to --keep-all behavior)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
 
         /// Exit 0 instead of erroring when the source does not exist
@@ -1167,6 +1630,24 @@ pub enum SourceCommand {
     Update {
         /// Specific source to update (default: all)
         name: Option<String>,
+
+        /// Demand that this source's HEAD commit carry a valid GPG/SSH signature
+        #[arg(long, requires = "name", conflicts_with = "no_require_signed_commits")]
+        require_signed_commits: bool,
+
+        /// Stop demanding a signature on this source's HEAD commit. A source
+        /// whose own manifest demands one is still verified
+        #[arg(long, requires = "name")]
+        no_require_signed_commits: bool,
+
+        /// Let this source's lifecycle scripts run even when its own
+        /// `constraints.noScripts` would reject them
+        #[arg(long, requires = "name", conflicts_with = "no_allow_scripts")]
+        allow_scripts: bool,
+
+        /// Stop letting this source's lifecycle scripts run
+        #[arg(long, requires = "name")]
+        no_allow_scripts: bool,
     },
 
     /// Override a source's recommendation
@@ -1249,7 +1730,7 @@ pub enum BackupCommand {
 
     /// Restore a snapshot back over the backup's source
     #[command(
-        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety snapshot of the current contents is taken first and recorded as an\nordinary run, unless --to points outside the source (nothing of the backup's is\nbeing overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --at notes.db.20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup restore notes-db --yes"
+        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety copy of the current contents is left beside the source first (the\nsame <path>.cfgd-backup sidecar cfgd leaves beside any file it displaces; not a\nsnapshot of the unit), unless --to points outside the source (nothing of the\nbackup's is being overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --at notes.db.20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup restore notes-db --yes"
     )]
     Restore {
         /// Backup name
@@ -1262,12 +1743,25 @@ pub enum BackupCommand {
 
         /// Restore into this path instead of the backup's source; a path
         /// outside the source leaves the live source untouched and skips the
-        /// safety snapshot
+        /// safety copy
         #[arg(long, value_hint = clap::ValueHint::AnyPath)]
         to: Option<PathBuf>,
 
         /// Skip the confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
+        yes: bool,
+    },
+
+    /// Put a backup's pre-restore copy back over its source
+    #[command(
+        long_about = "Put the copy a restore (or an apply) left beside a backup's source back over it.\n\nEvery time cfgd displaces a file it copies the current contents aside first, as\nthe <path>.cfgd-backup sidecar beside them; `backup restore` leaves one before\nit overlays a snapshot. A rollback puts the newest such copy back, which is how\na restore of the wrong snapshot is undone. One copy is retained per source, so\na rollback always undoes the most recent displacement.\n\nWith no name, lists the backups that have a copy to put back and leaves the\nmachine alone.\n\nThe unit's preBackup / postBackup hooks wrap the rollback once, with\nCFGD_OPERATION=rollback. The contents the rollback displaces are copied aside\nfirst, as their own sidecar, so a rollback is itself reversible: rolling back\ntwice returns the source to where it started.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup rollback\n  cfgd backup rollback notes-db\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup rollback"
+    )]
+    Rollback {
+        /// Backup name (default: list every backup that has a copy to put back)
+        name: Option<String>,
+
+        /// Skip the confirmation prompt
+        #[arg(from_global)]
         yes: bool,
     },
 }
@@ -1347,8 +1841,8 @@ pub enum ConfigCommand {
 pub enum WorkflowCommand {
     /// Generate or regenerate GitHub Actions workflows for releases
     Generate {
-        /// Overwrite existing workflow files
-        #[arg(long, short = 'y', alias = "yes", env = "CFGD_YES")]
+        /// Overwrite existing workflow files (the global --yes / CFGD_YES also overwrites)
+        #[arg(long)]
         force: bool,
     },
 }
@@ -1380,6 +1874,7 @@ pub enum AliasCommand {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileCreateArgs {
     /// Profile name
     pub name: String,
@@ -1389,7 +1884,9 @@ pub struct ProfileCreateArgs {
     /// Modules to include (repeatable)
     #[arg(long = "module")]
     pub modules: Vec<String>,
-    /// Packages to include (repeatable, e.g. --package curl or --package brew:curl)
+    /// Packages to include: <manager>[.<list>]:<name>, or a bare name for the
+    /// platform's native manager (repeatable, e.g. --package curl, --package
+    /// brew:curl, --package brew.taps:charmbracelet/tap)
     #[arg(long = "package")]
     pub packages: Vec<String>,
     /// Environment variables as key=value (repeatable)
@@ -1431,6 +1928,7 @@ pub struct ProfileCreateArgs {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileUpdateArgs {
     /// Profile name (default: active profile)
     pub name: Option<String>,
@@ -1440,16 +1938,20 @@ pub struct ProfileUpdateArgs {
     /// Modules (repeatable, prefix with - to remove)
     #[arg(long = "module", allow_hyphen_values = true)]
     pub modules: Vec<String>,
-    /// Packages (repeatable, prefix with - to remove, e.g. --package brew:jq --package -brew:old)
+    /// Packages: <manager>[.<list>]:<name>, or a bare name for the platform's
+    /// native manager (repeatable, prefix with - to remove, e.g. --package
+    /// brew:jq --package brew.casks:firefox --package -brew:old)
     #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)
     #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
-    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key —
+    /// removing takes every platform variant of that key)
     #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
-    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by
+    /// name — removing takes every platform variant of that name)
     #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// System settings as key=value (repeatable, prefix with - to remove by key)
@@ -1480,7 +1982,7 @@ pub struct ProfileUpdateArgs {
     #[arg(long = "private-files")]
     pub private: bool,
     /// Skip confirmation prompt (for non-interactive use)
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
     /// Allow unsigned modules even when require-signatures is enabled
     #[arg(long)]
@@ -1518,7 +2020,7 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Exit 0 instead of erroring when the profile does not exist
         #[arg(long)]
@@ -1545,12 +2047,13 @@ pub enum ProfileCommand {
         #[arg(long)]
         dry_run: bool,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleCreateArgs {
     /// Module name
     pub name: String,
@@ -1560,7 +2063,8 @@ pub struct ModuleCreateArgs {
     /// Dependencies on other modules (repeatable)
     #[arg(long = "depends")]
     pub depends: Vec<String>,
-    /// Packages to include (repeatable)
+    /// Packages to include: <manager>[.<list>]:<name>, or a bare name for the
+    /// platform's native manager (repeatable, e.g. --package brew.casks:firefox)
     #[arg(long = "package")]
     pub packages: Vec<String>,
     /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
@@ -1585,24 +2089,28 @@ pub struct ModuleCreateArgs {
     #[arg(long)]
     pub apply: bool,
     /// Skip confirmation prompts (used with --apply)
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleUpdateArgs {
     /// Module name
     pub name: String,
-    /// Packages (repeatable, prefix with - to remove)
+    /// Packages: <manager>[.<list>]:<name>, or a bare name for the platform's
+    /// native manager (repeatable, prefix with - to remove)
     #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)
     #[arg(long = "file", allow_hyphen_values = true)]
     pub files: Vec<String>,
-    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key)
+    /// Env vars as KEY=VALUE (repeatable, prefix with - to remove by key —
+    /// removing takes every platform variant of that key)
     #[arg(long = "env", allow_hyphen_values = true)]
     pub env: Vec<String>,
-    /// Shell aliases as name=command (repeatable, prefix with - to remove by name)
+    /// Shell aliases as name=command (repeatable, prefix with - to remove by
+    /// name — removing takes every platform variant of that name)
     #[arg(long = "alias", allow_hyphen_values = true)]
     pub aliases: Vec<String>,
     /// Dependencies (repeatable, prefix with - to remove)
@@ -1650,7 +2158,7 @@ pub enum ModuleCommand {
         /// Module name
         name: String,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Also remove files deployed by this module to target locations
         #[arg(long)]
@@ -1667,7 +2175,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         ref_: Option<String>,
         /// Skip confirmation prompt (for non-interactive use)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Allow unsigned modules even when require-signatures is enabled
         #[arg(long)]
@@ -1853,7 +2361,7 @@ pub enum SkillCommand {
         force: bool,
 
         /// Skip confirmation prompts
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 
@@ -1881,7 +2389,7 @@ pub enum SkillCommand {
         provider: Vec<String>,
 
         /// Skip confirmation prompts
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 
@@ -2012,6 +2520,27 @@ impl PhaseArg {
         PhaseArg {
             phase,
             selector: None,
+        }
+    }
+}
+
+impl std::fmt::Display for PhaseArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rendered back through clap's own vocabulary, so a `--phase` a hint
+        // re-states re-parses by construction rather than through a second
+        // table kept by hand. The retired spelling renders as the phase it
+        // selects: re-emitting `env` would hand the reader a command that
+        // prints a deprecation on its way to doing what `prerequisites` does.
+        let name = match self.phase {
+            ApplyPhase::Env => "prerequisites".to_string(),
+            phase => <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+                .map(|pv| pv.get_name().to_string())
+                .unwrap_or_else(|| "prerequisites".to_string()),
+        };
+        write!(f, "{name}")?;
+        match &self.selector {
+            Some(selector) => write!(f, ".{selector}"),
+            None => Ok(()),
         }
     }
 }
@@ -2265,9 +2794,19 @@ pub fn execute(
     match command {
         Command::Apply(args) => apply::cmd_apply(cli, printer, args),
         Command::Plan(args) => plan::cmd_plan(cli, printer, args),
-        Command::Status { module, exit_code } => {
-            status::cmd_status(cli, printer, module.as_deref(), *exit_code)
-        }
+        Command::Status {
+            module,
+            scan,
+            exit_code,
+            show_values,
+        } => status::cmd_status(
+            cli,
+            printer,
+            module.as_deref(),
+            *exit_code,
+            *scan,
+            *show_values,
+        ),
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }
@@ -2483,11 +3022,27 @@ pub fn execute(
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
+                *yes,
                 *ignore_not_found,
             ),
-            SourceCommand::Update { name } => {
-                source::cmd_source_update(cli, printer, name.as_deref())
-            }
+            SourceCommand::Update {
+                name,
+                require_signed_commits,
+                no_require_signed_commits,
+                allow_scripts,
+                no_allow_scripts,
+            } => source::cmd_source_update(
+                cli,
+                printer,
+                name.as_deref(),
+                source::SubscriptionEdits {
+                    require_signed_commits: paired_flag(
+                        *require_signed_commits,
+                        *no_require_signed_commits,
+                    ),
+                    allow_scripts: paired_flag(*allow_scripts, *no_allow_scripts),
+                },
+            ),
             SourceCommand::Override {
                 source,
                 action,
@@ -2526,6 +3081,9 @@ pub fn execute(
                     yes: *yes,
                 },
             ),
+            BackupCommand::Rollback { name, yes } => {
+                backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
+            }
         },
         Command::Explain {
             resource,
@@ -2612,7 +3170,7 @@ pub fn execute(
         }
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {
-                workflow::cmd_workflow_generate(cli, printer, *force)
+                workflow::cmd_workflow_generate(cli, printer, *force || cli.yes)
             }
         },
         Command::Checkin {
@@ -2656,14 +3214,6 @@ pub fn execute(
             cli.state_dir.as_deref(),
             cli.scope(),
         ),
-        Command::State { command } => match command {
-            StateCommand::ForgetPrefix { manager } => state_cmd::cmd_state_forget_prefix(
-                printer,
-                manager,
-                cli.state_dir.as_deref(),
-                cli.scope(),
-            ),
-        },
         Command::McpServer => {
             crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref(), cli.scope())
         }

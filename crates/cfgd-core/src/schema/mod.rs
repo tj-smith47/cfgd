@@ -15,6 +15,8 @@
 
 pub mod snapshot;
 
+use std::collections::HashMap;
+
 use schemars::{Schema, schema_for};
 use serde_json::Value;
 
@@ -57,6 +59,23 @@ pub struct FieldNode {
     pub required: bool,
     /// Short description from the schema (rustdoc on the source field).
     pub description: String,
+    /// The named `$defs` entry this field's schema resolved through — the
+    /// field's own `$ref` target, or its array element's (`files` →
+    /// `ModuleFileEntry`). Empty for an inline anonymous schema, for a scalar,
+    /// and for a bare root self-reference.
+    ///
+    /// DISPLAY only: [`FieldNode::displayed_type`] substitutes it for the shape
+    /// word so a reader sees the type they can look up, while `type_desc`
+    /// stays the shape vocabulary (`object`, `[]object`) every existing
+    /// consumer reads.
+    pub type_name: String,
+    /// The accepted values of a unit-variant enum (`Copy`, `Symlink`, …), in
+    /// declared order. Empty for every other field.
+    pub enum_values: Vec<String>,
+    /// Whether this node is one SHAPE a union field accepts rather than a
+    /// field of its own: its `name` is its displayed type, so a renderer
+    /// states the type once and never offers it as a path segment.
+    pub is_variant: bool,
     /// Nested fields, for object-typed fields (including an array field's
     /// object-shaped element, e.g. `packages[].name`).
     pub children: Vec<FieldNode>,
@@ -70,6 +89,24 @@ pub struct FieldNode {
     /// enum, an `Option<T>`) — those already carry that single type in
     /// `type_desc` and need no shape breakdown.
     pub variants: Vec<FieldNode>,
+}
+
+impl FieldNode {
+    /// The type as a reader sees it: the named `$defs` type when the field
+    /// resolved through one (`[]ModuleFileEntry`, `ScriptSpec`), else the
+    /// shape word in `type_desc`.
+    ///
+    /// The `[]` prefix is carried over from `type_desc` because a name is
+    /// recorded for the ELEMENT of an array field; no named definition in the
+    /// registry is itself array-shaped, so the two can never both contribute a
+    /// prefix.
+    pub fn displayed_type(&self) -> String {
+        match (self.type_name.as_str(), self.type_desc.strip_prefix("[]")) {
+            ("", _) => self.type_desc.clone(),
+            (name, Some(_)) => format!("[]{name}"),
+            (name, None) => name.to_string(),
+        }
+    }
 }
 
 /// One resource kind in the unified registry.
@@ -86,6 +123,10 @@ pub struct KindEntry {
     pub location: &'static str,
     /// Short human description of the kind.
     pub description: &'static str,
+    /// Where this kind is documented in the repo's `docs/` tree, as a path
+    /// plus heading anchor (`docs/spec/module.md#fields`). Shown by `explain`
+    /// so a reader who wants prose has one hop to it.
+    pub docs: &'static str,
     /// `true` for cluster-side CRD kinds, `false` for local YAML document kinds.
     /// Discriminates the CRD `Module` from the local `Module` (both share the
     /// `kind` string `"Module"`).
@@ -98,6 +139,11 @@ pub struct KindEntry {
     /// CRD kinds deserialize the `spec` into the matching `cfgd_crd::*Spec`.
     pub validate_fn: fn(&str) -> Result<(), Vec<String>>,
 }
+
+/// Per-kind memo of [`KindEntry::canonical_schema_value`], keyed by the pair
+/// that identifies a registry entry: the CRD `Module` shares its `kind` string
+/// with the local one.
+type CanonicalSchemaCache = std::sync::Mutex<HashMap<(&'static str, bool), std::sync::Arc<Value>>>;
 
 impl KindEntry {
     /// Resolve this kind's schema into a [`FieldNode`] tree (top-level `spec`
@@ -115,11 +161,11 @@ impl KindEntry {
     /// diffable form (the golden schema gate), use [`KindEntry::pretty_schema`].
     ///
     /// Emitted as draft-07 (via [`migrate_to_draft_07`]) with whitespace-collapsed
-    /// descriptions (via [`normalize_descriptions`]), so the embedded skill
+    /// descriptions (via `normalize_descriptions`), so the embedded skill
     /// schema stays consistent with the published draft-07 editor schemas and
     /// carries the same single-line descriptions the `explain` walk shows.
     pub fn json_schema(&self) -> String {
-        serde_json::to_string(&self.canonical_schema_value()).unwrap_or_default()
+        serde_json::to_string(self.canonical_schema_value().as_ref()).unwrap_or_default()
     }
 
     /// Serialize this kind's schema as a pretty-printed JSON string. Empty on
@@ -131,18 +177,40 @@ impl KindEntry {
     /// the output is stable across runs. This is the form the committed golden
     /// snapshots use, so a CI diff pinpoints exactly which schema field changed.
     pub fn pretty_schema(&self) -> String {
-        serde_json::to_string_pretty(&self.canonical_schema_value()).unwrap_or_default()
+        serde_json::to_string_pretty(self.canonical_schema_value().as_ref()).unwrap_or_default()
     }
 
     /// Schema as a `Value` in cfgd's canonical published form: draft-07 dialect
     /// and definition idiom with whitespace-collapsed descriptions. The single
     /// transform behind both [`KindEntry::json_schema`] and
     /// [`KindEntry::pretty_schema`].
-    fn canonical_schema_value(&self) -> Value {
+    ///
+    /// Derived at most once per kind per process. `schema_fn` re-runs
+    /// `schemars::schema_for!` and the two normalizers then walk the whole
+    /// document, so a caller asking for both the compact and the pretty form of
+    /// one kind paid for that walk twice. Only the serialization is still per
+    /// call, which is what keeps the compact caller from paying to pretty-print.
+    /// The `Value` is a function of Rust types compiled into this binary, so it
+    /// has no invalidation counterpart.
+    fn canonical_schema_value(&self) -> std::sync::Arc<Value> {
+        static CANONICAL: std::sync::OnceLock<CanonicalSchemaCache> = std::sync::OnceLock::new();
+        let cache = CANONICAL.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        // A poisoned lock means another thread panicked mid-derivation; the map
+        // holds only pure derived values, so reusing it is safe and refusing to
+        // would turn a schema panic into a second, unrelated one.
+        if let Ok(map) = cache.lock()
+            && let Some(hit) = map.get(&(self.kind, self.crd))
+        {
+            return hit.clone();
+        }
         let mut value =
             serde_json::to_value((self.schema_fn)()).unwrap_or(Value::Object(Default::default()));
         normalize_descriptions(&mut value);
         migrate_to_draft_07(&mut value);
+        let value = std::sync::Arc::new(value);
+        if let Ok(mut map) = cache.lock() {
+            map.insert((self.kind, self.crd), value.clone());
+        }
         value
     }
 }
@@ -199,6 +267,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "modules/<name>/module.yaml",
         description: "A reusable unit of packages, files, scripts, and environment.",
         crd: false,
+        docs: "docs/spec/module.md#fields",
         schema_fn: || schema_for!(crate::config::ModuleSpec),
         validate_fn: validate_local::<crate::config::ModuleDocument>,
     },
@@ -208,6 +277,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "profiles/<name>/profile.yaml",
         description: "A composable layer of modules, packages, files, and settings.",
         crd: false,
+        docs: "docs/spec/profile.md#fields",
         schema_fn: || schema_for!(crate::config::ProfileSpec),
         validate_fn: validate_local::<crate::config::ProfileDocument>,
     },
@@ -217,6 +287,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "cfgd-source.yaml",
         description: "A published source of modules and profiles for multi-source config.",
         crd: false,
+        docs: "docs/sources.md#configsource-manifest",
         schema_fn: || schema_for!(crate::config::ConfigSourceSpec),
         validate_fn: validate_local::<crate::config::ConfigSourceDocument>,
     },
@@ -226,6 +297,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "cfgd.yaml",
         description: "The root cfgd configuration: active profile, sources, daemon, theme.",
         crd: false,
+        docs: "docs/spec/config.md#fields",
         schema_fn: || schema_for!(crate::config::CfgdConfig),
         validate_fn: validate_local::<crate::config::CfgdConfig>,
     },
@@ -236,6 +308,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "MachineConfig CRD",
         description: "Per-machine desired state reconciled by the cfgd operator.",
         crd: true,
+        docs: "docs/spec/machineconfig.md#fields",
         schema_fn: || schema_for!(cfgd_crd::MachineConfigSpec),
         validate_fn: validate_crd_spec::<cfgd_crd::MachineConfigSpec>,
     },
@@ -246,6 +319,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "ConfigPolicy CRD",
         description: "Namespace-scoped policy of required modules, packages, and settings.",
         crd: true,
+        docs: "docs/spec/configpolicy.md#fields",
         schema_fn: || schema_for!(cfgd_crd::ConfigPolicySpec),
         validate_fn: validate_crd_spec::<cfgd_crd::ConfigPolicySpec>,
     },
@@ -256,6 +330,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "ClusterConfigPolicy CRD",
         description: "Cluster-scoped policy fanned out across selected namespaces.",
         crd: true,
+        docs: "docs/spec/clusterconfigpolicy.md#fields",
         schema_fn: || schema_for!(cfgd_crd::ClusterConfigPolicySpec),
         validate_fn: validate_crd_spec::<cfgd_crd::ClusterConfigPolicySpec>,
     },
@@ -266,6 +341,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "DriftAlert CRD",
         description: "A recorded drift event between desired and observed machine state.",
         crd: true,
+        docs: "docs/spec/driftalert.md#fields",
         schema_fn: || schema_for!(cfgd_crd::DriftAlertSpec),
         validate_fn: validate_crd_spec::<cfgd_crd::DriftAlertSpec>,
     },
@@ -276,6 +352,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "Module CRD",
         description: "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
         crd: true,
+        docs: "docs/operator.md#pod-module-injection",
         schema_fn: || schema_for!(cfgd_crd::ModuleSpec),
         validate_fn: validate_crd_spec::<cfgd_crd::ModuleSpec>,
     },
@@ -306,7 +383,21 @@ pub fn field_tree_from_schema(root: &Schema) -> Vec<FieldNode> {
         descent.leave(&mut visited);
         return fields;
     }
-    fields_from_properties(&top, &required_set(root), ctx, &mut visited)
+    // The KRM envelope keys are a property of the DOCUMENT root and nothing
+    // else: a nested field is never `apiVersion`, and a nested `kind`
+    // (`daemon.reconcile.patches[].kind`) is an authoring field the tree must
+    // carry. So the envelope is stripped here, once, and not in the recursion.
+    let authoring: Vec<(String, Value)> = top
+        .into_iter()
+        .filter(|(name, _)| !is_krm_envelope_key(name))
+        .collect();
+    fields_from_properties(&authoring, &required_set(root), ctx, &mut visited)
+}
+
+/// The keys every KRM document carries beside `spec`, which a field tree of
+/// AUTHORING fields leaves out at the document root.
+fn is_krm_envelope_key(name: &str) -> bool {
+    matches!(name, "apiVersion" | "kind" | "metadata" | "status")
 }
 
 /// The schema's definitions object — schemars 1.x emits `$defs`; older drafts
@@ -449,7 +540,6 @@ fn fields_from_properties(
 ) -> Vec<FieldNode> {
     let mut fields: Vec<FieldNode> = props
         .iter()
-        .filter(|(name, _)| !matches!(name.as_str(), "apiVersion" | "kind" | "metadata" | "status"))
         .map(|(name, schema)| field_node(name, schema, required.contains(name), ctx, visited))
         .collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -499,11 +589,80 @@ fn field_node(
     FieldNode {
         name: name.to_string(),
         type_desc,
+        type_name: named_type(&unwrapped, &resolved).unwrap_or_default(),
+        enum_values: enum_values(&resolved, ctx),
+        is_variant: false,
         required,
         description,
         children,
         variants,
     }
+}
+
+/// The `$defs` name a schema resolves through: its own `$ref` target, or — for
+/// an array — its element's. `None` for an inline schema and for a bare root
+/// self-reference, neither of which names a type a reader could look up.
+fn named_type(unwrapped: &Value, resolved: &Value) -> Option<String> {
+    fn named_ref(schema: &Value) -> Option<String> {
+        ref_name(schema).filter(|name| name != ROOT_REF)
+    }
+    named_ref(unwrapped).or_else(|| named_ref(&unwrap_single_subschema(array_item(resolved)?)))
+}
+
+/// The accepted values of a unit-variant enum, in declared order: schemars
+/// emits either a `oneOf` of `const` members (when the variants carry rustdoc)
+/// or a plain `enum` array (when they do not), and both spellings occur across
+/// the registry. An array of such an enum answers with its element's values, so
+/// `[]DriftSeverity` discloses them the same way a bare field does. Empty for
+/// anything else — including a union whose members are not all consts, which is
+/// a multi-shape union rather than a value list.
+fn enum_values(schema: &Value, ctx: SchemaCtx) -> Vec<String> {
+    let direct = enum_values_here(schema);
+    if !direct.is_empty() {
+        return direct;
+    }
+    match array_item(schema) {
+        Some(item) => enum_values_here(&resolve_ref(&unwrap_single_subschema(item), ctx)),
+        None => Vec::new(),
+    }
+}
+
+/// [`enum_values`] for one schema, without unwrapping an array element.
+fn enum_values_here(schema: &Value) -> Vec<String> {
+    let Some(obj) = schema.as_object() else {
+        return Vec::new();
+    };
+    if let Some(one) = obj.get("const").and_then(Value::as_str) {
+        return vec![one.to_string()];
+    }
+    if let Some(values) = obj.get("enum").and_then(Value::as_array) {
+        return values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+    }
+    let Some(members) = obj
+        .get("oneOf")
+        .or_else(|| obj.get("anyOf"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    // A member contributes either one `const` (a documented variant) or a
+    // whole `enum` array (the undocumented ones, which schemars collapses into
+    // a single member) — `ScriptShell` carries both at once. A member that
+    // contributes neither makes the union a multi-shape one rather than a
+    // value list, and the whole answer is empty.
+    let mut values = Vec::new();
+    for member in members.iter().filter(|m| !is_null_schema(m)) {
+        let member = enum_values_here(member);
+        if member.is_empty() {
+            return Vec::new();
+        }
+        values.extend(member);
+    }
+    values
 }
 
 /// Unwrap a schema that wraps a single subschema via `allOf`/`anyOf`/`oneOf`
@@ -826,7 +985,13 @@ fn union_type_join(
             return None;
         }
         let resolved = resolve_ref(member, ctx);
-        let desc = type_description(&resolved, ctx, visited);
+        // A `$ref` member names its `$defs` type; `object` is reserved for a
+        // member that genuinely has none. Every object arm cfgd publishes is
+        // a named type (`([]string | BrewSpec)`, `([]string | PackageListSpec)`),
+        // which `every_union_typed_field_renders_its_shapes_once_and_its_fields_by_name`
+        // holds.
+        let desc = named_type(member, &resolved)
+            .unwrap_or_else(|| type_description(&resolved, ctx, visited));
         descent.leave(visited);
         if !parts.contains(&desc) {
             parts.push(desc);
@@ -836,10 +1001,14 @@ fn union_type_join(
 }
 
 /// Field-tree expansion of a genuine multi-shape union: one [`FieldNode`] per
-/// distinct accepted shape, named by its own [`type_description`] (schemars
-/// drops Rust variant names for `#[serde(untagged)]` enums, so the type string
-/// is the only stable label available — e.g. `ScriptEntry` yields a `string`
-/// variant and an `object` variant carrying its `run`/`timeout`/… fields).
+/// distinct accepted shape, named by its displayed type — the `$defs` name a
+/// `$ref` member resolves through (`BrewSpec`), else its own
+/// [`type_description`] (schemars drops Rust variant names for
+/// `#[serde(untagged)]` enums, so for an inline member the type string is the
+/// only stable label — e.g. `ScriptEntry` yields a `string` variant and a
+/// `ScriptCommand` variant carrying its `run`/`timeout`/… fields, named
+/// because the variant wraps a named struct). The name IS the shape, which is
+/// why a variant row renders no type span of its own.
 /// Returns an empty vec when the union already collapses to one type via
 /// [`union_member_type`] (nothing to break down) or the schema is not a union.
 fn union_variants(
@@ -869,24 +1038,26 @@ fn union_variants(
             continue;
         }
         let resolved = resolve_ref(member, ctx);
-        let type_desc = type_description(&resolved, ctx, visited);
-        if seen.insert(type_desc.clone()) {
-            let description = schema_description(member)
+        let mut variant = FieldNode {
+            name: String::new(),
+            type_desc: type_description(&resolved, ctx, visited),
+            type_name: named_type(member, &resolved).unwrap_or_default(),
+            enum_values: Vec::new(),
+            is_variant: true,
+            required: false,
+            description: String::new(),
+            children: Vec::new(),
+            variants: Vec::new(),
+        };
+        variant.name = variant.displayed_type();
+        if seen.insert(variant.name.clone()) {
+            variant.description = schema_description(member)
                 .or_else(|| schema_description(&resolved))
                 .unwrap_or_default();
-            let children = if is_object(&resolved) {
-                object_fields(&resolved, ctx, visited)
-            } else {
-                Vec::new()
-            };
-            variants.push(FieldNode {
-                name: type_desc.clone(),
-                type_desc,
-                required: false,
-                description,
-                children,
-                variants: Vec::new(),
-            });
+            if is_object(&resolved) {
+                variant.children = object_fields(&resolved, ctx, visited);
+            }
+            variants.push(variant);
         }
         descent.leave(visited);
     }
@@ -934,6 +1105,39 @@ mod tests {
         ] {
             assert!(kinds.contains(&k), "missing {k}");
         }
+    }
+
+    /// The KRM envelope (`apiVersion`/`kind`/`metadata`/`status`) is stripped
+    /// at the document root ONLY. A nested field spelled `kind` is an
+    /// authoring field, and filtering it by name at every depth is how
+    /// `daemon.reconcile.patches[].kind` — the one required field of a patch —
+    /// vanished from `cfgd explain` and the published schema tree.
+    #[test]
+    fn a_nested_field_named_kind_survives_the_envelope_filter() {
+        let entry = KIND_REGISTRY.iter().find(|e| e.kind == "Config").unwrap();
+        let tree = entry.field_tree();
+        let mut node = tree.iter().find(|f| f.name == "daemon").expect("daemon");
+        for seg in ["reconcile", "patches"] {
+            node = node
+                .children
+                .iter()
+                .find(|f| f.name == seg)
+                .unwrap_or_else(|| panic!("{seg}"));
+        }
+        let kind = node
+            .children
+            .iter()
+            .find(|f| f.name == "kind")
+            .expect("patches[].kind is an authoring field, not the KRM envelope");
+        assert!(
+            kind.required,
+            "ReconcilePatch.kind carries no default, so it is required"
+        );
+        assert_eq!(kind.enum_values, ["Module", "Profile"]);
+        assert!(
+            !tree.iter().any(|f| is_krm_envelope_key(&f.name)),
+            "the document root still hides its envelope"
+        );
     }
 
     #[test]
@@ -1247,5 +1451,130 @@ mod tests {
             "recursive next must be cut to a leaf, got {:?}",
             inner_next.children
         );
+    }
+
+    #[test]
+    fn a_kind_derives_its_canonical_schema_once_per_process() {
+        // Deriving re-runs `schemars::schema_for!` and then walks the whole
+        // document twice to normalize it. A caller asking for both the compact
+        // and the pretty form of one kind must not pay for that twice, so the
+        // two calls hand back the SAME allocation rather than equal ones.
+        let entry = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Profile")
+            .expect("Profile is a registered kind");
+
+        let first = entry.canonical_schema_value();
+        let second = entry.canonical_schema_value();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+        // The memo is keyed by kind AND crd flag, so a different kind is a
+        // different derivation rather than the first one handed out again.
+        let other = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Config")
+            .expect("Config is a registered kind");
+        assert!(!std::sync::Arc::ptr_eq(
+            &first,
+            &other.canonical_schema_value()
+        ));
+    }
+
+    /// [`FieldNode::displayed_type`] carries the `[]` prefix over from
+    /// `type_desc` and takes the rest of the word from `type_name`, on the
+    /// premise that a named definition is never itself array-shaped. A def that
+    /// were would render `[][]Thing` or swallow the prefix, so the premise is
+    /// pinned here rather than left to the first reader who trips it.
+    #[test]
+    fn no_named_definition_in_the_registry_is_itself_array_shaped() {
+        for entry in KIND_REGISTRY {
+            let schema = entry.canonical_schema_value();
+            let Some(defs) = schema
+                .get("$defs")
+                .or_else(|| schema.get("definitions"))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            for (name, def) in defs {
+                // A union spelling (`"type": ["array", "null"]`) is as array-shaped
+                // as the bare string, so both spellings have to trip the guard.
+                let ty = def.get("type");
+                let is_array = ty.and_then(Value::as_str) == Some("array")
+                    || ty
+                        .and_then(Value::as_array)
+                        .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("array")));
+                assert!(
+                    !is_array,
+                    "{}'s $defs entry {name} is array-shaped, which breaks displayed_type's [] prefix rule",
+                    entry.kind
+                );
+            }
+        }
+    }
+
+    fn module_field(name: &str) -> FieldNode {
+        KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Module" && !e.crd)
+            .expect("Module is a registered kind")
+            .field_tree()
+            .into_iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("Module has no {name} field"))
+    }
+
+    #[test]
+    fn a_field_resolving_through_a_named_definition_displays_that_name() {
+        let files = module_field("files");
+        // The shape word is the wire value and never moves.
+        assert_eq!(files.type_desc, "[]object");
+        assert_eq!(files.type_name, "ModuleFileEntry");
+        assert_eq!(files.displayed_type(), "[]ModuleFileEntry");
+
+        let scripts = module_field("scripts");
+        assert_eq!(scripts.type_desc, "object");
+        assert_eq!(scripts.displayed_type(), "ScriptSpec");
+
+        // An inline anonymous map has no definition to name, and displays the
+        // shape word unchanged.
+        let system = module_field("system");
+        assert_eq!(system.type_name, "");
+        assert_eq!(system.displayed_type(), "object");
+    }
+
+    #[test]
+    fn a_union_mixing_a_const_with_an_enum_array_lists_every_accepted_value() {
+        // `ScriptShell` is a oneOf whose documented variants each carry one
+        // `const` while schemars collapses the undocumented ones into a single
+        // member holding a whole `enum` array. Both halves have to contribute
+        // or the field renders no accepted values at all.
+        let shell = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Profile" && !e.crd)
+            .expect("Profile is a registered kind")
+            .field_tree()
+            .into_iter()
+            .find(|f| f.name == "scripts")
+            .and_then(|f| f.children.into_iter().find(|c| c.name == "preApply"))
+            .and_then(|f| f.variants.into_iter().find(|v| v.type_desc == "object"))
+            .and_then(|v| v.children.into_iter().find(|c| c.name == "shell"))
+            .expect("Profile scripts.preApply object variant carries shell");
+        assert_eq!(
+            shell.enum_values,
+            vec!["sh", "bash", "zsh", "pwsh", "cmd", "auto"]
+        );
+    }
+
+    #[test]
+    fn every_registered_kind_points_at_a_docs_anchor() {
+        for entry in KIND_REGISTRY {
+            assert!(
+                entry.docs.starts_with("docs/") && entry.docs.contains('#'),
+                "{} has no docs anchor: {:?}",
+                entry.kind,
+                entry.docs
+            );
+        }
     }
 }

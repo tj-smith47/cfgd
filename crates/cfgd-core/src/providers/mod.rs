@@ -1,9 +1,21 @@
 // Provider traits and registry — consumed by packages/, files/, secrets/, reconciler/
 
+mod available;
+mod installed;
+mod secret_cache;
 pub mod skill;
+
+pub use secret_cache::SecretCache;
+
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use available::set_available_version_memo_ttl_override;
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use installed::set_enumeration_memo_ttl_override;
+pub use installed::{InstalledEnumerations, InstalledPackages};
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -56,6 +68,16 @@ pub struct PackageInfo {
     pub version: String,
 }
 
+/// What [`PackageManager::installed_packages_with_versions`] reports for a
+/// package whose manager cannot state a version — the trait default's answer
+/// for every manager that does not override the listing.
+///
+/// One spelling, because it is a SENTINEL two readers judge on: the planner's
+/// pinned-source gate (`known_version`) and the live `minVersion` check
+/// (`reconciler::package_version_floor`), which must both read it as "the
+/// manager did not say" rather than as a version string that failed to parse.
+pub const UNKNOWN_PACKAGE_VERSION: &str = "unknown";
+
 /// The per-run context every state-touching `PackageManager` method receives:
 /// the printer for user-facing output, plus the reconciler's already-open
 /// `StateStore` connection. Threading `state` here — instead of a manager
@@ -95,6 +117,42 @@ pub struct PackageContext<'a> {
     /// keeps its no-argument bootstrap contract while the one caller that holds
     /// a plan can bind execution to it.
     provision_via: Option<&'a str>,
+    /// What each manager reported installed, memoized for this context — see
+    /// [`PackageContext::installed_for`].
+    ///
+    /// Owned by the context on every path but one: a context is moved, never
+    /// cloned, and each lane worker mints its own through `PackageExec::cx`.
+    /// The exception is a host that OUTLIVES its contexts and rebuilds one per
+    /// unit of work — the MCP server, whose per-tool-call context would
+    /// otherwise re-enumerate every manager on every call — which owns the memo
+    /// itself and lends it through
+    /// [`PackageContext::with_shared_enumerations`]. Lending is safe because
+    /// each slot has its own lock and every entry is bounded twice: by
+    /// [`crate::command_resolution_generation`], which voids it the moment cfgd
+    /// installs, uninstalls or provisions anything, and by an age ceiling,
+    /// which voids it after 30 seconds so a package a HUMAN installed beside a
+    /// long-lived holder is not answered around. Neither bound alone is enough
+    /// for a holder that outlives one unit of work — no MCP tool call installs
+    /// anything, so on that host the generation never moves.
+    enumerations: EnumerationMemo<'a>,
+}
+
+/// Where a [`PackageContext`]'s installed-package memo lives.
+enum EnumerationMemo<'a> {
+    /// The context owns it, and it dies with the context. Every path but the
+    /// long-lived-host one.
+    Owned(installed::InstalledEnumerations),
+    /// A host that outlives this context owns it and lends it for the call.
+    Shared(&'a installed::InstalledEnumerations),
+}
+
+impl EnumerationMemo<'_> {
+    fn get(&self) -> &installed::InstalledEnumerations {
+        match self {
+            Self::Owned(memo) => memo,
+            Self::Shared(memo) => memo,
+        }
+    }
 }
 
 impl<'a> PackageContext<'a> {
@@ -109,6 +167,30 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
+            enumerations: EnumerationMemo::Owned(installed::InstalledEnumerations::default()),
+        }
+    }
+
+    /// A context that answers `installed_for` out of a memo its CALLER owns, so
+    /// a host rebuilding a context per unit of work does not re-enumerate every
+    /// manager each time. The MCP server is that host: one server serves many
+    /// tool calls, each of which needs its own short-lived context.
+    ///
+    /// Everything else about it matches [`PackageContext::new`] — notes are
+    /// discarded, no lane, no provision.
+    pub fn with_shared_enumerations(
+        printer: &'a Printer,
+        state: &'a dyn PackageStateStore,
+        enumerations: &'a installed::InstalledEnumerations,
+    ) -> Self {
+        Self {
+            printer,
+            state,
+            notes: NoteSink::discarded(),
+            caller_owns_status: false,
+            lane: None,
+            provision_via: None,
+            enumerations: EnumerationMemo::Shared(enumerations),
         }
     }
 
@@ -126,6 +208,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
+            enumerations: EnumerationMemo::Owned(installed::InstalledEnumerations::default()),
         }
     }
 
@@ -180,6 +263,68 @@ impl<'a> PackageContext<'a> {
         self
     }
 
+    /// What `manager` reports installed, enumerated at most once per context
+    /// per machine state.
+    ///
+    /// The ONE installed-state read for every surface that diffs against it —
+    /// `diff`, `status --scan`, `doctor`, `verify`, `compliance`, the planner and
+    /// the post-apply tracking GC. Each of those used to ask its manager
+    /// directly, several of them once per declared package, so a module with
+    /// five `apt` entries spawned five `dpkg-query` walks to answer one
+    /// question five times.
+    ///
+    /// An entry is stamped with [`crate::command_resolution_generation`] and
+    /// re-read whenever that has moved. The counter's two existing writers are
+    /// every path that puts a binary on the machine or takes one off it —
+    /// install, uninstall, provision, and a lifecycle script that runs an
+    /// installer of its own — which is the same event that changes what a
+    /// manager lists, so an installed-state memo needs no invalidation of its
+    /// own. It is what lets the daemon hold one context across a tick's plan,
+    /// its auto-apply and the tracking GC that follows: the GC re-enumerates
+    /// exactly when the apply changed something.
+    ///
+    /// An error is NOT memoized — a manager that could not be queried is asked
+    /// again by the next caller, which is what every call site did before.
+    ///
+    /// One enumeration means one COMMAND per manager, and for `dnf`/`yum` that
+    /// is `rpm --query --all` rather than `dnf list --installed`: the two read
+    /// the same rpm database and `%{NAME}` carries no `.arch` for
+    /// `parse_dnf_lines` to strip, so the populations and folded names are
+    /// equal and the rpm query is the cheaper of the two. Two second-order
+    /// effects follow — a failure detail on a read path now names the rpm
+    /// invocation, and a test shimming `CFGD_DNF_BIN` no longer redirects a
+    /// read path (they resolve `RPM_BIN_ENV`).
+    ///
+    /// A `PackageManager` implementation must not call this from inside its own
+    /// enumeration: the slot's lock is held across the call, so asking about
+    /// itself would deadlock.
+    pub fn installed_for(&self, manager: &dyn PackageManager) -> Result<Arc<InstalledPackages>> {
+        self.enumerations
+            .get()
+            .get_or_enumerate(manager.name(), || {
+                // Only reached on a cache miss, so a converged run that hits
+                // the memo for every manager it asks about narrates nothing —
+                // exactly the silence a fast run should have.
+                //
+                // Silent rather than `narrate`, whose failure settle assumes
+                // the `Err` reaches the CLI boundary and is rendered there.
+                // Here it does not: five callers swallow it and say so
+                // themselves (a `Warning` compliance check, a `not installed`
+                // doctor row, a package-drift row, a `tracing::warn`), so a
+                // settled `Fail` line would report the same broken manager
+                // twice — and `Fail` is the one role that survives
+                // `Verbosity::Quiet`, so it would land beside a `-o json`
+                // payload carrying the identical fact.
+                let name = manager.name();
+                self.printer
+                    .narrate_silent(format!("Enumerating {name} packages"), |_| {
+                        manager
+                            .installed_packages_with_versions(self)
+                            .map(|listed| InstalledPackages::from_listing(manager, listed))
+                    })
+            })
+    }
+
     /// Report something that is NOT this action's status line — work done on
     /// the side, a degraded fallback, the expanded command a custom manager
     /// ran.
@@ -205,6 +350,39 @@ impl<'a> PackageContext<'a> {
     }
 }
 
+/// The diagnostic for a note body that repeats its own tag, or `None` when the
+/// body is well-formed.
+///
+/// [`ActionNote::body`] composes `[{tag}] {message}` AROUND the tag, so a
+/// message opening on the tag prints the same fact twice in one row:
+/// `⚠ [npm] npm has no writable global prefix`. The tag's whole job is to say
+/// who spoke, and two of the three caveats in a settled block naming their
+/// speaker once while the third names it twice reads as though the prefix were
+/// part of the captured tool output rather than cfgd's own structure — the
+/// confusion the tag exists to remove. The twin of
+/// [`crate::reconciler::system_key_doubling_error`], which states the
+/// same rule for the other name-prefixed composition.
+///
+/// Judged on the OPENING word only: `report_abandoned_step`'s
+/// `"{method} could not install {manager}"` names the manager mid-sentence as
+/// the object of a different verb, which is information rather than a stutter.
+pub fn note_tag_doubling_error(tag: &str, message: &str) -> Option<String> {
+    fn opening(text: &str) -> String {
+        text.split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches([':', ',', '.'])
+            .to_lowercase()
+    }
+    let tag_head = opening(tag);
+    (!tag_head.is_empty() && opening(message) == tag_head).then(|| {
+        format!(
+            "note body `{message}` opens on its own tag `{tag}`; \
+             `[{tag}] {message}` prints the same fact twice"
+        )
+    })
+}
+
 /// A narration line a provider emitted while one action ran — a brew caveat, an
 /// npm warning, the unit a systemd configurator reloaded. Part of the provider
 /// contract rather than of any one provider, because the reconciler is what
@@ -224,6 +402,12 @@ pub struct ActionNote {
     /// fallback is a [`Role::Warn`]; a report of work done on the side is a
     /// [`Role::Info`].
     pub role: Role,
+    /// The note is a NEXT STEP for the reader, not a report about the run —
+    /// nothing went wrong, there is simply something left to do. It renders
+    /// through `Printer::hint`, so it wears the same `→` a hint anywhere else
+    /// in the CLI does instead of a warning glyph over a sentence that warns
+    /// about nothing.
+    pub hint: bool,
 }
 
 impl ActionNote {
@@ -233,6 +417,7 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Warn,
+            hint: false,
         }
     }
 
@@ -242,6 +427,20 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Info,
+            hint: false,
+        }
+    }
+
+    /// An untagged NEXT STEP the reader has to take once the run is over —
+    /// re-sourcing a generated env file, opening a new shell. Nothing about it
+    /// is a warning, and giving it a warning glyph is what made the closing
+    /// Caveats block read as though the apply had gone wrong.
+    pub fn next_step(message: impl Into<String>) -> Self {
+        Self {
+            tag: None,
+            message: message.into(),
+            role: Role::Info,
+            hint: true,
         }
     }
 
@@ -251,7 +450,30 @@ impl ActionNote {
             tag: None,
             message: message.into(),
             role,
+            hint: false,
         }
+    }
+
+    /// Re-tag a note with the SUBJECT of the action that produced it.
+    ///
+    /// A note's tag names the speaker, which is enough while the note renders
+    /// under the action's own line. The closing `Caveats` section has no such
+    /// line: it groups by `kind:name` OWNER, so a `profile:base` that installed
+    /// nine formulae stacked several `[brew]` bodies with nothing tying any of
+    /// them to a package — and "Bash completion has been installed to" is a body
+    /// several formulae emit. The subject already names the manager
+    /// (`brew install gum`), so this fills the one existing slot rather than
+    /// minting a second tag vocabulary.
+    ///
+    /// An UNTAGGED note is left alone: it carries no tag precisely because its
+    /// owner group already identifies it (`system:shell.defaultShell`), and a
+    /// next step is the run's closing instruction rather than a remark about
+    /// one action.
+    pub fn attributed_to(mut self, subject: &str) -> Self {
+        if self.tag.is_some() {
+            self.tag = Some(subject.to_string());
+        }
+        self
     }
 
     /// The rendered body of the note — the ONE derivation, so a tagged and an
@@ -298,8 +520,14 @@ impl NoteSink {
         })
     }
 
+    /// A note with nothing to say is refused here rather than at each
+    /// producer: a blank message renders as a lone glyph beside an owner tag
+    /// (`⚠ [npm] `), which is a caveat that tells the reader nothing and costs
+    /// them a line to work that out. Every producer — a manager's caveat
+    /// extraction, a `PackageAction::Skip` whose `reason` is empty, a
+    /// configurator's narration — routes through this one gate.
     pub fn push(&self, note: ActionNote) {
-        if !self.collecting {
+        if !self.collecting || note.message.trim().is_empty() {
             return;
         }
         self.notes
@@ -325,11 +553,26 @@ impl NoteSink {
         message: impl Into<String>,
     ) {
         let message = message.into();
+        if message.trim().is_empty() {
+            return;
+        }
+        // The AUTHORED half of the population: every body reaching here is a
+        // cfgd `format!`, so a doubling is a wording defect rather than a
+        // tool's own choice of words. The captured half is held one layer out,
+        // by `npm_warn_parts` / `strip_caveat_self_tag`, and is deliberately
+        // not asserted on — cfgd does not panic over somebody else's string.
+        debug_assert!(
+            tag.is_none_or(|t| note_tag_doubling_error(t, &message).is_none()),
+            "{}",
+            tag.and_then(|t| note_tag_doubling_error(t, &message))
+                .unwrap_or_default()
+        );
         if self.collecting {
             self.push(ActionNote {
                 tag: tag.map(str::to_string),
                 message,
                 role,
+                hint: false,
             });
         } else {
             // Untagged once it settles: a standalone line has no action line
@@ -344,6 +587,21 @@ impl NoteSink {
         self.report_tagged(printer, role, None, message);
     }
 
+    /// The same routing for a NEXT STEP — [`ActionNote::next_step`] under a
+    /// collecting sink, a `Printer::hint` standalone — so an instruction never
+    /// goes out through [`report`](Self::report) wearing a report's glyph.
+    pub fn next_step(&self, printer: &Printer, message: impl Into<String>) {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return;
+        }
+        if self.collecting {
+            self.push(ActionNote::next_step(message));
+        } else {
+            printer.hint(message);
+        }
+    }
+
     /// Drain — called by the reconciler once per action, after its status.
     pub fn take(&self) -> Vec<ActionNote> {
         std::mem::take(&mut *self.notes.lock().unwrap_or_else(|e| e.into_inner()))
@@ -356,7 +614,7 @@ impl NoteSink {
 ///
 /// A manager that cannot be provisioned at all — it ships with the OS (`winget`),
 /// it is a sub-manager of one that does (`brew-tap`), or nothing on this host can
-/// install it — answers [`PackageManager::bootstrap_plan`] with `None`. `Some` is
+/// install it — answers [`PackageManagerExt::bootstrap_plan`] with `None`. `Some` is
 /// the plan this run would carry out, resolved against what is available NOW: two
 /// hosts with different system managers get different methods for the same
 /// manager, which is what makes the plan a plan rather than a description.
@@ -419,9 +677,33 @@ pub trait PackageManager: Send + Sync {
     /// The provisioning plan for this host, or `None` when this manager cannot
     /// be provisioned at all. Implementations resolve the cascade the same way
     /// `bootstrap` does, so the plan names what will actually run.
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
+    ///
+    /// `delivered` answers whether a manager will be on the machine by the
+    /// time this plan runs — because it is there now, or because the run being
+    /// planned provisions it first. A cascade that probes a mediator (`brew`)
+    /// asks `delivered` BEFORE the host: the planner prices a plan that
+    /// installs brew two rows up, and a probe of the host alone answered "no
+    /// brew" and sent npm through 534 apt packages. The plan-time question is
+    /// "will it be there"; `bootstrap` asks the execute-time one, "is it there",
+    /// against a host the provision ahead of it has already changed.
+    /// [`PackageManagerExt::bootstrap_plan`] is the host-only view.
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan>;
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
+
+    /// The version this manager's own binary reports, read off the machine
+    /// NOW, or `None` when it cannot be asked (absent, no version flag, an
+    /// unparseable banner).
+    ///
+    /// The fact a provision PRODUCES that its subject cannot already state:
+    /// `provision brew via homebrew installer` names the manager and the
+    /// method, so the only thing left for the row's detail is what landed —
+    /// `— 4.6.3`. Read by the executor after its post-install verification,
+    /// the way the package arm re-reads its count; never at plan time, which
+    /// has nothing to read yet.
+    fn tool_version(&self) -> Option<String> {
+        None
+    }
 
     /// The packages `via` installs to deliver THIS manager, when this manager's
     /// bootstrap through `via` is an ordinary package install.
@@ -472,6 +754,19 @@ pub trait PackageManager: Send + Sync {
         false
     }
 
+    /// Whether this manager's "packages" are package SOURCES for its family —
+    /// repositories the family's other managers then resolve from (`brew-tap`,
+    /// whose entries are taps a `brew` formula may only exist in) — rather
+    /// than packages themselves.
+    ///
+    /// Every ordering surface in the `Packages` phase puts such a manager's
+    /// installs ahead of its siblings', so a formula delivered by a tap being
+    /// added in the same run resolves instead of failing the install that
+    /// needed it.
+    fn registers_family_sources(&self) -> bool {
+        false
+    }
+
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
     fn available_version(&self, package: &str) -> Result<Option<String>>;
@@ -482,8 +777,65 @@ pub trait PackageManager: Send + Sync {
     /// PORTREVISION (`_N`) suffixes — override this to defer to the manager's
     /// own version comparator so the floor is evaluated correctly.
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
-        crate::version_satisfies(available, &format!(">={min_version}"))
+        crate::version_meets_floor(available, min_version)
     }
+
+    /// The fallible twin of [`version_meets_minimum`](Self::version_meets_minimum),
+    /// for a comparator that genuinely shells out (FreeBSD `pkg version -t`)
+    /// and can fail to spawn. A spawn failure is a check that could not RUN,
+    /// never a verdict that the floor was missed — the default answers `Ok`
+    /// unconditionally because every other manager's comparator is pure.
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        Ok(self.version_meets_minimum(available, min_version))
+    }
+
+    /// Whether [`version_meets_minimum`](Self::version_meets_minimum) can judge
+    /// this version at all. A version scheme is the manager's, so only the
+    /// manager can say that a string it listed carries no comparable version —
+    /// a date stamp, a git description. The floor pass reports such a package
+    /// as a check that could not RUN
+    /// ([`VersionFloor::Unreadable`](crate::reconciler::VersionFloor)), never as
+    /// a floor that was missed, because a `false` from a comparator that could
+    /// not parse its input is not a verdict.
+    fn version_comparable(&self, version: &str) -> bool {
+        crate::parse_loose_version(version).is_some()
+    }
+
+    /// The symmetric twin of [`version_comparable`](Self::version_comparable),
+    /// asked of the DECLARED floor rather than of the installed copy.
+    ///
+    /// A `minVersion` is authored by hand, so it arrives in shapes no
+    /// comparator can read — `>=1.2`, `1.2.x`, a typo. Guarding only the
+    /// installed side made such a floor a permanent `Below`: the comparator
+    /// answered `false` because it could not parse its own argument, and every
+    /// scan reported drift no apply could ever heal. A floor nothing can
+    /// compare against is a check that could not RUN.
+    ///
+    /// Asked of the MANAGER rather than of a blanket parse, because a family
+    /// whose comparator reads packaging fields reads them on this side too: an
+    /// apt floor of `1:2.30` and a cask floor of `1.2.3,4567` are both
+    /// genuinely comparable, and a blanket refusal would turn two working
+    /// declarations into check errors. The `v` prefix every comparator's parse
+    /// already tolerates needs no strip here.
+    fn floor_comparable(&self, floor: &str) -> bool {
+        self.version_comparable(floor)
+    }
+
+    /// The verb this manager raises an already-held package with. For a
+    /// family whose install verb no-ops on a held package it is the distinct
+    /// raise (`upgrade`, `update`, `refresh`); for a family whose install
+    /// verb already replaces an older copy (`cargo install`, `npm install -g`,
+    /// `go install`, `apt-get install`) it is that install verb. `None` only
+    /// for a manager that cannot raise a package in place at all, which turns
+    /// a below-floor verdict into a check error rather than drift no apply
+    /// could heal. Deliberately no default: a manager inheriting `None`
+    /// silently would report every below-floor package it holds as a false
+    /// "has no upgrade verb" error and elide the raise from the plan.
+    fn upgrade_verb(&self) -> Option<&'static str>;
 
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
@@ -520,7 +872,8 @@ pub trait PackageManager: Send + Sync {
     }
 
     /// List all installed packages with their installed versions.
-    /// Default implementation wraps `installed_packages()` with version "unknown".
+    /// Default implementation wraps `installed_packages()` with
+    /// [`UNKNOWN_PACKAGE_VERSION`].
     fn installed_packages_with_versions(
         &self,
         cx: &PackageContext<'_>,
@@ -530,7 +883,7 @@ pub trait PackageManager: Send + Sync {
             .into_iter()
             .map(|name| PackageInfo {
                 name,
-                version: "unknown".into(),
+                version: UNKNOWN_PACKAGE_VERSION.into(),
             })
             .collect())
     }
@@ -581,22 +934,50 @@ pub trait PackageManager: Send + Sync {
     }
 }
 
-/// The question-only view of [`PackageManager::bootstrap_plan`], for call sites
+/// The question-only view of [`PackageManagerExt::bootstrap_plan`], for call sites
 /// that ask whether a manager can be provisioned without caring what that takes.
 ///
 /// Blanket-implemented over every `PackageManager` — including `dyn
 /// PackageManager` — rather than living on the trait as a defaulted method, so no
 /// implementation can answer this question differently from its own plan. A
 /// manager that returned `true` here while planning `None` would be claimed as a
-/// candidate by [`crate::modules::resolve`] and then never provisioned.
+/// candidate by [`crate::modules::resolve_package`] and then never provisioned.
 pub trait PackageManagerExt {
     fn can_bootstrap(&self) -> bool;
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
     fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan>;
+    fn available_version_memoized(&self, package: &str) -> Result<Option<String>>;
 }
 
 impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     fn can_bootstrap(&self) -> bool {
         self.feasible_bootstrap_plan().is_some()
+    }
+
+    /// [`PackageManager::bootstrap_plan_given`] against the host as it stands:
+    /// nothing delivered but what is already there. For every caller outside a
+    /// plan being built (`doctor`, the selector vocabulary, a recorded node's
+    /// PATH directories).
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        self.bootstrap_plan_given(&|_| false)
+    }
+
+    /// [`PackageManager::available_version`], asked at most once per
+    /// `(manager, package)` while the answer stands.
+    ///
+    /// Every version query in a run goes through here rather than through the
+    /// trait method directly. The query is a subprocess and for `npm`, `cargo`
+    /// and `pipx` a network round-trip, while the same package is asked about
+    /// once per module that declares it, once per candidate manager, and again
+    /// by any display fill — so the un-memoized call is a per-package cost paid
+    /// several times over for one answer that cannot have changed in between.
+    ///
+    /// Answers are keyed by the REGISTERED manager name, never
+    /// [`crate::manager_family`]: `brew` and `brew-cask` offer different
+    /// packages under one binary, so folding them would answer a question about
+    /// a cask with an answer about a formula.
+    fn available_version_memoized(&self, package: &str) -> Result<Option<String>> {
+        available::get_or_query(self.name(), package, || self.available_version(package))
     }
 
     /// The plan this host can actually carry out: a cascade exists AND every
@@ -684,11 +1065,11 @@ pub struct SystemDrift {
 /// rendered by one mechanism, so there is exactly one place that decides how a
 /// note attaches to the action that produced it.
 ///
-/// Both fields are PRIVATE, and that is the whole enforcement of this task's
-/// invariant: the reconciler settles one `system:<name>.<key>` line per call, so
-/// a configurator reaching a `Printer` could put a second settled line beside it
-/// and step outside the phase tree. The two things a configurator legitimately
-/// needs from a printer — narrating ([`report`](Self::report)) and opening a
+/// Both fields are PRIVATE, and that is the whole enforcement of the
+/// invariant: the reconciler settles one `system:<name>.<key>` line per call,
+/// so a configurator reaching a `Printer` could put a second settled line
+/// beside it and step outside the phase tree. The two things a configurator
+/// legitimately needs from a printer — narrating ([`report`](Self::report)) and opening a
 /// command window that does NOT settle ([`run_silent`](Self::run_silent)) — are
 /// exposed as named methods, so the bypass is not expressible rather than merely
 /// discouraged. Never add a `printer()` accessor: it re-opens the hole for every
@@ -727,6 +1108,15 @@ impl<'a> SystemContext<'a> {
         self.notes.report(self.printer, role, message);
     }
 
+    /// A NEXT STEP for the reader — source a file, open a new shell — which
+    /// is an instruction, never a report, and renders as a hint. The role of
+    /// every note a configurator emits is settled on one axis: must the reader
+    /// act? A caveat or a degraded fallback is [`Role::Warn`]; a report of
+    /// work done on the side is [`Role::Info`]; an instruction is this.
+    pub fn next_step(&self, message: impl Into<String>) {
+        self.notes.next_step(self.printer, message);
+    }
+
     /// Run a command with a live output window that collapses WITHOUT settling a
     /// line.
     ///
@@ -739,6 +1129,14 @@ impl<'a> SystemContext<'a> {
         label: impl Into<String>,
     ) -> std::io::Result<crate::output::CommandOutput> {
         self.printer.run_silent(cmd, label)
+    }
+
+    /// The theme's arrow glyph, for a note describing an `old {arrow} new`
+    /// relationship — a copy's source and destination, a rename. Narrower
+    /// than the banned `printer()` accessor: it hands back one glyph, not
+    /// the bypass that method would re-open.
+    pub fn arrow(&self) -> &str {
+        self.printer.arrow()
     }
 }
 
@@ -860,6 +1258,15 @@ pub enum FileAction {
 /// matches the rendered source content (presence AND bytes), plus the
 /// human-readable `expected`/`actual` descriptions used to build a drift report.
 ///
+/// The `expected` a file finding carries when the DESIRED content could not be
+/// determined at all (the managed source is not on disk).
+///
+/// A wire-ish literal shared with its one producer because a reader has to tell
+/// that finding apart from a content comparison and the type carries only
+/// strings: `mark_unmanaged_drift` re-words a content finding and must leave
+/// this one saying why it could not look.
+pub const SOURCE_MISSING_EXPECTED: &str = "managed source present";
+
 /// `target` is the display path of the managed target. `matches` is `true` only
 /// when the target exists and its bytes equal the rendered source; a missing
 /// source or missing target yields `matches: false` with `actual` describing the
@@ -870,6 +1277,10 @@ pub struct FileDriftResult {
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+    /// Whether the target holds a file cfgd never wrote. Additive: a converged
+    /// or cfgd-owned target reads `false`, exactly as every reader saw before
+    /// the field existed.
+    pub unmanaged: bool,
 }
 
 /// Serialized in the same shape as a `VerifyResult`: `resourceType` is the
@@ -885,12 +1296,13 @@ impl serde::Serialize for FileDriftResult {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("FileDriftResult", 5)?;
+        let mut state = serializer.serialize_struct("FileDriftResult", 6)?;
         state.serialize_field("resourceType", "file")?;
         state.serialize_field("resourceId", &self.target)?;
         state.serialize_field("matches", &self.matches)?;
         state.serialize_field("expected", &self.expected)?;
         state.serialize_field("actual", &self.actual)?;
+        state.serialize_field("unmanaged", &self.unmanaged)?;
         state.end()
     }
 }
@@ -908,12 +1320,54 @@ pub trait FileManager: Send + Sync {
     /// [`FileDriftResult`]. A missing source or missing target yields a
     /// non-matching result (`matches: false`) rather than an error, so a single
     /// unresolvable entry cannot mask drift elsewhere.
+    ///
+    /// `strategy` is the file's per-entry deployment strategy override (`None`
+    /// defers to whatever default the implementor resolves) — required so a
+    /// directory-shaped source/target pair is judged the right way: link
+    /// identity for Symlink/Hardlink, a recursive content comparison for
+    /// Copy/Template. Without it, a directory deployed by `strategy: copy`
+    /// (the usual Windows choice when Developer Mode is off) has no symlink and
+    /// no shared inode to find, so a caller that always checked link identity
+    /// reported it permanently drifted on a machine that had just converged.
     fn content_drift(
         &self,
         source: &Path,
         target: &Path,
         origin: Option<&str>,
+        strategy: Option<crate::config::FileStrategy>,
     ) -> Result<FileDriftResult>;
+
+    /// What each LINK-DEPLOYED managed entry currently holds.
+    ///
+    /// One row per `spec.files.managed` entry the profile deploys by
+    /// Symlink/Hardlink whose target is converged (the link really names the
+    /// managed source). Convergence for those
+    /// two strategies is link IDENTITY, so an edit made through the link is not
+    /// drift and plans no action — which is exactly the case that leaves cfgd's
+    /// recorded content hash describing bytes the deployed file no longer holds.
+    ///
+    /// The hash is taken over the SOURCE bytes because for a link the deployed
+    /// file IS the source file; a Copy/Template entry is not reported here, its
+    /// target being a separate copy whose divergence from the source is real
+    /// drift the plan already carries.
+    fn link_deployed_content_hashes(
+        &self,
+        profile: &crate::config::MergedProfile,
+    ) -> Result<Vec<LinkDeployedRow>>;
+}
+
+/// One converged link entry as the recorded-hash refresh sees it: the
+/// `~`-expanded target its `managed_resources` row is keyed on, the digest of
+/// what the link deploys ([`crate::reconciler::link_deployed_digest`]), and
+/// the per-file `<path>:<sha256>` breakdown behind that digest — one entry
+/// for a file, one per regular file for a directory link — which is what
+/// lets the refresh count the files that MOVED rather than the files the
+/// row covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkDeployedRow {
+    pub target: PathBuf,
+    pub hash: String,
+    pub file_hashes: Vec<String>,
 }
 
 // --- PackageAction ---
@@ -982,6 +1436,9 @@ pub enum SecretAction {
         provider: String,
         reference: String,
         target: PathBuf,
+        /// `spec.secrets[].template`: rendered around the resolved value
+        /// before it is written (see [`render_secret_template`]).
+        template: Option<String>,
         origin: String,
     },
     /// Resolve a secret and inject its value as environment variables into the
@@ -990,6 +1447,9 @@ pub enum SecretAction {
         provider: String,
         reference: String,
         envs: Vec<String>,
+        /// `spec.secrets[].template`: rendered around the resolved value
+        /// before it is exported (see [`render_secret_template`]).
+        template: Option<String>,
         origin: String,
     },
     Skip {
@@ -1002,12 +1462,129 @@ pub enum SecretAction {
 // --- ProviderRegistry ---
 
 pub struct ProviderRegistry {
-    pub package_managers: Vec<Box<dyn PackageManager>>,
-    pub system_configurators: Vec<Box<dyn SystemConfigurator>>,
+    /// Private because registering a provider has to retire the availability
+    /// sweep taken before it — see [`ProviderRegistry::add_package_manager`].
+    /// Read through [`ProviderRegistry::package_managers`].
+    package_managers: Vec<Box<dyn PackageManager>>,
+    system_configurators: Vec<Box<dyn SystemConfigurator>>,
     pub file_manager: Option<Box<dyn FileManager>>,
     pub secret_backend: Option<Box<dyn SecretBackend>>,
     pub secret_providers: Vec<Box<dyn SecretProvider>>,
     pub default_file_strategy: crate::config::FileStrategy,
+    /// Which registered providers answered `is_available()` yes, and what that
+    /// answer was keyed to. See [`AvailabilityMemo`].
+    available_managers: std::sync::Mutex<Option<AvailabilityMemo>>,
+    available_configurators: std::sync::Mutex<Option<AvailabilityMemo>>,
+}
+
+/// One availability sweep's result, plus everything that can invalidate it.
+///
+/// `is_available()` is a `PATH` probe for nearly every provider, and the sweep
+/// runs it over the whole registry — per system action, twice inside
+/// `plan_system`, three times per compliance snapshot, once per daemon tick.
+/// The result is reusable exactly as long as no install has happened since —
+/// the shared [`crate::command_resolution_generation`] — and no longer than
+/// [`AVAILABILITY_MEMO_TTL`]. Registration is the other thing that would
+/// invalidate it, and cannot be observed here: the provider vectors are private
+/// and every mutator clears the memo outright, so a sweep never has to be judged
+/// against a registry that has changed shape under it.
+struct AvailabilityMemo {
+    generation: u64,
+    computed: std::time::Instant,
+    available: Vec<usize>,
+}
+
+/// How long a sweep stands before the registry is probed again.
+///
+/// The generation counter covers every install, uninstall, provision and
+/// lifecycle script cfgd performs itself, and for a registry that dies with its
+/// run that is the whole space of events. It is NOT the whole space for a
+/// registry a DAEMON holds across ticks: nothing the daemon does moves the
+/// generation while it is merely watching, so a manager a human installed in
+/// another terminal would be answered around for as long as the daemon lives.
+/// Thirty seconds, matching [`crate::command_path`]'s memo, the installed
+/// enumeration memo and the available-version memo, for the same reason — see
+/// the 30-second convention in `shared-utils.md`.
+const AVAILABILITY_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Millisecond override of [`AVAILABILITY_MEMO_TTL`], or [`u64::MAX`] for "no
+/// override", so a test never depends on wall time.
+#[cfg(any(test, feature = "test-helpers"))]
+static AVAILABILITY_MEMO_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long a sweep stands, honouring the test override.
+fn availability_memo_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = AVAILABILITY_MEMO_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    AVAILABILITY_MEMO_TTL
+}
+
+/// Pin the availability memo's ceiling, or hand back the default with `None`.
+/// Returns what was pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::AvailabilityMemoTtlGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_availability_memo_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = AVAILABILITY_MEMO_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
+}
+
+impl AvailabilityMemo {
+    /// The indices, or `None` when the sweep behind them can no longer be
+    /// trusted.
+    fn indices(&self, generation: u64) -> Option<&[usize]> {
+        (self.generation == generation && self.computed.elapsed() < availability_memo_ttl())
+            .then_some(&self.available)
+    }
+}
+
+/// Sweep `providers` for availability, or reuse `memo` when nothing that could
+/// change the answer has happened since it was taken.
+fn memoized_available<T: ?Sized>(
+    providers: &[Box<T>],
+    memo: &std::sync::Mutex<Option<AvailabilityMemo>>,
+    is_available: impl Fn(&T) -> bool,
+) -> Vec<usize> {
+    let generation = crate::command_resolution_generation();
+    // A poisoned lock still holds a usable sweep; and re-sweeping is always
+    // correct, so neither arm here can be wrong about availability.
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.indices(generation))
+        .map(<[usize]>::to_vec)
+    {
+        return hit;
+    }
+    // The sweep runs with NO lock held: a provider's `is_available()` may probe
+    // the filesystem or take the PATH read guard, and holding a lock another
+    // thread wants across that is how a deadlock is built. Two threads racing
+    // here duplicate one sweep and agree on its result, which costs a walk and
+    // risks nothing.
+    let available: Vec<usize> = providers
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| is_available(p.as_ref()))
+        .map(|(i, _)| i)
+        .collect();
+    // Stamped with the generation read BEFORE the sweep, so a sweep the
+    // generation outran is rejected by the next lookup rather than trusted.
+    *memo.lock().unwrap_or_else(|e| e.into_inner()) = Some(AvailabilityMemo {
+        generation,
+        computed: std::time::Instant::now(),
+        available: available.clone(),
+    });
+    available
 }
 
 impl ProviderRegistry {
@@ -1019,23 +1596,113 @@ impl ProviderRegistry {
             secret_backend: None,
             secret_providers: Vec::new(),
             default_file_strategy: crate::config::FileStrategy::Symlink,
+            available_managers: std::sync::Mutex::new(None),
+            available_configurators: std::sync::Mutex::new(None),
         }
     }
 
-    pub fn available_package_managers(&self) -> Vec<&dyn PackageManager> {
+    /// Every registered package manager, available or not.
+    pub fn package_managers(&self) -> &[Box<dyn PackageManager>] {
+        &self.package_managers
+    }
+
+    /// Every registered package manager keyed by its registered name — the
+    /// shape [`crate::modules::resolve_package`] and its siblings take.
+    ///
+    /// The ONE construction of that map. Four crates' worth of call sites built
+    /// the same `name → &dyn` collect by hand, including two inside the daemon
+    /// alone, and a copy that reached for [`crate::manager_family`] instead of
+    /// the registered name would silently answer a `brew-cask` question with
+    /// `brew`'s managers.
+    pub fn manager_map(&self) -> std::collections::HashMap<String, &dyn PackageManager> {
         self.package_managers
             .iter()
-            .filter(|pm| pm.is_available())
-            .map(|pm| pm.as_ref())
+            .map(|m| (m.name().to_string(), m.as_ref()))
             .collect()
     }
 
+    /// Every registered system configurator, available or not.
+    pub fn system_configurators(&self) -> &[Box<dyn SystemConfigurator>] {
+        &self.system_configurators
+    }
+
+    /// Register one package manager, retiring the availability sweep taken
+    /// before it.
+    ///
+    /// Registration is the one event besides an install that changes what a
+    /// sweep should answer, and it is why the vector behind it is private: a
+    /// caller that could push directly would leave a sweep standing that
+    /// describes a registry it no longer matches.
+    pub fn add_package_manager(&mut self, manager: Box<dyn PackageManager>) {
+        self.package_managers.push(manager);
+        self.clear_manager_availability();
+    }
+
+    /// Register several package managers, retiring the sweep once.
+    pub fn extend_package_managers(
+        &mut self,
+        managers: impl IntoIterator<Item = Box<dyn PackageManager>>,
+    ) {
+        self.package_managers.extend(managers);
+        self.clear_manager_availability();
+    }
+
+    /// Replace the registered package managers wholesale.
+    pub fn set_package_managers(&mut self, managers: Vec<Box<dyn PackageManager>>) {
+        self.package_managers = managers;
+        self.clear_manager_availability();
+    }
+
+    /// Register one system configurator, retiring the availability sweep taken
+    /// before it.
+    pub fn add_system_configurator(&mut self, configurator: Box<dyn SystemConfigurator>) {
+        self.system_configurators.push(configurator);
+        self.clear_configurator_availability();
+    }
+
+    /// Register several system configurators, retiring the sweep once.
+    pub fn extend_system_configurators(
+        &mut self,
+        configurators: impl IntoIterator<Item = Box<dyn SystemConfigurator>>,
+    ) {
+        self.system_configurators.extend(configurators);
+        self.clear_configurator_availability();
+    }
+
+    fn clear_manager_availability(&mut self) {
+        // `&mut self` is the whole synchronisation: no other reference to this
+        // registry can exist, so the lock cannot be contended.
+        *self
+            .available_managers
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn clear_configurator_availability(&mut self) {
+        *self
+            .available_configurators
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub fn available_package_managers(&self) -> Vec<&dyn PackageManager> {
+        memoized_available(&self.package_managers, &self.available_managers, |pm| {
+            pm.is_available()
+        })
+        .into_iter()
+        .filter_map(|i| self.package_managers.get(i).map(Box::as_ref))
+        .collect()
+    }
+
     pub fn available_system_configurators(&self) -> Vec<&dyn SystemConfigurator> {
-        self.system_configurators
-            .iter()
-            .filter(|sc| sc.is_available())
-            .map(|sc| sc.as_ref())
-            .collect()
+        memoized_available(
+            &self.system_configurators,
+            &self.available_configurators,
+            |sc| sc.is_available(),
+        )
+        .into_iter()
+        .filter_map(|i| self.system_configurators.get(i).map(Box::as_ref))
+        .collect()
     }
 
     /// The set of registered (config-present) package-manager names — used to
@@ -1063,26 +1730,49 @@ impl Default for ProviderRegistry {
     }
 }
 
+/// The placeholder a `spec.secrets[].template` carries where the resolved
+/// value goes. Distinct from the file-content `${secret:<ref>}` syntax, which
+/// names a reference; this one stands for the value of the entry it is on.
+pub const SECRET_TEMPLATE_PLACEHOLDER: &str = "${secret:value}";
+
+/// Render `spec.secrets[].template` around a resolved value: every
+/// [`SECRET_TEMPLATE_PLACEHOLDER`] in `template` is replaced by `value`.
+/// Nothing else in the template is interpreted, so a `$HOME` or a `${other}`
+/// in it reaches the target byte-for-byte.
+pub fn render_secret_template(template: &str, value: &str) -> String {
+    template.replace(SECRET_TEMPLATE_PLACEHOLDER, value)
+}
+
+/// Every `spec.secrets[].source` scheme cfgd accepts, paired with the provider
+/// it selects. A provider may answer to more than one scheme: the long form
+/// names the provider, the short form is the spelling its own CLI already uses
+/// (`op://` is what `op read` takes, `bw://` mirrors it for Bitwarden), so a
+/// reference copied out of 1Password's UI works unchanged. Schemes must stay
+/// distinct from every real URI scheme cfgd reads elsewhere (`file://`,
+/// `https://`, `ssh://`, `git://`).
+pub const SECRET_REFERENCE_SCHEMES: &[(&str, &str)] = &[
+    ("1password://", "1password"),
+    ("op://", "1password"),
+    ("bitwarden://", "bitwarden"),
+    ("bw://", "bitwarden"),
+    ("lastpass://", "lastpass"),
+    ("lpass://", "lastpass"),
+    ("lp://", "lastpass"),
+    ("vault://", "vault"),
+];
+
 /// Parse a secret reference string to determine the provider.
-/// Formats:
-///   - `1password://Vault/Item/Field` → 1Password
-///   - `bitwarden://folder/item` → Bitwarden
-///   - `lastpass://folder/item/field` → LastPass
+/// Formats (see [`SECRET_REFERENCE_SCHEMES`]):
+///   - `1password://Vault/Item/Field` or `op://Vault/Item/Field` → 1Password
+///   - `bitwarden://folder/item` or `bw://folder/item` → Bitwarden
+///   - `lastpass://folder/item/field`, `lpass://…` or `lp://…` → LastPass
 ///   - `vault://secret/path#field` → HashiCorp Vault
 ///
 /// Returns (provider_name, reference_path).
 pub fn parse_secret_reference(source: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = source.strip_prefix("1password://") {
-        Some(("1password", rest))
-    } else if let Some(rest) = source.strip_prefix("bitwarden://") {
-        Some(("bitwarden", rest))
-    } else if let Some(rest) = source.strip_prefix("lastpass://") {
-        Some(("lastpass", rest))
-    } else if let Some(rest) = source.strip_prefix("vault://") {
-        Some(("vault", rest))
-    } else {
-        None
-    }
+    SECRET_REFERENCE_SCHEMES
+        .iter()
+        .find_map(|(scheme, provider)| source.strip_prefix(scheme).map(|rest| (*provider, rest)))
 }
 
 /// Configurable mock for `PackageManager`. Available to all test modules within cfgd-core.
@@ -1092,6 +1782,11 @@ pub(crate) struct StubPackageManager {
     pub available: bool,
     pub installed: HashSet<String>,
     pub versions: std::collections::HashMap<String, String>,
+    /// Versions the machine HOLDS, keyed by installed name — the answer to a
+    /// different question than `versions`, which is what the manager OFFERS.
+    /// Empty means the trait's default listing (every name at `"unknown"`),
+    /// which no declared floor can clear.
+    pub installed_versions: std::collections::HashMap<String, String>,
     pub bootstrap_capable: bool,
     /// The tools the stub's bootstrap plan shells out to. Empty by default, so
     /// a `bootstrappable()` stub describes a cascade every host can carry out.
@@ -1104,6 +1799,25 @@ pub(crate) struct StubPackageManager {
     /// reports a different letter case than the desired name. Lets tests guard
     /// the identity-routed comparison sites (verify, compliance, diff).
     pub fold_case: bool,
+    /// How many times this stub was asked what it OFFERS. The observable behind
+    /// every "asked once per (manager, package), and never on a read path"
+    /// claim — a count, never a duration — and shared, so a stub already handed
+    /// out as a `&dyn PackageManager` can still be read back for it.
+    version_queries: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many times this stub was asked what it HOLDS, failing reads
+    /// included. The observable behind "one enumeration per manager per run":
+    /// `installed_for` memoizes successes only, so a caller retrying a failed
+    /// read per package shows up here as a count, never a duration.
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
+    /// Whether `version_meets_minimum_checked` fails instead of answering —
+    /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
+    /// out and can fail to spawn.
+    comparisons_fail: bool,
+    /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
+    /// a package in place at all (`brew-tap`, a scripted installer). `false`
+    /// by default: every manager that lists versions carries a raise verb,
+    /// distinct or its own install.
+    no_upgrade_verb: bool,
 }
 
 #[cfg(test)]
@@ -1114,11 +1828,45 @@ impl StubPackageManager {
             available: true,
             installed: HashSet::new(),
             versions: std::collections::HashMap::new(),
+            installed_versions: std::collections::HashMap::new(),
             bootstrap_capable: false,
             bootstrap_requires: Vec::new(),
             installed_error: None,
             fold_case: false,
+            version_queries: Arc::default(),
+            enumerations: Arc::default(),
+            comparisons_fail: false,
+            no_upgrade_verb: false,
         }
+    }
+
+    /// The `pkg version -t` shape: the version comparator fails to spawn
+    /// rather than answering, so a caller judging a floor gets a check error
+    /// instead of a `bool`.
+    pub fn failing_version_comparisons(mut self) -> Self {
+        self.comparisons_fail = true;
+        self
+    }
+
+    /// A manager that cannot raise an already-held package in place at all —
+    /// `upgrade_verb()` answers `None`, so a below-floor package becomes a
+    /// check error rather than a planned raise.
+    pub fn without_upgrade_verb(mut self) -> Self {
+        self.no_upgrade_verb = true;
+        self
+    }
+
+    /// The shared counter of this stub's version queries, taken BEFORE the stub
+    /// is handed to a resolver.
+    pub fn version_query_counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.version_queries)
+    }
+
+    /// The shared counter of this stub's enumerations, taken BEFORE the stub
+    /// is handed to a resolver. Failed reads count too — they are the ones a
+    /// caller can accidentally retry per package, since only successes memoize.
+    pub fn enumeration_counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.enumerations)
     }
 
     /// Mark this stub as a case-insensitive manager so `package_identity`
@@ -1154,6 +1902,15 @@ impl StubPackageManager {
         self
     }
 
+    /// Report a package as installed AT a version, so a `minVersion` floor has
+    /// something to be judged against.
+    pub fn with_installed_at(mut self, pkg: &str, ver: &str) -> Self {
+        self.installed.insert(pkg.to_string());
+        self.installed_versions
+            .insert(pkg.to_string(), ver.to_string());
+        self
+    }
+
     pub fn with_installed_error(mut self, message: &str) -> Self {
         self.installed_error = Some(message.to_string());
         self
@@ -1173,7 +1930,7 @@ impl PackageManager for StubPackageManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         self.bootstrap_capable
             .then(|| BootstrapPlan::new("stub").requiring(self.bootstrap_requires.clone()))
     }
@@ -1181,12 +1938,31 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(ref msg) = self.installed_error {
             return Err(crate::errors::CfgdError::Io(std::io::Error::other(
                 msg.clone(),
             )));
         }
         Ok(self.installed.clone())
+    }
+    fn installed_packages_with_versions(
+        &self,
+        cx: &PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
+        Ok(self
+            .installed_packages(cx)?
+            .into_iter()
+            .map(|name| PackageInfo {
+                version: self
+                    .installed_versions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| UNKNOWN_PACKAGE_VERSION.into()),
+                name,
+            })
+            .collect())
     }
     fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -1195,6 +1971,8 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn available_version(&self, package: &str) -> Result<Option<String>> {
+        self.version_queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.versions.get(package).cloned())
     }
     fn package_identity(&self, entry: &str) -> String {
@@ -1203,6 +1981,19 @@ impl PackageManager for StubPackageManager {
         } else {
             entry.to_string()
         }
+    }
+    fn version_meets_minimum_checked(
+        &self,
+        available: &str,
+        min_version: &str,
+    ) -> std::result::Result<bool, String> {
+        if self.comparisons_fail {
+            return Err("stub comparator failed to spawn".to_string());
+        }
+        Ok(self.version_meets_minimum(available, min_version))
+    }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        (!self.no_upgrade_verb).then_some("upgrade")
     }
 }
 
@@ -1221,15 +2012,537 @@ mod tests {
         PackageContext::new(printer, state)
     }
 
+    /// A manager that counts how often it is asked whether it is available and
+    /// reads the answer from a flag the test owns — the shape of a manager a
+    /// bootstrap puts on the machine while the run is still going.
+    struct CountingManager {
+        mgr_name: String,
+        available: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingManager {
+        fn new(
+            name: &str,
+            available: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    mgr_name: name.to_string(),
+                    available: std::sync::Arc::clone(available),
+                    asked: std::sync::Arc::clone(&asked),
+                },
+                asked,
+            )
+        }
+    }
+
+    impl PackageManager for CountingManager {
+        fn name(&self) -> &str {
+            &self.mgr_name
+        }
+        fn upgrade_verb(&self) -> Option<&'static str> {
+            Some("upgrade")
+        }
+        fn is_available(&self) -> bool {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.available.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+            None
+        }
+        fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+            Ok(HashSet::new())
+        }
+        fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn asked_count(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A manager that counts how often it was asked to enumerate.
+    struct EnumeratingManager {
+        mgr_name: String,
+        installed: HashSet<String>,
+        enumerations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl EnumeratingManager {
+        fn new(name: &str, installed: &[&str]) -> Self {
+            Self {
+                mgr_name: name.to_string(),
+                installed: installed.iter().map(|p| (*p).to_string()).collect(),
+                enumerations: std::sync::Arc::default(),
+            }
+        }
+
+        fn counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+            std::sync::Arc::clone(&self.enumerations)
+        }
+    }
+
+    impl PackageManager for EnumeratingManager {
+        fn name(&self) -> &str {
+            &self.mgr_name
+        }
+        fn upgrade_verb(&self) -> Option<&'static str> {
+            Some("upgrade")
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+            None
+        }
+        fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+            self.enumerations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.installed.clone())
+        }
+        fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn installed_for_asks_one_manager_once_however_many_packages_are_checked() {
+        // A memo-hit count is only measurable while the resolution generation
+        // holds still — any test in this binary that installs something retires
+        // every entry, and the second read would legitimately re-enumerate. The
+        // age ceiling is the memo's other bound, and pinning it is what keeps
+        // the claim about the mechanism rather than about how long five
+        // adjacent statements took.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let asked = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let (printer, _cap) = Printer::for_test();
+            let state = StateStore::open_in_memory().expect("store");
+            let cx = test_cx(&printer, &state);
+            let mgr = EnumeratingManager::new("apt", &["ripgrep", "fd", "bat"]);
+            let counter = mgr.counter();
+
+            for name in ["ripgrep", "fd", "bat", "jq", "curl"] {
+                let installed = cx.installed_for(&mgr).expect("enumeration");
+                assert_eq!(installed.contains(name), mgr.installed.contains(name));
+            }
+
+            asked_count(&counter)
+        });
+
+        assert_eq!(asked, 1, "five package questions must cost one enumeration");
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn a_lent_memo_survives_the_context_that_borrowed_it() {
+        // The MCP server answers one tool call per context but lives for the
+        // whole session. Lending it the memo is what stops every call from
+        // re-enumerating every manager.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let (shared_asked, owned_asked) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let (printer, _cap) = Printer::for_test();
+                let state = StateStore::open_in_memory().expect("store");
+                let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let counter = mgr.counter();
+
+                let enumerations = InstalledEnumerations::default();
+                for _ in 0..3 {
+                    let cx =
+                        PackageContext::with_shared_enumerations(&printer, &state, &enumerations);
+                    assert!(
+                        cx.installed_for(&mgr)
+                            .expect("enumeration")
+                            .contains("ripgrep")
+                    );
+                }
+                let shared = asked_count(&counter);
+
+                // The control: a context that owns its memo takes the answer
+                // with it, so the same three calls cost three enumerations.
+                let owned_mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let owned_counter = owned_mgr.counter();
+                for _ in 0..3 {
+                    let cx = test_cx(&printer, &state);
+                    assert!(
+                        cx.installed_for(&owned_mgr)
+                            .expect("enumeration")
+                            .contains("ripgrep")
+                    );
+                }
+
+                (shared, asked_count(&owned_counter))
+            });
+
+        assert_eq!(
+            shared_asked, 1,
+            "three lent contexts must cost one enumeration"
+        );
+        assert_eq!(owned_asked, 3);
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn a_lent_memo_is_retired_once_it_is_older_than_the_ceiling() {
+        // Nothing an MCP tool call does bumps the resolution generation — none
+        // of them installs anything — so the age ceiling is the ONLY thing
+        // standing between a session-long holder and an inventory taken at the
+        // first call. Pinned to zero, every entry is expired the moment it is
+        // stored.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::always_expired();
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+        let counter = mgr.counter();
+
+        let enumerations = InstalledEnumerations::default();
+        for _ in 0..3 {
+            let cx = PackageContext::with_shared_enumerations(&printer, &state, &enumerations);
+            assert!(
+                cx.installed_for(&mgr)
+                    .expect("enumeration")
+                    .contains("ripgrep")
+            );
+        }
+
+        assert_eq!(
+            asked_count(&counter),
+            3,
+            "an aged-out enumeration must be asked again"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn installed_for_keeps_one_managers_answer_out_of_anothers() {
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let (apt_asked, npm_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let (printer, _cap) = Printer::for_test();
+            let state = StateStore::open_in_memory().expect("store");
+            let cx = test_cx(&printer, &state);
+            let apt = EnumeratingManager::new("apt", &["ripgrep"]);
+            let npm = EnumeratingManager::new("npm", &["typescript"]);
+            let (apt_count, npm_count) = (apt.counter(), npm.counter());
+
+            assert!(cx.installed_for(&apt).expect("apt").contains("ripgrep"));
+            assert!(!cx.installed_for(&npm).expect("npm").contains("ripgrep"));
+            assert!(cx.installed_for(&npm).expect("npm").contains("typescript"));
+
+            (asked_count(&apt_count), asked_count(&npm_count))
+        });
+
+        assert_eq!(apt_asked, 1);
+        assert_eq!(npm_asked, 1);
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn installed_for_re_enumerates_once_a_run_changes_what_is_installed() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        // Only the memo-HIT half is measured in a stable generation: anything
+        // else in this binary that installs something retires the entry between
+        // the two reads, and the second would legitimately re-enumerate. The
+        // invalidation half below cannot be measured that way — it moves the
+        // generation itself — and does not need to be: two calls cost at most
+        // two enumerations however many foreign bumps land between them.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let (cx, mgr, counter, asked) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                // Built inside, so a retry measures a context and a counter no
+                // abandoned attempt already warmed.
+                let cx = test_cx(&printer, &state);
+                let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let counter = mgr.counter();
+
+                cx.installed_for(&mgr).expect("first");
+                cx.installed_for(&mgr).expect("memoized");
+                let asked = asked_count(&counter);
+                (cx, mgr, counter, asked)
+            });
+        assert_eq!(asked, 1);
+
+        // What an install through the exec path does, and the only thing it has
+        // to do for a later read to see the machine as it now is.
+        crate::invalidate_command_resolution();
+
+        cx.installed_for(&mgr).expect("after the install");
+        assert_eq!(
+            asked_count(&counter),
+            2,
+            "an install must retire the observation that predates it"
+        );
+    }
+
+    #[test]
+    fn a_fresh_context_never_inherits_another_contexts_observation() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+        let counter = mgr.counter();
+
+        test_cx(&printer, &state)
+            .installed_for(&mgr)
+            .expect("first context");
+        test_cx(&printer, &state)
+            .installed_for(&mgr)
+            .expect("second context");
+
+        assert_eq!(asked_count(&counter), 2);
+    }
+
+    #[test]
+    fn an_enumeration_error_is_not_memoized() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let cx = test_cx(&printer, &state);
+        let mut mgr = StubPackageManager::new("apt");
+        mgr.installed_error = Some("database locked".to_string());
+
+        assert!(cx.installed_for(&mgr).is_err());
+        mgr.installed_error = None;
+        mgr.installed.insert("ripgrep".to_string());
+
+        assert!(
+            cx.installed_for(&mgr)
+                .expect("the retry must reach the manager")
+                .contains("ripgrep"),
+            "a manager that could not be queried must be asked again, not remembered as empty"
+        );
+    }
+
+    /// The sweep is `is_available()` over every registered provider, and it runs
+    /// per system action, twice inside `plan_system` and once per daemon tick —
+    /// so repeating the question costs one sweep, not one per asking.
+    #[test]
+    #[serial_test::serial]
+    fn repeated_availability_sweeps_ask_each_manager_once() {
+        // The claim is that a memoized sweep STANDS, so the ceiling is pinned
+        // out of reach rather than left to be a statement about how long five
+        // adjacent calls took on a loaded runner.
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
+        // Re-runnable: a retry builds its own registry, so the sweep it counts
+        // is its own.
+        let (here_asked, gone_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let absent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (here, here_asked) = CountingManager::new("here", &present);
+            let (gone, gone_asked) = CountingManager::new("gone", &absent);
+            let mut registry = ProviderRegistry::new();
+            registry.add_package_manager(Box::new(here));
+            registry.add_package_manager(Box::new(gone));
+
+            for _ in 0..5 {
+                let available = registry.available_package_managers();
+                assert_eq!(available.len(), 1);
+                assert_eq!(available[0].name(), "here");
+            }
+            (asked_count(&here_asked), asked_count(&gone_asked))
+        });
+
+        assert_eq!(here_asked, 1);
+        assert_eq!(gone_asked, 1);
+    }
+
+    /// A manager that becomes available mid-run must appear in the very next
+    /// sweep — that is what the bootstrap's invalidation buys, and the reason
+    /// the dispatcher keeps ASKING the registry rather than snapshotting it.
+    #[test]
+    #[serial_test::serial]
+    fn a_bootstrap_invalidation_lets_a_new_manager_into_the_sweep() {
+        // Half of this test's claim is that the sweep stands until something
+        // reports itself, so the age ceiling is pinned out of the way.
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (pending, asked) = CountingManager::new("pending", &flag);
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(pending));
+
+        // Everything before the invalidation is a memo-hit claim, so it is
+        // measured inside one generation. The flag is raised inside it: a
+        // manager becomes available while the run holds a sweep taken before.
+        let (while_memoized, asked_again) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                assert!(registry.available_package_managers().is_empty());
+                let after_first = asked_count(&asked);
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                (
+                    registry.available_package_managers().len(),
+                    asked_count(&asked) - after_first,
+                )
+            });
+        assert_eq!(
+            while_memoized, 0,
+            "the memoized sweep stands until an install reports itself"
+        );
+        assert_eq!(asked_again, 0, "and it is not re-swept to say so");
+
+        crate::invalidate_command_resolution();
+
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].name(), "pending");
+    }
+
+    /// The generation covers every install cfgd performs; the ceiling covers the
+    /// one it cannot see. It exists for the holder that outlives a run — the
+    /// daemon keeps ONE registry across ticks now — where a generation-only memo
+    /// would answer "not installed" for the rest of the process's life about a
+    /// manager a human installed by hand thirty seconds after startup.
+    #[test]
+    #[serial_test::serial]
+    fn a_sweep_older_than_the_ceiling_is_taken_again() {
+        // The half inside the ceiling is a memo-hit claim, so it is measured in
+        // a generation nothing else moved — a foreign invalidation re-sweeps the
+        // registry and reports the manager the pin says is still hidden. Its
+        // subject is built inside for the same reason: a retry must count its
+        // own sweeps.
+        let (registry, asked, while_memoized, swept) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (pending, asked) = CountingManager::new("pending", &flag);
+                let mut registry = ProviderRegistry::new();
+                registry.add_package_manager(Box::new(pending));
+
+                let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
+                assert!(registry.available_package_managers().is_empty());
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                let while_memoized = registry.available_package_managers().len();
+                let swept = asked_count(&asked);
+                (registry, asked, while_memoized, swept)
+            });
+        assert_eq!(while_memoized, 0, "inside the ceiling the sweep stands");
+        assert_eq!(swept, 1);
+
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        let available = registry.available_package_managers();
+        assert_eq!(
+            available.len(),
+            1,
+            "past the ceiling the machine is re-asked"
+        );
+        assert_eq!(asked_count(&asked), 2);
+    }
+
+    /// Registration is the second thing that retires a sweep: the CLI builds a
+    /// registry in stages and adds custom managers after a plan has already
+    /// asked what is available, so a memo the mutators did not clear would
+    /// answer the later sweep with indices taken over a shorter registry.
+    #[test]
+    #[serial_test::serial]
+    fn a_provider_registered_after_the_first_sweep_is_swept_too() {
+        let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (first, _) = CountingManager::new("first", &present);
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(first));
+        assert_eq!(registry.available_package_managers().len(), 1);
+
+        let (second, _) = CountingManager::new("second", &present);
+        registry.add_package_manager(Box::new(second));
+
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 2);
+        assert_eq!(available[1].name(), "second");
+    }
+
+    /// Every other way into the registry retires its sweep too — the reason the
+    /// vectors are private is that one that did not would answer for providers
+    /// it never asked.
+    #[test]
+    #[serial_test::serial]
+    fn every_registration_path_retires_the_sweep() {
+        let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut registry = ProviderRegistry::new();
+        assert!(registry.available_package_managers().is_empty());
+        assert!(registry.available_system_configurators().is_empty());
+
+        let (batched, _) = CountingManager::new("batched", &present);
+        registry.extend_package_managers([Box::new(batched) as Box<dyn PackageManager>]);
+        assert_eq!(registry.available_package_managers().len(), 1);
+
+        let (replacement, _) = CountingManager::new("replacement", &present);
+        registry.set_package_managers(vec![Box::new(replacement)]);
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].name(), "replacement");
+
+        registry.add_system_configurator(Box::new(StubConfigurator {
+            name: "late".to_string(),
+            available: true,
+        }));
+        assert_eq!(registry.available_system_configurators().len(), 1);
+    }
+
+    /// The configurator sweep is the same memo over the other vector; a system
+    /// action asks it once per action.
+    #[test]
+    #[serial_test::serial]
+    fn repeated_configurator_sweeps_ask_each_configurator_once() {
+        struct CountingConfigurator {
+            asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl SystemConfigurator for CountingConfigurator {
+            fn name(&self) -> &str {
+                "counting"
+            }
+            fn is_available(&self) -> bool {
+                self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                true
+            }
+            fn current_state(&self) -> Result<serde_yaml::Value> {
+                Ok(serde_yaml::Value::Null)
+            }
+            fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+                Ok(Vec::new())
+            }
+            fn apply(&self, _desired: &serde_yaml::Value, _cx: &SystemContext<'_>) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let swept = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut registry = ProviderRegistry::new();
+            registry.add_system_configurator(Box::new(CountingConfigurator {
+                asked: std::sync::Arc::clone(&asked),
+            }));
+
+            for _ in 0..4 {
+                assert_eq!(registry.available_system_configurators().len(), 1);
+            }
+            asked_count(&asked)
+        });
+        assert_eq!(swept, 1);
+    }
+
     #[test]
     fn registry_filters_available_managers() {
         let mut registry = ProviderRegistry::new();
-        registry
-            .package_managers
-            .push(Box::new(StubPackageManager::new("mock")));
-        registry
-            .package_managers
-            .push(Box::new(StubPackageManager::new("mock2").unavailable()));
+        registry.add_package_manager(Box::new(StubPackageManager::new("mock")));
+        registry.add_package_manager(Box::new(StubPackageManager::new("mock2").unavailable()));
 
         let available = registry.available_package_managers();
         assert_eq!(available.len(), 1);
@@ -1298,11 +2611,84 @@ mod tests {
         assert!(parse_secret_reference("").is_none());
     }
 
+    /// The short schemes are the spellings the provider CLIs themselves use,
+    /// and they resolve to the SAME provider and path as the long form, so a
+    /// reference pasted from `op` works unchanged.
+    #[test]
+    fn parse_secret_reference_short_schemes_alias_the_long_ones() {
+        assert_eq!(
+            parse_secret_reference("op://Vault/Item/Field"),
+            parse_secret_reference("1password://Vault/Item/Field")
+        );
+        assert_eq!(
+            parse_secret_reference("bw://folder/item"),
+            parse_secret_reference("bitwarden://folder/item")
+        );
+        for short in ["lpass://folder/item/field", "lp://folder/item/field"] {
+            assert_eq!(
+                parse_secret_reference(short),
+                parse_secret_reference("lastpass://folder/item/field"),
+                "{short}"
+            );
+        }
+        assert_eq!(
+            parse_secret_reference("op://Vault/Item/Field"),
+            Some(("1password", "Vault/Item/Field"))
+        );
+        assert_eq!(
+            parse_secret_reference("bw://folder/item"),
+            Some(("bitwarden", "folder/item"))
+        );
+    }
+
+    /// Every accepted scheme is documented, and every documented scheme is
+    /// accepted: `docs/secrets.md`'s provider table is the user's only list, and
+    /// a scheme that appears on one side only is either an undocumented feature
+    /// or a documented lie.
+    #[test]
+    fn every_secret_reference_scheme_is_documented_in_secrets_md() {
+        let docs = include_str!("../../../../docs/secrets.md");
+        for (scheme, provider) in SECRET_REFERENCE_SCHEMES {
+            assert!(
+                docs.contains(&format!("`{scheme}")),
+                "docs/secrets.md never names the `{scheme}` scheme ({provider})"
+            );
+        }
+        let documented: std::collections::BTreeSet<&str> = docs
+            .split('`')
+            .filter_map(|span| {
+                let end = span.find("://")?;
+                Some(&span[..end + 3])
+            })
+            .filter(|s| {
+                s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '/')
+            })
+            .collect();
+        let accepted: std::collections::BTreeSet<&str> =
+            SECRET_REFERENCE_SCHEMES.iter().map(|(s, _)| *s).collect();
+        let stray: Vec<&str> = documented
+            .iter()
+            .filter(|s| {
+                !accepted.contains(*s)
+                    && !matches!(
+                        **s,
+                        "file://" | "https://" | "http://" | "ssh://" | "git://"
+                    )
+            })
+            .copied()
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "docs/secrets.md documents schemes cfgd does not accept: {stray:?}"
+        );
+    }
+
     #[test]
     fn provider_registry_default_matches_new() {
         let reg = ProviderRegistry::default();
-        assert!(reg.package_managers.is_empty());
-        assert!(reg.system_configurators.is_empty());
+        assert!(reg.package_managers().is_empty());
+        assert!(reg.system_configurators().is_empty());
         assert!(reg.file_manager.is_none());
         assert!(reg.secret_backend.is_none());
         assert!(reg.secret_providers.is_empty());
@@ -1334,11 +2720,11 @@ mod tests {
     #[test]
     fn available_system_configurators_filters_unavailable() {
         let mut reg = ProviderRegistry::new();
-        reg.system_configurators.push(Box::new(StubConfigurator {
+        reg.add_system_configurator(Box::new(StubConfigurator {
             name: "shell".to_string(),
             available: true,
         }));
-        reg.system_configurators.push(Box::new(StubConfigurator {
+        reg.add_system_configurator(Box::new(StubConfigurator {
             name: "systemd".to_string(),
             available: false,
         }));
@@ -1479,5 +2865,36 @@ mod tests {
         let parsed: PackageInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, info.name);
         assert_eq!(parsed.version, info.version);
+    }
+
+    /// A configurator's next step reaches the reader as a HINT on both
+    /// routes: pushed as `ActionNote::next_step` under a collecting sink, and
+    /// settled through `Printer::hint` standalone — never as a `report` line
+    /// wearing a report's glyph over a sentence that reports nothing.
+    #[test]
+    fn a_configurator_next_step_is_a_hint_on_both_routes() {
+        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+        let sink = NoteSink::default();
+        SystemContext::with_notes(&printer, &sink)
+            .next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
+        SystemContext::with_notes(&printer, &sink).next_step("   ");
+        let notes = sink.take();
+        assert_eq!(notes.len(), 1, "a blank next step is refused: {notes:?}");
+        assert_eq!(
+            notes[0],
+            ActionNote::next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc")
+        );
+        assert!(
+            crate::test_helpers::captured_text(&buf).is_empty(),
+            "a collected next step settles nothing on the printer"
+        );
+
+        SystemContext::new(&printer).next_step("Open a new shell");
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("→ Open a new shell"),
+            "standalone, the next step settles as a hint: {out:?}"
+        );
     }
 }

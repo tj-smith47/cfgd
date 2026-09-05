@@ -19,7 +19,10 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
             let available = super::available_profile_names(&profiles_dir);
             let mut hints = Vec::new();
             if !available.is_empty() {
-                hints.push(format!("Available profiles: {}", available.join(", ")));
+                hints.push(cfgd_core::output::HintCommands::from(format!(
+                    "Available profiles: {}",
+                    available.join(", ")
+                )));
             }
             // Carry the typed `ConfigError::ProfileNotFound` in the chain so the
             // exit-code downcast in `main.rs` resolves to ExitCode::NotFound (6);
@@ -51,9 +54,16 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     let doc = Doc::new()
         .status(
             Role::Ok,
-            format!("Switched profile: {} → {}", old_profile, name),
+            format!(
+                "Switched profile: {} {} {}",
+                old_profile,
+                printer.arrow(),
+                name
+            ),
         )
-        .hint(MSG_RUN_APPLY)
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::ProfileSwitched,
+        ))
         .with_data(serde_json::json!({
             "from": old_profile,
             "to": name,

@@ -21,9 +21,9 @@ const XDG_EXPORT_LINE: &str = r#"export XDG_CONFIG_HOME="$HOME/.config""#;
 /// files).
 const FISH_XDG_LINE: &str = r#"set -gx XDG_CONFIG_HOME "$HOME/.config""#;
 
-/// Substring marking an existing `XDG_CONFIG_HOME` assignment, so we never append
-/// a second (possibly conflicting) one regardless of the exact syntax the user
-/// already used.
+/// Substring marking an existing `XDG_CONFIG_HOME` assignment, so a second
+/// (possibly conflicting) one is never appended regardless of the exact
+/// syntax the user already used.
 const XDG_VAR_MARKER: &str = "XDG_CONFIG_HOME";
 
 /// Sentinel filename recording that the user chose "keep ~/.config" on the macOS
@@ -235,7 +235,7 @@ fn append_line_once(path: &Path, line: &str, var_marker: &str) -> std::io::Resul
 /// Silently migrate a legacy combined data dir (state DB + `sources/` cache) to
 /// the split state and cache roots. A no-op when no home is resolvable or the
 /// new roots can't be resolved. Runs on every startup (idempotent); the heavy
-/// lifting and all output live in [`migrate_legacy_data_dirs_at`].
+/// lifting and all output live in `migrate_legacy_data_dirs_at`.
 pub fn migrate_legacy_data_dirs(printer: &Printer) {
     let Some(legacy) = cfgd_core::legacy_data_dir() else {
         return;
@@ -517,7 +517,7 @@ mod tests {
             "legacy dir must no longer exist after move"
         );
 
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.lines().any(|l| l.contains("Moved config to")),
             "output must contain 'Moved config to', got:\n{out}"
@@ -541,7 +541,7 @@ mod tests {
         let result = migrate_move(&printer, &legacy, &native);
 
         assert_eq!(result, None, "must return None on failure");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.lines().any(|l| l.contains("Could not move config")),
             "output must contain 'Could not move config', got:\n{out}"
@@ -612,7 +612,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         migrate_legacy_data_dirs(&printer);
 
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         // No "Migrated" lines should appear — the outer resolver early-returned.
         assert!(
             !out.contains("Migrated"),

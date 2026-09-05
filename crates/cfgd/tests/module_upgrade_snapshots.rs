@@ -172,6 +172,116 @@ fn push_second_tag(
     src
 }
 
+/// `make_bare_module_repo` with a stand-in `spec` — every OTHER consumer of
+/// that shared fixture wants `spec: {}` and stays untouched. This variant is
+/// local to the one test proving what `diff_module_specs` renders for a REAL
+/// spec change, since `push_second_tag` only ever tweaks `description`.
+fn make_bare_module_repo_with_spec(
+    tmp_root: &Path,
+    module_name: &str,
+    tag: &str,
+    spec_yaml: &str,
+) -> std::path::PathBuf {
+    let bare = tmp_root.join(format!("{module_name}-upstream.git"));
+    let _bare_repo = git2::Repository::init_bare(&bare).expect("init_bare");
+
+    let src = tmp_root.join(format!("{module_name}-src"));
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: test mod\n{spec_yaml}"
+    );
+    std::fs::write(src.join("module.yaml"), yaml).expect("write module.yaml");
+    std::fs::write(src.join(".gitattributes"), "* -text\n").expect("write .gitattributes");
+    let mut index = src_repo.index().expect("index");
+    index
+        .add_path(Path::new(".gitattributes"))
+        .expect("add_path gitattributes");
+    index.add_path(Path::new("module.yaml")).expect("add_path");
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
+    let commit_id = src_repo
+        .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+        .expect("commit");
+    drop(tree);
+    let commit_obj = src_repo.find_commit(commit_id).expect("find_commit");
+    src_repo
+        .tag(tag, commit_obj.as_object(), &sig, "release", false)
+        .expect("tag");
+
+    let bare_url = cfgd_core::test_helpers::file_url(&bare);
+    let mut remote = src_repo.remote("origin", &bare_url).expect("add_remote");
+    let branch = src_repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    remote
+        .push(
+            &[
+                &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                &format!("refs/tags/{tag}:refs/tags/{tag}"),
+            ],
+            None,
+        )
+        .expect("push");
+    bare
+}
+
+/// `push_second_tag` with a stand-in `spec` instead of a `description`-only
+/// tweak, so the new tag's diff against v1 is a real one `diff_module_specs`
+/// has to render rather than the empty-diff sentinel.
+fn push_second_tag_with_spec(
+    tmp_root: &Path,
+    module_name: &str,
+    bare: &Path,
+    new_tag: &str,
+    spec_yaml: &str,
+) -> std::path::PathBuf {
+    let src = tmp_root.join(format!("{module_name}-src2"));
+    let bare_url = cfgd_core::test_helpers::file_url(bare);
+    let repo = git2::Repository::clone(&bare_url, &src).expect("clone bare");
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: upgraded test mod\n{spec_yaml}"
+    );
+    std::fs::write(src.join("module.yaml"), yaml).unwrap();
+
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("module.yaml")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let commit_id = repo
+        .commit(Some("HEAD"), &sig, &sig, "upgrade", &tree, &[&parent])
+        .unwrap();
+    drop(tree);
+    let commit_obj = repo.find_commit(commit_id).unwrap();
+    repo.tag(new_tag, commit_obj.as_object(), &sig, "next", false)
+        .unwrap();
+
+    let branch = repo
+        .head()
+        .unwrap()
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    let mut remote = repo.find_remote("origin").unwrap();
+    remote
+        .push(
+            &[
+                &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                &format!("refs/tags/{new_tag}:refs/tags/{new_tag}"),
+            ],
+            None,
+        )
+        .unwrap();
+    src
+}
+
 #[test]
 #[serial]
 fn module_upgrade_no_change_human_json() {
@@ -309,4 +419,53 @@ fn module_upgrade_happy_human_json() {
             "snapshot mismatch: module_upgrade/happy.json"
         );
     }
+}
+
+const SPEC_DIFF_V1: &str = "spec:\n  depends:\n    - base-tools\n  packages:\n    - name: git\n      minVersion: \"2.0\"\n    - name: curl\n  env:\n    - name: EDITOR\n      value: vim\n    - name: OLD_VAR\n      value: legacy\n  aliases:\n    - name: ll\n      command: ls -la\n";
+
+const SPEC_DIFF_V2: &str = "spec:\n  depends:\n    - base-tools\n    - vim-config\n  packages:\n    - name: git\n      minVersion: \"2.30\"\n    - name: curl\n    - name: ripgrep\n  env:\n    - name: EDITOR\n      value: nvim\n    - name: NEW_VAR\n      value: hello\n  aliases:\n    - name: ll\n      command: ls -lah\n    - name: gs\n      command: git status\n";
+
+#[test]
+#[serial]
+fn module_upgrade_shows_real_spec_diff_human() {
+    // Every other upgrade fixture in this file only tweaks `description`
+    // between v1 and v2, so `diff_module_specs` always renders the
+    // "(no spec changes)" sentinel and no golden pins what a REAL upgrade
+    // review looks like. v1/v2 here differ across every diffed field
+    // (depends, packages incl. a minVersion bump, env incl. add/change/
+    // remove, aliases) with each HashSet-diffed field carrying at most one
+    // add and one remove so the rendered order stays deterministic (a
+    // HashSet's iteration order is not).
+    let (config_dir, state_dir) = upgrade_test_setup();
+    let _home = cfgd_core::with_test_home_guard(config_dir.path());
+    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = make_bare_module_repo_with_spec(bare_root.path(), "diffmod", "v1.0.0", SPEC_DIFF_V1);
+    let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v2a = test_printer();
+    module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
+
+    push_second_tag_with_spec(bare_root.path(), "diffmod", &bare, "v1.1.0", SPEC_DIFF_V2);
+
+    let (printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
+    module::cmd_module_upgrade(&cli, &printer, "diffmod", Some("v1.1.0"), false, true).unwrap();
+    drop(printer);
+
+    let mut stripped =
+        strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
+    stripped = mask_commit_sha(&stripped);
+    stripped = mask_integrity(&stripped);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "module_upgrade/spec_diff.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "diffmod");
+    assert_eq!(json["cancelled"], true);
 }

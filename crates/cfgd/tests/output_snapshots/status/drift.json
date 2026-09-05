@@ -2,14 +2,14 @@
   "classificationDegraded": false,
   "drift": [
     {
-      "actual": "hash-actual",
-      "expected": "hash-desired",
+      "actual": "content differs from source",
+      "expected": "content matches source",
       "id": 10,
       "resolvedBy": null,
       "resourceId": "~/.zshrc",
       "resourceType": "file",
       "source": "local",
-      "timestamp": "2026-05-14T12:00:00Z"
+      "timestamp": "2026-05-14T09:58:00Z"
     },
     {
       "actual": "13.0.0",
@@ -19,7 +19,7 @@
       "resourceId": "ripgrep",
       "resourceType": "package",
       "source": "team-config",
-      "timestamp": "2026-05-14T12:01:00Z"
+      "timestamp": "2026-05-14T09:59:00Z"
     }
   ],
   "driftCheckedLive": false,
@@ -29,20 +29,23 @@
     "profile": "default",
     "status": "success",
     "summary": null,
-    "timestamp": "2026-05-14T11:30:00Z"
+    "timestamp": "2026-05-14T09:30:00Z"
   },
+  "lastScanAt": "2026-05-14T08:00:00Z",
   "managedResources": [],
   "modules": [
     {
       "files": 4,
       "name": "shell-config",
       "packages": 0,
+      "scripts": 0,
       "status": "installed"
     }
   ],
   "pendingDecisions": [
     {
       "action": "install",
+      "contentHash": null,
       "createdAt": "2026-05-14T08:00:00Z",
       "id": 5,
       "resolution": null,
@@ -57,13 +60,14 @@
     {
       "id": 1,
       "lastCommit": "abc123",
+      "lastCommitSigned": true,
       "lastFetched": "2026-05-14T09:00:00Z",
       "name": "team-config",
       "originBranch": "main",
       "originUrl": "https://github.com/team/config",
       "pinnedVersion": null,
       "sourceVersion": "3.1.0",
-      "status": "synced"
+      "status": "active"
     }
   ]
 }

@@ -88,7 +88,13 @@ pub struct ApplyOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_id: Option<i64>,
     pub succeeded: usize,
+    /// Actions that ran and changed nothing — the rollup's `N skipped`.
+    pub skipped: usize,
     pub failed: usize,
+    /// Actions the plan withheld before the run (the rollup's `(N not
+    /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
+    /// outside the plan's `totalActions`, exactly as the human line prices it.
+    pub not_attempted: usize,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -108,7 +114,9 @@ impl ApplyOutput {
             status: "nothingToDo".to_string(),
             apply_id: None,
             succeeded: 0,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -119,7 +127,9 @@ impl ApplyOutput {
             status: "aborted".to_string(),
             apply_id: None,
             succeeded: 0,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -135,26 +145,26 @@ pub struct RollbackOutput {
     pub non_file_actions: Vec<String>,
 }
 
-/// Structured payload for `cfgd state forget-prefix`. `prefix`/`is_fallback`/
-/// `resolved_at` describe the row that was cleared and are omitted (not
-/// nulled) when `forgotten` is `false` — there was no row to describe.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForgetPrefixOutput {
-    pub manager: String,
-    pub forgotten: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_fallback: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncOutput {
     pub local_pulled: bool,
+    /// Why the local repository could not be pulled, absent when it was or
+    /// when the config directory is under no version control. The human
+    /// verdict withholds `Synced` on the same fact, so a consumer can see
+    /// what the report said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_pull_error: Option<String>,
+    /// Why the configuration as this command FOUND it could not be resolved,
+    /// absent when it was. The header resolution reads the source cache
+    /// offline, so the one failure it raises that this very run repairs — a
+    /// cached head refused for its signature — is left out and reported by the
+    /// `sources` row the fetch below settles instead. Every other failure is a
+    /// refusal like a failed pull: the human verdict withholds `Synced` on the
+    /// same fact, and a consumer reading only `sources` would otherwise see
+    /// total success over a configuration that cannot resolve at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_resolution_error: Option<String>,
     pub sources: Vec<SourceSyncOutput>,
 }
 
@@ -194,6 +204,24 @@ pub struct DiffOutput {
     /// "the machine is in sync".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<SystemCheckError>,
+    /// One record per declared env var or alias whose line in the primary
+    /// managed env file no longer matches what `spec.env`/`spec.aliases`
+    /// declares — the same per-item check `cfgd verify` persists as drift,
+    /// run here read-only.
+    pub env: Vec<EnvDriftOutput>,
+    /// Set only by `diff --module`: the scoped env check reads the primary
+    /// managed env file once for every entry the module's chain owns, so a
+    /// file that exists but cannot be read fails the whole check — the
+    /// failure lands here instead of aborting a diff whose Files/Packages
+    /// phases already succeeded for the module asked about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_check_error: Option<String>,
+    /// Recorded rows this run's own scope owns but could not re-examine —
+    /// the store's own answer, kept unresolved and rendered beside the live
+    /// findings above. `diff`, `verify` and `status --scan` all name this
+    /// key the same way, so a consumer parses one shape across all three.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing: Vec<cfgd_core::state::DriftEvent>,
     pub summary: DiffSummary,
 }
 
@@ -207,13 +235,24 @@ pub struct DiffSummary {
     /// is unknown rather than clean. Read alongside `has_system_drift` by
     /// every consumer that treats "no drift" as "nothing to do".
     pub system_check_failed: bool,
+    pub has_env_drift: bool,
+    /// The env check itself could not run (`diff --module` only — see
+    /// `DiffOutput::env_check_error`), so `has_env_drift` is not a verdict.
+    /// Read alongside `has_env_drift` the same way `system_check_failed` is
+    /// read alongside `has_system_drift`.
+    pub env_check_failed: bool,
+    /// At least one row in `DiffOutput::standing` — a recorded finding this
+    /// run's scope owns but did not re-check. Priced into `diff_exit_code`
+    /// exactly like a live finding: the store's own unresolved answer is
+    /// drift the reader has not yet acted on, whichever check last saw it.
+    pub has_standing_drift: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageDrift {
     pub manager: String,
-    /// `missing` | `extra` | `provision` | `refused`. `provision`/`refused` are
+    /// `missing` | `extra` | `outdated` | `provision` | `refused`. `provision`/`refused` are
     /// package-less rows: the manager itself is what drifts, not a package it
     /// would install, so `packages` stays empty for both. `provision` names the
     /// plan-state fact (matches `ManagerAction::Provision`'s machine vocabulary
@@ -231,6 +270,13 @@ pub struct PackageDrift {
     /// `shape == "refused"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The declared `minVersion` floor and the version the machine holds.
+    /// `Some` only when `shape == "outdated"`: the two operands are the whole
+    /// content of that row, and a presence row has no version to state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,20 +287,71 @@ pub struct SystemDriftOutput {
     pub actual: String,
 }
 
-/// A configurator whose drift check itself failed — the machine's state for
-/// that key is unknown.
+// One type across all three erroring-check producers (`cli::live_drift`'s
+// engine and `reconciler::verify`), so the `systemErrors` payload entry
+// cannot fork per surface.
+pub use cfgd_core::reconciler::SystemCheckError;
+
+/// One drifted env row: a declared env var or alias whose deployed line
+/// diverges from what `spec.env`/`spec.aliases` declares (`kind` is
+/// `"env-var"` or `"alias"`), the primary managed env file itself gone stale
+/// (`kind` `"env"`), or a shell rc's `cfgd` source line missing (`kind`
+/// `"env-rc"`). Matches `cfgd_core::reconciler::VerifyResult::resource_type`
+/// for this check byte-for-byte, so a consumer joining this against a
+/// `cfgd verify` or recorded-drift row needs no second vocabulary.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SystemCheckError {
-    pub key: String,
-    pub error: String,
+pub struct EnvDriftOutput {
+    pub kind: String,
+    pub name: String,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// What one source came to in a `sync` or `source update` payload.
+///
+/// The two verbs spell the same states differently on the wire (`failed` /
+/// `error`), and each compared its own spelling by hand — so the predicate
+/// deciding the process exit was a bare string compare that answers `false`
+/// the moment a producer's spelling moves. The tokens each payload has always
+/// carried are unchanged; what is shared is the TYPE and the two predicates
+/// over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceOutcome {
+    /// `cfgd sync` fetched it.
+    Synced,
+    /// `cfgd source update` fetched it.
+    Updated,
+    /// The reader declined its permission changes at the prompt.
+    Skipped,
+    /// The permission prompt could not be answered.
+    Cancelled,
+    /// `cfgd sync` could not fetch it.
+    Failed,
+    /// `cfgd source update` could not fetch it.
+    Error,
+}
+
+impl SourceOutcome {
+    /// Whether this outcome is one nobody chose, which is what a nonzero exit
+    /// reports. A declined prompt is an answered question, not a refusal.
+    pub fn refused(self) -> bool {
+        matches!(self, Self::Failed | Self::Error)
+    }
+
+    /// Whether the reader's own answer at the permission prompt is why this
+    /// source contributed nothing.
+    pub fn declined(self) -> bool {
+        matches!(self, Self::Skipped | Self::Cancelled)
+    }
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceSyncOutput {
     pub name: String,
-    pub status: String,
+    pub status: SourceOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
 }
@@ -265,6 +362,16 @@ pub struct PlanOutput {
     pub context: String,
     pub phases: Vec<PlanPhaseOutput>,
     pub total_actions: usize,
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`cfgd_core::reconciler::ComposedSource::from_declared`]), in
+    /// declaration order — the structured counterpart of the header's
+    /// `Sources` row, present whether or not this machine has synced. Without
+    /// it a consumer reading a plan carrying `<- team` provenance on its
+    /// actions has no way to learn what `team` is or which of its profiles
+    /// this machine subscribed to. Empty (and omitted from the wire) for a
+    /// config that declares none, so every existing payload stays byte-exact.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Names of schedule-less `spec.backups[]` entries that a non-dry-run
@@ -356,7 +463,7 @@ impl PlanGroupOutput {
     }
 }
 
-/// The `cfgd:managers` group's per-action structured payload — spec §7's
+/// The `cfgd:managers` group's per-action structured payload — the
 /// `{manager, state, via, requires}` shape, populated only for
 /// `Action::Manager` rows (`PlanActionOutput.manager`).
 ///
@@ -370,10 +477,9 @@ impl PlanGroupOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ManagerActionOutput {
     pub manager: String,
-    /// `present` (refresh) | `provisioned` | `prerequisite` | `refused`.
-    /// `refused` is not in spec §7's literal enum — the spec's variant list
-    /// names `Refuse` as a node this task must give a payload, and a state
-    /// enum a refusal cannot express in is a payload that silently drops it.
+    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`.
+    /// `Action::Manager` names `Refuse` as a node that must give a payload,
+    /// and a state enum a refusal cannot express in would silently drop it.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
@@ -416,6 +522,13 @@ pub struct PlanActionOutput {
     /// The row's `cfgd:managers` detail, `Some` only for `Action::Manager`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<ManagerActionOutput>,
+    /// What the action PRODUCES, as the tree states it beside the subject
+    /// (`5 already deployed`, `3 vars, 3 aliases`) — the plan preview's
+    /// bullet detail and the apply row's detail are this one string. Omitted
+    /// for an action with no produced count; never folded into
+    /// `description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -541,11 +654,39 @@ pub struct DoctorConfiguratorCheck {
 #[serde(rename_all = "camelCase")]
 pub struct SourceListEntry {
     pub name: String,
-    pub url: String,
-    pub priority: u32,
+    /// The declared origin. Every field below `name` and `status` is an
+    /// `Option`, because a row is not always a `spec.sources[]` entry: the
+    /// daemon reports the implicit `local` layer, which declares no origin,
+    /// no priority and no signing demand. `None` renders `-` (or drops the
+    /// column when no row can fill it) and serializes `null`; a default such
+    /// as `0` or `false` would state a fact nobody declared.
+    pub url: Option<String>,
+    pub priority: Option<u32>,
     pub version: Option<String>,
     pub status: String,
+    /// The ISO 8601 stamp of the last fetch. The human table humanizes it
+    /// (`2h ago`); the payload keeps the instant, which is the only form a
+    /// machine consumer can compare or re-render.
     pub last_fetched: Option<String>,
+    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
+    /// "not known", never "unsigned".
+    pub signed: Option<bool>,
+    /// Whether the subscription DEMANDS a signed HEAD. Distinct from `signed`,
+    /// which reports what the last fetch found: two sources with signed HEADs,
+    /// one demanding signatures and one not, are not the same subscription.
+    /// `None` is "nothing declared", never "not required".
+    pub require_signed_commits: Option<bool>,
+    /// The commit the cached checkout is at, full length. The human table
+    /// shortens it through `short_commit`; the payload keeps the whole id,
+    /// which is the only form a machine consumer can match against a remote.
+    pub last_commit: Option<String>,
+    /// Unresolved drift attributed to this source, when the surface rendering
+    /// the row knows it. `None` is "not known" and renders `-`; every producer
+    /// answers `None` today, so the column is dropped from every render (see
+    /// `cfgd_core::daemon::SourceStatus::drift_count` for why the daemon's own
+    /// rows cannot answer it either). The machine-wide total is a header fact,
+    /// never a row's.
+    pub drift_count: Option<u32>,
 }
 
 /// One `spec.backups[]` entry plus its last recorded run, for
@@ -574,6 +715,13 @@ pub struct BackupListEntry {
     /// schedule with no upcoming occurrence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<String>,
+    /// How many snapshots this unit currently holds on disk. `None` when the
+    /// state store could not be read — an unknown count must not be reported
+    /// as zero, which is a unit whose snapshots have all been pruned away.
+    /// Backups of the unit only: the safety copy a restore leaves beside the
+    /// source is a sidecar, not a snapshot, and is never counted here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -618,11 +766,18 @@ pub struct BackupRestoreOutput {
     /// Size recorded for the snapshot that was restored, matching
     /// `BackupSnapshotEntry::size_bytes` for the same snapshot.
     pub size_bytes: u64,
-    /// Snapshot of the target's previous contents, taken immediately before
-    /// the overlay. Omitted when the restore was redirected away from the live
-    /// source or the source did not exist yet.
+    /// The `.cfgd-backup` sidecar holding the source's previous contents,
+    /// written beside it immediately before the overlay. Omitted when the
+    /// restore was redirected away from the live source or the source did not
+    /// exist yet. Not one of the unit's snapshots: it lists under neither
+    /// `backup list` nor `--snapshots`, and no retention prunes it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_snapshot: Option<String>,
+    pub safety_copy: Option<String>,
+    /// Whether `safety_copy` already held the source's bytes from an earlier
+    /// displacement and was reused rather than written by this restore.
+    /// Present exactly when `safety_copy` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy_reused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -636,7 +791,11 @@ impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
             restored: outcome.restored,
             clean: outcome.is_clean(),
             size_bytes: outcome.size_bytes,
-            safety_snapshot: outcome.safety_snapshot.clone(),
+            safety_copy: outcome
+                .safety_copy
+                .as_ref()
+                .map(|s| cfgd_core::to_posix_string(&s.path)),
+            safety_copy_reused: outcome.safety_copy.as_ref().map(|s| s.reused),
             error: outcome.error.clone(),
         }
     }
@@ -661,6 +820,94 @@ pub struct BackupRestoreDeclinedOutput {
     /// declined and the completed payload.
     pub restored: bool,
     /// Always `true` — the discriminator between this payload and a restore
+    /// that ran.
+    pub declined: bool,
+}
+
+/// One backup that has a copy to put back, for `cfgd backup rollback` with no
+/// name.
+///
+/// A unit with no sidecar beside its source is absent from the listing: the
+/// command's whole question is what it COULD roll back, and a row saying
+/// "nothing" for a unit that has never been restored is the answer to a
+/// question nobody asked.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackEntry {
+    pub name: String,
+    /// The copy that would be put back, absolute and posix-folded.
+    pub copy: String,
+    /// ISO 8601 UTC time the copy was written, read off its mtime — a sidecar
+    /// carries no record of its own. On the same scale as
+    /// `BackupSnapshotEntry::created`.
+    pub created: String,
+    pub size_bytes: u64,
+}
+
+/// Outcome of `cfgd backup rollback <name>`.
+///
+/// Shaped like [`BackupRestoreOutput`] because it is the same write read the
+/// other way: `copy` stands where `snapshot` does, and `clean` is the same
+/// predicate the exit code gates on.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackOutput {
+    pub name: String,
+    /// The copy that was put back, absolute and posix-folded.
+    pub copy: String,
+    /// Where it landed — the unit's source, with a top-level symlink followed.
+    pub restored_to: String,
+    /// Whether the overlay actually ran and completed.
+    pub restored: bool,
+    /// The overlay completed AND every hook succeeded.
+    pub clean: bool,
+    pub size_bytes: u64,
+    /// Where the contents the rollback displaced were copied aside — what makes
+    /// the rollback itself reversible. Absent when the source did not exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy: Option<String>,
+    /// Whether `safety_copy` already held those bytes from an earlier
+    /// displacement. Present exactly when `safety_copy` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_copy_reused: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::RollbackOutcome> for BackupRollbackOutput {
+    fn from(outcome: &cfgd_core::backup::RollbackOutcome) -> Self {
+        Self {
+            name: outcome.name.clone(),
+            copy: outcome.copy.clone(),
+            restored_to: outcome.restored_to.clone(),
+            restored: outcome.restored,
+            clean: outcome.is_clean(),
+            size_bytes: outcome.size_bytes,
+            safety_copy: outcome
+                .safety_copy
+                .as_ref()
+                .map(|s| cfgd_core::to_posix_string(&s.path)),
+            safety_copy_reused: outcome.safety_copy.as_ref().map(|s| s.reused),
+            error: outcome.error.clone(),
+        }
+    }
+}
+
+/// A rollback the operator declined at the confirmation prompt, the
+/// [`BackupRestoreDeclinedOutput`] of the third mutating verb and carrying the
+/// same `declined` discriminator for the same reason.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRollbackDeclinedOutput {
+    pub name: String,
+    /// The copy that would have been put back.
+    pub copy: String,
+    /// Where it would have landed.
+    pub restored_to: String,
+    /// Always `false`; present so a consumer can read the same key on both the
+    /// declined and the completed payload.
+    pub restored: bool,
+    /// Always `true` — the discriminator between this payload and a rollback
     /// that ran.
     pub declined: bool,
 }
@@ -744,14 +991,106 @@ pub struct SourceShowOutput {
     /// no modules or its manifest could not be loaded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
+    /// What this source enforces, combining the manifest's own
+    /// `policy.constraints` with this subscriber's overrides
+    /// (`subscription.allowScripts`, `subscription.requireSignedCommits`).
+    /// `None` when the manifest could not be loaded, since the constraints it
+    /// would combine with are unknown. Omitted from the wire in that case
+    /// (matches the envelope discipline of dropping empty fields), rather
+    /// than serializing as a `null` a consumer has to special-case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<SourcePolicyOutput>,
+    /// What the source's own manifest DECLARES — the same facts the human
+    /// render's `Manifest` and `Profiles` sections read. `None` when the
+    /// manifest could not be loaded, and omitted from the wire in that case
+    /// rather than serializing a `null` a consumer has to special-case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<SourceManifestOutput>,
+}
+
+/// A config source's manifest as a structured payload, shared by `source show`
+/// and `source add` so both answer "what does this source provide" with one
+/// shape.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceManifestOutput {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub profiles: Vec<SourceManifestProfileOutput>,
+    pub modules: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceManifestProfileOutput {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherits: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePolicyOutput {
+    /// Whether this source's HEAD commit must carry a valid signature — the
+    /// OR of the subscriber's own `subscription.requireSignedCommits` and the
+    /// manifest's `policy.constraints.requireSignedCommits`. This is the
+    /// DEMAND, not the enforcement: `spec.security.allowUnsigned` can bypass
+    /// it entirely, which `signed_commits_bypassed` says explicitly rather
+    /// than leaving this flag to read as unqualified enforcement.
+    pub require_signed_commits: bool,
+    /// Whether `spec.security.allowUnsigned` bypasses `require_signed_commits`
+    /// for this subscriber — always `false` when the demand above is itself
+    /// `false`, since there is nothing to bypass.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub signed_commits_bypassed: bool,
+    /// Whether this source's lifecycle scripts run — the subscriber's
+    /// `allowScripts` opt-in OR the manifest not constraining scripts at all.
+    pub scripts_allowed: bool,
+    /// Whether this source may deliver `${secret:…}` references.
+    pub secrets_read_allowed: bool,
+    /// Whether this source may deliver `system:` configurator settings.
+    pub system_changes_allowed: bool,
+    /// Glob patterns restricting which file targets this source may deploy
+    /// to. Empty means no restriction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_target_paths: Vec<String>,
+    /// Encryption the manifest's `policy.constraints.encryption` imposes on
+    /// files this source delivers. `None` when the manifest declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<SourceEncryptionOutput>,
+}
+
+/// The `policy.constraints.encryption` block, reshaped for display —
+/// `cfgd_core::config::EncryptionConstraint` with its enum/optional fields
+/// rendered as plain strings so a `source show` consumer needs no second
+/// vocabulary for the same mode/backend names the manifest schema documents.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceEncryptionOutput {
+    /// Glob patterns or explicit paths that must be encrypted.
+    pub required_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceStateInfo {
     pub status: String,
+    /// The ISO 8601 stamp of the last fetch; the human render humanizes it.
     pub last_fetched: Option<String>,
     pub last_commit: Option<String>,
+    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
+    /// "not known", never "unsigned".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<bool>,
     pub version: Option<String>,
     /// Resolved tag name from sources.lock (None for HEAD-tracking sources).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -841,8 +1180,11 @@ pub(in crate::cli) struct ComplianceDiffOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceCheckChange {
     pub key: String,
-    pub old_status: String,
-    pub new_status: String,
+    /// Typed rather than the `format!("{:?}")` string it used to be: the wire
+    /// value is identical (both spell the variant), and the render slot can
+    /// then take the status's own role instead of matching on the word.
+    pub old_status: cfgd_core::compliance::ComplianceStatus,
+    pub new_status: cfgd_core::compliance::ComplianceStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -1002,7 +1344,9 @@ mod tests {
             status: "partial".to_string(),
             apply_id: Some(7),
             succeeded: 2,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1026,7 +1370,9 @@ mod tests {
             status: "success".to_string(),
             apply_id: Some(99),
             succeeded: 3,
+            skipped: 0,
             failed: 1,
+            not_attempted: 0,
             source_commits: commits,
             backups: Vec::new(),
         };
@@ -1053,7 +1399,9 @@ mod tests {
             status: "success".to_string(),
             apply_id: Some(1),
             succeeded: 1,
+            skipped: 0,
             failed: 0,
+            not_attempted: 0,
             source_commits: commits,
             backups: Vec::new(),
         };
@@ -1088,9 +1436,11 @@ mod tests {
     fn sync_output_pins_local_pulled_flag_and_sources_array() {
         let v = SyncOutput {
             local_pulled: true,
+            local_pull_error: None,
+            config_resolution_error: None,
             sources: vec![SourceSyncOutput {
                 name: "main".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("c0ffee".to_string()),
             }],
         };
@@ -1153,6 +1503,7 @@ mod tests {
                 matches: false,
                 expected: "content satisfies patch spec".to_string(),
                 actual: "cannot evaluate patch spec: blocked".to_string(),
+                unmanaged: false,
             }],
             packages: vec![PackageDrift {
                 manager: "brew".to_string(),
@@ -1160,6 +1511,8 @@ mod tests {
                 packages: vec!["ripgrep".to_string()],
                 bootstrap_method: None,
                 reason: None,
+                expected: None,
+                actual: None,
             }],
             system: vec![SystemDriftOutput {
                 key: "sysctl.kernel.x".to_string(),
@@ -1170,12 +1523,23 @@ mod tests {
                 key: "launchd".to_string(),
                 error: "permission denied".to_string(),
             }],
+            env: vec![EnvDriftOutput {
+                kind: "alias".to_string(),
+                name: "ll".to_string(),
+                expected: r#"alias ll="ls -la""#.to_string(),
+                actual: "missing or changed".to_string(),
+            }],
+            standing: Vec::new(),
             summary: DiffSummary {
                 has_file_drift: true,
                 has_pkg_drift: true,
                 has_system_drift: true,
                 system_check_failed: true,
+                has_env_drift: true,
+                env_check_failed: false,
+                has_standing_drift: false,
             },
+            env_check_error: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         let files = json["files"].as_array().expect("files is array");
@@ -1205,6 +1569,13 @@ mod tests {
         assert_eq!(errs[0]["key"], json!("launchd"));
         assert_eq!(errs[0]["error"], json!("permission denied"));
         assert_eq!(json["summary"]["systemCheckFailed"], json!(true));
+        let env = json["env"].as_array().expect("env is array");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0]["kind"], json!("alias"));
+        assert_eq!(env[0]["name"], json!("ll"));
+        assert_eq!(env[0]["expected"], json!(r#"alias ll="ls -la""#));
+        assert_eq!(env[0]["actual"], json!("missing or changed"));
+        assert_eq!(json["summary"]["hasEnvDrift"], json!(true));
     }
 
     #[test]
@@ -1214,12 +1585,18 @@ mod tests {
             has_pkg_drift: true,
             has_system_drift: false,
             system_check_failed: false,
+            has_env_drift: true,
+            env_check_failed: true,
+            has_standing_drift: true,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
         assert_eq!(json["hasPkgDrift"], json!(true));
         assert_eq!(json["hasSystemDrift"], json!(false));
         assert_eq!(json["systemCheckFailed"], json!(false));
+        assert_eq!(json["hasEnvDrift"], json!(true));
+        assert_eq!(json["envCheckFailed"], json!(true));
+        assert_eq!(json["hasStandingDrift"], json!(true));
     }
 
     #[test]
@@ -1232,6 +1609,11 @@ mod tests {
             "a complete run carries no error list: {json}"
         );
         assert_eq!(json["summary"]["systemCheckFailed"], json!(false));
+        assert!(
+            json.get("envCheckError").is_none(),
+            "a complete run carries no env check error: {json}"
+        );
+        assert_eq!(json["summary"]["envCheckFailed"], json!(false));
     }
 
     #[test]
@@ -1242,6 +1624,8 @@ mod tests {
             packages: vec![],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["manager"], json!("apt"));
@@ -1260,6 +1644,8 @@ mod tests {
             packages: vec!["bat".to_string(), "fd-find".to_string()],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["packages"], json!(["bat", "fd-find"]));
@@ -1282,12 +1668,12 @@ mod tests {
     fn source_sync_output_skips_none_commit() {
         let v = SourceSyncOutput {
             name: "infra".to_string(),
-            status: "pending".to_string(),
+            status: SourceOutcome::Skipped,
             commit: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("infra"));
-        assert_eq!(json["status"], json!("pending"));
+        assert_eq!(json["status"], json!("skipped"));
         assert!(
             json.get("commit").is_none(),
             "commit must be skipped when None"
@@ -1308,10 +1694,12 @@ mod tests {
                         targets: vec![],
                         origin: None,
                         manager: None,
+                        detail: None,
                     }],
                 )],
             }],
             total_actions: 1,
+            sources: vec![],
             warnings: vec![],
             pending_backups: vec![],
             pending_decisions: vec![],
@@ -1342,6 +1730,7 @@ mod tests {
             context: "default".to_string(),
             phases: vec![],
             total_actions: 0,
+            sources: vec![],
             warnings: vec!["missing tool".to_string()],
             pending_backups: vec![],
             pending_decisions: vec![],
@@ -1357,6 +1746,7 @@ mod tests {
             context: "default".to_string(),
             phases: vec![],
             total_actions: 0,
+            sources: vec![],
             warnings: vec![],
             pending_backups: vec!["photos".to_string()],
             pending_decisions: vec![],
@@ -1378,6 +1768,7 @@ mod tests {
                     targets: vec!["/etc/hosts".to_string()],
                     origin: None,
                     manager: None,
+                    detail: None,
                 }],
             )],
         };
@@ -1408,6 +1799,7 @@ mod tests {
             targets: vec![],
             origin: None,
             manager: None,
+            detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -1434,6 +1826,7 @@ mod tests {
             targets: vec!["/etc/hosts".to_string()],
             origin: None,
             manager: None,
+            detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(
@@ -1684,11 +2077,15 @@ mod tests {
     fn source_list_entry_camelcases_last_fetched_and_emits_nulls() {
         let v = SourceListEntry {
             name: "main".to_string(),
-            url: "https://example.com/repo.git".to_string(),
-            priority: 100,
+            url: Some("https://example.com/repo.git".to_string()),
+            priority: Some(100),
             version: None,
             status: "synced".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
+            signed: Some(true),
+            require_signed_commits: Some(true),
+            last_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            drift_count: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("main"));
@@ -1697,6 +2094,13 @@ mod tests {
         assert_eq!(json["version"], Value::Null);
         assert_eq!(json["status"], json!("synced"));
         assert_eq!(json["lastFetched"], json!("2026-01-01T00:00:00Z"));
+        assert_eq!(json["requireSignedCommits"], json!(true));
+        assert_eq!(
+            json["lastCommit"],
+            json!("0123456789abcdef0123456789abcdef01234567"),
+            "the payload keeps the full id; only the column shortens it"
+        );
+        assert_eq!(json["driftCount"], Value::Null);
     }
 
     #[test]
@@ -1715,6 +2119,7 @@ mod tests {
                 status: "fresh".to_string(),
                 last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
                 last_commit: Some("abc".to_string()),
+                signed: Some(true),
                 version: Some("v1.2.3".to_string()),
                 locked_ref: None,
                 locked_commit: None,
@@ -1724,6 +2129,20 @@ mod tests {
                 resource_id: "shell".to_string(),
             }],
             modules: vec!["dev-tools".to_string()],
+            policy: Some(SourcePolicyOutput {
+                require_signed_commits: true,
+                signed_commits_bypassed: true,
+                scripts_allowed: false,
+                secrets_read_allowed: false,
+                system_changes_allowed: false,
+                allowed_target_paths: vec!["~/.config/**".to_string()],
+                encryption: Some(crate::cli::output_types::SourceEncryptionOutput {
+                    required_targets: vec!["secrets/**".to_string()],
+                    backend: Some("sops".to_string()),
+                    mode: Some("Always".to_string()),
+                }),
+            }),
+            manifest: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["modules"], json!(["dev-tools"]));
@@ -1738,6 +2157,77 @@ mod tests {
         assert_eq!(json["pinVersion"], json!("v1.2.3"));
         assert_eq!(json["state"]["status"], json!("fresh"));
         assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
+        assert_eq!(json["policy"]["requireSignedCommits"], json!(true));
+        assert_eq!(json["policy"]["signedCommitsBypassed"], json!(true));
+        assert_eq!(json["policy"]["scriptsAllowed"], json!(false));
+        assert_eq!(json["policy"]["secretsReadAllowed"], json!(false));
+        assert_eq!(json["policy"]["systemChangesAllowed"], json!(false));
+        assert_eq!(
+            json["policy"]["allowedTargetPaths"],
+            json!(["~/.config/**"])
+        );
+        assert_eq!(
+            json["policy"]["encryption"]["requiredTargets"],
+            json!(["secrets/**"])
+        );
+        assert_eq!(json["policy"]["encryption"]["backend"], json!("sops"));
+        assert_eq!(json["policy"]["encryption"]["mode"], json!("Always"));
+    }
+
+    /// `signedCommitsBypassed` and `encryption` both take `skip_serializing_if`
+    /// — omitted from the wire rather than serialized as `false`/`null` when
+    /// there is nothing to report, matching the envelope discipline every
+    /// other optional field on this struct already follows.
+    #[test]
+    fn source_policy_output_omits_bypass_and_encryption_when_absent() {
+        let policy = SourcePolicyOutput {
+            require_signed_commits: false,
+            signed_commits_bypassed: false,
+            scripts_allowed: true,
+            secrets_read_allowed: true,
+            system_changes_allowed: true,
+            allowed_target_paths: Vec::new(),
+            encryption: None,
+        };
+        let json = serde_json::to_value(&policy).unwrap();
+        assert!(
+            json.get("signedCommitsBypassed").is_none(),
+            "false bypass must be omitted: {json}"
+        );
+        assert!(
+            json.get("encryption").is_none(),
+            "absent encryption constraint must be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn source_show_output_omits_policy_when_manifest_unavailable() {
+        let v = SourceShowOutput {
+            name: "infra".to_string(),
+            url: "https://example.com/r.git".to_string(),
+            branch: "main".to_string(),
+            priority: 50,
+            accept_recommended: false,
+            profile: None,
+            sync_interval: "5m".to_string(),
+            auto_apply: false,
+            pin_version: None,
+            state: None,
+            managed_resources: Vec::new(),
+            modules: Vec::new(),
+            policy: None,
+            manifest: None,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            json.get("manifest").is_none(),
+            "an unloadable manifest is omitted from the wire, never null: {json}"
+        );
+        assert!(
+            json.get("policy").is_none(),
+            "no manifest means no effective policy to report — the key must be \
+             omitted, not serialized as null: {json}"
+        );
     }
 
     #[test]
@@ -1746,6 +2236,7 @@ mod tests {
             status: "stale".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             last_commit: Some("c0ffee".to_string()),
+            signed: None,
             version: Some("v0.1".to_string()),
             locked_ref: Some("v2.1.0".to_string()),
             locked_commit: Some("a".repeat(40)),
@@ -1924,8 +2415,8 @@ mod tests {
             removed: vec![],
             changed: vec![ComplianceCheckChange {
                 key: "pkg/git".to_string(),
-                old_status: "Compliant".to_string(),
-                new_status: "Violation".to_string(),
+                old_status: cfgd_core::compliance::ComplianceStatus::Compliant,
+                new_status: cfgd_core::compliance::ComplianceStatus::Violation,
                 detail: Some("missing".to_string()),
             }],
         };
@@ -1947,8 +2438,8 @@ mod tests {
     fn compliance_check_change_skips_none_detail() {
         let v = ComplianceCheckChange {
             key: "pkg/x".to_string(),
-            old_status: "Warning".to_string(),
-            new_status: "Compliant".to_string(),
+            old_status: cfgd_core::compliance::ComplianceStatus::Warning,
+            new_status: cfgd_core::compliance::ComplianceStatus::Compliant,
             detail: None,
         };
         let json = serde_json::to_value(&v).unwrap();

@@ -1,0 +1,54 @@
+Show source:team-config
+  URL                 https://github.com/team/config
+  Branch              main
+  Priority            100
+  Accept Recommended  yes
+  Profile             team
+  Sync Interval       1h
+  Auto Apply          no
+  Pin Version         v1.2.3
+
+State
+  Status       Active
+  Last Sync    18d ago
+  Last Commit  deadbeef1234
+  Signed       yes
+
+Managed Resources
+  Type     Resource 
+  ──────────────────
+  package  brew/curl
+  file     ~/.bashrc
+  env      EDITOR   
+
+Modules
+  ◉ dev-tools
+  ◉ shell
+
+Manifest
+  Name         team-config
+  Description  Team-wide baseline
+  Version      3.1.0
+
+Profiles
+  profile:dev
+    Env
+      EDITOR  vim
+    Packages
+      brew formulae  ripgrep
+
+Policy
+  Require Signed Commits  yes (bypassed: security.allowUnsigned)
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
+  Allowed Target Paths    ~/.config/**, ~/.bashrc
+  Encryption
+    Required Targets  secrets/**
+    Backend           sops
+    Mode              Always
+  Required
+    ◉ file: ~/.bashrc
+    ◉ env: EDITOR
+  Recommended
+    ◉ system: shellAliases

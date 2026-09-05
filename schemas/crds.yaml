@@ -39,17 +39,29 @@ spec:
             properties:
               files:
                 default: []
+                description: |-
+                  Files to write on the machine, either inline or fetched from a source
+                  path.
                 items:
+                  description: A file the operator writes on a managed machine.
                   properties:
                     content:
+                      description: Literal file body, written as-is. Mutually exclusive with `source`.
                       nullable: true
                       type: string
                     mode:
                       default: '0644'
+                      description: 'Octal permission bits applied after the write. Default: `0644`.'
                       type: string
                     path:
+                      description: |-
+                        Destination path on the machine. A leading `~` expands to the home
+                        directory of the user the agent runs as.
                       type: string
                     source:
+                      description: |-
+                        Path the body is read from instead of `content`, resolved against the
+                        machine's config directory.
                       nullable: true
                       type: string
                   required:
@@ -63,16 +75,27 @@ spec:
                 - path
                 x-kubernetes-list-type: map
               hostname:
+                description: |-
+                  Hostname of the machine this document describes. The agent reconciles
+                  only the MachineConfig whose hostname matches its own.
                 type: string
               moduleRefs:
                 default: []
+                description: |-
+                  Modules to install on the machine, each naming a cluster-scoped
+                  `Module` resource.
                 items:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -83,12 +106,19 @@ spec:
                 x-kubernetes-list-type: map
               packages:
                 default: []
+                description: |-
+                  Packages to install on top of whatever the profile declares, each
+                  optionally version-pinned.
                 items:
                   description: Reference to a package with optional version pin.
                   properties:
                     name:
+                      description: Package name as the machine's own package manager knows it.
                       type: string
                     version:
+                      description: |-
+                        Exact version to pin to. Omitted, whatever the manager currently offers
+                        is installed and left alone once present.
                       nullable: true
                       type: string
                   required:
@@ -99,10 +129,17 @@ spec:
                 - name
                 x-kubernetes-list-type: map
               profile:
+                description: |-
+                  Name of the profile the machine reconciles against. Resolved on the
+                  machine, from its own config directory or from a subscribed source.
                 type: string
               systemSettings:
                 additionalProperties: true
                 default: {}
+                description: |-
+                  System configurator settings to apply, keyed by
+                  `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
+                  no system settings are reconciled.
                 type: object
             required:
             - hostname
@@ -209,9 +246,14 @@ spec:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -222,12 +264,19 @@ spec:
                 x-kubernetes-list-type: map
               packages:
                 default: []
+                description: |-
+                  Packages every selected MachineConfig must declare, each optionally
+                  version-pinned.
                 items:
                   description: Reference to a package with optional version pin.
                   properties:
                     name:
+                      description: Package name as the machine's own package manager knows it.
                       type: string
                     version:
+                      description: |-
+                        Exact version to pin to. Omitted, whatever the manager currently offers
+                        is installed and left alone once present.
                       nullable: true
                       type: string
                   required:
@@ -239,13 +288,21 @@ spec:
                 x-kubernetes-list-type: map
               requiredModules:
                 default: []
+                description: |-
+                  Modules every selected MachineConfig must carry. A machine missing one
+                  is counted non-compliant.
                 items:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -257,21 +314,33 @@ spec:
               settings:
                 additionalProperties: true
                 default: {}
+                description: |-
+                  System settings every selected MachineConfig must declare, keyed the
+                  same way as `MachineConfig.spec.systemSettings`.
                 type: object
               targetSelector:
                 default:
                   matchExpressions: []
                   matchLabels: {}
-                description: Kubernetes-style label selector with match_labels and match_expressions.
+                description: |-
+                  Which MachineConfigs in this namespace the policy applies to. Empty,
+                  it applies to all of them.
                 properties:
                   matchExpressions:
                     default: []
+                    description: |-
+                      Set-based requirements a resource must satisfy, evaluated alongside
+                      `matchLabels`. Every requirement must hold.
                     items:
                       description: A single requirement for label selector expressions.
                       properties:
                         key:
+                          description: Label key this requirement tests.
                           type: string
                         operator:
+                          description: |-
+                            How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+                            `DoesNotExist`.
                           enum:
                           - In
                           - NotIn
@@ -280,6 +349,9 @@ spec:
                           type: string
                         values:
                           default: []
+                          description: |-
+                            Values the key is tested against. Required for `In` and `NotIn`, and
+                            must be empty for `Exists` and `DoesNotExist`.
                           items:
                             type: string
                           type: array
@@ -295,6 +367,9 @@ spec:
                     additionalProperties:
                       type: string
                     default: {}
+                    description: |-
+                      Labels a resource must carry verbatim to match. Every entry must match;
+                      an empty map matches everything.
                     type: object
                 type: object
             type: object
@@ -338,6 +413,19 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              nonCompliantMachines:
+                default: []
+                description: |-
+                  `namespace/name` of the MachineConfigs currently violating this policy,
+                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+                  `PolicyViolation` event fires on the transition into violation rather
+                  than once per observation — an in-process memory would re-announce every
+                  machine after an operator restart. `nonCompliantCount` is the exact
+                  total and is never capped.
+                items:
+                  type: string
+                maxItems: 500
+                type: array
             required:
             - compliantCount
             - nonCompliantCount
@@ -386,18 +474,42 @@ spec:
         description: Auto-generated derived type for DriftAlertSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              Drifted system settings a device reported at check-in.
+
+              A device's report covers its system settings alone — the answers of the
+              system configurators its profile declares (`sysctl`, `kernelModules`,
+              `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
+              and aliases are checked on the device by `cfgd diff` and reach the fleet only
+              as the aggregate counts of a compliance summary, never as findings — so a
+              device with no DriftAlert is a device whose system settings matched, not a
+              device proven in sync.
             properties:
               deviceId:
+                description: Identifier of the device that reported the drift, as it enrolled.
                 type: string
               driftDetails:
                 default: []
+                description: |-
+                  One entry per drifted system setting, each carrying what was declared and
+                  what the device found.
                 items:
+                  description: One system setting whose live value diverged from its declared value.
                   properties:
                     actual:
+                      description: The value the device actually reported.
                       type: string
                     expected:
+                      description: The value the MachineConfig declares.
                       type: string
                     field:
+                      description: |-
+                        The drifted setting, named `<configurator>.<key>` as the device reported
+                        it (e.g. `sysctl.net.ipv4.ip_forward`).
+
+                        The configurator qualifies the key because a key names a setting only
+                        within its own configurator: two of them may declare the same one, and
+                        this list merges by this field.
                       type: string
                   required:
                   - actual
@@ -409,17 +521,24 @@ spec:
                 - field
                 x-kubernetes-list-type: map
               machineConfigRef:
-                description: Typed reference to a MachineConfig resource.
+                description: The MachineConfig whose desired state the device diverged from.
                 properties:
                   name:
+                    description: Name of the referenced MachineConfig.
                     type: string
                   namespace:
+                    description: |-
+                      Namespace the MachineConfig lives in. Omitted, the referring
+                      resource's own namespace is used.
                     nullable: true
                     type: string
                 required:
                 - name
                 type: object
               severity:
+                description: |-
+                  How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
+                  Drives alert routing rather than any automatic remediation.
                 enum:
                 - Low
                 - Medium
@@ -522,9 +641,14 @@ spec:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -537,16 +661,25 @@ spec:
                 default:
                   matchExpressions: []
                   matchLabels: {}
-                description: Select which namespaces this cluster policy applies to.
+                description: |-
+                  Select which namespaces this cluster policy applies to. Empty, it
+                  applies to every namespace in the cluster.
                 properties:
                   matchExpressions:
                     default: []
+                    description: |-
+                      Set-based requirements a resource must satisfy, evaluated alongside
+                      `matchLabels`. Every requirement must hold.
                     items:
                       description: A single requirement for label selector expressions.
                       properties:
                         key:
+                          description: Label key this requirement tests.
                           type: string
                         operator:
+                          description: |-
+                            How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+                            `DoesNotExist`.
                           enum:
                           - In
                           - NotIn
@@ -555,6 +688,9 @@ spec:
                           type: string
                         values:
                           default: []
+                          description: |-
+                            Values the key is tested against. Required for `In` and `NotIn`, and
+                            must be empty for `Exists` and `DoesNotExist`.
                           items:
                             type: string
                           type: array
@@ -570,16 +706,24 @@ spec:
                     additionalProperties:
                       type: string
                     default: {}
+                    description: |-
+                      Labels a resource must carry verbatim to match. Every entry must match;
+                      an empty map matches everything.
                     type: object
                 type: object
               packages:
                 default: []
+                description: Packages every MachineConfig in a selected namespace must declare.
                 items:
                   description: Reference to a package with optional version pin.
                   properties:
                     name:
+                      description: Package name as the machine's own package manager knows it.
                       type: string
                     version:
+                      description: |-
+                        Exact version to pin to. Omitted, whatever the manager currently offers
+                        is installed and left alone once present.
                       nullable: true
                       type: string
                   required:
@@ -591,13 +735,19 @@ spec:
                 x-kubernetes-list-type: map
               requiredModules:
                 default: []
+                description: Modules every MachineConfig in a selected namespace must carry.
                 items:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -610,12 +760,20 @@ spec:
                 default:
                   allowUnsigned: false
                   trustedRegistries: []
+                description: Cluster-wide rules governing which modules may be admitted at all.
                 properties:
                   allowUnsigned:
                     default: false
+                    description: |-
+                      Whether a module carrying an unsigned OCI artifact may be admitted.
+                      Default: `false` — creating any ClusterConfigPolicy at all starts
+                      rejecting unsigned modules.
                     type: boolean
                   trustedRegistries:
                     default: []
+                    description: |-
+                      Registry prefixes a module artifact may be pulled from; a trailing `*`
+                      or `/` widens the match. Empty, any registry is accepted.
                     items:
                       type: string
                     type: array
@@ -624,6 +782,9 @@ spec:
               settings:
                 additionalProperties: true
                 default: {}
+                description: |-
+                  System settings every MachineConfig in a selected namespace must
+                  declare, keyed the same way as `MachineConfig.spec.systemSettings`.
                 type: object
             type: object
           status:
@@ -666,6 +827,19 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              nonCompliantMachines:
+                default: []
+                description: |-
+                  `namespace/name` of the MachineConfigs currently violating this policy,
+                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+                  `PolicyViolation` event fires on the transition into violation rather
+                  than once per observation — an in-process memory would re-announce every
+                  machine after an operator restart. `nonCompliantCount` is the exact
+                  total and is never capped.
+                items:
+                  type: string
+                maxItems: 500
+                type: array
             required:
             - compliantCount
             - nonCompliantCount
@@ -699,11 +873,14 @@ spec:
     - jsonPath: .spec.ociArtifact
       name: Artifact
       type: string
-    - jsonPath: .status.verified
-      name: Verified
-      type: boolean
-    - jsonPath: .status.availablePlatforms
+    - jsonPath: .status.signature
+      name: Signature
+      type: string
+    - jsonPath: .status.platformsSummary
       name: Platforms
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Available")].status
+      name: Available
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -717,21 +894,41 @@ spec:
             properties:
               depends:
                 default: []
+                description: Names of other `Module` resources that must be applied first.
                 items:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
               env:
                 default: []
+                description: |-
+                  Environment variables this module contributes to containers that mount
+                  it.
                 items:
                   description: An environment variable set by a Module.
                   properties:
                     append:
                       default: false
+                      description: |-
+                        Append to the variable's existing value with the platform's path
+                        separator instead of replacing it. Default: `false`.
                       type: boolean
                     name:
+                      description: Variable name, as exported into the container or shell environment.
                       type: string
+                    platforms:
+                      description: |-
+                        Platform tags gating this entry alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
+                        Linux container, so the pod-mutating webhook injects an entry only when
+                        this is empty or names `linux` — nothing about a pod can answer a
+                        distro or arch tag.
+                      items:
+                        type: string
+                      type: array
                     value:
+                      description: Value assigned to the variable.
                       type: string
                   required:
                   - name
@@ -743,12 +940,17 @@ spec:
                 x-kubernetes-list-type: map
               files:
                 default: []
+                description: Files this module deploys out of its artifact.
                 items:
                   description: A file managed by a Module.
                   properties:
                     source:
+                      description: Path to the file inside the module artifact.
                       type: string
                     target:
+                      description: |-
+                        Destination path the file is deployed to inside the pod or on the
+                        machine.
                       type: string
                   required:
                   - source
@@ -770,14 +972,24 @@ spec:
                 - Debug
                 type: string
               ociArtifact:
+                description: |-
+                  OCI reference the module's content is pulled from
+                  (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content
+                  inline and nothing is fetched.
                 nullable: true
                 type: string
               packages:
                 default: []
+                description: |-
+                  Packages this module installs, each with optional per-platform name
+                  overrides.
                 items:
                   description: An entry in a Module's package list with optional per-platform overrides.
                   properties:
                     name:
+                      description: |-
+                        Default package name, used on every platform `platforms` names no
+                        override for.
                       type: string
                     platforms:
                       additionalProperties:
@@ -793,18 +1005,25 @@ spec:
                 x-kubernetes-list-type: map
               scripts:
                 default: {}
-                description: Scripts that run during module lifecycle.
+                description: Lifecycle commands run around the module's deployment.
                 properties:
                   postApply:
+                    description: |-
+                      Command run once after the module's files and packages are in place.
+                      Omitted, nothing runs.
                     nullable: true
                     type: string
                 type: object
               signature:
-                description: Signature configuration for a Module's OCI artifact.
+                description: |-
+                  How the artifact's provenance is verified before it is admitted.
+                  Omitted, verification is governed by the cluster policy alone.
                 nullable: true
                 properties:
                   cosign:
-                    description: Cosign configuration for OCI artifact signature verification.
+                    description: |-
+                      How the artifact's cosign signature is verified. Omitted, no signature
+                      is required of this module.
                     nullable: true
                     properties:
                       certificateIdentity:
@@ -868,7 +1087,39 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  The `metadata.generation` every other field here was computed from. A
+                  status whose `observedGeneration` is behind `metadata.generation`
+                  describes the PREVIOUS spec, which is what lets a caller wait for a
+                  verdict about the spec it just applied instead of reading the one it
+                  replaced.
+                format: int64
+                nullable: true
+                type: integer
+              platformsSummary:
+                description: |-
+                  `availablePlatforms` rendered as one comma-joined string for the
+                  `Platforms` printer column, and the only field that column may be bound
+                  to: a column resolving to an array prints the Go rendering of the
+                  slice, so an empty one reads as the literal `[]` where an absent value
+                  leaves the cell empty. Absent when no platform is known, so the
+                  JSONPath resolves to nothing and the cell stays blank.
+                nullable: true
+                type: string
               resolvedArtifact:
+                nullable: true
+                type: string
+              signature:
+                description: |-
+                  The signature verdict as ONE word (`verified` / `unverified` /
+                  `unsigned` / `unknown`), and the only field the `Signature` printer
+                  column may be bound to. `verified` is the same verdict as a raw bool,
+                  which reads as
+                  `true` in a column beside a `kubectl cfgd status` row saying
+                  `(verified)` about the same module — one fact, two vocabularies. Absent
+                  when no reconcile has written it, so the JSONPath resolves to nothing
+                  and the cell stays blank.
                 nullable: true
                 type: string
               signatureDigest:

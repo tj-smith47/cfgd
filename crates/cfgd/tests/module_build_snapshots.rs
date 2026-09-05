@@ -21,7 +21,7 @@ use std::path::Path;
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -77,10 +77,20 @@ fn module_build_missing_yaml_human() {
 
 #[test]
 fn module_build_bridge_one_blank_line() {
+    // Mirrors production's real section shape (`cli/module/build.rs`'s
+    // multi-target loop): the command's one `Build Module` section, holding a
+    // `target:<t>` owner group per platform — the same idiom the "Fetch" /
+    // "registry:<name>" owner groups elsewhere use. See
+    // `build_failure_settle_line_nests_under_the_target_owner_header`, which
+    // asserts the settled line renders deeper than the header for the real
+    // command.
     let (printer, cap) = Printer::for_test_doc();
-    printer.heading("Build Module");
     {
-        let sp = printer.spinner("Building for linux/amd64...");
+        let build_sec = printer.section("Build Module");
+        let _inherit = printer.depth_inheritance();
+        build_sec.kv_block([("Directory", "."), ("Targets", "linux/amd64")]);
+        let owner = build_sec.section_owner(&OwnerLabel::new("target", "linux/amd64"));
+        let sp = owner.spinner("Building for linux/amd64");
         sp.finish_ok("Built linux/amd64 to /tmp/build-out");
     }
     printer.emit(

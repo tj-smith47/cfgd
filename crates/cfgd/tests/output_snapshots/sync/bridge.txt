@@ -1,6 +1,6 @@
 Sync
 
-Local repo
+Local Repo
   ✓ Already up to date
 
 Source Commits

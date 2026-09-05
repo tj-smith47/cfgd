@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::PathDisplayExt;
 use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
+use crate::output::Role;
 
 use super::git::{GitSource, fetch_git_source, git_cache_dir, parse_git_source, resolve_subdir};
 use super::loader::{load_module, load_modules};
@@ -16,6 +17,7 @@ use super::{LoadedModule, SourceModuleRoot};
 /// Returns an empty lockfile if the file does not exist.
 pub fn load_lockfile(config_dir: &Path) -> Result<ModuleLockfile> {
     let lockfile_path = config_dir.join("modules.lock");
+    crate::record_config_input(&lockfile_path);
     if !lockfile_path.exists() {
         return Ok(ModuleLockfile::default());
     }
@@ -39,26 +41,32 @@ pub fn save_lockfile(config_dir: &Path, lockfile: &ModuleLockfile) -> Result<()>
 
 /// Compute SHA-256 integrity hash of a module directory's contents.
 /// Hashes file paths (relative to module dir) and their contents, sorted for determinism.
+///
+/// The digest is taken over `<rel-path>\0<contents>\0` per file in sorted order,
+/// streamed into the hasher a chunk at a time. The byte sequence is exactly the
+/// one a buffered concatenation produced, because an existing `modules.lock`
+/// entry has to keep verifying — what changed is that a module's whole tree is
+/// no longer resident (twice) to answer a 32-byte question.
 pub fn hash_module_contents(module_dir: &Path) -> Result<String> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
     collect_files_for_hash(module_dir, module_dir, &mut entries)?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher_input = Vec::new();
-    for (rel_path, content) in &entries {
-        hasher_input.extend_from_slice(rel_path.as_bytes());
-        hasher_input.push(0);
-        hasher_input.extend_from_slice(content);
-        hasher_input.push(0);
+    let mut hasher = crate::Sha256Stream::new();
+    for (rel_path, path) in &entries {
+        hasher.update(rel_path.as_bytes());
+        hasher.update(&[0]);
+        hasher.absorb_file(path)?;
+        hasher.update(&[0]);
     }
 
-    Ok(crate::sha256_digest(&hasher_input))
+    Ok(hasher.finish_digest())
 }
 
 pub(super) fn collect_files_for_hash(
     base: &Path,
     current: &Path,
-    entries: &mut Vec<(String, Vec<u8>)>,
+    entries: &mut Vec<(String, std::path::PathBuf)>,
 ) -> Result<()> {
     if !current.is_dir() {
         return Ok(());
@@ -94,8 +102,7 @@ pub(super) fn collect_files_for_hash(
             // file as `templates\foo.conf` on Windows vs `templates/foo.conf`
             // on Linux, diverging the digest for identical module bytes.
             let rel = crate::to_posix_string(path.strip_prefix(base).unwrap_or(&path));
-            let content = std::fs::read(&path)?;
-            entries.push((rel, content));
+            entries.push((rel, path));
         }
     }
     Ok(())
@@ -115,7 +122,10 @@ pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path
         return Err(ModuleError::GitFetchFailed {
             module: lock_entry.name.clone(),
             url: lock_entry.url.clone(),
-            message: "cached module directory does not exist — run 'cfgd module update'".into(),
+            message: format!(
+                "cached module directory does not exist — run `cfgd module upgrade {}`",
+                lock_entry.name
+            ),
         }
         .into());
     }
@@ -135,6 +145,20 @@ pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path
 
 /// Load remote modules from the lockfile, fetching if needed, and merge
 /// them into the given modules map.
+///
+/// A locked entry is resolved by the COMMIT the lock records, not by the tag it
+/// was locked from. Both name the same tree — `commit` is what `pinnedRef`
+/// resolved to at lock time, and re-pinning either is what `cfgd module upgrade`
+/// is for — but only the commit is an immutable object id, which is what lets
+/// [`fetch_git_source`] answer it out of the cache with no network at all. Every
+/// run used to pay one full fetch cycle per locked entry to re-learn where a
+/// pinned tag pointed, which by the lockfile's own contract cannot have moved.
+///
+/// A cache that cannot answer the pin is still materialized from the remote: the
+/// lockfile is a determinism guarantee, not an offline one (see `docs/modules.md`
+/// — a machine that has never fetched a locked module has nothing to resolve
+/// from, and cloning a recorded commit is deterministic). What is gone is the
+/// per-run fetch of an entry the cache already holds.
 pub fn load_locked_modules(
     config_dir: &Path,
     cache_base: &Path,
@@ -148,13 +172,17 @@ pub fn load_locked_modules(
         if modules.contains_key(&entry.name) {
             continue;
         }
+        // The entry name becomes both a cache directory component and the map
+        // key rows are attributed by, and the body's own `metadata.name` need
+        // not equal it.
+        super::validate_module_name(&entry.name)?;
 
         let git_src = parse_git_source(&entry.url)?;
 
         // Build a GitSource with the pinned ref
         let pinned_src = GitSource {
             repo_url: git_src.repo_url.clone(),
-            tag: Some(entry.pinned_ref.clone()),
+            tag: Some(locked_ref(entry)),
             git_ref: None,
             subdir: entry.subdir.clone(),
         };
@@ -171,6 +199,21 @@ pub fn load_locked_modules(
     }
 
     Ok(())
+}
+
+/// The ref a locked entry is checked out at: its recorded commit when the lock
+/// carries a full object id, and otherwise the tag it was locked from.
+///
+/// The fallback is not a legacy shim — `commit` has always been written by
+/// `get_head_commit_sha`, so every lockfile cfgd wrote carries a full id — it is
+/// for a lockfile a human edited or truncated, where a short or empty `commit`
+/// must degrade to the tag rather than fail the load with an unresolvable ref.
+fn locked_ref(entry: &ModuleLockEntry) -> String {
+    let commit = entry.commit.trim();
+    if super::git::is_full_object_id(commit) {
+        return commit.to_string();
+    }
+    entry.pinned_ref.clone()
 }
 
 /// Load module bodies delivered by subscribed ConfigSources into `modules`.
@@ -199,7 +242,18 @@ pub fn load_source_modules(
             if modules.contains_key(name) {
                 continue;
             }
+            // A source names the modules it offers in its own manifest, and the
+            // name is joined onto the checkout to find the body as well as
+            // becoming the map key.
+            super::validate_module_name(name)?;
             let module_yaml = root.modules_dir.join(name).join("module.yaml");
+            // Recorded BEFORE the existence test, and so recorded even when the
+            // answer is "nothing there": an offered module whose body arrives on
+            // a later sync is a change to the desired state, and the only thing
+            // that can report it is an absent-input entry for the file that was
+            // missing. The source checkout's own directory stamp cannot — the
+            // body lands two levels below it.
+            crate::record_config_input(&module_yaml);
             if !module_yaml.exists() {
                 continue;
             }
@@ -251,7 +305,7 @@ fn module_script_kind(module: &LoadedModule) -> Option<String> {
         }
     }
     for pkg in &module.spec.packages {
-        if pkg.prefer.iter().any(|p| p == "script") {
+        if pkg.prefer.iter().any(|p| p == crate::SCRIPT_SENTINEL) {
             return Some(format!(
                 "a 'prefer: [script]' install for package '{}'",
                 pkg.name
@@ -287,28 +341,62 @@ pub fn load_all_modules(
     Ok(modules)
 }
 
+/// A declared value with its own `platforms:` gate named after it, so a spec
+/// diff shows a gate that moved rather than reporting an unchanged value.
+fn gated(value: &str, entry: &impl crate::platform::PlatformGated) -> String {
+    match entry.platform_annotation() {
+        Some(tags) => format!("{value} ({tags})"),
+        None => value.to_string(),
+    }
+}
+
 /// Diff two module specs, returning a human-readable summary of changes.
-pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> {
+///
+/// Each entry carries the [`Role`] the caller renders it with — `Ok` for an
+/// addition, `Fail` for a removal, `Warn` for a value change on an existing
+/// entry, `Info` for the no-changes sentinel — instead of baking a `+`/`-`/`~`
+/// marker into the text: the role's own icon at render time IS the marker, so
+/// this stays a single source of add/remove/change signal rather than two
+/// (a hand-typed glyph in the string AND a role driving the icon beside it).
+///
+/// This runs inside `cfgd module upgrade`'s pre-approval security review —
+/// the user is deciding whether to let the upgrade run on their machine — so
+/// every added/removed entry also spells the word into the text
+/// ("dependency added: …" / "dependency removed: …"), matching the
+/// postApply-script arm below. `Role::Ok`/`Role::Fail` alone would leave a
+/// removed package (the new version simply stopped declaring it, not a
+/// failure) reading as "this upgrade failed" at the exact moment the user is
+/// approving it; the words remove that ambiguity without inventing a
+/// dedicated add/remove role the rest of the theme has no other use for.
+///
+/// name-row-ok: every row NAMES the declared kind that changed (`dependency
+/// added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
+/// and not a past-tense report of something the command did.
+pub fn diff_module_specs(
+    old: &LoadedModule,
+    new: &LoadedModule,
+    arrow: &str,
+) -> Vec<(Role, String)> {
     let mut changes = Vec::new();
 
     // Dependencies
     let old_deps: HashSet<&str> = old.spec.depends.iter().map(|s| s.as_str()).collect();
     let new_deps: HashSet<&str> = new.spec.depends.iter().map(|s| s.as_str()).collect();
     for dep in new_deps.difference(&old_deps) {
-        changes.push(format!("+ dependency: {dep}"));
+        changes.push((Role::Ok, format!("dependency added: {dep}")));
     }
     for dep in old_deps.difference(&new_deps) {
-        changes.push(format!("- dependency: {dep}"));
+        changes.push((Role::Fail, format!("dependency removed: {dep}")));
     }
 
     // Packages
     let old_pkgs: HashSet<&str> = old.spec.packages.iter().map(|p| p.name.as_str()).collect();
     let new_pkgs: HashSet<&str> = new.spec.packages.iter().map(|p| p.name.as_str()).collect();
     for pkg in new_pkgs.difference(&old_pkgs) {
-        changes.push(format!("+ package: {pkg}"));
+        changes.push((Role::Ok, format!("package added: {pkg}")));
     }
     for pkg in old_pkgs.difference(&new_pkgs) {
-        changes.push(format!("- package: {pkg}"));
+        changes.push((Role::Fail, format!("package removed: {pkg}")));
     }
 
     // Check for version constraint changes on existing packages
@@ -316,11 +404,15 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         if let Some(old_pkg) = old.spec.packages.iter().find(|p| p.name == new_pkg.name)
             && old_pkg.min_version != new_pkg.min_version
         {
-            changes.push(format!(
-                "~ package '{}': minVersion {} -> {}",
-                new_pkg.name,
-                old_pkg.min_version.as_deref().unwrap_or("(none)"),
-                new_pkg.min_version.as_deref().unwrap_or("(none)")
+            changes.push((
+                Role::Warn,
+                format!(
+                    "package '{}': minVersion {} {} {}",
+                    new_pkg.name,
+                    old_pkg.min_version.as_deref().unwrap_or("(none)"),
+                    arrow,
+                    new_pkg.min_version.as_deref().unwrap_or("(none)")
+                ),
             ));
         }
     }
@@ -329,69 +421,85 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
     let old_files: HashSet<&str> = old.spec.files.iter().map(|f| f.target.as_str()).collect();
     let new_files: HashSet<&str> = new.spec.files.iter().map(|f| f.target.as_str()).collect();
     for file in new_files.difference(&old_files) {
-        changes.push(format!("+ file target: {file}"));
+        changes.push((Role::Ok, format!("file target added: {file}")));
     }
     for file in old_files.difference(&new_files) {
-        changes.push(format!("- file target: {file}"));
+        changes.push((Role::Fail, format!("file target removed: {file}")));
     }
 
     // Env vars — an upgrade that introduces one reaches the login shell of
     // every new terminal, so it belongs on the approval surface next to a
     // post-apply script. Iterated in declaration order rather than through a
     // set difference so the approval output is stable between runs.
-    let old_env: HashMap<&str, &str> = old
+    // Compared on the DECLARED value, gate included: a `platforms:` list that
+    // moved changes which machines take the entry, which is a change to the
+    // module the approver is being asked to accept.
+    let old_env: HashMap<&str, String> = old
         .spec
         .env
         .iter()
-        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .map(|e| (e.name.as_str(), gated(&e.value, e)))
         .collect();
-    let new_env: HashMap<&str, &str> = new
+    let new_env: HashMap<&str, String> = new
         .spec
         .env
         .iter()
-        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .map(|e| (e.name.as_str(), gated(&e.value, e)))
         .collect();
     for ev in &new.spec.env {
+        let value = gated(&ev.value, ev);
         match old_env.get(ev.name.as_str()) {
-            None => changes.push(format!("+ env: {}={}", ev.name, ev.value)),
-            Some(prev) if *prev != ev.value.as_str() => {
-                changes.push(format!("~ env '{}': {} -> {}", ev.name, prev, ev.value))
-            }
+            None => changes.push((Role::Ok, format!("env added: {}={}", ev.name, value))),
+            Some(prev) if *prev != value => changes.push((
+                Role::Warn,
+                format!("env '{}': {} {} {}", ev.name, prev, arrow, value),
+            )),
             Some(_) => {}
         }
     }
     for ev in &old.spec.env {
         if !new_env.contains_key(ev.name.as_str()) {
-            changes.push(format!("- env: {}={}", ev.name, ev.value));
+            changes.push((
+                Role::Fail,
+                format!("env removed: {}={}", ev.name, gated(&ev.value, ev)),
+            ));
         }
     }
 
     // Aliases
-    let old_aliases: HashMap<&str, &str> = old
+    let old_aliases: HashMap<&str, String> = old
         .spec
         .aliases
         .iter()
-        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .map(|a| (a.name.as_str(), gated(&a.command, a)))
         .collect();
-    let new_aliases: HashMap<&str, &str> = new
+    let new_aliases: HashMap<&str, String> = new
         .spec
         .aliases
         .iter()
-        .map(|a| (a.name.as_str(), a.command.as_str()))
+        .map(|a| (a.name.as_str(), gated(&a.command, a)))
         .collect();
     for alias in &new.spec.aliases {
+        let command = gated(&alias.command, alias);
         match old_aliases.get(alias.name.as_str()) {
-            None => changes.push(format!("+ alias: {}={}", alias.name, alias.command)),
-            Some(prev) if *prev != alias.command.as_str() => changes.push(format!(
-                "~ alias '{}': {} -> {}",
-                alias.name, prev, alias.command
+            None => changes.push((Role::Ok, format!("alias added: {}={}", alias.name, command))),
+            Some(prev) if *prev != command => changes.push((
+                Role::Warn,
+                format!("alias '{}': {} {} {}", alias.name, prev, arrow, command),
             )),
             Some(_) => {}
         }
     }
     for alias in &old.spec.aliases {
         if !new_aliases.contains_key(alias.name.as_str()) {
-            changes.push(format!("- alias: {}={}", alias.name, alias.command));
+            changes.push((
+                Role::Fail,
+                format!(
+                    "alias removed: {}={}",
+                    alias.name,
+                    gated(&alias.command, alias)
+                ),
+            ));
         }
     }
 
@@ -415,15 +523,18 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         // user must see the FULL script body before approving it running on
         // their machine, so push the raw body untouched. Never condense here;
         // the caller (`cmd_module_upgrade` in `cli/module/registry.rs`)
-        // decides bullet-vs-code_block rendering based on embedded `\n`.
-        changes.push(format!("+ postApply script: {script}"));
+        // decides bullet-vs-code_block rendering based on embedded `\n`. A
+        // multi-line script renders as a `code_block`, which carries no
+        // per-line Role icon, so "added"/"removed" is spelled out in the
+        // label itself rather than relying on a marker the block can't show.
+        changes.push((Role::Ok, format!("postApply script added: {script}")));
     }
     for script in old_script_set.difference(&new_script_set) {
-        changes.push(format!("- postApply script: {script}"));
+        changes.push((Role::Fail, format!("postApply script removed: {script}")));
     }
 
     if changes.is_empty() {
-        changes.push("(no spec changes)".to_string());
+        changes.push((Role::Info, "(no spec changes)".to_string()));
     }
 
     changes

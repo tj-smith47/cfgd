@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::config::{ResolvedProfile, ScriptEntry, ScriptShell};
+use crate::config::{ResolvedProfile, ScriptCommand, ScriptEntry, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
@@ -9,6 +9,7 @@ use crate::providers::{
     NoteSink, PackageAction, PackageContext, PackageManager, PackageStateStore, ProviderRegistry,
 };
 
+use super::apply::ActionRun;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, build_module_script_env, execute_script,
     script_default_workdir,
@@ -24,6 +25,11 @@ use super::types::{ManagerAction, ModuleAction, ModuleActionKind, ReconcileConte
 /// `(manager, identity)` pairs the caller should delete from the tracking table.
 /// Only available managers are inspected — an unavailable one cannot confirm
 /// absence, so its rows are left intact. Run only on a FULL unscoped apply.
+///
+/// The enumeration comes from `cx`, so a caller whose planner already read the
+/// same managers through the same context pays for no second walk — and one
+/// that ran an install or an uninstall in between is re-read, because that
+/// moves the resolution generation every memo entry is stamped with.
 ///
 /// `cfgd_installed` holds `"<manager>/<identity>"` entries.
 pub fn stale_tracked_packages(
@@ -44,7 +50,7 @@ pub fn stale_tracked_packages(
         if tracked.is_empty() {
             continue;
         }
-        let installed = manager.installed_packages(cx)?;
+        let installed = cx.installed_for(*manager)?;
         for id in tracked {
             if !installed.contains(id) {
                 stale.push((manager.name().to_string(), id.to_string()));
@@ -104,6 +110,14 @@ pub(super) struct ModuleInstallContext<'x> {
     /// makes the snapshot current: a bootstrap has been collected before
     /// anything that could observe its directories is dispatched.
     pub(super) path_dirs: &'x [String],
+    /// Managers a node of THIS run has already put on the machine, so a module
+    /// entry naming one of them as a PACKAGE is not installed a second time by
+    /// another manager: see `super::Reconciler::provisioned`.
+    pub(super) provisioned: &'x [String],
+    /// The `(installer, package)` pairs those provisions installed, so an
+    /// entry the run itself delivered is worded as such on its row: see
+    /// `super::Reconciler::provisioned_packages`.
+    pub(super) provisioned_packages: &'x [(String, String)],
 }
 
 /// One package action's whole execution environment, holding no `&Reconciler`.
@@ -120,6 +134,13 @@ pub(super) struct PackageExec<'x> {
     printer: &'x Printer,
     notes: &'x NoteSink,
     lane: Option<&'x dyn LaneOutput>,
+    /// Managers an earlier phase of this run already failed to provision, which
+    /// no action of this one may reach: see `super::Reconciler::unprovisioned`.
+    unprovisioned: &'x [String],
+    /// The `(installer, package)` pairs this run's provisions installed, for a
+    /// profile install row's `provisioned by this run` count: see
+    /// `super::Reconciler::provisioned_packages`.
+    provisioned_packages: &'x [(String, String)],
     /// Every bootstrap this exec performed, drained by whoever owns the SQLite
     /// connection. A `RefCell` because the trait methods take `&self` and one
     /// exec is only ever used from the thread that built it.
@@ -139,6 +160,8 @@ impl<'x> PackageExec<'x> {
             printer,
             notes,
             lane: None,
+            unprovisioned: &[],
+            provisioned_packages: &[],
             bootstrapped: RefCell::new(Vec::new()),
         }
     }
@@ -148,6 +171,22 @@ impl<'x> PackageExec<'x> {
     #[must_use]
     pub(super) fn in_lane(mut self, lane: &'x dyn LaneOutput) -> Self {
         self.lane = Some(lane);
+        self
+    }
+
+    /// Refuse every action naming one of `managers` — the run's own record of
+    /// what it could not put on the machine.
+    #[must_use]
+    pub(super) fn withholding_managers(mut self, managers: &'x [String]) -> Self {
+        self.unprovisioned = managers;
+        self
+    }
+
+    /// Word a profile install's shortfall against what this run's own
+    /// provisions installed.
+    #[must_use]
+    pub(super) fn delivered_by(mut self, packages: &'x [(String, String)]) -> Self {
+        self.provisioned_packages = packages;
         self
     }
 
@@ -207,6 +246,38 @@ impl<'x> PackageExec<'x> {
         self.record_path_dirs(pm.name(), dirs, PathDirRecord::Created);
     }
 
+    /// Make an install's resolvable directories reachable to the REST OF THIS
+    /// PROCESS, without persisting anything.
+    ///
+    /// [`PackageManager::path_dirs`] answers where a manager's binaries live
+    /// however they got there, and normally only reaches the process registry
+    /// through [`Self::record_bootstrap`], which fires when the manager's OWN
+    /// bootstrap runs THIS run. A manager already available on a prior run, or
+    /// baked into an image, never bootstraps — so a binary this run's install
+    /// just landed in that directory (pipx, nvim, ...) is still unresolvable to
+    /// the very next action or postApply script naming it, even though the
+    /// manager reported the install successful seconds earlier.
+    ///
+    /// This closes that gap at the PROCESS level only: it registers the
+    /// directories for [`crate::command_path`] resolution and deliberately
+    /// mints no [`BootstrapRecord`] — the directory is the manager's own to
+    /// have always had, not something cfgd created, so nothing about it
+    /// belongs in the generated env file. [`Self::record_created_path_dirs`]
+    /// (`PackageManager::created_path_dirs`) is the only path to that surface,
+    /// and answers separately for whatever a manager genuinely made itself.
+    fn register_install_path_dirs(&self, pm: &dyn PackageManager) {
+        let cx = self.cx();
+        let dirs: Vec<String> = pm
+            .path_dirs(&cx)
+            .iter()
+            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        crate::register_bootstrapped_path_dirs(&dirs);
+    }
+
     /// Install through `pm` and record whatever that install created, whichever
     /// way it went.
     ///
@@ -223,6 +294,11 @@ impl<'x> PackageExec<'x> {
         cx: &PackageContext<'_>,
     ) -> Result<()> {
         let result = pm.install(packages, cx);
+        // An install can land a binary in a directory that was already on
+        // `PATH` — the whole point of `apt install curl` — which registers no
+        // new directory and so would leave a memoized "not found" standing.
+        crate::invalidate_command_resolution();
+        self.register_install_path_dirs(pm);
         self.record_created_path_dirs(pm);
         result
     }
@@ -244,7 +320,7 @@ impl<'x> PackageExec<'x> {
     fn provision_batch(&self, members: &[&str], via: &str) -> Result<()> {
         let mediator = self
             .registry
-            .package_managers
+            .package_managers()
             .iter()
             .find(|pm| pm.name() == via)
             .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -254,7 +330,7 @@ impl<'x> PackageExec<'x> {
         for name in members {
             let pm = self
                 .registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|pm| pm.name() == *name)
                 .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -312,7 +388,7 @@ impl<'x> PackageExec<'x> {
     fn package_manager_missing_error(&self, manager: &str) -> crate::errors::CfgdError {
         let registered = self
             .registry
-            .package_managers
+            .package_managers()
             .iter()
             .any(|pm| pm.name() == manager);
         if registered {
@@ -328,47 +404,161 @@ impl<'x> PackageExec<'x> {
         }
     }
 
+    /// Refuse `name` when a node of THIS run already failed to put it on the
+    /// machine.
+    ///
+    /// The run's own verdict outranks any later probe: `is_available()` bottoms
+    /// out in a path lookup whose memo the intervening installs moved and whose
+    /// last arm is a bare `exists()`, so a cargo cfgd had just reported it could
+    /// not provision answered available one phase later — and `cargo install
+    /// stylua` was spawned into `No such file or directory (os error 2)`
+    /// instead of the recovery
+    /// [`crate::errors::PackageError::ManagerNotAvailable`] already states for
+    /// exactly this case.
+    ///
+    /// Asked before the manager is touched, so neither the install nor the
+    /// [`Self::installed_now`] re-read behind it spawns. Deliberately NOT a
+    /// live availability probe: a manager that is merely unavailable right now
+    /// is still dispatched — alone, the phase draining around it — because the
+    /// action ahead of it in the drain may be what delivers it.
+    fn refuse_withheld_manager(&self, name: &str) -> Result<()> {
+        if self.unprovisioned.iter().any(|m| m == name) {
+            return Err(self.package_manager_missing_error(name));
+        }
+        Ok(())
+    }
+
+    /// The manager `name` names, or the reason a profile-owned action may not
+    /// reach it: this run's own failed provision first, then availability.
+    fn usable_manager(&self, name: &str) -> Result<&'x dyn PackageManager> {
+        self.refuse_withheld_manager(name)?;
+        for pm in self.registry.available_package_managers() {
+            if pm.name() == name {
+                return Ok(pm);
+            }
+        }
+        Err(self.package_manager_missing_error(name))
+    }
+
+    /// What `pm` reports installed at THIS moment, or `None` when it cannot be
+    /// asked.
+    ///
+    /// The planner elided every entry the manager already carried, but it did so
+    /// before the `Prerequisites` phase ran, and that phase installs packages:
+    /// `apt install npm pipx` provisions two managers and lands two apt packages
+    /// a module is free to declare as well. Re-reading the machine is what keeps
+    /// the two phases from installing one package twice — the truth, rather than
+    /// a comparison against the names a provision happened to mention.
+    ///
+    /// One listing per manager per action, and never a stale one: the memo
+    /// behind [`PackageContext::installed_for`] is keyed on
+    /// [`crate::command_resolution_generation`], which every install, uninstall
+    /// and provision this run performed has already moved.
+    ///
+    /// Fail-OPEN, exactly as the planner's own elision does: a manager cfgd
+    /// cannot query is one whose declared entries must still be installed.
+    fn installed_now(
+        &self,
+        pm: &dyn PackageManager,
+        cx: &PackageContext<'_>,
+    ) -> Option<std::sync::Arc<crate::providers::InstalledPackages>> {
+        match cx.installed_for(pm) {
+            Ok(installed) => Some(installed),
+            Err(e) => {
+                // debug!, not warn!: at the default filter a warn lands at
+                // column 0 in the middle of the phase tree, wearing a wall
+                // clock and `key="value"` grammar, and its `error =` payload is
+                // byte-for-byte the row this action is about to settle with.
+                // The row names the manager too, so the only field left here
+                // that the report does not already carry is the level.
+                tracing::debug!(
+                    manager = pm.name(),
+                    error = %e,
+                    "cannot re-read installed packages; installing the planned set in full"
+                );
+                None
+            }
+        }
+    }
+
     /// Apply one profile-owned package action.
-    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<String> {
+    ///
+    /// [`ActionRun::changed`] is whether the action CHANGED anything: an install
+    /// whose every entry an earlier phase already landed ran and did nothing,
+    /// which is a skip rather than a success. [`ActionRun::installed`] is HOW
+    /// MANY of the entries it named it had to land — the fact the executed row
+    /// states as `1 already installed`, and the one thing about this action a
+    /// preview cannot know.
+    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<ActionRun> {
         let cx = self.cx();
         match action {
             PackageAction::Install {
                 manager, packages, ..
             } => {
-                for pm in self.registry.available_package_managers() {
-                    if pm.name() == manager {
-                        // Install with the original entries (go needs the full
-                        // module path), but build the tracking description from
-                        // IDENTITIES so the tracked key matches what prune later
-                        // compares against (`go/2fa`, not `go/rsc.io/2fa`).
-                        self.install_recording_created(pm, packages, &cx)?;
-                        let identities: Vec<String> =
-                            packages.iter().map(|p| pm.package_identity(p)).collect();
-                        return Ok(format!(
-                            "package:{}:install:{}",
-                            manager,
-                            identities.join(",")
-                        ));
-                    }
+                let pm = self.usable_manager(manager)?;
+                // Install with the original entries (go needs the full module
+                // path), but build the tracking description from IDENTITIES so
+                // the tracked key matches what prune later compares against
+                // (`go/2fa`, not `go/rsc.io/2fa`).
+                let pending: Vec<String> = match self.installed_now(pm, &cx) {
+                    Some(installed) => packages
+                        .iter()
+                        .filter(|p| !installed.contains(&pm.package_identity(p)))
+                        .cloned()
+                        .collect(),
+                    None => packages.clone(),
+                };
+                let changed = !pending.is_empty();
+                if changed {
+                    self.install_recording_created(pm, &pending, &cx)?;
                 }
-                Err(self.package_manager_missing_error(manager))
+                let delivered = packages
+                    .iter()
+                    .filter(|p| !pending.contains(p))
+                    .filter(|p| {
+                        super::Reconciler::delivered_by_this_run(
+                            self.provisioned_packages,
+                            manager,
+                            p,
+                        )
+                    })
+                    .count();
+                // The description names the whole DECLARED set either way: the
+                // entries this run did not have to install are on the machine
+                // and are still this action's managed resources.
+                let identities: Vec<String> =
+                    packages.iter().map(|p| pm.package_identity(p)).collect();
+                Ok(ActionRun::new(
+                    format!("package:{}:install:{}", manager, identities.join(",")),
+                    changed,
+                )
+                .installed(pending.len(), delivered))
             }
             PackageAction::Uninstall {
                 manager, packages, ..
             } => {
-                for pm in self.registry.available_package_managers() {
-                    if pm.name() == manager {
-                        pm.uninstall(packages, &cx)?;
-                        return Ok(format!(
-                            "package:{}:uninstall:{}",
-                            manager,
-                            packages.join(",")
-                        ));
-                    }
-                }
-                Err(self.package_manager_missing_error(manager))
+                let pm = self.usable_manager(manager)?;
+                let removed = pm.uninstall(packages, &cx);
+                // A removal takes a binary OFF `PATH` — the mirror of the
+                // install side, and just as invisible to a memo keyed on `PATH`
+                // alone. Reported whether or not the command as a whole
+                // succeeded, because a partial uninstall has already deleted
+                // what it deleted.
+                crate::invalidate_command_resolution();
+                removed?;
+                // Every name it listed was handed to the manager: cfgd narrows
+                // nothing on the way out, so the row's subject and its work are
+                // the same set and there is no count to qualify.
+                Ok(ActionRun::new(
+                    format!("package:{}:uninstall:{}", manager, packages.join(",")),
+                    true,
+                ))
             }
-            PackageAction::Skip { manager, .. } => Ok(format!("package:{}:skip", manager)),
+            // A planned skip ran nothing by construction, so it neither counts
+            // as a change nor triggers the onChange scripts a change gates.
+            PackageAction::Skip { manager, .. } => {
+                Ok(ActionRun::new(format!("package:{}:skip", manager), false))
+            }
         }
     }
 
@@ -379,7 +569,7 @@ impl<'x> PackageExec<'x> {
     /// installed carries a fresh index. The description returned is the node's
     /// own id, so the journal row and the DAG edge naming it are the same
     /// string.
-    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<(String, bool)> {
+    pub(super) fn apply_manager_action(&self, action: &ManagerAction) -> Result<ActionRun> {
         let cx = self.cx();
         // A provision's manager is by definition not available yet, so the
         // lookup spans every registered manager rather than the available ones.
@@ -388,7 +578,7 @@ impl<'x> PackageExec<'x> {
         // different failure when the manager is not registered at all.
         let lookup = |name: &str| {
             self.registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|pm| pm.name() == name)
                 .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -396,6 +586,12 @@ impl<'x> PackageExec<'x> {
                 })
         };
         let mut changed = true;
+        // How many of the managers this node NAMES it actually had to install,
+        // and what version each of those reports once it is here, for the
+        // detail beside its own row. Set by the provision arm alone — every
+        // other node installs exactly what its subject names.
+        let mut provisioned_now: Option<usize> = None;
+        let mut delivered: Vec<(String, String)> = Vec::new();
         match action {
             // An index refresh is best-effort and never fails the phase: a
             // flaky mirror must not turn a run into a failure the installs
@@ -405,7 +601,15 @@ impl<'x> PackageExec<'x> {
             // the cause attached beneath it.
             ManagerAction::RefreshIndex { manager } => {
                 let pm = lookup(manager)?;
-                if let Err(e) = pm.refresh_index(&cx) {
+                let refreshed = pm.refresh_index(&cx);
+                // A refreshed index changes what the manager OFFERS, and the
+                // available-version memo is keyed on the resolution generation
+                // alone — so without this, every offer taken before the refresh
+                // would still be answered to every caller after it. Reported
+                // whether or not the refresh succeeded: a partial `apt-get
+                // update` has already rewritten the lists it managed to fetch.
+                crate::invalidate_command_resolution();
+                if let Err(e) = refreshed {
                     cx.report(
                         crate::output::Role::Warn,
                         manager,
@@ -417,7 +621,7 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { via, .. } => {
+            ManagerAction::Provision { via, declared, .. } => {
                 let members = action.provisioned_managers();
                 // An earlier node may have provisioned one already. What the
                 // node promises is an available manager, not a second run of
@@ -429,29 +633,90 @@ impl<'x> PackageExec<'x> {
                         pending.push(*name);
                     }
                 }
-                match pending.as_slice() {
-                    [] => {}
+                // The re-read the row's detail is worded from, and the same
+                // re-read the arms below branch on: a node whose members were
+                // all available already runs nothing, so it neither claims a
+                // green tick nor reports a count it did not earn.
+                provisioned_now = Some(pending.len());
+                changed = !pending.is_empty();
+                let outcome = match (declared, pending.as_slice()) {
+                    (_, []) => Ok(()),
+                    // The module's own entry for this tool: install exactly
+                    // what it declared, through the manager its `prefer` chain
+                    // picked and under the name its `aliases` gave it there.
+                    // The manager's own cascade is not consulted at all — that
+                    // is the point: running both is what left two toolchains
+                    // on the machine with `PATH` order deciding. A declared
+                    // route is never batched, so this arm speaks for one
+                    // manager.
+                    (Some(route), _) => self
+                        .install_recording_created(
+                            lookup(&route.installer)?.as_ref(),
+                            std::slice::from_ref(&route.package),
+                            &cx,
+                        )
+                        .map(|_| ()),
                     // A batch of one is the solo path exactly: its own cascade,
                     // its own fallback arm, its own error words. The merged
                     // command below is only reached when merging is what the
                     // line promised.
-                    [one] => {
+                    (None, [one]) => {
                         // The method travels into the bootstrap so the cascade
                         // runs the mediator the line named — which is also the
                         // mediator whose lane this action holds.
-                        lookup(one)?.bootstrap(&cx.for_provision(via))?;
+                        lookup(one)?.bootstrap(&cx.for_provision(via))
                     }
-                    many => self.provision_batch(many, via)?,
+                    (None, many) => self.provision_batch(many, via),
+                };
+                // Before the outcome is propagated, and whatever it was: a
+                // cascade that failed at its last step may still have put the
+                // manager on the machine, and the check below asks a question
+                // whose memoized answer predates the install either way. A node
+                // whose members were all available already ran nothing and so
+                // changed nothing.
+                if !pending.is_empty() {
+                    crate::invalidate_command_resolution();
                 }
+                outcome?;
                 for name in &members {
                     let pm = lookup(name)?;
-                    self.record_bootstrap(pm.as_ref(), via);
+                    // Only a cascade declares where it lands. A declared route
+                    // is an ordinary install by another manager, which puts the
+                    // tool wherever that manager puts things — already on PATH,
+                    // or recorded by the install's own `created_path_dirs`.
+                    if declared.is_none() {
+                        self.record_bootstrap(pm.as_ref(), via);
+                    }
+                    // The verification names what the run actually did. A
+                    // declared route ran no cascade at all — it is an ordinary
+                    // install by another manager, as the arm eleven lines up
+                    // says — so calling its failure a bootstrap tells the
+                    // reader a cascade broke when none ran, and naming only the
+                    // absent tool hides the one fact that explains the absence:
+                    // the package the module's own `aliases:` entry chose does
+                    // not provide it.
                     if !pm.is_available() {
                         return Err(crate::errors::PackageError::BootstrapFailed {
                             manager: (*name).to_string(),
-                            message: format!("{name} still not available after bootstrap"),
+                            message: match declared {
+                                Some(route) => format!(
+                                    "{name} not on PATH after {} installed {}",
+                                    route.installer, route.package
+                                ),
+                                None => {
+                                    format!("{name} still not on PATH after the {via} bootstrap")
+                                }
+                            },
                         }
                         .into());
+                    }
+                    // What the run PUT here, read off the binary it just
+                    // verified; a member that was here already produced
+                    // nothing this row can claim.
+                    if pending.contains(name)
+                        && let Some(version) = pm.tool_version()
+                    {
+                        delivered.push(((*name).to_string(), version));
                     }
                 }
             }
@@ -473,16 +738,25 @@ impl<'x> PackageExec<'x> {
                 .into());
             }
         }
-        Ok((action.node_id(), changed))
+        let run = ActionRun::new(action.node_id(), changed).delivering(delivered);
+        Ok(match provisioned_now {
+            Some(landed) => run.installed(landed, 0),
+            None => run,
+        })
     }
 
     /// Apply one module-owned `InstallPackages` action.
+    ///
+    /// [`ActionRun::installed`] carries how many of the module's declared
+    /// entries this run had to land, which the re-read below can narrow below
+    /// what the subject names. A `prefer: [script]` install has no count: its
+    /// subject names one entry and the script's own guards decide.
     pub(super) fn install_module_packages(
         &self,
         action: &ModuleAction,
         pkgs: &[crate::modules::ResolvedPackage],
         mcx: &ModuleInstallContext<'_>,
-    ) -> Result<(String, bool)> {
+    ) -> Result<ActionRun> {
         // Packages in each InstallPackages action are already grouped by
         // manager in plan_modules(), so just collect names and install.
         let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
@@ -500,13 +774,25 @@ impl<'x> PackageExec<'x> {
         // unchanged rather than a re-run. Without guards the script runs
         // every apply (changed=true), which is the author's responsibility.
         let mut script_changed = false;
-        // A manager-backed install always counts as changed (the package
-        // managers own their own idempotency at the package level, but the
-        // action having reached the install call means work was attempted).
+        // A manager-backed install counts as changed only for the entries the
+        // machine still lacks. The planner dropped everything the manager
+        // reported installed (`Reconciler::diffing_installed`), but it did so
+        // BEFORE the `Prerequisites` phase ran, and that phase installs
+        // packages — `apt install npm pipx` provisions two managers and lands
+        // two apt packages this module may declare itself. The set is re-read
+        // below; an action left with nothing to install ran and changed
+        // nothing, which is a skip.
         let mut manager_changed = false;
+        // `None` until a manager-backed install re-reads the machine: the
+        // script path narrows nothing, and neither does an action whose
+        // manager is not registered here.
+        let mut installed: Option<usize> = None;
+        // Of the entries NOT installed here, how many this run's own
+        // provisions delivered; the row's `provisioned by this run` count.
+        let mut delivered = 0;
 
         if let Some(first) = pkgs.first() {
-            if first.manager == "script" {
+            if first.manager == crate::SCRIPT_SENTINEL {
                 for pkg in pkgs {
                     if let Some(ref script_content) = pkg.script {
                         let profile_name = mcx
@@ -531,7 +817,7 @@ impl<'x> PackageExec<'x> {
                         // guards run through the same guard-evaluation path
                         // as lifecycle scripts (creates → onlyIf → unless);
                         // a guard that says "skip" yields changed=false.
-                        let script_entry = ScriptEntry::Full {
+                        let script_entry = ScriptEntry::Full(ScriptCommand {
                             run: script_content.clone(),
                             timeout: None,
                             idle_timeout: None,
@@ -542,7 +828,7 @@ impl<'x> PackageExec<'x> {
                             creates: pkg.creates.clone(),
                             interactive: false,
                             workdir: None,
-                        };
+                        });
                         let source = module_dir.as_deref().unwrap_or(mcx.config_dir);
                         let working = script_default_workdir(mcx.config_dir);
                         let (_label, changed, _captured) = execute_script(
@@ -593,29 +879,82 @@ impl<'x> PackageExec<'x> {
                     }
                 }
             } else {
+                // A manager this run already failed to provision is refused in
+                // cfgd's own words rather than spawned into an errno. Merely
+                // unavailable is not refused here: an action naming one is
+                // dispatched alone and the drain around it may be what delivers
+                // the manager (`unavailable_manager_action_drains_the_phase`).
+                self.refuse_withheld_manager(&first.manager)?;
                 // Find the manager — check all registered, not just available
                 let pm = self
                     .registry
-                    .package_managers
+                    .package_managers()
                     .iter()
                     .find(|m| m.name() == first.manager);
 
                 if let Some(pm) = pm {
                     let cx = self.cx();
-                    self.install_recording_created(pm.as_ref(), &pkg_names, &cx)?;
-                    manager_changed = true;
+                    let pending: Vec<String> = match self.installed_now(pm.as_ref(), &cx) {
+                        Some(installed) => pkgs
+                            .iter()
+                            .filter(|pkg| {
+                                super::Reconciler::package_survives_elision(
+                                    pm.as_ref(),
+                                    &installed,
+                                    pkg,
+                                    mcx.provisioned,
+                                )
+                            })
+                            .map(|pkg| pkg.resolved_name.clone())
+                            .collect(),
+                        // Fail-open on an unreadable manager, exactly as the
+                        // planner does — but a tool this run itself delivered
+                        // is known without asking the manager.
+                        None => pkgs
+                            .iter()
+                            .filter(|pkg| {
+                                super::Reconciler::package_survives_elision(
+                                    pm.as_ref(),
+                                    &crate::providers::InstalledPackages::default(),
+                                    pkg,
+                                    mcx.provisioned,
+                                )
+                            })
+                            .map(|pkg| pkg.resolved_name.clone())
+                            .collect(),
+                    };
+                    installed = Some(pending.len());
+                    delivered = pkgs
+                        .iter()
+                        .filter(|pkg| !pending.contains(&pkg.resolved_name))
+                        .filter(|pkg| {
+                            super::Reconciler::delivered_by_this_run(
+                                mcx.provisioned_packages,
+                                &pkg.manager,
+                                &pkg.resolved_name,
+                            )
+                        })
+                        .count();
+                    if !pending.is_empty() {
+                        self.install_recording_created(pm.as_ref(), &pending, &cx)?;
+                        manager_changed = true;
+                    }
                 }
             }
         }
 
-        Ok((
+        let run = ActionRun::new(
             format!(
                 "module:{}:packages:{}",
                 action.module_name,
                 pkg_names.join(",")
             ),
             script_changed || manager_changed,
-        ))
+        );
+        Ok(match installed {
+            Some(landed) => run.installed(landed, delivered),
+            None => run,
+        })
     }
 }
 
@@ -657,8 +996,12 @@ impl super::Reconciler<'_> {
         action: &PackageAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<String> {
-        let exec = PackageExec::new(self.registry, self.state, printer, notes);
+    ) -> Result<ActionRun> {
+        let unprovisioned = self.unprovisioned.borrow();
+        let provisioned_packages = self.provisioned_packages.borrow();
+        let exec = PackageExec::new(self.registry, self.state, printer, notes)
+            .withholding_managers(&unprovisioned)
+            .delivered_by(&provisioned_packages);
         let result = exec.apply_package_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
         result
@@ -669,7 +1012,7 @@ impl super::Reconciler<'_> {
         action: &ManagerAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<(String, bool)> {
+    ) -> Result<ActionRun> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_manager_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());
@@ -689,6 +1032,7 @@ impl super::Reconciler<'_> {
                     .add_bootstrapped_path_dirs(&record.manager, &record.dirs),
             };
             if let Err(e) = written {
+                // tracing-ok: a state write nothing printed; the bootstrap itself already settled its own row
                 tracing::warn!(
                     "cannot record PATH directories for bootstrapped {}: {e}",
                     record.manager

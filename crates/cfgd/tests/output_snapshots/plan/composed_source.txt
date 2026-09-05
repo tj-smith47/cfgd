@@ -1,0 +1,17 @@
+◐ Cloning source:acme
+  Cloning into '<STATE_DIR>/sources/acme'...
+
+Plan
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Sources  acme (profile default)
+  Profile  default
+  Phases   Prerequisites
+
+Phase: Prerequisites
+  cfgd:env
+    - write ~/.cfgd.env                 — 1 var
+    - inject source line into ~/.bashrc
+
+◉ 2 actions planned
+
+→ Run `cfgd apply` to make these changes

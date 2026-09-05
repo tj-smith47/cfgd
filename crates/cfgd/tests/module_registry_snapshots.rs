@@ -392,13 +392,38 @@ fn module_add_happy_json() {
     assert!(json["integrity"].as_str().is_some());
 }
 
+/// `cmd_module_add_remote`'s fetch spinner is bound directly
+/// to its own `Fetch` section (`fetch_sec.spinner(...)`), so the settled
+/// line must nest one level deeper than the section header instead of
+/// sitting flush with it.
+#[test]
+#[serial]
+fn module_add_fetch_settle_line_nests_under_the_fetch_section_header() {
+    let (config_dir, state_dir) = registry_test_setup();
+    let _home = cfgd_core::with_test_home_guard(config_dir.path());
+    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = make_bare_module_repo(bare_root.path(), "depthmod", "v1.0.0");
+    let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    common::assert_nests_under(&human, "Fetch", "Fetched");
+}
+
 // ─── module add_from_registry (streaming) — bridge.txt ──────────────
 
 #[test]
 #[serial]
 fn module_add_from_registry_bridge_one_blank_line() {
     // The registry resolver assembles a synthetic git URL and delegates
-    // to cmd_module_add_remote, so we get the same streaming clone +
+    // to cmd_module_add_remote, so this gets the same streaming clone +
     // buffered summary bridge from a one-step-removed entry point.
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());

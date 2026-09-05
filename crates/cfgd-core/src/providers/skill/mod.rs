@@ -1,6 +1,6 @@
 //! Multi-provider agent-skill rendering.
 //!
-//! A single logical [`SkillModel`](crate::generate::SkillModel) renders to each
+//! A single logical [`crate::generate::SkillModel`] renders to each
 //! coding-agent platform's native primitive (Claude Code `SKILL.md`, Gemini TOML
 //! command, Copilot prompt file, Codex `AGENTS.md` block, Cursor `.mdc` rule).
 //! Each platform implements [`SkillProvider`]; consumers depend on the registry
@@ -41,7 +41,7 @@ pub enum SkillScope {
 /// The result of probing whether a provider's agent is present at a scope.
 ///
 /// Detection never shells out: it uses filesystem checks and/or a PATH lookup via
-/// [`command_available`](crate::util::process::command_available) (never a fork).
+/// [`crate::command_available`] (never a fork).
 /// A given provider may use either or both (claude-code is filesystem-only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detection {
@@ -95,7 +95,7 @@ impl RenderedSkill {
     /// managed block), so callers that need the on-disk content — the golden gate
     /// in particular — must route through this method rather than reading
     /// `contents` directly, or they would snapshot an empty file. The managed-block
-    /// form is produced by the same [`splice_block`] writer `install` uses, so the
+    /// form is produced by the same `splice_block` writer `install` uses, so the
     /// returned bytes cannot drift from a real fresh install.
     pub fn effective_fresh_install(&self) -> String {
         match &self.managed_section {
@@ -182,7 +182,9 @@ pub trait SkillProvider: Send + Sync {
     /// rather than degrade to an empty file that would silently install a broken
     /// skill. Whole-file providers that only `format!` are infallible and return
     /// `Ok`.
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill>;
+    /// `scope` decides whether the body embeds the fallback JSON schema — see
+    /// [`render_skill_body`] for why a user-scope skill omits it.
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill>;
 
     /// Render and write the skill for `model.kind` at `scope`, returning the
     /// absolute path written.
@@ -198,7 +200,7 @@ pub trait SkillProvider: Send + Sync {
                 provider: self.id().to_string(),
                 message: format!("no target path for {} at {scope:?}", model.kind.as_str()),
             })?;
-        let rendered = self.render(model)?;
+        let rendered = self.render(model, scope)?;
 
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(SkillError::Write)?;
@@ -235,7 +237,7 @@ pub trait SkillProvider: Send + Sync {
         let Some(target) = self.target_path(kind, scope) else {
             return Ok(None);
         };
-        let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
+        let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version), scope)?;
 
         match &rendered.managed_section {
             None => {
@@ -276,7 +278,8 @@ pub trait SkillProvider: Send + Sync {
             let Some(target) = self.target_path(kind, scope) else {
                 continue;
             };
-            let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
+            let rendered =
+                self.render(&crate::generate::skill_model_for(kind, cfgd_version), scope)?;
             let present = match &rendered.managed_section {
                 None => target.exists(),
                 Some(section) => read_to_string_optional(&target)?

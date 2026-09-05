@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn detect_returns_valid_platform() {
     let platform = Platform::detect();
-    // We can't assert specific values since tests run on different platforms,
-    // but we can verify the struct is populated
+    // Specific values cannot be asserted since tests run on different platforms,
+    // but this verifies the struct is populated
     assert!(!format!("{}", platform.os).is_empty());
     assert!(!format!("{}", platform.arch).is_empty());
 }
@@ -500,4 +500,198 @@ fn read_command_output_errors_on_missing_binary() {
     let err = super::read_command_output("definitely-not-a-real-command-xyzzy", &[])
         .expect_err("missing binary must error");
     let _ = err.to_string();
+}
+
+#[test]
+fn the_platform_is_detected_once_per_process() {
+    // Detection spawns `sw_vers` on macOS and `freebsd-version` on FreeBSD and
+    // reads `/etc/os-release` on Linux; every reader takes the memo, so the two
+    // answers are the SAME value rather than two equal ones.
+    let first = super::Platform::current();
+    let second = super::Platform::current();
+    assert!(std::ptr::eq(first, second));
+
+    // And the memo describes this host, not a default: it answers what a fresh
+    // detection answers.
+    let fresh = super::Platform::detect();
+    assert_eq!(first.os, fresh.os);
+    assert_eq!(first.distro, fresh.distro);
+    assert_eq!(first.version, fresh.version);
+    assert_eq!(first.arch, fresh.arch);
+}
+
+// --- per-entry platform gating ---
+
+fn platform_of(os: super::Os, distro: super::Distro, arch: super::Arch) -> super::Platform {
+    super::Platform {
+        os,
+        distro,
+        version: "1".to_string(),
+        arch,
+    }
+}
+
+fn macos() -> super::Platform {
+    platform_of(super::Os::MacOS, super::Distro::MacOS, super::Arch::Aarch64)
+}
+
+fn ubuntu() -> super::Platform {
+    platform_of(super::Os::Linux, super::Distro::Ubuntu, super::Arch::X86_64)
+}
+
+fn env(name: &str, value: &str, platforms: &[&str]) -> crate::config::EnvVar {
+    crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: platforms.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_gated_entry_belongs_only_to_the_platforms_it_names() {
+    use super::PlatformGated;
+    let gated = env("PATH", "/opt/homebrew/bin:$PATH", &["macos"]);
+    assert!(gated.applies_to(&macos()));
+    assert!(!gated.applies_to(&ubuntu()));
+
+    // An ungated entry belongs everywhere — the empty list gates nothing.
+    let plain = env("EDITOR", "nvim", &[]);
+    assert!(plain.applies_to(&macos()));
+    assert!(plain.applies_to(&ubuntu()));
+
+    // Distro and arch tags are matched by the same predicate the module and
+    // package gates use, so the three levels cannot disagree about a tag.
+    assert!(env("A", "b", &["ubuntu"]).applies_to(&ubuntu()));
+    assert!(env("A", "b", &["x86_64"]).applies_to(&ubuntu()));
+    assert!(!env("A", "b", &["aarch64"]).applies_to(&ubuntu()));
+}
+
+#[test]
+fn the_shared_filter_keeps_declaration_order() {
+    let entries = vec![
+        env("ONE", "1", &[]),
+        env("TWO", "2", &["macos"]),
+        env("THREE", "3", &["linux", "freebsd"]),
+    ];
+    let (linux, mac) = (ubuntu(), macos());
+    let kept: Vec<&str> = super::applicable_here(&entries, &linux)
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(kept, vec!["ONE", "THREE"]);
+    let kept: Vec<&str> = super::applicable_here(&entries, &mac)
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(kept, vec!["ONE", "TWO"]);
+}
+
+#[test]
+fn every_gated_kind_annotates_with_the_one_vocabulary() {
+    use super::PlatformGated;
+    assert_eq!(env("A", "b", &[]).platform_annotation(), None);
+    assert_eq!(
+        env("A", "b", &["macos"]).platform_annotation().as_deref(),
+        Some("platforms: macos")
+    );
+    // A module and a package read the SAME annotation off the same trait, so a
+    // surface listing a gated env var beside a gated package cannot spell the
+    // two differently.
+    let spec = crate::config::ModuleSpec {
+        platforms: vec!["macos".to_string(), "linux".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(
+        spec.platform_annotation().as_deref(),
+        Some("platforms: macos/linux")
+    );
+}
+
+#[test]
+fn a_tag_no_host_can_match_is_refused_where_it_is_written() {
+    // Each alias names its canonical token rather than merely being refused:
+    // `matches_any` compares verbatim, so the near-miss spelling silently
+    // matches nothing and the gated entry quietly never appears.
+    for (wrong, canonical) in [
+        ("darwin", "macos"),
+        ("Darwin", "macos"),
+        ("osx", "macos"),
+        ("mac", "macos"),
+        ("win", "windows"),
+        ("win32", "windows"),
+        ("win64", "windows"),
+        ("x64", "x86_64"),
+        ("amd64", "x86_64"),
+        ("arm64", "aarch64"),
+    ] {
+        let err = super::validate_platform_tag(wrong)
+            .expect_err("a near-miss spelling must be refused, not silently unmatched");
+        assert!(
+            err.contains(&format!("use '{canonical}'")),
+            "'{wrong}' must name '{canonical}': {err}"
+        );
+    }
+
+    // Not a known alias, so only the lowercase rule is stated.
+    let err = super::validate_platform_tag("Ubuntu").expect_err("uppercase is refused");
+    assert!(err.contains("lowercase"), "{err}");
+    assert!(!err.contains("use '"), "{err}");
+    assert!(super::validate_platform_tag("").is_err());
+    assert!(super::validate_platform_tag("no spaces").is_err());
+
+    // A distro or arch cfgd does not name is still a legitimate tag for
+    // another host: `Arch::Other` carries its target's own spelling.
+    for ok in ["macos", "ubuntu", "x86_64", "aarch64", "riscv64", "nixos"] {
+        assert!(
+            super::validate_platform_tag(ok).is_ok(),
+            "{ok} must be a tag"
+        );
+    }
+}
+
+#[test]
+fn every_platforms_field_in_the_config_types_is_deserialized_through_the_validator() {
+    // The class the example belongs to: FOUR `platforms` fields, all matched by
+    // the same verbatim matcher, so all four refuse the same near-miss
+    // spellings. A fifth field added without a rejection case below fails the
+    // liveness floor rather than shipping unvalidated.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("config dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        for _ in text.matches("pub platforms: Vec<String>") {
+            found.push(path.display().to_string());
+        }
+    }
+    assert_eq!(
+        found.len(),
+        4,
+        "every `platforms` field must have a rejection case below: {found:?}"
+    );
+
+    let cases = [
+        (
+            "module",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec:\n  platforms: [Darwin]\n",
+        ),
+        (
+            "package",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec:\n  packages:\n    - name: p\n      platforms: [Darwin]\n",
+        ),
+        (
+            "env",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec:\n  env:\n    - name: A\n      value: b\n      platforms: [Darwin]\n",
+        ),
+        (
+            "alias",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec:\n  aliases:\n    - name: a\n      command: b\n      platforms: [Darwin]\n",
+        ),
+    ];
+    for (which, yaml) in cases {
+        let err = serde_yaml::from_str::<crate::config::ModuleDocument>(yaml)
+            .expect_err(&format!("{which}: 'Darwin' must be refused"));
+        assert!(err.to_string().contains("use 'macos'"), "{which}: {err}");
+    }
 }

@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
@@ -44,7 +44,7 @@ pub fn cmd_module_add_from_registry(
                 &reg_ref.registry,
                 "registry_not_found",
                 format!(
-                    "Registry '{}' not configured — run 'cfgd module registry add <url>' first",
+                    "Registry '{}' not configured — run `cfgd module registry add <url>` first",
                     reg_ref.registry
                 ),
                 serde_json::json!({}),
@@ -57,14 +57,10 @@ pub fn cmd_module_add_from_registry(
     let tag = match reg_ref.tag {
         Some(t) => t,
         None => {
-            printer.status_simple(
-                Role::Info,
-                format!(
-                    "No tag specified — looking up latest for '{}'",
-                    reg_ref.module
-                ),
-            );
-            // Fetch the registry repo so we can read tags. The lib call
+            printer
+                .status(Role::Info, "No tag specified")
+                .detail(format!("looking up latest for '{}'", reg_ref.module));
+            // Fetch the registry repo to read tags. The lib call
             // takes a Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's status surface above
             // owns the user-facing line (inversion of control).
@@ -92,8 +88,11 @@ pub fn cmd_module_add_from_registry(
     printer.status_simple(
         Role::Info,
         format!(
-            "Resolved: {}/{} -> {}",
-            reg_ref.registry, reg_ref.module, full_url
+            "Resolved: {}/{} {} {}",
+            reg_ref.registry,
+            reg_ref.module,
+            printer.arrow(),
+            full_url
         ),
     );
 
@@ -120,25 +119,32 @@ pub fn cmd_module_add_remote(
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
 
-    // Streaming: clone-fetch spinner. The lib call takes a Printer; the
-    // Quiet sink suppresses the lib's progress emissions so the spinner
-    // owns the user-facing surface (inversion of control).
-    let sp = printer.spinner(format!("Fetching {}", url));
-    let lib_printer = null_lib_printer(printer);
-    let fetched = match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
-        Ok(f) => {
-            sp.finish_ok(format!("Fetched {}", url));
-            f
-        }
-        Err(e) => {
-            sp.finish_fail(format!("Failed to fetch {}", url))
-                .detail(cfgd_core::output::collapse_to_subject_line(&e));
-            return Err(crate::cli::cli_error(
-                url,
-                "clone_failed",
-                e.to_string(),
-                serde_json::json!({}),
-            ));
+    // Streaming: clone-fetch spinner, nested under its own "Fetch" section —
+    // one identifiable step of the multi-step add flow below (review,
+    // signature check, confirm, lockfile write) rather than a bare depth-0
+    // line with nothing marking which phase it belongs to.
+    let fetched = {
+        let fetch_sec = printer.section("Fetch");
+        let sp = fetch_sec.spinner(format!("Fetching {}", url));
+        // The lib call takes a Printer; the Quiet sink suppresses the lib's
+        // progress emissions so the spinner owns the user-facing surface
+        // (inversion of control).
+        let lib_printer = null_lib_printer(printer);
+        match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
+            Ok(f) => {
+                sp.finish_ok(format!("Fetched {}", url));
+                f
+            }
+            Err(e) => {
+                sp.finish_fail(format!("Failed to fetch {}", url))
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                return Err(crate::cli::cli_error(
+                    url,
+                    "clone_failed",
+                    e.to_string(),
+                    serde_json::json!({}),
+                ));
+            }
         }
     };
     let module_name = fetched.module.name.clone();
@@ -154,7 +160,7 @@ pub fn cmd_module_add_remote(
                 .status(
                     Role::Info,
                     format!(
-                        "Module '{}' is already in the lockfile — use 'cfgd module update {}' to change versions",
+                        "Module '{}' is already in the lockfile — use `cfgd module upgrade {}` to change versions",
                         module_name, module_name
                     ),
                 )
@@ -254,7 +260,7 @@ pub fn cmd_module_add_remote(
                 Role::Ok,
                 format!("Locked remote module '{}' in modules.lock", module_name),
             )
-            .hint(MSG_RUN_APPLY)
+            .hint(super::success_next_step(super::Mutation::ModuleLocked))
             .with_data(serde_json::json!({
                 "name": module_name,
                 "url": url,
@@ -276,10 +282,7 @@ pub fn cmd_module_upgrade(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading(format!(
-        "Update {}",
-        cfgd_core::reconciler::Owner::module(name).token()
-    ));
+    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
@@ -317,7 +320,7 @@ pub fn cmd_module_upgrade(
                     .into(),
                     name,
                     "not_found",
-                    format!("Module '{}' not found", name),
+                    format!("Module '{}' {}", name, cfgd_core::Absence::NotFound),
                     serde_json::json!({}),
                 ));
             }
@@ -353,7 +356,9 @@ pub fn cmd_module_upgrade(
             match modules::latest_module_version_remote(&old_git_src.repo_url, name)? {
                 Some(version) => {
                     let tag = format!("{}/{}", name, version);
-                    printer.status_simple(Role::Info, format!("Latest version: {}", tag));
+                    printer
+                        .status(Role::Info, "Latest version")
+                        .qualifier(tag.clone());
                     tag
                 }
                 None => {
@@ -397,24 +402,27 @@ pub fn cmd_module_upgrade(
         return Ok(());
     }
 
+    // What is being compared heads the comparison: the two commits are the
+    // run's INPUT facts, so they open the screen as one block rather than
+    // sitting between the diff's rows and the signature verdict under them.
+    printer.kv_block([
+        ("Old Commit", old_entry.commit.as_str()),
+        ("New Commit", new_commit.as_str()),
+        ("New Integrity", new_integrity.as_str()),
+    ]);
+
     // Show diff
-    let changes = modules::diff_module_specs(&old_module, &new_module);
+    let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());
     {
         let changes_sec = printer.section("Changes");
-        for change in &changes {
+        for (role, change) in &changes {
             // A diff entry embeds the unmodified body of whatever changed — a
             // multi-line script, or an env value carrying a newline — so it
             // goes through the same full-fidelity renderer as the add-time
             // review rather than being condensed at the moment of approval.
-            review_entry(&changes_sec, "", change);
+            review_entry(&changes_sec, Some(*role), "", change);
         }
     }
-
-    printer.kv_block([
-        ("Old commit", old_entry.commit.as_str()),
-        ("New commit", new_commit.as_str()),
-        ("New integrity", new_integrity.as_str()),
-    ]);
 
     // Check for signature on new ref
     super::enforce_signature_policy(
@@ -453,11 +461,8 @@ pub fn cmd_module_upgrade(
 
     printer.emit(
         Doc::new()
-            .status(
-                Role::Ok,
-                format!("Updated module '{}' in modules.lock", name),
-            )
-            .hint(MSG_RUN_APPLY)
+            .status(Role::Ok, "Updated in modules.lock")
+            .hint(super::success_next_step(super::Mutation::ModuleLocked))
             .with_data(serde_json::json!({
                 "name": name,
                 "oldCommit": old_entry.commit,
@@ -499,9 +504,25 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 /// being approved, while a raw `\r` or `\x1b[` sequence would let the value
 /// repaint the lines describing it.
 ///
+/// The escaping stays HERE rather than being left to the renderer's own
+/// `cursor_safe` fold, which every slot below applies and which would make it
+/// redundant everywhere else. The fold STRIPS an ANSI sequence; this surface
+/// has to SHOW it. A value carrying `\x1b[2K` is approved and then written to
+/// disk with those bytes in it, so an operator who never saw them on the
+/// review screen approved something other than what they read. The fold sees
+/// no control character left to act on afterwards, so the two agree.
+///
 /// Renders nothing when `body` holds no non-empty line; a caller whose section
 /// header has already promised an entry handles that case itself.
-fn review_entry(section: &SectionGuard<'_>, prefix: &str, body: &str) {
+///
+/// `role` is the add/remove/change marker for a single-logical-line entry —
+/// its icon renders in place of a hand-typed `+`/`-`/`~` glyph, via
+/// `status_simple` instead of a plain `bullet`. `None` keeps the bare bullet
+/// (a caller with nothing to mark, e.g. a fresh `add`'s env/alias listing). A
+/// multi-line body always renders as a `code_block`, which carries no
+/// per-line icon — the caller spells "added"/"removed" into that body's own
+/// label instead of relying on `role` to convey it there.
+fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, body: &str) {
     // Split by hand rather than with `lines()`, which silently drops a `\r`
     // sitting before a `\n` — on a surface whose contract is "this is exactly
     // what will be written", a byte may not disappear just because it happens
@@ -511,13 +532,16 @@ fn review_entry(section: &SectionGuard<'_>, prefix: &str, body: &str) {
     if has_second_non_empty_line(body) {
         section.code_block(raw.map(decorate));
     } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
-        section.bullet(decorate(line));
+        match role {
+            Some(role) => section.status_simple(role, decorate(line)),
+            None => section.bullet(decorate(line)),
+        };
     }
 }
 
 /// Print the module-review summary shown before the user confirms an
-/// `add` or `upgrade`: dependencies, packages, files, environment, aliases,
-/// post-apply script warnings, then commit + integrity. Split out so the
+/// `add` or `upgrade`: commit + integrity, dependencies, packages, files,
+/// aliases, environment, then post-apply script warnings. Split out so the
 /// side-effect-free output shape is testable against a captured Printer buffer
 /// without running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
@@ -528,59 +552,95 @@ pub(super) fn print_module_review_summary(
     integrity: &str,
 ) {
     // The review heads the module with the same token its actions carry in an
-    // apply tree, so the thing being approved is named once, one way.
-    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", module_name));
+    // apply tree, so the thing being approved is named once, one way. The name
+    // is the remote document's own `metadata.name`, escaped here for the same
+    // reason every row below is: this is the row that NAMES the thing being
+    // approved, so it is the last one that may hide an escape.
+    let heading = cfgd_core::escape_control_chars(module_name);
+    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", &heading));
+
+    // The heading above and every row below carry text the remote module
+    // wrote, and escape it rather than leaving it to the renderer's
+    // `cursor_safe` fold, for the reason spelled out on `review_entry`: the
+    // fold STRIPS an ANSI sequence and this screen has to SHOW it. One screen,
+    // one answer — a `\x1b[2K` that is visible in the Aliases list and
+    // invisible in the Files list tells the operator two different stories
+    // about the same module.
+    //
+    // The commit and integrity are the INPUT facts of the review — what is
+    // being approved — so they open the block; cfgd derives both itself, so
+    // neither is a likely carrier, but "every row on this screen escapes" is
+    // a rule an operator can check by looking.
+    mod_sec.kv("Commit", cfgd_core::escape_control_chars(commit));
+    mod_sec.kv("Integrity", cfgd_core::escape_control_chars(integrity));
 
     if !module.spec.depends.is_empty() {
-        mod_sec.kv("Dependencies", module.spec.depends.join(", "));
+        mod_sec.kv(
+            "Dependencies",
+            cfgd_core::escape_control_chars(&module.spec.depends.join(", ")),
+        );
     }
 
     if !module.spec.packages.is_empty() {
-        let pkgs_sec = mod_sec.section(format!("Packages ({})", module.spec.packages.len()));
+        let pkgs_sec = mod_sec.section("Packages");
         for pkg in &module.spec.packages {
             let ver = pkg
                 .min_version
                 .as_ref()
                 .map(|v| format!(" (min: {})", v))
                 .unwrap_or_default();
-            pkgs_sec.bullet(format!("{}{}", pkg.name, ver));
+            pkgs_sec.bullet(cfgd_core::escape_control_chars(&format!(
+                "{}{}",
+                pkg.name, ver
+            )));
         }
     }
 
     if !module.spec.files.is_empty() {
-        let files_sec = mod_sec.section(format!("Files ({})", module.spec.files.len()));
+        let files_sec = mod_sec.section("Files");
         for file in &module.spec.files {
-            files_sec.bullet(format!("{} -> {}", file.source, file.target));
+            files_sec.bullet(cfgd_core::escape_control_chars(&format!(
+                "{} {} {}",
+                file.source,
+                printer.arrow(),
+                file.target
+            )));
         }
     }
 
     // Env values and alias commands reach the user's login shell on every new
     // shell, so they belong on the same review surface as a post-apply script.
     // Rendered in full: a truncated value is exactly where a payload hides.
-    if !module.spec.env.is_empty() {
-        let env_sec = mod_sec.section(format!("Environment ({})", module.spec.env.len()));
-        for ev in &module.spec.env {
-            review_entry(&env_sec, "", &format!("{}={}", ev.name, ev.value));
+    // Aliases lead the pair, the order every surface naming both renders them
+    // in.
+    if !module.spec.aliases.is_empty() {
+        let alias_sec = mod_sec.section("Aliases");
+        for alias in &module.spec.aliases {
+            review_entry(
+                &alias_sec,
+                None,
+                "",
+                &format!("{}={}", alias.name, alias.command),
+            );
         }
     }
 
-    if !module.spec.aliases.is_empty() {
-        let alias_sec = mod_sec.section(format!("Aliases ({})", module.spec.aliases.len()));
-        for alias in &module.spec.aliases {
-            review_entry(&alias_sec, "", &format!("{}={}", alias.name, alias.command));
+    if !module.spec.env.is_empty() {
+        let env_sec = mod_sec.section("Environment");
+        for ev in &module.spec.env {
+            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
         }
     }
 
     if let Some(ref scripts) = module.spec.scripts
         && !scripts.post_apply.is_empty()
     {
-        mod_sec.status_simple(
-            Role::Warn,
-            format!(
-                "Post-apply scripts ({}) — these will execute on your machine:",
-                scripts.post_apply.len()
-            ),
-        );
+        mod_sec
+            .status(
+                Role::Warn,
+                format!("Post-apply scripts ({})", scripts.post_apply.len()),
+            )
+            .detail("these will execute on your machine:");
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
             let body = script.run_str();
@@ -589,13 +649,10 @@ pub(super) fn print_module_review_summary(
                 // so rendering nothing would leave it unaccounted for.
                 scripts_sec.bullet("(empty script)");
             } else {
-                review_entry(&scripts_sec, "$ ", body);
+                review_entry(&scripts_sec, None, "$ ", body);
             }
         }
     }
-
-    mod_sec.kv("Commit", commit);
-    mod_sec.kv("Integrity", integrity);
 }
 
 /// Filter a registry-module list by case-insensitive substring match on
@@ -647,9 +704,9 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     if registries.is_empty() {
         printer.emit(
             Doc::new()
-                .heading(format!("Search Modules: {}", query))
+                .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
-                .hint("Add a registry: cfgd module registry add <git-url>")
+                .hint_commands("Add a registry:", &["cfgd module registry add <git-url>"])
                 .with_data(serde_json::json!([])),
         );
         return Ok(());
@@ -659,7 +716,14 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     let mut errors: Vec<String> = Vec::new();
 
     for source in registries {
-        let sp = printer.spinner(format!("Searching {} ({})", source.name, source.url));
+        // One `registry:<name>` owner group per source searched — the same
+        // idiom `cli/sync.rs` uses per source, and what gives each spinner
+        // an owner to nest under instead of a bare depth-0 line.
+        let owner = printer.section_owner(&cfgd_core::output::OwnerLabel::new(
+            "registry",
+            source.name.clone(),
+        ));
+        let sp = owner.spinner(format!("Searching {} ({})", source.name, source.url));
         match modules::fetch_registry_modules(source, &cache_base, &lib_printer) {
             Ok(registry_modules) => {
                 sp.finish_ok(format!("Searched {}", source.name));
@@ -673,7 +737,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         }
     }
 
-    let mut doc = Doc::new().heading(format!("Search Modules: {}", query));
+    let mut doc = Doc::new().heading_title("Search Modules", query);
 
     if !errors.is_empty() {
         let mut errs_doc = doc;
@@ -698,20 +762,24 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
                 m.name.clone(),
                 m.registry.clone(),
                 m.description.clone().unwrap_or_default(),
-                m.version.clone().unwrap_or_else(|| "-".into()),
+                m.version
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
             ]);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     } else {
         let mut t = cfgd_core::output::renderer::Table::new(["Module", "Description", "Latest"]);
         for m in &all_results {
             t = t.row([
                 m.name.clone(),
                 m.description.clone().unwrap_or_default(),
-                m.version.clone().unwrap_or_else(|| "-".into()),
+                m.version
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
             ]);
         }
-        doc = doc.table(t);
+        doc = doc.table(t.without_unfillable_columns());
     }
 
     printer.emit(doc.with_data(&all_results));
@@ -811,7 +879,7 @@ pub fn cmd_module_registry_add(
                 Role::Ok,
                 format!("Added module registry '{}' ({})", registry_name, url),
             )
-            .hint("Search for modules: cfgd module search <query>")
+            .hint(super::success_next_step(super::Mutation::RegistryAdded))
             .with_data(serde_json::json!({
                 "name": registry_name,
                 "url": url,
@@ -881,15 +949,14 @@ pub fn cmd_module_registry_remove(
             }
 
             if !affected_profiles.is_empty() {
-                let warn_sec = printer.section("Profile references");
+                let warn_sec = printer.section("Profile References");
                 for profile_name in &affected_profiles {
-                    warn_sec.status_simple(
-                        Role::Warn,
-                        format!(
-                            "Profile '{}' still references '{}/...' — those modules will fail to resolve",
-                            profile_name, name
-                        ),
-                    );
+                    warn_sec
+                        .status(
+                            Role::Warn,
+                            format!("Profile '{}' still references '{}/...'", profile_name, name),
+                        )
+                        .detail("those modules will fail to resolve");
                 }
             }
 
@@ -930,7 +997,7 @@ fn registry_not_found_error(name: &str) -> anyhow::Error {
         .into(),
         name,
         "registry_not_found",
-        format!("Registry '{}' not found", name),
+        format!("Registry '{}' {}", name, cfgd_core::Absence::NotFound),
         serde_json::json!({}),
     )
 }
@@ -972,7 +1039,7 @@ pub fn cmd_module_registry_rename(
             .into(),
             name,
             "registry_not_found",
-            format!("Registry '{}' not found", name),
+            format!("Registry '{}' {}", name, cfgd_core::Absence::NotFound),
             serde_json::json!({}),
         ));
     }
@@ -1019,15 +1086,13 @@ pub fn cmd_module_registry_rename(
             // Which candidate wins is unknowable, so no rewrite happens;
             // surface it loudly — a silent skip would leave dangling
             // '<old>/...' refs behind the rename.
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Profile '{}' not rewritten — '{}/...' references left as-is: {}",
-                    prof.name,
+            printer
+                .status(Role::Warn, format!("Profile '{}' not rewritten", prof.name))
+                .detail(format!(
+                    "'{}/...' references left as-is: {}",
                     name,
                     cfgd_core::output::collapse_to_subject_line(error)
-                ),
-            );
+                ));
             not_rewritten.push(prof.name);
             continue;
         }
@@ -1089,7 +1154,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, NO_REGISTRIES_MSG)
-                .hint("Add one: cfgd module registry add <git-url>")
+                .hint_commands("Add one:", &["cfgd module registry add <git-url>"])
                 .with_data(serde_json::json!([])),
         );
         return Ok(());
@@ -1111,7 +1176,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
     printer.emit(
         Doc::new()
             .heading("Module Registries")
-            .table(t)
+            .table(t.without_unfillable_columns())
             .with_data(&entries),
     );
 

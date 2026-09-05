@@ -5,8 +5,8 @@ mod common;
 
 use std::path::Path;
 
-use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
-use cfgd::cli::sync::{build_sync_doc, cmd_sync};
+use cfgd::cli::output_types::{SourceOutcome, SourceSyncOutput, SyncOutput};
+use cfgd::cli::sync::{build_sync_doc, cmd_sync, run_sync, sync_refused};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
@@ -23,15 +23,17 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn happy_output() -> SyncOutput {
     SyncOutput {
         local_pulled: false,
+        local_pull_error: None,
+        config_resolution_error: None,
         sources: vec![
             SourceSyncOutput {
                 name: "team-a".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("abc1234def56".to_string()),
             },
             SourceSyncOutput {
                 name: "team-b".to_string(),
-                status: "synced".to_string(),
+                status: SourceOutcome::Synced,
                 commit: Some("def56abc1234".to_string()),
             },
         ],
@@ -52,10 +54,17 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path) -> String {
 /// Replace the commit short-hash (12 hex chars) with a stable placeholder so
 /// goldens don't drift across runs.
 fn normalize_commit_hashes(raw: &str) -> String {
-    let needle = "commit: ";
+    // A ref MOVEMENT renders two hashes on one line (`commit: <old> → <new>`),
+    // so the scan anchors on the arrow as well as on the label. Each anchor
+    // only folds what actually is a hash, so an arrow elsewhere is untouched.
+    const NEEDLES: [&str; 2] = ["commit: ", "→ "];
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
-    while let Some(idx) = rest.find(needle) {
+    while let Some((idx, needle)) = NEEDLES
+        .iter()
+        .filter_map(|n| rest.find(n).map(|i| (i, *n)))
+        .min_by_key(|(i, _)| *i)
+    {
         let after = idx + needle.len();
         out.push_str(&rest[..after]);
         let tail = &rest[after..];
@@ -129,6 +138,72 @@ fn sync_no_sources_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
 }
 
+/// The closing `Modules` row names what the synced config RESOLVES to, not
+/// what its profile declares: `editor` alone is in `spec.modules`, and the row
+/// reads `core, editor`.
+#[test]
+#[serial]
+fn sync_module_dependency_header_human() {
+    let (config_dir, state_dir) = common::profile_with_module_dependency_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/module_dependency.txt",
+        &stripped
+    );
+}
+
+/// A local repository the run could not pull withholds the success verdict.
+///
+/// `✓ Synced` two lines under `⚠ Pull failed` claimed the very thing the row
+/// above it denied, and the command exited 0 — so a CI `&&` chain read a
+/// refused leg as a completed sync. The verdict now names what the run came
+/// to, and `cmd_sync` exits nonzero on the outcomes nobody chose.
+#[test]
+#[serial]
+fn sync_local_pull_failure_withholds_the_synced_verdict() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+
+    // A real repository with a commit and no `origin`: the pull refuses
+    // without reaching a network, so the fixture fails the same way on every
+    // host.
+    let repo = git2::Repository::init(config_dir.path()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let tree = {
+        let mut index = repo.index().unwrap();
+        let oid = index.write_tree().unwrap();
+        repo.find_tree(oid).unwrap()
+    };
+    repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+        .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let payload = run_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    assert!(
+        sync_refused(&payload),
+        "a refused pull must leave the command exiting nonzero"
+    );
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/local_pull_failed.txt",
+        &stripped
+    );
+}
+
 /// Permission-rejection path skips the source and prints a Skipped status.
 #[test]
 #[serial]
@@ -174,6 +249,10 @@ fn sync_perm_changes_accept_human() {
     drop(printer);
 
     let raw = buf.lock().unwrap().clone();
+    // The golden folds both hashes to one placeholder, so the claim that the
+    // two ENDS of the movement differ can only be made here, on the capture
+    // that still holds them.
+    assert_movement_ends_differ(&strip_ansi(&raw));
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
     let stripped = strip_ansi(&normalized);
@@ -181,6 +260,25 @@ fn sync_perm_changes_accept_human() {
         Path::new(SNAPSHOT_ROOT),
         "sync/perm_changes_accept.txt",
         &stripped,
+    );
+}
+
+/// Assert the one `commit: <old> → <new>` line names two different commits.
+fn assert_movement_ends_differ(human: &str) {
+    let line = human
+        .lines()
+        .find(|l| l.contains("commit: "))
+        .unwrap_or_else(|| panic!("no commit line in:\n{human}"));
+    let detail = line.split("commit: ").nth(1).expect("commit detail");
+    let ends: Vec<&str> = detail.split(" → ").collect();
+    assert_eq!(
+        ends.len(),
+        2,
+        "expected a two-ended movement, got: {detail}"
+    );
+    assert_ne!(
+        ends[0], ends[1],
+        "a ref that did not move must render one commit, never an arrow to itself"
     );
 }
 
@@ -195,7 +293,9 @@ fn sync_source_failure_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &printer).unwrap();
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the render is what is under test.
+    run_sync(&cli, &printer).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -214,7 +314,7 @@ fn sync_bridge_one_blank_line() {
 
     printer.heading("Sync");
     {
-        let repo_sec = printer.section("Local repo");
+        let repo_sec = printer.section("Local Repo");
         repo_sec.status(Role::Ok, "Already up to date");
     }
 
@@ -264,6 +364,21 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         "the record must carry the fetch time and the resolved commit: {acme:?}"
     );
 
+    // The declared catalog carries the columns the status payload does not,
+    // so the shared `Sources` table has something to render.
+    let declared = vec![cfgd::cli::output_types::SourceListEntry {
+        name: "acme".to_string(),
+        url: Some(acme.origin_url.clone()),
+        priority: Some(100),
+        version: acme.source_version.clone(),
+        status: acme.status.clone(),
+        last_fetched: acme.last_fetched.clone(),
+        signed: None,
+        require_signed_commits: Some(false),
+        last_commit: acme.last_commit.clone(),
+        drift_count: None,
+    }];
+
     // The record is what keeps `status` off the "not yet fetched" branch.
     let output = cfgd::cli::status::StatusOutput {
         last_apply: None,
@@ -277,13 +392,26 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         classification_degraded_code: None,
         classification_degraded_reason: None,
         drift_checked_live: false,
+        last_scan_at: None,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
     };
+
     let (status_printer, status_cap) = Printer::for_test_doc();
     status_printer.emit(cfgd::cli::status::build_fleet_status_doc(
         &output,
-        &["acme".to_string()],
-        Path::new("/tmp/cfgd.yaml"),
-        "default",
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/tmp/cfgd.yaml")),
+            sources: &[],
+            profile: Some("default"),
+            profile_inherits: &[],
+            modules: &[],
+            arrow: status_printer.arrow(),
+        },
+        &declared,
+        "2026-05-14T10:05:00Z",
+        &Default::default(),
+        &Default::default(),
     ));
     drop(status_printer);
     let rendered = strip_ansi(&status_cap.human());
@@ -294,6 +422,51 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     assert!(
         rendered.contains("acme"),
         "the source must appear in the Config Sources table: {rendered}"
+    );
+}
+
+/// Representative of the "missing else arm" shape at
+/// `cli/sync.rs`'s per-source loop. The sibling arm this fix added — `Ok(())`
+/// from `load_source` but the source absent from the cache — is structurally
+/// unreachable through the real `SourceManager` (every success path inserts
+/// into `self.sources` before returning `Ok`), so this proves the discipline
+/// on the reachable sibling instead: the `Err(e)` arm right below it, which
+/// settles the SAME spinner the same way (`finish_fail`, one line, no Drop).
+/// Both arms share one shape by construction — `sp.finish_fail("sync
+/// failed").detail(...)` — so proving one never leaks proves the other by
+/// symmetry. Live capture (not `for_test_doc`) so a leaked Drop-interrupted
+/// line would be visible rather than silently absorbed into a buffered Doc.
+#[test]
+#[serial]
+fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
+    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+
+    let (config_dir, state_dir) = unreachable_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, buf) = Printer::for_test_live_scrollback();
+
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the render is what is under test.
+    run_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("source:missing-team"),
+        "the owner header must be committed via commit_header before the settle line: {out}"
+    );
+    assert!(
+        out.contains("Sync failed — git error"),
+        "the finish_fail line must be committed: {out}"
+    );
+    assert_eq!(
+        out.matches("Sync failed — git error").count(),
+        1,
+        "the failure must settle exactly once, never twice: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a spinner settled by finish_fail must never also settle via Drop: {out}"
     );
 }
 

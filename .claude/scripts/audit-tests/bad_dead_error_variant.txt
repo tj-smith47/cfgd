@@ -1,0 +1,12 @@
+# EXPECTED: caught — Orphan is never constructed anywhere in this file.
+#[derive(Debug, thiserror::Error)]
+pub enum FixtureError {
+    #[error("used: {0}")]
+    Used(String),
+    #[error("orphan: {0}")]
+    Orphan(String),
+}
+
+fn make_error() -> FixtureError {
+    FixtureError::Used("ok".to_string())
+}

@@ -17,7 +17,7 @@ fn plan_items(actions: Vec<PackageAction>) -> Vec<String> {
     actions
         .into_iter()
         .map(|a| {
-            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a))
+            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a), "→")
         })
         .collect()
 }
@@ -33,6 +33,9 @@ struct MockPackageManager {
     // manager (e.g. pacman db unreadable). Used to assert plan_packages never
     // probes a manager that has no work to do.
     list_fails: bool,
+    // The brew-tap shape: entries are package SOURCES for the family, so the
+    // planner must order this mock's installs first.
+    registers_sources: bool,
 }
 
 impl MockPackageManager {
@@ -45,6 +48,7 @@ impl MockPackageManager {
             installs: Mutex::new(Vec::new()),
             uninstalls: Mutex::new(Vec::new()),
             list_fails: false,
+            registers_sources: false,
         }
     }
 
@@ -57,6 +61,11 @@ impl MockPackageManager {
         self.list_fails = true;
         self
     }
+
+    fn registering_family_sources(mut self) -> Self {
+        self.registers_sources = true;
+        self
+    }
 }
 
 impl PackageManager for MockPackageManager {
@@ -64,11 +73,22 @@ impl PackageManager for MockPackageManager {
         self.mgr_name
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
     fn is_available(&self) -> bool {
         self.available
     }
 
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn registers_family_sources(&self) -> bool {
+        self.registers_sources
+    }
+
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         self.bootstrappable
             .then(|| cfgd_core::providers::BootstrapPlan::new("stub"))
     }
@@ -126,10 +146,16 @@ impl PackageManager for GoLikeMockManager {
     fn name(&self) -> &str {
         "go"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         self.available
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -647,7 +673,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // brew is unavailable + bootstrappable, brew-tap should get Install (not Skip)
     let brew_mock = MockPackageManager::new("brew", false, vec![]).with_bootstrap();
-    let tap_mock = MockPackageManager::new("brew-tap", false, vec![]);
+    let tap_mock = MockPackageManager::new("brew-tap", false, vec![]).registering_family_sources();
 
     let profile = test_profile(PackagesSpec {
         brew: Some(cfgd_core::config::BrewSpec {
@@ -661,11 +687,12 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    // Should have: Install(brew: ripgrep), Install(brew-tap: some/tap) — brew's
+    // Should have: Install(brew-tap: some/tap), Install(brew: ripgrep) — the tap
+    // registers the source a formula may come from, so it orders first; brew's
     // own provisioning is a Prerequisites-phase concern this planner never sees.
     assert_eq!(actions.len(), 2);
-    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
 }
 
 // --- Declarative prune (Uninstall generation) tests ---
@@ -1535,7 +1562,7 @@ fn desired_packages_for_new_managers() {
 #[test]
 fn yum_skipped_when_dnf_available() {
     // yum_manager().is_available() returns false when dnf is present
-    // We can't directly test this without the actual system, but we can verify
+    // Cannot directly test this without the actual system, but this verifies
     // the manager's name is correct
     let yum = yum_manager();
     assert_eq!(yum.name(), "yum");
@@ -1772,7 +1799,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
             tool,
         )
     };
-    match shared::detect_system_method() {
+    match shared::detect_system_method(&|_| false) {
         Some("apt") => assert!(runnable("apt-get")),
         Some("dnf") => assert!(runnable("dnf")),
         Some("zypper") => assert!(runnable("zypper")),
@@ -1787,7 +1814,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
     // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = shared::detect_brew_system_method("pip");
+    let method = shared::detect_brew_system_method("pip", &|_| false);
     assert!(
         method == "brew" || method == "apt" || method == "dnf" || method == "pip",
         "expected brew, apt, dnf, or pip, got: {}",
@@ -1864,8 +1891,6 @@ fn the_unix_pip_arm_declares_the_home_local_bin() {
 #[cfg(windows)]
 #[test]
 fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
-    use cfgd_core::providers::PackageManager;
-
     let _guard = cfgd_core::test_helpers::path_env_read_guard();
     let pip_present = ["pip3", "pip"]
         .iter()
@@ -2367,13 +2392,12 @@ fn simple_manager_default_versions_unknown() {
     // Managers without list_with_versions return "unknown" for all packages
     let mgr = pacman_manager();
     assert!(mgr.list_with_versions.is_none());
-    // We can't call installed_packages_with_versions without pacman installed,
-    // but we verify the field is None
+    // Cannot call installed_packages_with_versions without pacman installed,
+    // but this verifies the field is None
 }
 
 // --- SimpleManager available_version dispatch ---
 
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn simple_manager_available_version_dispatches() {
@@ -3126,6 +3150,35 @@ fn all_package_managers_bootstrap_consistency() {
     }
 }
 
+/// Every manager whose bootstrap has a brew arm plans `via brew` when the run
+/// being planned delivers brew, whatever this host has. The brew arm is
+/// declared by `mediated_packages("brew")`, so a manager that grows one is
+/// walked here without being named.
+#[test]
+fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
+    let brew_delivered = |m: &str| m == "brew";
+    let mut walked = Vec::new();
+    for m in all_package_managers() {
+        if m.mediated_packages("brew").is_none() || m.name() == "brew" {
+            continue;
+        }
+        let plan = m
+            .bootstrap_plan_given(&brew_delivered)
+            .unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
+        assert_eq!(
+            plan.method,
+            "brew",
+            "{} probed the host instead of the plan it joins",
+            m.name()
+        );
+        walked.push(m.name().to_string());
+    }
+    assert!(
+        walked.iter().any(|n| n == "npm"),
+        "the walk must cover npm, the manager the hero take routed through apt: {walked:?}"
+    );
+}
+
 #[test]
 fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     // One gate over the whole registry, so a manager added later cannot declare
@@ -3395,7 +3448,7 @@ fn mock_manager_installed_packages_empty() {
 // --- ScriptedManager error variants ---
 
 // --- run_pkg_cmd error kind dispatch ---
-// We test all error_kind paths through ScriptedManager since it calls
+// These tests cover all error_kind paths through ScriptedManager since it calls
 // run_pkg_cmd_msg (for {package} mode) and run_pkg_cmd (for batch mode)
 
 // --- apply_packages output verification ---
@@ -3411,11 +3464,11 @@ fn apply_packages_skip_prints_warning() {
         origin: "local".into(),
     }];
     apply_packages(&actions, &[], &cx).unwrap();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("snap") && output.contains("cannot auto-install"),
         "expected skip warning, got: {}",
-        *output
+        output
     );
 }
 
@@ -3596,8 +3649,8 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
 // =========================================================================
 
 // --- query_version_apt string parsing logic ---
-// query_version_apt parses `apt-cache policy` output. We can't call the function
-// directly without apt, but we replicate its parsing logic to verify correctness.
+// query_version_apt parses `apt-cache policy` output. The function cannot be called
+// directly without apt, so this replicates its parsing logic to verify correctness.
 
 // --- query_version_apk string parsing logic ---
 
@@ -3618,7 +3671,7 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
 // --- ScriptedManager from_spec comprehensive field verification ---
 
 // --- run_pkg_cmd_prefixed error kind branches ---
-// We test these through ScriptedManager since it uses run_pkg_cmd_msg/run_pkg_cmd
+// These tests cover them through ScriptedManager since it uses run_pkg_cmd_msg/run_pkg_cmd
 // with different error_kind values.
 
 // --- parse_dnf_yum_lines with whitespace-only lines ---
@@ -3864,7 +3917,7 @@ fn brew_path_dirs_through_trait() {
 
 // --- SimpleManager::update with ignore_update_exit ---
 
-// Note: We can't easily test ignore_update_exit through SimpleManager directly
+// Note: ignore_update_exit cannot easily be tested through SimpleManager directly
 // without the actual commands, but the dnf/yum managers have this flag set.
 // Verify the flag is properly set on the managers that need it.
 
@@ -3873,7 +3926,7 @@ fn brew_path_dirs_through_trait() {
 // --- SimpleManager query_version function pointers ---
 
 // These call the actual query_version functions which shell out to system
-// commands. We can verify they at least return Ok when the command is not found.
+// commands. This verifies they at least return Ok when the command is not found.
 
 // --- SimpleManager::display_cmd with packages ---
 
@@ -3897,10 +3950,16 @@ impl PackageManager for CiVersionedMockManager {
     fn name(&self) -> &str {
         "winget"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -4036,10 +4095,16 @@ impl PackageManager for PkgLikeMockManager {
     fn name(&self) -> &str {
         "pkg"
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("install")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
@@ -4126,4 +4191,920 @@ fn a_non_fixed_point_identity_never_collapses_a_listed_name() {
         vec!["packages.pkg.drm"],
         "the not-installed item still owes its question"
     );
+}
+
+// --- ManifestCache ---
+
+fn apt_manifest_spec() -> PackagesSpec {
+    PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    }
+}
+
+fn resolved_apt(spec: PackagesSpec) -> Vec<String> {
+    spec.apt.expect("apt spec present").packages
+}
+
+#[test]
+fn a_cached_manifest_is_read_once_per_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+    let meta = std::fs::metadata(&manifest).unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(meta.accessed().unwrap())
+        .set_modified(meta.modified().unwrap());
+
+    let cache = ManifestCache::default();
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    // Rewritten to the same length with the same mtime restored: the file is
+    // byte-for-byte indistinguishable, to everything the cache stats, from the
+    // one this run already read. A second pass answering with the OLD names is
+    // the only way to observe that it did not read the file again.
+    std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
+
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(second), vec!["git", "curl"]);
+}
+
+#[test]
+fn a_changed_manifest_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+
+    let cache = ManifestCache::default();
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    // A lifecycle hook rewriting a manifest mid-run changes its length, so the
+    // entry describing the old bytes is retired rather than merged.
+    std::fs::write(&manifest, "ripgrep\n").unwrap();
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(second), vec!["ripgrep"]);
+}
+
+#[test]
+fn the_uncached_entry_point_never_reuses_a_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+    let meta = std::fs::metadata(&manifest).unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(meta.accessed().unwrap())
+        .set_modified(meta.modified().unwrap());
+
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages(&mut first, dir.path()).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
+
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages(&mut second, dir.path()).unwrap();
+    assert_eq!(resolved_apt(second), vec!["ab", "cdefg"]);
+}
+
+/// How one registered manager states the versions it lists, which is what
+/// decides whether the trait's loose-semver comparator can judge a declared
+/// `minVersion` against them.
+enum VersionGrammar {
+    /// Plain semver: the trait default is correct. `sample` is a real
+    /// listing string of this manager, and `incomparable` a shape the default
+    /// deliberately refuses — a floor against it is an honest check error
+    /// rather than an invented verdict.
+    Semver {
+        sample: &'static str,
+        incomparable: Option<&'static str>,
+    },
+    /// A packaging grammar carrying fields semver reads as a prerelease or
+    /// refuses outright. `sample` is a real listing string of this family and
+    /// `floor` a declaration it must clear.
+    Packaged {
+        sample: &'static str,
+        floor: &'static str,
+    },
+    /// The tool owns the comparison end to end (the manager shells out to its
+    /// own comparator), so the floor is driven through a shim: what must hold
+    /// is that the DECLARATION reaches the tool in a spelling the tool can
+    /// read.
+    ToolOwned {
+        sample: &'static str,
+        floor: &'static str,
+    },
+}
+
+/// Where a manager's `sample` version really comes from, so the grammar table
+/// cannot classify a family against a version string that family never states.
+enum SampleRead {
+    /// The family's own installed-listing parser, and a fixture in the shape
+    /// its tool prints. `parse` is the production function, not a restatement
+    /// of it: a listing whose grammar moves takes the sample with it.
+    Listed {
+        fixture: &'static str,
+        parse: fn(&str) -> Vec<cfgd_core::providers::PackageInfo>,
+    },
+    /// The family's installed listing states no version at all, so its sample
+    /// is what the single-package version query reads instead. `seam` is the
+    /// `CFGD_*_BIN` variable that query spawns through, and `stdout` what the
+    /// tool answers with.
+    Queried {
+        seam: &'static str,
+        stdout: &'static str,
+    },
+    /// The family states no version anywhere: a brew tap is a repository, and
+    /// its entries carry the unknown sentinel rather than a version at all.
+    Unlisted,
+}
+
+/// The listing parsers whose production signature takes parsed JSON rather
+/// than the tool's stdout, adapted to the one shape the table holds.
+fn npm_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).expect("npm fixture is JSON");
+    super::npm::parse_npm_list_versions(&parsed)
+}
+
+fn pipx_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).expect("pipx fixture is JSON");
+    super::pipx::parse_pipx_list_versions(&parsed)
+}
+
+/// go reads its versions per BINARY rather than as one listing, so the batch
+/// parser is fed the one path the fixture's transcript names.
+fn go_listing_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
+    let paths = vec!["/go/bin/gopls".to_string()];
+    super::go::parse_go_version_m_batch(stdout, &paths)
+        .into_iter()
+        .map(|(name, version)| cfgd_core::providers::PackageInfo { name, version })
+        .collect()
+}
+
+/// Every registered manager against its real version grammar. A manager whose
+/// listings carry packaging fields needs its own comparator, or every package
+/// it holds with a declared floor reports a check that could not run AND is
+/// re-planned as an install on a converged machine — the defect brew shipped
+/// with while its distro siblings were being swept.
+///
+/// A newly registered manager fails this walk until it is classified here,
+/// which is the mechanism that keeps the next family honest.
+const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar, SampleRead)] = &[
+    // Homebrew: `<upstream>_<revision>` for a formula, `<version>,<build>`
+    // for a cask. A tap has no versions, so the default never judges one.
+    (
+        "brew",
+        VersionGrammar::Packaged {
+            sample: "0.12.5_1",
+            floor: "0.11",
+        },
+        SampleRead::Listed {
+            fixture: "ripgrep 0.12.5_1\n",
+            parse: super::brew::parse_brew_versions,
+        },
+    ),
+    (
+        "brew-cask",
+        VersionGrammar::Packaged {
+            sample: "1.2.3,4567",
+            floor: "1.2",
+        },
+        SampleRead::Listed {
+            fixture: "rectangle 1.2.3,4567\n",
+            parse: super::brew::parse_brew_versions,
+        },
+    ),
+    (
+        "brew-tap",
+        VersionGrammar::Semver {
+            sample: "1.0.0",
+            incomparable: None,
+        },
+        SampleRead::Unlisted,
+    ),
+    // The distro families: `[<epoch>:]<upstream>[-<revision>]`.
+    (
+        "apt",
+        VersionGrammar::Packaged {
+            sample: "1:2.34-0ubuntu3.4",
+            floor: "2",
+        },
+        SampleRead::Listed {
+            fixture: "vim\t1:2.34-0ubuntu3.4\n",
+            parse: super::versions::parse_apt_versions,
+        },
+    ),
+    // rpm's `%{VERSION}` is the upstream field alone — the release lives in
+    // `%{RELEASE}` and the epoch in `%{EPOCH}`, so this family's listing
+    // never carries a packaging suffix even though a DECLARED floor may.
+    (
+        "dnf",
+        VersionGrammar::Packaged {
+            sample: "1.2.3",
+            floor: "1.2",
+        },
+        SampleRead::Listed {
+            fixture: "vim\t1.2.3\n",
+            parse: super::versions::parse_rpm_versions,
+        },
+    ),
+    (
+        "yum",
+        VersionGrammar::Packaged {
+            sample: "1.2.3",
+            floor: "1.2",
+        },
+        SampleRead::Listed {
+            fixture: "vim\t1.2.3\n",
+            parse: super::versions::parse_rpm_versions,
+        },
+    ),
+    // The four families whose installed listing states no version at all:
+    // their samples are what the single-package version QUERY reads, so the
+    // weld drives each one's own `CFGD_*_BIN` seam instead of a parser.
+    (
+        "apk",
+        VersionGrammar::Packaged {
+            sample: "3.0.0-r0",
+            floor: "2",
+        },
+        SampleRead::Queried {
+            seam: super::versions::APK_BIN_ENV,
+            stdout: "curl policy:\n  3.0.0-r0:\n    https://dl-cdn.alpinelinux.org/alpine\n",
+        },
+    ),
+    (
+        "pacman",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+        SampleRead::Queried {
+            seam: super::versions::PACMAN_BIN_ENV,
+            stdout: "Repository      : extra\nName            : curl\nVersion         : 1.2.3-2\n",
+        },
+    ),
+    (
+        "zypper",
+        VersionGrammar::Packaged {
+            sample: "1.2.3-2",
+            floor: "1.2",
+        },
+        SampleRead::Queried {
+            seam: super::versions::ZYPPER_BIN_ENV,
+            stdout: "Name           : curl\nVersion        : 1.2.3-2\nArch           : x86_64\n",
+        },
+    ),
+    // FreeBSD carries PORTEPOCH and PORTREVISION and defers to `pkg version -t`.
+    (
+        "pkg",
+        VersionGrammar::ToolOwned {
+            sample: "1.2.0_1,1",
+            floor: "v1.2.0",
+        },
+        SampleRead::Queried {
+            seam: super::versions::PKG_BIN_ENV,
+            stdout: "curl\t1.2.0_1,1\n",
+        },
+    ),
+    // Language and app-store managers publish plain semver (`cargo search`,
+    // `npm view`, PyPI, `go list -m`, nix, snap, flatpak) or vendor versions
+    // the shared parser reads as-is (winget, chocolatey, scoop).
+    (
+        "cargo",
+        VersionGrammar::Semver {
+            sample: "0.4.19",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "ripgrep v0.4.19:\n    rg\n",
+            parse: super::cargo::parse_cargo_install_list,
+        },
+    ),
+    (
+        "npm",
+        VersionGrammar::Semver {
+            sample: "10.9.2",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: r#"{"dependencies":{"npm":{"version":"10.9.2"}}}"#,
+            parse: npm_listing_versions,
+        },
+    ),
+    (
+        "pipx",
+        VersionGrammar::Semver {
+            sample: "24.0.1",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: r#"{"venvs":{"black":{"metadata":{"main_package":{"package_version":"24.0.1"}}}}}"#,
+            parse: pipx_listing_versions,
+        },
+    ),
+    // `go version -m` states the module version with go's own `v` prefix,
+    // which the parser strips: the sample is the version cfgd compares, not
+    // the string the tool printed.
+    (
+        "go",
+        VersionGrammar::Semver {
+            sample: "0.16.2",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "/go/bin/gopls: go1.21.5\n\tpath\texample.com/gopls\n\tmod\texample.com/gopls\tv0.16.2\th1:aaa=\n",
+            parse: go_listing_versions,
+        },
+    ),
+    (
+        "nix",
+        VersionGrammar::Semver {
+            sample: "0.10.0",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/aaaaaaaa-ripgrep-0.10.0"]}}}"#,
+            parse: super::nix::parse_nix_profile_list_versions,
+        },
+    ),
+    (
+        "snap",
+        VersionGrammar::Semver {
+            sample: "2.61.3",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "Name  Version  Rev  Tracking  Publisher  Notes\ncore  2.61.3  16574  latest/stable  canonical  core\n",
+            parse: super::snap::parse_snap_list_versions,
+        },
+    ),
+    (
+        "flatpak",
+        VersionGrammar::Semver {
+            sample: "2.10.36",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: "org.gnome.Calculator\t2.10.36\n",
+            parse: super::flatpak::parse_flatpak_app_list_versions,
+        },
+    ),
+    (
+        "winget",
+        VersionGrammar::Packaged {
+            sample: "133.0.6943.98",
+            floor: "133",
+        },
+        SampleRead::Listed {
+            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n",
+            parse: super::winget::parse_winget_list_versions,
+        },
+    ),
+    (
+        "chocolatey",
+        VersionGrammar::Packaged {
+            sample: "4.7.1.2019",
+            floor: "4.7",
+        },
+        SampleRead::Listed {
+            fixture: "Chocolatey v2.2.2\nnodejs 4.7.1.2019\n1 packages installed.\n",
+            parse: super::choco::parse_choco_list_versions,
+        },
+    ),
+    (
+        "scoop",
+        VersionGrammar::Semver {
+            sample: "22.0.0",
+            incomparable: None,
+        },
+        SampleRead::Listed {
+            fixture: r#"{"apps":[{"Name":"nodejs","Version":"22.0.0"}]}"#,
+            parse: super::scoop::parse_scoop_export_versions,
+        },
+    ),
+];
+
+#[test]
+fn every_registered_manager_judges_a_floor_in_its_own_version_grammar() {
+    for mgr in all_package_managers() {
+        let (_, grammar, read) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _, _)| *name == mgr.name())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: classify this manager's version grammar — a packaging \
+                     suffix the default comparator cannot read makes every \
+                     declared minVersion an erroring check",
+                    mgr.name()
+                )
+            });
+        match grammar {
+            VersionGrammar::Semver {
+                sample,
+                incomparable,
+            } => {
+                assert!(
+                    mgr.version_comparable(sample),
+                    "{}: {sample} is this manager's own listing shape",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.version_meets_minimum(sample, sample),
+                    "{}: {sample} clears a floor of itself",
+                    mgr.name()
+                );
+                assert!(
+                    !mgr.floor_comparable(">=1.2"),
+                    "{}: a range written where a version belongs is a floor this \
+                     comparator cannot judge, so the check errors rather than \
+                     reporting drift forever",
+                    mgr.name()
+                );
+                if let Some(refused) = incomparable {
+                    assert!(
+                        !mgr.version_comparable(refused),
+                        "{}: {refused} is a shape this comparator cannot judge, so \
+                         a floor against it is an erroring check rather than an \
+                         invented verdict",
+                        mgr.name()
+                    );
+                }
+            }
+            VersionGrammar::Packaged { sample, floor } => {
+                // The floor guard is the MANAGER's: this family reads
+                // packaging fields, so a declaration carrying them is a
+                // comparable floor and never a check error.
+                assert!(
+                    mgr.floor_comparable(sample),
+                    "{}: {sample} is a floor this family can compare against",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.version_comparable(sample),
+                    "{}: {sample} is this family's own listing shape, not an \
+                     unreadable version",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.version_meets_minimum(sample, floor),
+                    "{}: {sample} clears a declared floor of {floor}",
+                    mgr.name()
+                );
+            }
+            VersionGrammar::ToolOwned { sample, floor } => {
+                assert!(
+                    mgr.version_comparable(sample),
+                    "{}: the tool's own comparator reads everything it lists",
+                    mgr.name()
+                );
+                assert!(
+                    mgr.floor_comparable(floor),
+                    "{}: {floor} is a declaration this family carries to its tool \
+                     rather than refusing, or the floor the tool half drives \
+                     through the shim would never reach it",
+                    mgr.name()
+                );
+                // The tool owns this family's grammar, so the shapes it reads
+                // stay comparable — a letter suffix FreeBSD orders by
+                // collation among them — while a range expression is refused
+                // here as everywhere: `pkg version -t` settles one by
+                // collation, which is an answer rather than a comparison.
+                // Both questions are answered without spawning the tool; what
+                // the tool itself must say is
+                // `a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read`.
+                assert!(
+                    mgr.floor_comparable("1.2.x"),
+                    "{}: the tool orders its own letter suffixes",
+                    mgr.name()
+                );
+                assert!(
+                    !mgr.floor_comparable(">=1.2"),
+                    "{}: a range expression is no version in any grammar",
+                    mgr.name()
+                );
+            }
+        }
+
+        // The sample has to be a version this family really states, or the
+        // classification above is a claim about a string nothing produces.
+        let sample = match grammar {
+            VersionGrammar::Semver { sample, .. }
+            | VersionGrammar::Packaged { sample, .. }
+            | VersionGrammar::ToolOwned { sample, .. } => *sample,
+        };
+        match read {
+            SampleRead::Listed { fixture, parse } => {
+                let listed: Vec<String> = parse(fixture).into_iter().map(|p| p.version).collect();
+                assert!(
+                    listed.iter().any(|v| v == sample),
+                    "{}: {sample} is no version this family's own listing parser \
+                     produces from its tool's output — it read {listed:?}",
+                    mgr.name()
+                );
+            }
+            SampleRead::Unlisted => {
+                assert_eq!(
+                    mgr.upgrade_verb(),
+                    None,
+                    "{}: a family stating no version anywhere raises nothing in \
+                     place either",
+                    mgr.name()
+                );
+            }
+            // Driven through the tool seam by
+            // `every_queried_sample_is_what_its_familys_own_version_query_reads`,
+            // which serializes against every other test using the same seam.
+            SampleRead::Queried { .. } => {}
+        }
+    }
+}
+
+/// The half of the sample-provenance weld that needs a tool: four families
+/// list no versions at all, so their samples come from the single-package
+/// version query, which spawns. Split out for the same reason
+/// `a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read` is: it
+/// drives a `CFGD_*_BIN` seam and so has to serialize.
+#[test]
+#[serial_test::serial]
+fn every_queried_sample_is_what_its_familys_own_version_query_reads() {
+    let mut driven = 0;
+    for mgr in all_package_managers() {
+        let Some((_, grammar, SampleRead::Queried { seam, stdout })) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _, _)| *name == mgr.name())
+        else {
+            continue;
+        };
+        let sample = match grammar {
+            VersionGrammar::Semver { sample, .. }
+            | VersionGrammar::Packaged { sample, .. }
+            | VersionGrammar::ToolOwned { sample, .. } => *sample,
+        };
+        let _shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, stdout, "");
+        let read = mgr
+            .available_version("curl")
+            .unwrap_or_else(|e| panic!("{}: shimmed version query failed: {e}", mgr.name()));
+        assert_eq!(
+            read.as_deref(),
+            Some(sample),
+            "{}: {sample} is no version this family's own query reads back",
+            mgr.name()
+        );
+        driven += 1;
+    }
+    assert_eq!(
+        driven, 4,
+        "the four version-less-listing families each drove their own seam"
+    );
+}
+
+/// The half of the grammar walk that needs the tool itself, split out because
+/// it spawns a [`cfgd_core::test_helpers::ToolShim`] and so has to serialize
+/// against every other test driving the same env seam, while the walk above
+/// answers from the manager alone and runs in parallel.
+///
+/// A `ToolOwned` manager's `version_comparable` is unconditionally true, so a
+/// floor it misreads invents drift rather than erroring: the declaration has to
+/// reach the tool in a spelling the tool can read.
+#[test]
+#[serial_test::serial]
+fn a_tool_owned_manager_reaches_its_tool_with_a_floor_it_can_read() {
+    for mgr in all_package_managers() {
+        let Some((_, VersionGrammar::ToolOwned { sample, floor }, _)) = MANAGER_VERSION_GRAMMARS
+            .iter()
+            .find(|(name, _, _)| *name == mgr.name())
+        else {
+            continue;
+        };
+        // The tool answers `=`, so the floor clears only if the declaration
+        // reached it in a spelling it can read.
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(super::versions::PKG_BIN_ENV, 0, "=\n", "");
+        assert!(
+            mgr.version_meets_minimum(sample, floor),
+            "{}: a floor declared {floor} clears when the tool says `=`",
+            mgr.name()
+        );
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("version -t"),
+            "{}: the comparison really reached the tool: {argv}",
+            mgr.name()
+        );
+        assert!(
+            !argv.contains(" v"),
+            "{}: the declared floor reaches the tool with no `v` for it \
+             to compare against a digit: {argv}",
+            mgr.name()
+        );
+    }
+}
+
+/// The raise verb a family answers `upgrade_verb()` with, or the seam that
+/// proves the alternative when it cannot raise in place at all: a manager
+/// answering `None` must then LIST only [`cfgd_core::providers::UNKNOWN_PACKAGE_VERSION`],
+/// or a floor check against it is a bug nothing can clear (see
+/// `packages::shared::upgrade_each`'s rustdoc). `listing_seam` is the
+/// `CFGD_*_BIN` variable that manager's listing spawns through, so the walk
+/// can shim it and prove the sentinel without the real tool.
+enum RaiseVerb {
+    Verb(&'static str),
+    None { listing_seam: &'static str },
+}
+
+/// Every registered manager against the verb it raises an already-held
+/// package with, read off each manager's own `upgrade_verb()` at HEAD. A
+/// newly registered manager fails this walk until it is classified here,
+/// which is the mechanism that keeps the next family honest.
+const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb)] = &[
+    ("brew", RaiseVerb::Verb("upgrade")),
+    ("brew-cask", RaiseVerb::Verb("upgrade")),
+    (
+        "brew-tap",
+        RaiseVerb::None {
+            listing_seam: "CFGD_BREW_BIN",
+        },
+    ),
+    ("apt", RaiseVerb::Verb("install")),
+    ("cargo", RaiseVerb::Verb("install")),
+    ("npm", RaiseVerb::Verb("install")),
+    ("pipx", RaiseVerb::Verb("upgrade")),
+    ("dnf", RaiseVerb::Verb("install")),
+    ("apk", RaiseVerb::Verb("upgrade")),
+    ("pacman", RaiseVerb::Verb("-S")),
+    ("zypper", RaiseVerb::Verb("install")),
+    ("yum", RaiseVerb::Verb("install")),
+    ("pkg", RaiseVerb::Verb("install")),
+    ("snap", RaiseVerb::Verb("refresh")),
+    ("flatpak", RaiseVerb::Verb("update")),
+    ("nix", RaiseVerb::Verb("upgrade")),
+    ("go", RaiseVerb::Verb("install")),
+    ("winget", RaiseVerb::Verb("install")),
+    ("chocolatey", RaiseVerb::Verb("upgrade")),
+    ("scoop", RaiseVerb::Verb("update")),
+];
+
+#[test]
+#[serial_test::serial]
+fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = PackageContext::new(&printer, &state);
+    for mgr in all_package_managers() {
+        let (_, verb) = MANAGER_RAISE_VERBS
+            .iter()
+            .find(|(name, _)| *name == mgr.name())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: classify this manager's raise verb — an uninventoried \
+                     manager could silently disagree with what its own \
+                     upgrade_verb() answers",
+                    mgr.name()
+                )
+            });
+        let expected = match verb {
+            RaiseVerb::Verb(v) => Some(*v),
+            RaiseVerb::None { .. } => None,
+        };
+        assert_eq!(
+            mgr.upgrade_verb(),
+            expected,
+            "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
+             upgrade_verb()",
+            mgr.name()
+        );
+        if let RaiseVerb::None { listing_seam } = verb {
+            let _shim = cfgd_core::test_helpers::ToolShim::install(
+                listing_seam,
+                0,
+                "one/tap\ntwo/tap\n",
+                "",
+            );
+            let listed = mgr
+                .installed_packages_with_versions(&cx)
+                .unwrap_or_else(|e| panic!("{}: shimmed listing failed: {e}", mgr.name()));
+            assert!(
+                !listed.is_empty(),
+                "{}: the shim listed two entries",
+                mgr.name()
+            );
+            assert!(
+                listed
+                    .iter()
+                    .all(|p| p.version == cfgd_core::providers::UNKNOWN_PACKAGE_VERSION),
+                "{}: a manager that cannot raise must list only the unknown sentinel",
+                mgr.name()
+            );
+        }
+    }
+}
+
+/// The half of the floor-dedup rule a "simplification" would break. Both
+/// `2:1.0` and `1:9.0` are apt-epoch floors no `parse_loose_version` reads,
+/// so the dedup can only settle their order in the FAMILY's own grammar —
+/// which puts epoch ahead of upstream, so `2:1.0` wins even though its
+/// upstream digits (`1.0`) read smaller than `9.0`'s. A pair differing only
+/// in whether one carried an epoch AT ALL would pass under a simpler, wrong
+/// rule too: "explicit epoch always wins", never comparing epoch VALUES.
+// `installed_for(apt)` shells `dpkg-query -f=${Package}\t${Version}\n`, and a
+// newline in an argument is what `Command` refuses to hand a `.cmd` shim.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_family_grammar_floor_propagates_through_the_dedup_and_compares_clean() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let modules = vec![pinned("base", "2:1.0"), pinned("dev", "1:9.0")];
+
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    let effective = cfgd_core::effective::effective_desired_packages(
+        &resolved.merged,
+        &modules,
+        Some(&managers),
+    );
+    assert_eq!(
+        effective[0].min_version.as_deref(),
+        Some("2:1.0"),
+        "epoch dominance beats a larger upstream number in apt's own grammar: {effective:?}"
+    );
+
+    // And the whole check, not two detached trait halves: a shimmed dpkg-query
+    // listing driven through the engine `cfgd verify` and the live scan both
+    // read. A guard added here that asked the SHARED parser would turn the
+    // epoch-carrying floors `docs/packages.md` promises work into check errors.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        super::versions::DPKG_QUERY_BIN_ENV,
+        0,
+        "vim\t2:8.2.3995-1ubuntu2\n",
+        "",
+    );
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = PackageContext::new(&printer, &state);
+    let installed = cx.installed_for(apt.as_ref()).expect("the shim lists");
+    assert!(
+        matches!(
+            cfgd_core::reconciler::package_version_floor(
+                apt.as_ref(),
+                &installed,
+                "vim",
+                Some("2:1.0"),
+            ),
+            cfgd_core::reconciler::VersionFloor::Met
+        ),
+        "an epoch floor is a comparison the family makes, never a check error"
+    );
+    // The contrast that makes the `Met` above non-vacuous: a package absent
+    // from the listing is `Met` too, so only a floor the listed version misses
+    // proves the shimmed row was read at all. Same epoch as the listing (2) so
+    // the miss comes from the upstream comparison, not from epoch dominance.
+    assert!(
+        matches!(
+            cfgd_core::reconciler::package_version_floor(
+                apt.as_ref(),
+                &installed,
+                "vim",
+                Some("2:9.0"),
+            ),
+            cfgd_core::reconciler::VersionFloor::Below { .. }
+        ),
+        "and upstream 8.2.3995 misses a same-epoch 2:9.0 floor, so the listing really was read"
+    );
+}
+
+/// The one-unreadable case belongs to the manager arm too, and order-independently.
+/// `>=1.2` is a floor apt cannot read and `1:2.30` is one it can, so the
+/// malformed declaration must survive the dedup and reach the check that
+/// reports it — whichever module declared it. Falling to the parse ladder here
+/// let the family floor win in one order and lose in the other.
+#[test]
+fn a_floor_the_manager_cannot_read_survives_the_dedup_in_either_order() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    for order in [["1:2.30", ">=1.2"], [">=1.2", "1:2.30"]] {
+        let modules = vec![pinned("base", order[0]), pinned("dev", order[1])];
+        let effective = cfgd_core::effective::effective_desired_packages(
+            &resolved.merged,
+            &modules,
+            Some(&managers),
+        );
+        assert_eq!(
+            effective[0].min_version.as_deref(),
+            Some(">=1.2"),
+            "the floor the manager cannot read reaches its check: {effective:?}"
+        );
+    }
+}
+
+/// The other direction of the same rule, and the one the round-5 propagate rule
+/// got wrong on its own: `1:2.30` is unreadable to the SHARED parser but
+/// perfectly comparable to apt. Its explicit epoch of 1 outranks `9.0`'s
+/// implicit epoch of 0 — dpkg's own comparator lets epoch dominate upstream
+/// entirely, so `1:2.30` is the STRICTER floor here even though its upstream
+/// number reads smaller. Letting the unparseable floor lose to a same-epoch
+/// upstream comparison here would drop a real constraint with no check error
+/// anywhere to show for it.
+#[test]
+fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
+    let resolved = cfgd_core::test_helpers::make_empty_resolved();
+    let pinned = |name: &str, floor: &str| {
+        let mut m = cfgd_core::test_helpers::make_resolved_module(name);
+        m.packages = vec![cfgd_core::modules::ResolvedPackage {
+            canonical_name: "vim".to_string(),
+            resolved_name: "vim".to_string(),
+            manager: "apt".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some(floor.to_string()),
+        }];
+        m
+    };
+    let apt = all_package_managers()
+        .into_iter()
+        .find(|m| m.name() == "apt")
+        .expect("apt is a registered manager");
+    let managers: HashMap<String, &dyn PackageManager> =
+        std::iter::once(("apt".to_string(), apt.as_ref())).collect();
+
+    for order in [["1:2.30", "9.0"], ["9.0", "1:2.30"]] {
+        let modules = vec![pinned("base", order[0]), pinned("dev", order[1])];
+        let effective = cfgd_core::effective::effective_desired_packages(
+            &resolved.merged,
+            &modules,
+            Some(&managers),
+        );
+        assert_eq!(
+            effective[0].min_version.as_deref(),
+            Some("1:2.30"),
+            "the strictest floor in the family's own grammar survives: {effective:?}"
+        );
+    }
 }

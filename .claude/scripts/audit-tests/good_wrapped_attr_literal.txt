@@ -1,0 +1,26 @@
+# EXPECTED: NOT flagged — a wrapped #[serde(...)] attribute's continuation
+# line repeats a literal at 3 call sites; the whole attribute is exempt, wrap
+# or not.
+struct One {
+    #[serde(
+        default,
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
+    platforms: Vec<String>,
+}
+
+struct Two {
+    #[serde(
+        default,
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
+    platforms: Vec<String>,
+}
+
+struct Three {
+    #[serde(
+        default,
+        deserialize_with = "crate::platform::deserialize_platform_tags"
+    )]
+    platforms: Vec<String>,
+}

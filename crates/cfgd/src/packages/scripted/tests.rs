@@ -1,5 +1,6 @@
 use cfgd_core::config::PackagesSpec;
 use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::PackageManagerExt;
 
 use super::*;
 
@@ -1034,7 +1035,7 @@ fn build_template_invocations_brace_package_takes_precedence_over_brace_packages
         "first cmd: {}",
         cmds[0]
     );
-    // `{packages}` is left literal in this branch (we picked per-package).
+    // `{packages}` is left literal in this branch (per-package was picked).
     assert!(
         cmds[0].contains("{packages}"),
         "literal `{{packages}}` survives in per-package mode: {}",

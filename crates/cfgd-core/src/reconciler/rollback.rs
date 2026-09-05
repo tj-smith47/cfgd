@@ -67,7 +67,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Track which file paths we've already restored (avoid duplicate restores)
+        // Track which file paths are already restored (avoid duplicate restores)
         let mut restored_paths = HashSet::new();
 
         // Restore from target apply's post-apply snapshots, in reverse-apply
@@ -122,10 +122,14 @@ impl<'a> super::Reconciler<'a> {
             "rollback",
             &format!("rollback-of-{}", apply_id),
             ApplyStatus::Success,
-            Some(&format!(
-                "{{\"rollback_of\":{},\"restored\":{},\"removed\":{}}}",
-                apply_id, files_restored, files_removed
-            )),
+            Some(
+                &crate::state::ApplySummary::Rollback {
+                    rollback_of: apply_id,
+                    restored: files_restored,
+                    removed: files_removed,
+                }
+                .to_column(),
+            ),
         )?;
 
         Ok(RollbackResult {

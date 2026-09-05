@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cfgd_core::PathDisplayExt;
+use cfgd_core::{PathDisplayExt, env_or};
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
@@ -20,21 +20,6 @@ use crate::csi::v1::node_server::NodeServer;
 use crate::identity::CfgdIdentity;
 use crate::metrics::{CsiMetrics, serve_metrics};
 use crate::node::CfgdNode;
-
-pub(crate) fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-pub(crate) async fn shutdown_signal() -> Result<(), std::io::Error> {
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| std::io::Error::other(format!("failed to register SIGTERM handler: {e}")))?;
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::select! {
-        _ = sigterm.recv() => {}
-        _ = ctrl_c => {}
-    }
-    Ok(())
-}
 
 /// Full CSI plugin lifecycle: parse config from env, create the module cache,
 /// start the metrics HTTP server, bind the Unix socket, and serve gRPC until a
@@ -96,7 +81,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(IdentityServer::new(CfgdIdentity::new(cache_dir)))
         .add_service(NodeServer::new(CfgdNode::new(cache, metrics, node_id)))
         .serve_with_incoming_shutdown(stream, async {
-            if let Err(e) = shutdown_signal().await {
+            if let Err(e) = cfgd_core::await_shutdown_request().await {
                 tracing::warn!(error = %e, "signal handler setup failed; proceeding with shutdown");
             } else {
                 tracing::info!("received shutdown signal, draining");
@@ -117,46 +102,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-
-    // --- env_or ---
-
-    #[test]
-    #[serial]
-    fn env_or_returns_default_when_var_unset() {
-        let _g = EnvVarGuard::unset("CFGD_CSI_TEST_UNSET_VAR_42");
-        let v = env_or("CFGD_CSI_TEST_UNSET_VAR_42", "fallback-value");
-        assert_eq!(v, "fallback-value");
-    }
-
-    #[test]
-    #[serial]
-    fn env_or_returns_value_when_var_set() {
-        let _g = EnvVarGuard::set("CFGD_CSI_TEST_SET_VAR_42", "from-env");
-        let v = env_or("CFGD_CSI_TEST_SET_VAR_42", "fallback");
-        assert_eq!(v, "from-env");
-    }
-
-    #[test]
-    #[serial]
-    fn env_or_returns_empty_string_when_set_to_empty() {
-        // Setting a var to "" is distinct from unset; empty string is valid.
-        let _g = EnvVarGuard::set("CFGD_CSI_TEST_EMPTY_VAR", "");
-        let v = env_or("CFGD_CSI_TEST_EMPTY_VAR", "fallback");
-        assert_eq!(v, "");
-    }
-
-    // --- shutdown_signal ---
-
-    /// Drive `shutdown_signal` against a 50 ms timer. The sleep wins; the
-    /// signal registration lines execute but no real signal fires. A hard
-    /// timeout ensures the test cannot block the suite.
-    #[tokio::test(flavor = "current_thread")]
-    async fn shutdown_signal_registers_handlers_without_panicking() {
-        let result = tokio::time::timeout(Duration::from_millis(50), shutdown_signal()).await;
-        // Elapsed is expected — no signal was sent so the future never
-        // resolves. What matters is no panic during signal registration.
-        assert!(result.is_err(), "timeout should fire before any signal");
-    }
 
     // --- run ---
 

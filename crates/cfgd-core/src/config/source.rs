@@ -9,29 +9,56 @@ use super::profile_spec::{
 
 // --- Multi-source config management ---
 
+/// One entry of `spec.sources[]`: a remote config source this machine
+/// subscribes to.
+///
+/// ```yaml
+/// sources:
+///   - name: team-baseline
+///     origin:
+///       type: Git
+///       url: git@github.com:acme/cfgd-baseline.git
+///     subscription:
+///       acceptRecommended: true
+///     sync:
+///       interval: 1h
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSpec {
+    /// Local name for this source, used in `cfgd source` commands and status output.
     pub name: String,
+    /// Where the source's manifest is fetched from.
     pub origin: OriginSpec,
+    /// What this machine accepts from the source and how it applies.
     #[serde(default)]
     pub subscription: SubscriptionSpec,
+    /// How often and under what conditions the source is refreshed.
     #[serde(default)]
     pub sync: SourceSyncSpec,
 }
 
+/// `spec.sources[].subscription`: the subscriber's own policy toward one source.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionSpec {
+    /// Which of the source's published profiles to compose against. Omitted
+    /// composes every profile the source provides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Merge priority against other sources and the local profile; higher wins
+    /// on conflicting leaf values. Default: `500`. Capped at
+    /// `MAX_SOURCE_PRIORITY`.
     #[serde(
         default = "default_source_priority",
         deserialize_with = "deserialize_source_priority"
     )]
     pub priority: u32,
+    /// Automatically accept the source's `recommended` policy tier without
+    /// prompting. Default: `false`.
     #[serde(default)]
     pub accept_recommended: bool,
+    /// Names from the source's `optional` policy tier to accept.
     #[serde(default)]
     pub opt_in: Vec<String>,
     /// Subscriber opt-in to run lifecycle scripts (profile-layer and
@@ -40,9 +67,28 @@ pub struct SubscriptionSpec {
     /// the source's own `noScripts` constraint governs.
     #[serde(default)]
     pub allow_scripts: bool,
+    /// Subscriber-side demand that this source's HEAD commit carry a valid GPG
+    /// or SSH signature.
+    ///
+    /// The trust anchor for the check. `constraints.requireSignedCommits` says
+    /// the same thing, but it is read from the source's manifest INSIDE the
+    /// cached clone, so whoever can write the cache can also clear it. This
+    /// flag is read from the subscriber's own config, which the cache cannot
+    /// reach.
+    ///
+    /// ORed with the manifest's flag, so it only ever ADDS strictness: a
+    /// manifest `true` is never weakened by a subscriber `false`. Default
+    /// `false`. `spec.security.allowUnsigned` still bypasses both.
+    #[serde(default)]
+    pub require_signed_commits: bool,
+    /// Local values to deep-merge on top of what the source delivers, applied
+    /// after composition.
     #[serde(default)]
     #[schemars(with = "serde_json::Value")]
     pub overrides: serde_yaml::Value,
+    /// Items from the source's `recommended` tier to drop entirely rather than
+    /// accept. A mapping under `packages`, `env`, `aliases`, and/or `modules`;
+    /// any other top-level key is rejected as a typo.
     #[serde(default)]
     #[schemars(with = "serde_json::Value")]
     pub reject: serde_yaml::Value,
@@ -56,9 +102,26 @@ impl Default for SubscriptionSpec {
             accept_recommended: false,
             opt_in: Vec::new(),
             allow_scripts: false,
+            require_signed_commits: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         }
+    }
+}
+
+impl SourceSpec {
+    /// Whether this source's HEAD signature must be verified, given what its
+    /// manifest asks for.
+    ///
+    /// The ONE derivation of the effective flag, and what every enforcing site
+    /// reads: `SourceManager::verify_commit_signature` on the load paths and
+    /// `build_sync_tasks` for the daemon's per-source sync. Two sites deciding
+    /// this separately is how one of them ends up trusting only the manifest,
+    /// which is the file inside the cache an attacker who planted that cache
+    /// wrote. Strictness only accumulates: either side asking for signatures is
+    /// enough, and neither can turn the other off.
+    pub fn requires_signed_commits(&self, manifest_requires: bool) -> bool {
+        self.subscription.require_signed_commits || manifest_requires
     }
 }
 
@@ -94,13 +157,24 @@ where
     validate_source_priority(n).map_err(serde::de::Error::custom)
 }
 
+/// `spec.sources[].sync`: how a source is refreshed and pinned.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSyncSpec {
+    /// How often to fetch and re-resolve the source, as a duration string.
+    /// Default: `1h`.
     #[serde(default = "default_sync_interval")]
     pub interval: String,
+    /// After a refresh that CHANGED this source, reconcile the whole profile
+    /// immediately and apply, forcing `Auto` for that tick regardless of
+    /// `spec.daemon.reconcile.driftPolicy`. The source-decision gate is
+    /// untouched: an item awaiting a decision is withheld exactly as it would
+    /// be on any other tick. Default: `false`, which records the change and
+    /// leaves the apply to the ordinary reconcile tick or to `cfgd sync`.
     #[serde(default)]
     pub auto_apply: bool,
+    /// Pin to a specific git tag/branch/commit instead of tracking the origin's
+    /// default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_version: Option<String>,
     /// Fail-closed marker. When `true`, a failure to load this source (fetch,
@@ -130,43 +204,85 @@ pub(super) fn default_sync_interval() -> String {
 
 // --- ConfigSource manifest (published by team, lives in source repo as cfgd-source.yaml) ---
 
+/// A `cfgd-source.yaml` manifest: what a config source publishes and the
+/// policy tier each item is offered under. Lives in the source's own
+/// repository, not in the subscriber's config.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: ConfigSource
+/// metadata:
+///   name: team-baseline
+/// spec:
+///   provides:
+///     profiles: [base]
+///   policy:
+///     required:
+///       packages:
+///         apt: [git]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceDocument {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`.
     pub api_version: String,
+    /// Document kind. Always `ConfigSource` for this file.
     pub kind: String,
+    /// Identifying metadata for this source.
     pub metadata: ConfigSourceMetadata,
+    /// What the source publishes and its policy tiers.
     pub spec: ConfigSourceSpec,
 }
 
+/// `metadata`: identifying information for a config source.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceMetadata {
+    /// The source's published name, as its maintainer spells it. Shown wherever
+    /// the manifest is displayed (`cfgd source show`, the summary a subscriber
+    /// approves before trusting the source) and carried in `-o json` output.
+    /// Required. A subscriber registers the source under a local name of their
+    /// own choosing, so this value identifies the source to a reader rather
+    /// than keying anything cfgd stores.
     pub name: String,
+    /// The source manifest's own version, shown to subscribers.
     #[serde(default)]
     pub version: Option<String>,
+    /// A one-line human summary of what this source provides.
     #[serde(default)]
     pub description: Option<String>,
 }
 
+/// `spec`: the body of a config source manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceSpec {
+    /// Profiles and modules this source publishes.
     #[serde(default)]
     pub provides: ConfigSourceProvides,
+    /// Policy tiers (required/recommended/optional/locked) and constraints
+    /// this source enforces on subscribers.
     #[serde(default)]
     pub policy: ConfigSourcePolicy,
 }
 
+/// `spec.provides`: what a config source makes available to subscribers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProvides {
+    /// Flat list of published profile names. Superseded by `profileDetails`
+    /// when that list is non-empty.
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// Published profiles with descriptions, paths, and inheritance — richer
+    /// than the flat `profiles` list.
     #[serde(default)]
     pub profile_details: Vec<ConfigSourceProfileEntry>,
+    /// Maps a platform/distro tag (`macos`, `debian`, …) to the profile name
+    /// to use on that platform.
     #[serde(default)]
     pub platform_profiles: HashMap<String, String>,
+    /// Names of modules this source publishes.
     #[serde(default)]
     pub modules: Vec<String>,
 }
@@ -176,35 +292,77 @@ pub struct ConfigSourceProvides {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProfileEntry {
+    /// Name the profile is published under, and the value `cfgd profile
+    /// switch` takes to activate it.
     pub name: String,
+    /// A one-line human summary of the profile.
     #[serde(default)]
     pub description: Option<String>,
+    /// Path to the profile's manifest within the source repository, if not at
+    /// the conventional location.
     #[serde(default)]
     pub path: Option<String>,
+    /// Names of other published profiles this one inherits from.
     #[serde(default)]
     pub inherits: Vec<String>,
 }
 
+/// `spec.policy`: the four acceptance tiers a config source offers items
+/// under, plus the constraints it enforces on every subscriber.
+///
+/// ```yaml
+/// policy:
+///   required:
+///     packages:
+///       apt: [git]
+///   recommended:
+///     modules: [nvim]
+///   optional:
+///     modules: [tmux]
+///   locked:
+///     env:
+///       - name: COMPANY_PROXY
+///         value: http://proxy.internal:3128
+///   constraints:
+///     noScripts: true
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourcePolicy {
+    /// Items every subscriber receives unconditionally.
     #[serde(default)]
     pub required: PolicyItems,
+    /// Items a subscriber receives when `subscription.acceptRecommended` is set.
     #[serde(default)]
     pub recommended: PolicyItems,
+    /// Items a subscriber must explicitly name in `subscription.optIn` to receive.
     #[serde(default)]
     pub optional: PolicyItems,
+    /// Items every subscriber receives and cannot override locally.
     #[serde(default)]
     pub locked: PolicyItems,
+    /// Restrictions this source imposes on how subscribers may compose it.
     #[serde(default)]
     pub constraints: SourceConstraints,
 }
 
+/// A single `NAME=VALUE` environment variable entry.
 #[derive(Debug, Clone, Serialize, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvVar {
+    /// Variable name. Must be shell-safe and not a reserved `CFGD_*` name.
     pub name: String,
+    /// Value assigned to the variable, exported verbatim into the shell
+    /// environment.
     pub value: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module or profile is not already gated off of. Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS. An entry gated off this host is not part of its desired state at
+    /// all: it appears on no surface, exactly as a platform-filtered package
+    /// does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for EnvVar {
@@ -217,21 +375,42 @@ impl<'de> Deserialize<'de> for EnvVar {
         struct Raw {
             name: String,
             value: String,
+            #[serde(
+                default,
+                deserialize_with = "crate::platform::deserialize_platform_tags"
+            )]
+            platforms: Vec<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         crate::validate_env_var_user_name(&raw.name).map_err(serde::de::Error::custom)?;
         Ok(EnvVar {
             name: raw.name,
             value: raw.value,
+            platforms: raw.platforms,
         })
     }
 }
 
+/// A single shell alias entry.
 #[derive(Debug, Clone, Serialize, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellAlias {
+    /// Alias name, as typed at the shell prompt.
     pub name: String,
+    /// Command the alias expands to, written in the syntax of the shell it is
+    /// generated for. It may carry arguments, pipes and quotes: cfgd quotes the
+    /// whole value per dialect when it writes the alias definition, so the text
+    /// reaches the shell exactly as declared. Required — an alias with no
+    /// command has nothing to expand to.
     pub command: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module or profile is not already gated off of. Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS. An entry gated off this host is not part of its desired state at
+    /// all: it appears on no surface, exactly as a platform-filtered package
+    /// does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for ShellAlias {
@@ -244,51 +423,91 @@ impl<'de> Deserialize<'de> for ShellAlias {
         struct Raw {
             name: String,
             command: String,
+            #[serde(
+                default,
+                deserialize_with = "crate::platform::deserialize_platform_tags"
+            )]
+            platforms: Vec<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         crate::validate_alias_name(&raw.name).map_err(serde::de::Error::custom)?;
         Ok(ShellAlias {
             name: raw.name,
             command: raw.command,
+            platforms: raw.platforms,
         })
     }
 }
 
+impl crate::platform::PlatformGated for EnvVar {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+}
+
+impl crate::platform::PlatformGated for ShellAlias {
+    fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+}
+
+/// The content a config source offers under one policy tier
+/// (`required`/`recommended`/`optional`/`locked`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyItems {
+    /// Packages offered at this tier.
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
+    /// Files offered at this tier.
     #[serde(default)]
     pub files: Vec<ManagedFileSpec>,
+    /// Environment variables offered at this tier.
     #[serde(default)]
     pub env: Vec<EnvVar>,
+    /// Shell aliases offered at this tier.
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
+    /// System configurator settings offered at this tier.
     #[serde(default)]
     #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub system: SystemSettings,
+    /// Profile names this tier recommends composing in.
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// Module names offered at this tier.
     #[serde(default)]
     pub modules: Vec<String>,
+    /// Secrets offered at this tier.
     #[serde(default)]
     pub secrets: Vec<SecretSpec>,
 }
 
+/// `spec.policy.constraints`: restrictions a config source imposes on every
+/// subscriber, independent of which tier delivered an item.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceConstraints {
+    /// Reject lifecycle scripts (profile-layer and module `run:` bodies) this
+    /// source delivers, unless a subscriber opts in via
+    /// `subscription.allowScripts`. Default: `true`.
     #[serde(default = "default_true")]
     pub no_scripts: bool,
+    /// Reject `${secret:…}` references this source's delivered content
+    /// resolves. Default: `true`.
     #[serde(default = "default_true")]
     pub no_secrets_read: bool,
+    /// Glob patterns restricting which file targets this source may deploy to.
+    /// Empty means no restriction.
     #[serde(default)]
     pub allowed_target_paths: Vec<String>,
+    /// Allow this source to deliver `system:` configurator settings. Default: `false`.
     #[serde(default)]
     pub allow_system_changes: bool,
     /// Require that the HEAD commit in this source's git repo has a valid
-    /// GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.
+    /// GPG or SSH signature. ORed with the subscriber's
+    /// `subscription.requireSignedCommits`, so either side asking is enough.
+    /// Subscribers can bypass both with `spec.security.allowUnsigned`.
     #[serde(default)]
     pub require_signed_commits: bool,
     /// Encryption requirements imposed on files delivered by this source.
@@ -357,6 +576,49 @@ bogusField: 1
         let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
         assert!(!spec.allow_scripts);
         assert!(!SubscriptionSpec::default().allow_scripts);
+    }
+
+    #[test]
+    fn subscription_spec_parses_require_signed_commits() {
+        let yaml = "priority: 100\nrequireSignedCommits: true\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.require_signed_commits);
+        assert_eq!(spec.priority, 100);
+
+        let round_tripped: SubscriptionSpec =
+            serde_yaml::from_str(&serde_yaml::to_string(&spec).unwrap()).unwrap();
+        assert!(round_tripped.require_signed_commits);
+    }
+
+    #[test]
+    fn subscription_spec_require_signed_commits_defaults_false() {
+        let yaml = "priority: 100\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(!spec.require_signed_commits);
+        assert!(!SubscriptionSpec::default().require_signed_commits);
+    }
+
+    #[test]
+    fn requires_signed_commits_ors_the_subscriber_flag_with_the_manifests() {
+        let yaml = r#"
+name: team
+origin:
+  type: Git
+  url: https://example.com/team.git
+  branch: main
+subscription:
+  requireSignedCommits: true
+"#;
+        let subscriber_demands: SourceSpec = serde_yaml::from_str(yaml).unwrap();
+        // A manifest inside a planted cache cannot clear the subscriber's demand.
+        assert!(subscriber_demands.requires_signed_commits(false));
+        assert!(subscriber_demands.requires_signed_commits(true));
+
+        let mut silent = subscriber_demands.clone();
+        silent.subscription.require_signed_commits = false;
+        // A subscriber that asks for nothing still honours the manifest.
+        assert!(!silent.requires_signed_commits(false));
+        assert!(silent.requires_signed_commits(true));
     }
 
     #[test]

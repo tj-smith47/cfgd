@@ -445,9 +445,171 @@ fn module_crd_has_printer_columns() {
     let columns = version.additional_printer_columns.as_ref().unwrap();
     let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
     assert!(col_names.contains(&"Artifact"));
-    assert!(col_names.contains(&"Verified"));
+    assert!(col_names.contains(&"Signature"));
     assert!(col_names.contains(&"Platforms"));
+    assert!(col_names.contains(&"Available"));
     assert!(col_names.contains(&"Age"));
+}
+
+/// Every kind whose status carries `conditions` exposes its readiness
+/// condition as a printer column. `Module` shipped without one, so a module
+/// the operator WITHHELD over its signature verdict (`Available: False`) and
+/// a served one were the same row in `kubectl get modules` — the one surface
+/// a cluster user reaches for. The column's condition type is checked against
+/// the literals the operator's controllers write, so a column bound to a
+/// condition nothing sets would trip here too.
+#[test]
+fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
+    use kube::CustomResourceExt;
+
+    let controllers =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-operator/src/controllers");
+    let written: String = std::fs::read_dir(&controllers)
+        .expect("the operator's controllers directory is checked out")
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+    let mut judged = 0usize;
+    for (kind, crd) in crds {
+        let version = &crd.spec.versions[0];
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+        if resolve_column_schema(schema, ".status.conditions").as_deref() != Some("array") {
+            continue;
+        }
+        judged += 1;
+        let condition_types: Vec<String> = version
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .filter_map(|c| {
+                let rest = c
+                    .json_path
+                    .strip_prefix(".status.conditions[?(@.type==\"")?;
+                let (ty, _) = rest.split_once("\")].status")?;
+                Some(ty.to_string())
+            })
+            .collect();
+        assert!(
+            !condition_types.is_empty(),
+            "{kind} writes conditions but exposes none of them as a printer column"
+        );
+        for ty in condition_types {
+            assert!(
+                written.contains(&format!("\"{ty}\"")),
+                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
+            );
+        }
+    }
+    assert_eq!(
+        judged, 5,
+        "every kind carries conditions; the walk reached {judged}"
+    );
+}
+
+/// A printer column resolving to an ARRAY prints the Go rendering of the
+/// slice, so an empty one reads as the literal `[]` where an absent value
+/// leaves the cell blank — `kubectl get` has no way to join one. A column
+/// resolving to a BOOL prints `true`/`false`, a second vocabulary beside the
+/// word every human surface spells for the same verdict. Every column on every
+/// kind therefore binds to a derived display field: a list gets a summary
+/// string (`platformsSummary`), a verdict gets a word (`signature`), and the
+/// raw `availablePlatforms` / `verified` fields stay on the wire for machines.
+#[test]
+fn every_printer_column_binds_to_a_display_field() {
+    use kube::CustomResourceExt;
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+
+    for (kind, crd) in crds {
+        for version in &crd.spec.versions {
+            let schema = version
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+            for column in version.additional_printer_columns.iter().flatten() {
+                let Some(resolved) = resolve_column_schema(schema, &column.json_path) else {
+                    // `metadata.*` and a `conditions[?(...)]` filter resolve
+                    // outside the spec/status schema this walk can see; both
+                    // select a scalar by construction.
+                    continue;
+                };
+                assert!(
+                    resolved != "array" && resolved != "boolean",
+                    "{kind}'s {} column binds to a raw {resolved} ({}) — bind it to a derived display field instead",
+                    column.name,
+                    column.json_path,
+                );
+            }
+        }
+    }
+}
+
+/// The walk above is only a fence if it can SEE the shapes it rejects.
+/// `Module` carries both (`availablePlatforms`, the list `platformsSummary`
+/// renders; `verified`, the bool `signature` spells), so resolving them is the
+/// positive control the fence's negative depends on.
+#[test]
+fn the_display_column_fence_resolves_the_raw_shapes_it_rejects() {
+    use kube::CustomResourceExt;
+
+    let crd = Module::crd();
+    let schema = crd.spec.versions[0]
+        .schema
+        .as_ref()
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .expect("Module publishes a schema");
+    assert_eq!(
+        resolve_column_schema(schema, ".status.availablePlatforms").as_deref(),
+        Some("array"),
+    );
+    assert_eq!(
+        resolve_column_schema(schema, ".status.verified").as_deref(),
+        Some("boolean"),
+    );
+    assert_eq!(
+        resolve_column_schema(schema, ".status.signature").as_deref(),
+        Some("string"),
+    );
+}
+
+/// Walk a dotted `jsonPath` through a CRD's OpenAPI schema and answer the
+/// leaf's `type`. `None` means the path leaves what the schema describes
+/// (a `metadata` field, or a JSONPath filter expression).
+fn resolve_column_schema(
+    root: &k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::JSONSchemaProps,
+    json_path: &str,
+) -> Option<String> {
+    if json_path.contains('[') {
+        return None;
+    }
+    let mut node = root;
+    for segment in json_path.trim_start_matches('.').split('.') {
+        if segment == "metadata" {
+            return None;
+        }
+        node = node.properties.as_ref()?.get(segment)?;
+    }
+    node.type_.clone()
 }
 
 #[test]
@@ -474,6 +636,7 @@ fn module_validate_accepts_full() {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
             append: false,
+            platforms: vec![],
         }],
         depends: vec!["base".to_string()],
         oci_artifact: Some("registry.example.com/modules/vim:v1".to_string()),
@@ -573,5 +736,43 @@ fn machine_config_status_accepts_unknown_field_for_forward_compat() {
         result.is_ok(),
         "MachineConfigStatus must accept unknown fields for forward compat, got: {:?}",
         result.err()
+    );
+}
+
+/// A DriftAlert carries what `cfgd checkin` sends, and that payload is the
+/// answers of the device's system CONFIGURATORS alone — no package, file, env or
+/// alias finding has ever reached the fleet. `kubectl explain driftalert` reads
+/// these descriptions, so they name the class rather than letting an operator
+/// read a settings report as a whole-machine verdict.
+#[test]
+fn the_driftalert_schema_names_the_class_of_drift_a_device_reports() {
+    use kube::CustomResourceExt;
+    let crd = DriftAlert::crd();
+    let schema = crd.spec.versions[0]
+        .schema
+        .as_ref()
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .expect("DriftAlert publishes a schema");
+    let spec = schema
+        .properties
+        .as_ref()
+        .and_then(|p| p.get("spec"))
+        .expect("DriftAlert spec property");
+
+    let described = spec.description.clone().unwrap_or_default();
+    assert!(
+        described.to_lowercase().contains("system setting"),
+        "the DriftAlert spec description must name the class a device reports: {described}"
+    );
+
+    let details = spec
+        .properties
+        .as_ref()
+        .and_then(|p| p.get("driftDetails"))
+        .and_then(|d| d.description.clone())
+        .unwrap_or_default();
+    assert!(
+        details.to_lowercase().contains("system setting"),
+        "driftDetails must name what each entry is: {details}"
     );
 }

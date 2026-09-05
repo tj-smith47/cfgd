@@ -183,7 +183,12 @@ pub(crate) fn build_sync_tasks(
     for source_spec in sources {
         let source_dir = source_cache_dir.join(&source_spec.name);
         if source_dir.exists() {
-            let require_signed = manifest_detector(&source_dir).unwrap_or(false);
+            // The subscriber's own flag ORed with the manifest's, through the
+            // one derivation the load paths use. Read from the manifest alone,
+            // this asks the cached clone whether its own contents should be
+            // checked.
+            let require_signed = source_spec
+                .requires_signed_commits(manifest_detector(&source_dir).unwrap_or(false));
             tasks.push(SyncTask {
                 source_name: source_spec.name.clone(),
                 repo_path: source_dir,

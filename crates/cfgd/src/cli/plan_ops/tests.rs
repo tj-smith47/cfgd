@@ -11,7 +11,35 @@ use cfgd_core::reconciler::{
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
+use cfgd_core::reconciler::{apply_conflict_policy, is_unmanaged_file, sweep_label};
+
 use super::*;
+
+/// A `Cli` whose config lives in `dir`, so a [`RunContext`] built from it
+/// resolves manifests against that directory.
+fn test_cli_in(dir: &std::path::Path) -> Cli {
+    Cli {
+        config: dir.join("cfgd.yaml"),
+        config_explicit: false,
+        profile: None,
+        verbose: 0,
+        quiet: true,
+        no_color: true,
+        color: crate::cli::ColorWhen::Auto,
+        output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
+        no_hints: false,
+        theme: None,
+        jsonpath: None,
+        yes: false,
+        state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
+        scope_arg: crate::cli::ScopeArg::User,
+        command: None,
+    }
+}
 
 /// A plan built with nothing withheld — the shape every payload test but the
 /// decision ones asserts against.
@@ -103,6 +131,7 @@ fn secret_resolve() -> Action {
         provider: "1password".to_string(),
         reference: "op://vault/item".to_string(),
         target: PathBuf::from("/etc/foo"),
+        template: None,
         origin: "test".to_string(),
     })
 }
@@ -112,6 +141,7 @@ fn secret_resolve_env() -> Action {
         provider: "vault".to_string(),
         reference: "secret/data/app".to_string(),
         envs: vec!["TOKEN".to_string(), "KEY".to_string()],
+        template: None,
         origin: "test".to_string(),
     })
 }
@@ -173,7 +203,10 @@ fn module_run_script() -> Action {
 fn module_deploy_files() -> Action {
     Action::Module(ModuleAction {
         module_name: "dotfiles".to_string(),
-        kind: ModuleActionKind::DeployFiles { files: vec![] },
+        kind: ModuleActionKind::DeployFiles {
+            files: vec![],
+            declared_total: 0,
+        },
         origin: None,
     })
 }
@@ -192,6 +225,8 @@ fn env_write() -> Action {
     Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "export FOO=bar".to_string(),
+        vars: 0,
+        aliases: 0,
     })
 }
 
@@ -256,6 +291,7 @@ fn action_type_str_manager_variants() {
         action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -302,6 +338,7 @@ fn manager_action_output_provision_carries_via_and_requires() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "pipx".to_string(),
         via: "pip install pipx".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec!["manager:prereq:curl".to_string()],
     }))
@@ -334,10 +371,9 @@ fn manager_action_output_prerequisite_names_the_tool_and_installer() {
 
 #[test]
 fn manager_action_output_refuse_extends_spec_with_a_refused_state_and_reason() {
-    // Spec §7's literal `state` enum is present|provisioned|prerequisite —
-    // it does not name Refuse. This task's own scope names `Refuse` as a
-    // node requiring a payload, so a fourth state carries the reason rather
-    // than the row silently disappearing from `-o json`.
+    // The `state` enum is present|provisioned|prerequisite|refused: `Refuse`
+    // is a node requiring a payload, so the fourth state carries the reason
+    // rather than the row silently disappearing from `-o json`.
     let out = manager_action_output(&Action::Manager(ManagerAction::Refuse {
         manager: "snap".to_string(),
         reason: "no available system manager".to_string(),
@@ -392,6 +428,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
     let deploy = Action::Module(ModuleAction {
         module_name: "dotfiles".to_string(),
         kind: ModuleActionKind::DeployFiles {
+            declared_total: 2,
             files: vec![
                 cfgd_core::modules::ResolvedFile {
                     source: PathBuf::from("/m/.zshrc"),
@@ -568,6 +605,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
     let brew_provision = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "curl".to_string(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -622,6 +660,7 @@ fn filter_plan_noop_when_empty_filters() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 2);
 }
@@ -645,6 +684,7 @@ fn filter_plan_skip_removes_matching_file_actions() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     // Every action in the Files phase was skipped, so the phase itself must
@@ -680,6 +720,7 @@ fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_ou
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -714,6 +755,7 @@ fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -738,6 +780,7 @@ fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
+                declared: None,
                 batched: vec!["pipx".to_string()],
                 depends_on: vec![],
             })],
@@ -757,7 +800,7 @@ fn provision_lines(plan: &cfgd_core::reconciler::Plan) -> Vec<String> {
         .iter()
         .flat_map(|phase| phase.actions())
         .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-        .map(cfgd_core::reconciler::format_plan_item)
+        .map(|a| cfgd_core::reconciler::format_plan_item(a, "→"))
         .collect()
 }
 
@@ -774,6 +817,7 @@ fn skipping_one_manager_of_a_batch_leaves_the_others_provisioned() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(
         provision_lines(&plan),
@@ -799,6 +843,7 @@ fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
         )),
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(
         provision_lines(&plan),
@@ -812,6 +857,7 @@ fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "npm".to_string(),
         via: "apt".to_string(),
+        declared: None,
         batched: vec!["pipx".to_string()],
         depends_on: vec![],
     }))
@@ -833,6 +879,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -847,6 +894,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -876,6 +924,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -893,6 +942,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -937,12 +987,14 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::Provision {
                     manager: "npm".to_string(),
                     via: "node installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -964,6 +1016,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -997,6 +1050,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1021,6 +1075,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1064,6 +1119,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -1078,6 +1134,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1111,6 +1168,7 @@ fn filter_plan_only_keeps_matching_actions() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     // Every file action fell outside the --only scope, so the Files phase
@@ -1147,6 +1205,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1170,6 +1229,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let prereq_phase = plan
@@ -1208,6 +1268,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    declared: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1231,6 +1292,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let prereq_phase = plan
@@ -1265,6 +1327,7 @@ fn filter_plan_skip_individual_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1296,6 +1359,7 @@ fn filter_plan_only_specific_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1325,6 +1389,7 @@ fn filter_plan_skip_removes_entire_manager_with_all_packages_skipped() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1358,6 +1423,7 @@ fn filter_plan_only_specific_manager_keeps_just_that_manager() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1384,6 +1450,7 @@ fn filter_plan_skip_uninstall_individual_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     if let Action::Package(PackageAction::Uninstall { packages, .. }) =
@@ -1492,12 +1559,141 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     assert!(
         plan.phases.is_empty(),
         "a phase whose only action was skipped must not survive empty: {:?}",
         plan.phases
+    );
+}
+
+/// Every operand a list-bearing action holds reaches the `-o json` payload.
+///
+/// A cut that lived in the builder filling `PlanActionOutput.description`
+/// once had `cfgd plan -o json` emit `apt install unzip, ripgrep, +9 more`,
+/// nine package names reaching no field at all — `targets` is empty for both
+/// package shapes. A CI gate diffing two plans could not see a package added
+/// to an eleven-entry segment. The human row names every operand now, but the
+/// payload is a separate string built by a separate walk, so every
+/// list-bearing shape is serialized here and every name must be findable in
+/// it.
+#[test]
+fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
+    let names: Vec<String> = (0..8).map(|i| format!("operand{i}")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let file = |target: &str| cfgd_core::modules::ResolvedFile {
+        source: PathBuf::from("src"),
+        target: PathBuf::from(format!("/home/u/{target}")),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    // One shape per list-bearing action kind; a new one is added here or the
+    // walk below cannot vouch for it.
+    let shapes: Vec<(&str, Action)> = vec![
+        ("package install", pkg_install("brew", name_refs.clone())),
+        (
+            "package uninstall",
+            pkg_uninstall("brew", name_refs.clone()),
+        ),
+        (
+            "module install",
+            module_batch(
+                "m",
+                names.iter().map(|n| resolved_package("apt", n)).collect(),
+            ),
+        ),
+        (
+            "module deploy",
+            Action::Module(ModuleAction::local(
+                "m".to_string(),
+                ModuleActionKind::DeployFiles {
+                    files: names.iter().map(|n| file(n)).collect(),
+                    declared_total: names.len(),
+                },
+            )),
+        ),
+    ];
+    for (shape, action) in shapes {
+        let plan = one_phase_plan(vec![action]);
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+        let json = serde_json::to_string(&output).unwrap();
+        for name in &names {
+            assert!(
+                json.contains(name.as_str()),
+                "{shape}: operand {name} reaches no field of the payload: {json}"
+            );
+        }
+        assert!(
+            !json.contains(" more"),
+            "{shape}: the wire carries a display elision marker: {json}"
+        );
+    }
+}
+
+/// A tool this plan's own provision delivers is named ONCE on the wire.
+///
+/// The elision that keeps `brew install …, node, pipx` off the `Packages` row
+/// is asserted at its producer in `cfgd-core`, over the same
+/// `reconciler::format_plan_item` this builder fills
+/// `PlanActionOutput.description` from. That is a producer-side proof of a
+/// payload-side promise: a CI gate diffing two `cfgd plan -o json` runs reads
+/// the payload, and nothing would fail if the builder stopped reading that
+/// producer. So the real plan is built through the reconciler here and
+/// serialized, and the delivered package must appear exactly once across every
+/// `description` and `targets` the payload carries.
+#[test]
+fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "alt",
+    )));
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "sys",
+    )));
+    registry.add_package_manager(Box::new(
+        cfgd_core::test_helpers::MockPackageManager::new("tool")
+            .without_index()
+            .unavailable()
+            .bootstrappable_via("sys"),
+    ));
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("tools");
+    module.packages = vec![
+        resolved_package_declared("alt", "tool", "tool-alias"),
+        resolved_package("tool", "widget"),
+    ];
+
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = reconciler::Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &cfgd_core::test_helpers::make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let json = serde_json::to_string(&output).expect("serialize");
+    assert_eq!(
+        json.matches("tool-alias").count(),
+        1,
+        "the package the provision delivers is named once on the wire: {json}"
+    );
+    assert!(
+        json.contains("provision tool via alt (tool-alias)"),
+        "and the one naming is the provision the module's route settled: {json}"
+    );
+    assert!(
+        json.contains("widget"),
+        "an entry no provision delivers still reaches the payload: {json}"
     );
 }
 
@@ -1510,7 +1706,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -1556,6 +1752,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         Some(&PhaseFilter::Phase(PhaseName::Files)),
         &[],
         &no_decisions(),
+        &[],
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -1569,7 +1766,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -1607,13 +1804,14 @@ fn build_plan_output_orders_groups_profile_first() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(
         output.phases[0]
@@ -1641,7 +1839,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(
         output.phases[0]
@@ -1660,7 +1858,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
 
 #[test]
 fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
-    // Spec §7: `phases[]` gains a `managers` phase object with one group,
+    // `phases[]` gains a `managers` phase object with one group,
     // `cfgd:managers`, whose actions carry `{manager, state, via, requires}`.
     let plan = make_plan(vec![(
         PhaseName::Prerequisites,
@@ -1671,6 +1869,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             Action::Manager(ManagerAction::Provision {
                 manager: "pipx".to_string(),
                 via: "pip install pipx".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec!["manager:prereq:curl".to_string()],
             }),
@@ -1680,7 +1879,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             }),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
     let json = serde_json::to_value(&output).unwrap();
     let groups = json["phases"][0]["groups"].as_array().expect("groups");
     assert_eq!(groups.len(), 1);
@@ -1731,6 +1930,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
         None,
         &[],
         &no_decisions(),
+        &[],
     );
     let other_json = serde_json::to_value(&other).unwrap();
     assert!(
@@ -1744,7 +1944,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -1776,7 +1976,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -1813,7 +2013,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -1834,10 +2034,64 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
+}
+
+/// A `-o json` plan payload is the SAME BYTES whatever theme rendered it:
+/// `build_plan_output` carries no `arrow` parameter, so a themed printer has
+/// no seam to reach the wire through. Proven through the real
+/// `display_plan_preview` path `cmd_plan` itself calls (header included), not
+/// the isolated builder alone, over a fixture whose action's description does
+/// carry an arrow (`system_set`'s `0 → 1`).
+#[test]
+fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arrow() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let scope = ScopeReport::capture(&plan, false);
+    let decisions = no_decisions();
+    let render = |theme: cfgd_core::output::Theme| {
+        let (printer, buf) =
+            Printer::for_test_with_theme_and_format(theme, cfgd_core::output::OutputFormat::Json);
+        let ctx = reconciler::RunContext {
+            title: reconciler::RunTitle::Plan,
+            config_path: None,
+            profile: None,
+            sources: &[],
+            modules: &[],
+            profile_inherits: &[],
+            trigger: None,
+            subject: None,
+            unit_source: None,
+        };
+        let run = reconciler::ApplyRun::new(ctx, &plan);
+        let args = PlanPreviewArgs {
+            context: "ctx",
+            preview: crate::cli::PreviewScope::unscoped(),
+            phase_filter: None,
+            dry_run_fm: None,
+            scope: &scope,
+            pending_backups: &[],
+            withheld: &decisions,
+        };
+        display_plan_preview(&run, &plan, &printer, &args);
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let default_json = render(cfgd_core::output::Theme::default());
+    let minimal_json =
+        render(cfgd_core::output::Theme::preset("minimal").expect("minimal is a preset"));
+
+    assert!(
+        default_json.contains('→'),
+        "fixture must exercise the arrow-bearing description field: {default_json}"
+    );
+    assert_eq!(
+        default_json, minimal_json,
+        "a -o json plan payload must be byte-identical whatever theme rendered it"
+    );
 }
 
 // `build_plan_output`'s `PlanActionOutput.description` is the
@@ -1853,7 +2107,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -1878,7 +2132,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -1896,7 +2150,7 @@ fn render_plan_tree_populated_plan_shows_phase_header() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Files"),
         "expected phase header in output, got: {out}"
@@ -1919,7 +2173,7 @@ fn render_plan_tree_condenses_multiline_script_bullet() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("line-three"),
         "human bullet must condense away subsequent lines, got: {out}"
@@ -1944,7 +2198,7 @@ fn render_plan_tree_unknown_system_key_renders_warn() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains('\u{26A0}'),
         "unknown system key must warn (⚠) at plan time, got: {out}"
@@ -1963,7 +2217,7 @@ fn render_plan_tree_unavailable_system_key_renders_neutral() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains('\u{26A0}'),
         "expected platform skip must not warn (⚠), got: {out}"
@@ -1978,9 +2232,11 @@ fn render_plan_tree_unavailable_system_key_renders_neutral() {
 fn is_unmanaged_file_missing_path_returns_false() {
     let state = StateStore::open_in_memory().unwrap();
     let config_dir = PathBuf::from("/config");
+    let module_cache = PathBuf::from("/module-cache");
     let result = is_unmanaged_file(
         &PathBuf::from("/nonexistent/path/that/does/not/exist/abc123"),
         &config_dir,
+        &module_cache,
         &state,
     );
     assert!(!result, "missing file should not be considered unmanaged");
@@ -2007,159 +2263,36 @@ fn is_unmanaged_file_managed_path_returns_false() {
         .unwrap();
 
     let config_dir = PathBuf::from("/config");
-    let result = is_unmanaged_file(&file_path, &config_dir, &state);
+    let module_cache = PathBuf::from("/module-cache");
+    let result = is_unmanaged_file(&file_path, &config_dir, &module_cache, &state);
     assert!(
         !result,
         "state-tracked file should not be considered unmanaged"
     );
 }
 
+/// The Backup policy RESERVES the target rather than copying it: the sidecar
+/// is written by the file action itself, inside the Files phase, so the disk
+/// is untouched while the plan is still being decided.
 #[test]
-fn backup_file_copies_to_cfgd_backup_suffix_and_leaves_the_original() {
-    let tmp = tempfile::tempdir().unwrap();
-    let original = tmp.path().join("myfile.txt");
-    std::fs::write(&original, "original content").unwrap();
-
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&original, &printer).unwrap();
-
-    let backup = tmp.path().join("myfile.txt.cfgd-backup");
-    assert_eq!(written, backup, "backup should land at the sidecar path");
-    assert!(backup.exists(), "backup file should exist at expected path");
-    assert_eq!(
-        std::fs::read_to_string(&backup).unwrap(),
-        "original content",
-        "the sidecar must hold the original bytes"
-    );
-    // The crash window the rename opened: between moving the file away and
-    // writing the managed one, the content existed at neither path.
-    assert!(
-        original.exists(),
-        "the original must stay in place until the apply's own atomic write replaces it"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&original).unwrap(),
-        "original content",
-        "the original content must be untouched by the backup"
-    );
-
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("Backed up to"),
-        "expected backup confirmation in output, got: {out}"
-    );
-    assert!(
-        out.contains("cfgd-backup"),
-        "output should mention backup path, got: {out}"
-    );
-}
-
-#[test]
-fn backup_file_nonexistent_target_returns_error() {
-    let tmp = tempfile::tempdir().unwrap();
-    let missing = tmp.path().join("does_not_exist.txt");
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-
-    let result = backup_file(&missing, &printer);
-    assert!(result.is_err(), "backup of nonexistent file should fail");
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("Failed to backup"),
-        "error should describe backup failure, got: {err_msg}"
-    );
-}
-
-#[test]
-fn backup_file_verifies_and_preserves_the_mode_of_its_copy() {
-    let tmp = tempfile::tempdir().unwrap();
-    let original = tmp.path().join("secret.env");
-    std::fs::write(&original, "TOKEN=keep-me\n").unwrap();
-    cfgd_core::set_file_permissions(&original, 0o600).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&original, &printer).unwrap();
-
-    let meta = std::fs::metadata(&backup).unwrap();
-    assert_eq!(
-        cfgd_core::file_permissions_mode(&meta),
-        cfgd_core::file_permissions_mode(&std::fs::metadata(&original).unwrap()),
-        "the sidecar must carry the mode of the file it preserves"
-    );
-    assert_eq!(
-        cfgd_core::sha256_hex(&std::fs::read(&backup).unwrap()),
-        cfgd_core::sha256_hex(&std::fs::read(&original).unwrap()),
-        "the sidecar must hash identically to the original"
-    );
-}
-
-#[test]
-fn backup_file_never_clobbers_an_older_sidecar() {
-    // The primary sidecar holds the content that predates cfgd; a second,
-    // different original is stamped instead of destroying the first.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.toml");
-    let primary = tmp.path().join("conf.toml.cfgd-backup");
-    std::fs::write(&primary, "the original").unwrap();
-    std::fs::write(&target, "something else entirely").unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&target, &printer).unwrap();
-
-    assert_ne!(written, primary, "an occupied sidecar must not be reused");
-    assert_eq!(
-        std::fs::read_to_string(&primary).unwrap(),
-        "the original",
-        "the older sidecar must survive untouched"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&written).unwrap(),
-        "something else entirely"
-    );
-}
-
-#[test]
-fn backup_file_reuses_a_sidecar_that_already_holds_the_same_bytes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.toml");
-    let primary = tmp.path().join("conf.toml.cfgd-backup");
-    std::fs::write(&target, "same bytes").unwrap();
-    std::fs::write(&primary, "same bytes").unwrap();
-
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&target, &printer).unwrap();
-
-    assert_eq!(
-        written, primary,
-        "an identical sidecar is reused, not stamped"
-    );
-    let entries: Vec<_> = std::fs::read_dir(tmp.path())
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .collect();
-    assert_eq!(entries.len(), 2, "no second sidecar should be created");
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains("Already backed up at"),
-        "a reused sidecar says so, got: {out}"
-    );
-}
-
-#[test]
-fn apply_conflict_policy_backup_copies_file() {
+fn apply_conflict_policy_backup_reserves_the_target_without_touching_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("target.txt");
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Backup, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(ResolvedConflict::Backup, &file, &mut action, &mut backups).unwrap();
 
-    let backup = tmp.path().join("target.txt.cfgd-backup");
     assert!(
-        backup.exists(),
-        "backup file should exist after Backup policy"
+        backups.contains(&file),
+        "Backup policy must reserve the target for the apply-time copy"
     );
-    assert!(file.exists(), "the target must survive the backup");
+    assert!(
+        !tmp.path().join("target.txt.cfgd-backup").exists(),
+        "planning must not write the sidecar"
+    );
+    assert!(file.exists(), "the target must survive planning");
 }
 
 #[test]
@@ -2169,8 +2302,8 @@ fn apply_conflict_policy_skip_converts_action_to_skip() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Skip, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(ResolvedConflict::Skip, &file, &mut action, &mut backups).unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Skip { .. })),
@@ -2180,6 +2313,7 @@ fn apply_conflict_policy_skip_converts_action_to_skip() {
         !tmp.path().join("target.txt.cfgd-backup").exists(),
         "Skip writes no sidecar"
     );
+    assert!(backups.is_empty(), "Skip writes no sidecar");
 }
 
 #[test]
@@ -2189,8 +2323,14 @@ fn apply_conflict_policy_overwrite_leaves_action_unchanged() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Overwrite, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(
+        ResolvedConflict::Overwrite,
+        &file,
+        &mut action,
+        &mut backups,
+    )
+    .unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Create { .. })),
@@ -2200,6 +2340,7 @@ fn apply_conflict_policy_overwrite_leaves_action_unchanged() {
         !tmp.path().join("target.txt.cfgd-backup").exists(),
         "Overwrite keeps no copy"
     );
+    assert!(backups.is_empty(), "Overwrite keeps no copy");
 }
 
 #[test]
@@ -2209,9 +2350,9 @@ fn apply_conflict_policy_fail_aborts_and_touches_nothing() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let err =
-        apply_conflict_policy(ResolvedConflict::Fail, &file, &mut action, &printer).unwrap_err();
+    let mut backups = std::collections::HashSet::new();
+    let err = apply_conflict_policy(ResolvedConflict::Fail, &file, &mut action, &mut backups)
+        .unwrap_err();
 
     assert!(
         err.to_string().contains("--on-conflict fail"),
@@ -2271,7 +2412,7 @@ fn every_prompt_option_maps_to_a_settled_policy() {
 }
 
 #[test]
-fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
+fn an_unanswerable_prompt_reserves_the_file_instead_of_overwriting_it() {
     // No seeded answer and `interactive_stdin: false`, so `prompt_select`
     // fails — the shape a `--dry-run`-less apply piped into a script hits.
     let tmp = tempfile::tempdir().unwrap();
@@ -2282,21 +2423,21 @@ fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = one_phase_plan(vec![copy_update(&target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("zshrc.cfgd-backup")).unwrap(),
-        "hand written",
-        "a prompt nobody can answer must still preserve the file"
+    assert!(
+        backups.contains(&target),
+        "a prompt nobody can answer must still reserve the file"
     );
 }
 
@@ -2353,14 +2494,15 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
         )]);
     let mut plan = one_phase_plan(vec![patch_update(&patch_target), copy_update(&copy_target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2380,8 +2522,8 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
     // The single queued answer went to the non-Patch action, proving the
     // Patch one never prompted.
     assert!(
-        tmp.path().join("zshrc.cfgd-backup").exists(),
-        "a Copy target still honours the Backup choice"
+        backups.contains(&copy_target) && !backups.contains(&patch_target),
+        "a Copy target still honours the Backup choice, a Patch target never does"
     );
 }
 
@@ -2393,12 +2535,16 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
     // `--yes` (which now means backup) mints a sidecar for cfgd's OWN files on
     // every apply, forever.
     let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let module_cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let target = tmp.path().join("zshrc");
     std::fs::write(&target, "written by cfgd").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
     assert!(
-        is_unmanaged_file(&target, tmp.path(), &state),
+        is_unmanaged_file(&target, &config_dir, &module_cache, &state),
         "control: with no row at all the target is unmanaged"
     );
 
@@ -2411,7 +2557,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
         .unwrap();
 
     assert!(
-        !is_unmanaged_file(&target, tmp.path(), &state),
+        !is_unmanaged_file(&target, &config_dir, &module_cache, &state),
         "a target whose managed id the reconciler minted must be recognised as managed"
     );
 }
@@ -2431,20 +2577,25 @@ fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
     file.strategy = None;
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![file]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Copy,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Copy),
     )
     .unwrap();
 
+    assert!(
+        backups.is_empty(),
+        "a converged target is not a conflict, got: {backups:?}"
+    );
     assert!(
         !tmp.path().join("live.conf.cfgd-backup").exists(),
         "a converged target must not be copied aside"
@@ -2453,11 +2604,6 @@ fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
         deployed_files(&plan),
         vec![target],
         "the file stays in the deployment"
-    );
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        !out.contains("unmanaged file"),
-        "a converged target is not a conflict, got: {out}"
     );
 }
 
@@ -2486,11 +2632,12 @@ fn skip_drops_the_chmod_planned_beside_the_write_it_skipped() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2531,11 +2678,12 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2556,63 +2704,54 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
 }
 
 #[test]
-fn two_adoptions_in_the_same_second_land_beside_each_other_never_on_top() {
-    // The stamp has one-second resolution, so it is a hint at a free name and
-    // never a guarantee of one: unchecked, the second adoption of a second
-    // original overwrites the sidecar holding the first.
+fn a_skipped_module_file_leaves_the_declared_set_with_it() {
+    // The survivor must not render `1 already deployed` — that shape claims the
+    // skipped sibling CONVERGED when it was refused over an unmanaged target.
     let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("live.conf");
-    let primary = tmp.path().join("live.conf.cfgd-backup");
-    std::fs::write(&primary, "first original").unwrap();
+    let kept_source = tmp.path().join("kept-src.conf");
+    let kept_target = tmp.path().join("kept.conf");
+    std::fs::write(&kept_source, "from module\n").unwrap();
+    let skipped_source = tmp.path().join("skipped-src.conf");
+    let skipped_target = tmp.path().join("skipped.conf");
+    std::fs::write(&skipped_source, "from module\n").unwrap();
+    std::fs::write(&skipped_target, "hand written\n").unwrap();
 
+    let state = StateStore::open_in_memory().unwrap();
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![
+        module_copy_file(&kept_source, &kept_target),
+        module_copy_file(&skipped_source, &skipped_target),
+    ]);
 
-    std::fs::write(&target, "second original").unwrap();
-    let second = backup_file(&target, &printer).unwrap();
-    std::fs::write(&target, "third original").unwrap();
-    let third = backup_file(&target, &printer).unwrap();
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Skip,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
+    )
+    .unwrap();
 
-    assert_ne!(second, third, "back-to-back adoptions need distinct names");
-    assert_eq!(std::fs::read_to_string(&primary).unwrap(), "first original");
-    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second original");
-    assert_eq!(std::fs::read_to_string(&third).unwrap(), "third original");
-}
-
-#[test]
-fn a_directory_backup_never_merges_into_an_occupied_sidecar() {
-    // `copy_dir_recursive` writes INTO an existing directory, so an occupied
-    // sidecar silently fuses two different originals into one tree.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.d");
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join("new.conf"), "new").unwrap();
-
-    let primary = tmp.path().join("conf.d.cfgd-backup");
-    std::fs::create_dir_all(&primary).unwrap();
-    std::fs::write(primary.join("old.conf"), "old").unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let first = backup_file(&target, &printer).unwrap();
-
-    // A second, different original in the same second: the stamp alone would
-    // name the directory the first one just filled.
-    std::fs::remove_file(target.join("new.conf")).unwrap();
-    std::fs::write(target.join("newer.conf"), "newer").unwrap();
-    let second = backup_file(&target, &printer).unwrap();
-
-    assert_ne!(
-        first, primary,
-        "an occupied sidecar directory is not reused"
-    );
-    assert_ne!(first, second, "two originals need two directories");
+    assert_eq!(deployed_files(&plan), vec![kept_target]);
+    let survives_with_total =
+        plan.phases
+            .iter()
+            .flat_map(|p| p.owned_actions())
+            .find_map(|(_, a)| match a {
+                Action::Module(ma) => match &ma.kind {
+                    ModuleActionKind::DeployFiles { declared_total, .. } => Some(*declared_total),
+                    _ => None,
+                },
+                _ => None,
+            });
     assert_eq!(
-        std::fs::read_dir(&primary).unwrap().count(),
-        1,
-        "the older sidecar must not gain the newer originals' entries"
+        survives_with_total,
+        Some(1),
+        "the skipped file leaves the declared set with it"
     );
-    assert!(primary.join("old.conf").exists());
-    assert!(first.join("new.conf").exists() && !first.join("newer.conf").exists());
-    assert!(second.join("newer.conf").exists() && !second.join("new.conf").exists());
 }
 
 #[test]
@@ -2654,11 +2793,12 @@ fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
     let err = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap_err()
     .to_string();
@@ -2669,27 +2809,6 @@ fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "hand written");
     assert!(!tmp.path().join("zshrc.cfgd-backup").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn a_sidecar_carries_the_setuid_bit_of_the_file_it_preserves() {
-    // A backup is the file it preserves; a special bit dropped in the copy is
-    // not restorable from it.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("helper.sh");
-    std::fs::write(&target, "#!/bin/sh\n").unwrap();
-    cfgd_core::set_file_permissions(&target, 0o4755).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&target, &printer).unwrap();
-
-    let mode = cfgd_core::file_permissions_mode_full(&std::fs::metadata(&backup).unwrap());
-    assert_eq!(
-        mode,
-        Some(0o4755),
-        "the sidecar must reproduce the mode it is a copy of"
-    );
 }
 
 // --- Shell environment reminder ---
@@ -2704,12 +2823,18 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 success: true,
                 error: None,
                 changed: !d.ends_with(":skipped"),
+                skipped: d.ends_with(":skipped"),
+                not_attempted: None,
+                installed: None,
+                versions: Default::default(),
+                drift_rows: Vec::new(),
             })
             .collect(),
         status: ApplyStatus::Success,
         apply_id: 0,
         aborted: None,
         planned_total: descriptions.len(),
+        caveats: Vec::new(),
     }
 }
 
@@ -2721,9 +2846,9 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
         "env:session:refresh:skipped",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.is_empty(),
         "an apply that changed no env surface must not nag: {out}"
@@ -2757,17 +2882,21 @@ fn unmanaged_prompt_skips_patch_module_files() {
     };
     let mut plan = one_phase_plan(vec![Action::Module(ModuleAction::local(
         "mymod".to_string(),
-        ModuleActionKind::DeployFiles { files: vec![file] },
+        ModuleActionKind::DeployFiles {
+            files: vec![file],
+            declared_total: 1,
+        },
     ))]);
 
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2797,9 +2926,13 @@ fn module_copy_file(source: &Path, target: &Path) -> cfgd_core::modules::Resolve
 }
 
 fn module_deploy_plan(files: Vec<cfgd_core::modules::ResolvedFile>) -> Plan {
+    let declared_total = files.len();
     one_phase_plan(vec![Action::Module(ModuleAction::local(
         "mymod".to_string(),
-        ModuleActionKind::DeployFiles { files },
+        ModuleActionKind::DeployFiles {
+            files,
+            declared_total,
+        },
     ))])
 }
 
@@ -2809,13 +2942,71 @@ fn deployed_files(plan: &Plan) -> Vec<PathBuf> {
         .flat_map(|p| p.owned_actions())
         .filter_map(|(_, a)| match a {
             Action::Module(ma) => match &ma.kind {
-                ModuleActionKind::DeployFiles { files } => Some(files),
+                ModuleActionKind::DeployFiles { files, .. } => Some(files),
                 _ => None,
             },
             _ => None,
         })
         .flat_map(|files| files.iter().map(|f| f.target.clone()))
         .collect()
+}
+
+/// A module records ONE aggregate `module` resource row plus a per-file
+/// `module_file_manifest` row, so a module-deployed target is invisible to a
+/// classification that only asks about `file` rows: a user replacing the
+/// deployed symlink with a regular file had their own file read as a
+/// stranger's and copied aside on the next apply.
+#[test]
+fn a_module_deployed_target_is_never_a_strangers_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "edited in place\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let apply_id = state
+        .record_apply("test", "h", ApplyStatus::Success, None)
+        .unwrap();
+    state
+        .upsert_module_file(
+            "mymod",
+            &cfgd_core::to_posix_fs_key(&target),
+            "deadbeef",
+            "Symlink",
+            apply_id,
+        )
+        .unwrap();
+
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    let backups = handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Backup,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
+    )
+    .unwrap();
+
+    assert!(
+        backups.is_empty(),
+        "cfgd's own module file must not be reserved as an adoption, got: {backups:?}"
+    );
+    assert_eq!(
+        deployed_files(&plan),
+        vec![target.clone()],
+        "the file stays in the deployment"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "edited in place\n",
+        "and nothing on disk moved"
+    );
 }
 
 #[test]
@@ -2829,33 +3020,40 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
     std::fs::write(&target, "identical\n").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        // The strategy the sweep acts on is the RESOLVED one, which production
+        // reads out of `effective_file_strategies` — the same `Copy` this
+        // fixture's entry declares. Only a whole-content strategy has a desired
+        // hash to compare, so a link default here would answer "not converged"
+        // about a file that is.
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Copy),
     )
     .unwrap();
 
     assert!(
+        backups.is_empty(),
+        "a converged target must not be reserved for adoption, got: {backups:?}"
+    );
+    assert!(
         !tmp.path().join("live.conf.cfgd-backup").exists(),
         "a converged target is not a conflict and needs no sidecar"
     );
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        !out.contains("unmanaged file"),
-        "a converged target must not be announced as a conflict, got: {out}"
-    );
 }
 
+/// The sidecar itself is written by the file action inside the Files phase;
+/// what `--yes` decides here is that the target is RESERVED for it.
 #[test]
-fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
+fn a_module_target_holding_different_bytes_is_reserved_under_yes() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("src.conf");
     let target = tmp.path().join("live.conf");
@@ -2866,21 +3064,25 @@ fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
-        "hand written\n",
-        "--yes must preserve the file it is about to replace"
+    assert!(
+        backups.contains(&target),
+        "--yes must reserve the file it is about to replace"
+    );
+    assert!(
+        !tmp.path().join("live.conf.cfgd-backup").exists(),
+        "planning writes no sidecar; the file action does"
     );
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
@@ -2909,11 +3111,12 @@ fn on_conflict_overwrite_keeps_no_copy() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Overwrite,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2943,11 +3146,12 @@ fn on_conflict_skip_drops_the_file_from_the_deployment() {
     handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2974,11 +3178,12 @@ fn on_conflict_fail_aborts_naming_the_module_and_the_file() {
     let err = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
+        tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Fail,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap_err()
     .to_string();
@@ -2996,7 +3201,7 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
     std::fs::write(&target, "export EDITOR=vim\n").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut action = copy_update(&target);
     if let Action::File(FileAction::Update {
         ref mut source_hash,
@@ -3007,33 +3212,40 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
     }
     let mut plan = one_phase_plan(vec![action]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Backup,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
     assert!(
+        backups.is_empty(),
+        "a converged profile target is not a conflict, got: {backups:?}"
+    );
+    assert!(
         !tmp.path().join("zshrc.cfgd-backup").exists(),
         "a converged profile target must not be copied aside"
     );
-    let out = buf.lock().unwrap().clone();
     assert!(
-        !out.contains("unmanaged file"),
-        "a converged profile target is not announced as a conflict, got: {out}"
+        matches!(
+            plan.phases[0].owned_actions().next().map(|(_, a)| a),
+            Some(Action::File(FileAction::Update { .. })),
+        ),
+        "and its write is left exactly as planned"
     );
 }
 
 #[test]
-fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
-    // Adoption runs and the process dies before the reconciler writes a byte:
-    // the state the rename could not survive. Nothing below writes the target,
-    // so what the assertions read IS the post-crash filesystem.
+fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
+    // Reservation happens while the plan is being decided and the process dies
+    // before the Files phase runs: nothing below writes the target, so what the
+    // assertions read IS the post-crash filesystem.
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("src.conf");
     let target = tmp.path().join("live.conf");
@@ -3044,14 +3256,15 @@ fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
+        tmp.path(),
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Backup,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -3060,30 +3273,10 @@ fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
         "years of hand edits\n",
         "the user's file must still be at the path they know it by"
     );
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
-        "years of hand edits\n",
-        "and at the sidecar, so either survivor is the whole file"
+    assert!(
+        backups.contains(&target),
+        "and it is reserved, so the write that replaces it copies it aside first"
     );
-}
-
-#[test]
-fn a_symlinked_target_is_backed_up_as_a_link_not_as_its_destination() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("elsewhere.conf");
-    let target = tmp.path().join("live.conf");
-    std::fs::write(&dest, "the destination\n").unwrap();
-    cfgd_core::create_symlink(&dest, &target).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&target, &printer).unwrap();
-
-    assert_eq!(
-        backup.read_link().unwrap(),
-        dest,
-        "the sidecar must preserve the link, not materialize its destination"
-    );
-    assert!(target.symlink_metadata().is_ok(), "the link stays in place");
 }
 
 #[test]
@@ -3097,8 +3290,8 @@ fn shell_env_reminder_names_the_written_env_file() {
             "env:inject:/home/u/.bashrc:skipped",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
-        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+        print_caveats(&result, &printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         (out, home)
     });
 
@@ -3106,16 +3299,23 @@ fn shell_env_reminder_names_the_written_env_file() {
         !home.is_empty() && home != "~",
         "the test home must resolve to a real sandbox path, got: {home}"
     );
+    // The reminder is the report's closing instruction, so it renders at the
+    // foot with no `Caveats` heading and no owner group around it — there is
+    // nothing to caveat here, only something to do next.
     assert!(
-        out.contains("Shell environment changed"),
-        "expected reminder heading, got: {out}"
+        !out.contains("Caveats"),
+        "a lone next step opens no Caveats section, got: {out}"
     );
     assert!(
-        out.contains("run `source ~/.cfgd.env`"),
+        !out.contains("cfgd:env"),
+        "a next step is not a remark about one owner, got: {out}"
+    );
+    assert!(
+        out.contains("Run `source ~/.cfgd.env`"),
         "expected a retypeable source command, got: {out}"
     );
     assert!(
-        out.contains("— or open a new shell"),
+        out.contains(", or open a new shell"),
         "expected the new-shell alternative, got: {out}"
     );
 }
@@ -3136,12 +3336,12 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
             "env:write:/home/u/.cfgd.env",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
-        cfgd_core::output::strip_ansi(&buf.lock().unwrap())
+        print_caveats(&result, &printer);
+        cfgd_core::test_helpers::captured_text(&buf)
     });
 
     assert!(
-        out.contains("run `source /home/u/.cfgd.env`"),
+        out.contains("Run `source /home/u/.cfgd.env`"),
         "expected the shell-matching file, got: {out}"
     );
     assert!(
@@ -3179,20 +3379,38 @@ fn preferred_env_file_follows_the_running_shell_on_windows() {
     }
 }
 
+/// Neither `MSYSTEM` nor `SHELL` is inherited: they are what
+/// `preferred_env_file` reads, so a run under Git Bash and a run under
+/// PowerShell would assert about two different commands. Unset, the choice is
+/// the platform's alone — a POSIX host sources `~/.cfgd.env`, a Windows host
+/// dot-sources `~/.cfgd-env.ps1` — and which file that is stays pinned by
+/// `preferred_env_file_follows_the_running_shell_on_windows` above.
 #[test]
+#[serial_test::serial]
 fn shell_env_reminder_fires_for_source_line_injection_alone() {
+    let _msystem = cfgd_core::test_helpers::EnvVarGuard::unset("MSYSTEM");
+    let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
     let result = env_apply_result(&[
         "env:write:/home/u/.cfgd.env:skipped",
         "env:inject:/home/u/.bashrc",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let want = if cfg!(windows) {
+        "Run `. ~/.cfgd-env.ps1`"
+    } else {
+        "Run `source ~/.cfgd.env`"
+    };
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Shell environment changed"),
+        out.contains(want),
         "an rc file that only just learned to source the env file still leaves \
          the running shell stale: {out}"
+    );
+    assert!(
+        !out.contains("Caveats"),
+        "a lone next step opens no Caveats section, got: {out}"
     );
 }
 
@@ -3200,9 +3418,9 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
 fn shell_env_reminder_absent_under_structured_output() {
     let result = env_apply_result(&["env:write:/home/u/.cfgd.env"]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.is_empty(),
         "structured output auto-quiets; the reminder must not corrupt it: {out}"
@@ -3216,11 +3434,28 @@ fn resolved_package(manager: &str, name: &str) -> cfgd_core::modules::ResolvedPa
         canonical_name: name.to_string(),
         resolved_name: name.to_string(),
         manager: manager.to_string(),
+        manager_declared: false,
         version: None,
         script: None,
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
+    }
+}
+
+/// [`resolved_package`] whose manager the module's AUTHOR named — the `prefer`
+/// chain's installer and the `aliases` name it installs under, which is what
+/// mints a `DeclaredProvision` route.
+fn resolved_package_declared(
+    manager: &str,
+    canonical: &str,
+    resolved: &str,
+) -> cfgd_core::modules::ResolvedPackage {
+    cfgd_core::modules::ResolvedPackage {
+        resolved_name: resolved.to_string(),
+        manager_declared: true,
+        ..resolved_package(manager, canonical)
     }
 }
 
@@ -3244,10 +3479,16 @@ impl cfgd_core::providers::PackageManager for AvailableManager {
     fn name(&self) -> &str {
         self.0
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         None
     }
     fn bootstrap(
@@ -3302,6 +3543,7 @@ fn brew_provision_plan() -> Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -3399,6 +3641,7 @@ fn skip_owner_pattern_selects_one_module_across_every_phase() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3426,6 +3669,7 @@ fn skip_owner_pattern_selects_the_profile() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3450,9 +3694,10 @@ fn legacy_modules_pattern_still_skips_and_says_so() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     let owners: Vec<String> = plan
         .phases
@@ -3479,6 +3724,7 @@ fn only_packages_brew_does_not_match_a_module_named_brew() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3506,6 +3752,7 @@ fn only_packages_module_brew_selects_the_module_not_the_manager() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3527,9 +3774,10 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !plan
@@ -3568,9 +3816,10 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         plan.phases
@@ -3610,6 +3859,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                declared: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -3625,9 +3875,10 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
         None,
         &printer,
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         out.contains("2 package actions"),
@@ -3644,12 +3895,8 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
 fn no_stranded_warning_when_every_manager_is_available() {
     let mut plan = brew_provision_plan();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(AvailableManager("brew")));
-    registry
-        .package_managers
-        .push(Box::new(AvailableManager("brew-tap")));
+    registry.add_package_manager(Box::new(AvailableManager("brew")));
+    registry.add_package_manager(Box::new(AvailableManager("brew-tap")));
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
@@ -3658,9 +3905,10 @@ fn no_stranded_warning_when_every_manager_is_available() {
         None,
         &printer,
         &registry,
+        &std::collections::HashSet::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !out.contains("still name") && !out.contains("still names"),
@@ -3686,9 +3934,12 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions());
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
 
-    assert_eq!(output.total_actions, 2, "the skip is a counted action");
+    assert_eq!(
+        output.total_actions, 1,
+        "the skip is stated by the header's Modules clause and counted nowhere"
+    );
     let modules = output
         .phases
         .iter()
@@ -3715,6 +3966,69 @@ fn platform_skip_survives_in_the_plan_payload() {
             .collect::<Vec<_>>(),
         vec!["module:wsl-tools".to_string()],
         "the skip keeps its module owner group"
+    );
+}
+
+/// The payload's `total_actions` is the plan's own count, so `cfgd plan`'s
+/// footer, `-o json` and the apply header cannot print three numbers for one
+/// plan. Fails on the next hand-rolled sum over the rendered rows, which prices
+/// in a row [`Action::pre_skip_reason`] has already answered for.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+#[serial_test::serial]
+fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        "/no/such/systemctl",
+    );
+
+    let plan = make_plan(vec![(
+        PhaseName::Prerequisites,
+        vec![
+            Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+            }),
+            pkg_install("brew", vec!["rg"]),
+        ],
+    )]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+
+    assert_eq!(
+        output.total_actions,
+        plan.total_actions(),
+        "the payload prices what the apply will attempt, not what the tree draws"
+    );
+    assert_eq!(output.total_actions, 1);
+    assert_eq!(
+        output.phases.iter().flat_map(|p| phase_actions(p)).count(),
+        2,
+        "the pre-skipped row is still listed — it is only uncounted"
+    );
+}
+
+/// `--phase` is a predicate the payload is built through, not a prune of the
+/// plan, so the total belongs to the scope the payload LISTED. Fails on a
+/// footer wired to the whole plan's count, which would promise a `--phase
+/// files` run the packages it never showed.
+#[test]
+fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
+    let plan = make_plan(vec![
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        (PhaseName::Files, vec![file_create("/etc/foo")]),
+    ]);
+    let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
+
+    assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
+    assert_eq!(output.total_actions, 1);
+    assert_eq!(
+        output
+            .phases
+            .iter()
+            .map(|p| p.phase.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Files"],
+        "only the scoped phase is listed, so only it is priced"
     );
 }
 
@@ -3760,14 +4074,21 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
             "recommended",
             "install",
             "recommended ripgrep (from acme)",
+            None,
         )
         .unwrap();
 
+    let cli = test_cli_in(dir.path());
+    let printer = Printer::for_test().0;
+    let ctx = RunContext::new(&cli, &printer);
     let (withheld, _review) = withheld_for_run(
+        &ctx,
         &store,
         &config_subscribed_to_acme(),
-        &local_resolved("packages:\n  brew:\n    file: Brewfile\n"),
-        dir.path(),
+        DesiredOwnership {
+            resolved: &local_resolved("packages:\n  brew:\n    file: Brewfile\n"),
+            entry_owners: &cfgd_core::config::EntryOwners::default(),
+        },
         true,
         DecisionWrites::ReadOnly,
         &reconciler::ActualPackages::default(),
@@ -3794,14 +4115,21 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
             "recommended",
             "install",
             "recommended ripgrep (from acme)",
+            None,
         )
         .unwrap();
 
+    let cli = test_cli_in(dir.path());
+    let printer = Printer::for_test().0;
+    let ctx = RunContext::new(&cli, &printer);
     let (withheld, _review) = withheld_for_run(
+        &ctx,
         &store,
         &cfgd_core::config::minimal_config(),
-        &local_resolved("{}\n"),
-        dir.path(),
+        DesiredOwnership {
+            resolved: &local_resolved("{}\n"),
+            entry_owners: &cfgd_core::config::EntryOwners::default(),
+        },
         false,
         DecisionWrites::ReadOnly,
         &reconciler::ActualPackages::default(),
@@ -3812,5 +4140,305 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
         withheld.pending.len(),
         1,
         "an unparsed config is not evidence that the source was dropped"
+    );
+}
+
+// -----------------------------------------------------------------------
+// TokenHits — per-token --skip/--only match accounting
+// -----------------------------------------------------------------------
+
+#[test]
+fn token_hits_seeds_every_supplied_token_at_zero_in_first_seen_order() {
+    let hits = TokenHits::new(&[
+        "files".to_string(),
+        "packages.brew".to_string(),
+        "files".to_string(),
+    ]);
+    // A duplicate token collapses to one accounting slot, and every slot
+    // starts at zero — nothing is recorded until `record` is called.
+    assert_eq!(
+        hits.misses(),
+        vec!["files", "packages.brew"],
+        "every never-recorded token is a miss, deduped, in first-seen order"
+    );
+}
+
+#[test]
+fn token_hits_record_only_advances_the_named_token() {
+    let mut hits = TokenHits::new(&["files".to_string(), "packages.brew".to_string()]);
+    hits.record("files");
+    hits.record("files");
+    // Recording a token this instance was never seeded with must not panic
+    // and must not fabricate a new tracked entry.
+    hits.record("packages.npm");
+    assert_eq!(
+        hits.misses(),
+        vec!["packages.brew"],
+        "a recorded token drops out of misses; an unseeded record is a no-op"
+    );
+}
+
+#[test]
+fn token_hits_misses_empty_once_every_token_is_recorded() {
+    let mut hits = TokenHits::new(&["files".to_string()]);
+    hits.record("files");
+    assert!(hits.misses().is_empty());
+}
+
+// -----------------------------------------------------------------------
+// module_known_but_unresolved — the --module hint gate for a `module:<name>`
+// zero-match token
+// -----------------------------------------------------------------------
+
+#[test]
+fn module_known_but_unresolved_true_for_a_locally_declared_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let module_dir = dir.path().join("modules").join("nvm");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvm\nspec: {}\n",
+    )
+    .unwrap();
+
+    let known = known_module_names(dir.path());
+    assert!(
+        module_known_but_unresolved(&known, "nvm"),
+        "a module declared under modules/ is known, even though it is not part of the active profile"
+    );
+    assert!(
+        !module_known_but_unresolved(&known, "no-such-module"),
+        "a name naming nothing on disk or in the lockfile is not known"
+    );
+}
+
+#[test]
+fn known_module_names_is_empty_when_config_dir_has_no_modules_at_all() {
+    assert!(known_module_names(Path::new("/nonexistent-config")).is_empty());
+}
+
+// -----------------------------------------------------------------------
+// filter_plan zero-match token accounting — the warning every
+// `--skip`/`--only` token that matched nothing pushes into `Plan.warnings`,
+// and the `bool` return `apply.rs`/`plan.rs` fold into
+// `ScopeReport.filter_miss`.
+// -----------------------------------------------------------------------
+
+#[test]
+fn filter_plan_zero_match_skip_token_alerts_and_reports_a_miss() {
+    let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let (printer, _buf) = Printer::for_test();
+    let missed = filter_plan(
+        &mut plan,
+        &["no-such-owner".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(
+        missed,
+        "a token that matched zero actions must report a miss"
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("`--skip no-such-owner` matched no actions in this plan")),
+        "expected the zero-match warning naming the token verbatim, got:\n{:?}",
+        plan.warnings
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("owners present: profile:test")),
+        "expected the owner-token hint naming what the plan actually held, got:\n{:?}",
+        plan.warnings
+    );
+    // The file action itself never matched "no-such-owner", so it survives.
+    assert_eq!(plan.phases[0].action_count(), 1);
+}
+
+#[test]
+fn filter_plan_zero_match_only_token_naming_a_known_unresolved_module_hints_the_module_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let module_dir = dir.path().join("modules").join("nvm");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvm\nspec: {}\n",
+    )
+    .unwrap();
+
+    let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let (printer, _buf) = Printer::for_test();
+    let known_modules = known_module_names(dir.path());
+    let missed = filter_plan(
+        &mut plan,
+        &[],
+        &["module:nvm".to_string()],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &known_modules,
+    );
+
+    assert!(missed);
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("`--only module:nvm` matched no actions in this plan")),
+        "got:\n{:?}",
+        plan.warnings
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("to resolve a module outside the profile: --module nvm")),
+        "a token naming a module cfgd already knows about (just not part of this run's graph) \
+         must hint the way to bring it in, not the generic owner-token list, got:\n{:?}",
+        plan.warnings
+    );
+    assert!(
+        !plan.warnings.iter().any(|w| w.contains("owners present:")),
+        "the module-specific hint replaces the generic one, got:\n{:?}",
+        plan.warnings
+    );
+}
+
+#[test]
+fn filter_plan_a_token_that_matches_something_alerts_for_nothing() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Files,
+        vec![file_create("/etc/foo"), file_update("/etc/bar")],
+    )]);
+    let (printer, _buf) = Printer::for_test();
+    let missed = filter_plan(
+        &mut plan,
+        &["files".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(!missed, "a token that matched every action is not a miss");
+    assert!(
+        !plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("matched no actions in this plan")),
+        "a fully-matching token must not push the zero-match warning, got:\n{:?}",
+        plan.warnings
+    );
+}
+
+#[test]
+fn filter_plan_zero_match_token_escapes_embedded_control_chars() {
+    // A `--skip`/`--only` token is untrusted terminal input echoed verbatim
+    // into a warning that lands on the terminal (via `ApplyRun::header`'s
+    // `printer.alert`); an unescaped `\r` here would repaint or erase the
+    // very line describing it.
+    let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let (printer, _buf) = Printer::for_test();
+    let evil_token = "no-such-owner\r\x1b[2K";
+    let missed = filter_plan(
+        &mut plan,
+        &[evil_token.to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(missed);
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| !w.contains('\r') && !w.contains('\x1b')),
+        "the raw control bytes must not reach the warning text, got:\n{:?}",
+        plan.warnings
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains(r"\x0d") && w.contains(r"\x1b")),
+        "the control bytes must be rendered as visible \\xNN escapes, got:\n{:?}",
+        plan.warnings
+    );
+}
+
+/// A settled policy answers every conflict itself, so the sweep is seconds of
+/// silent hashing between the plan and the Apply header. It renames the
+/// Planning bar per owner, so the wait names what is being read.
+#[test]
+fn a_settled_conflict_sweep_narrates_the_owner_it_is_reading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, drawn) = Printer::for_test_with_live_bars();
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Backup,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
+    )
+    .unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&drawn);
+    let label = sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
+    assert!(
+        out.contains(&label),
+        "the planning bar must name the owner it is reading ({label}), got: {out}"
+    );
+}
+
+/// An unsettled policy prompts per file, which is its own live indicator: an
+/// animated bar cannot share the terminal with `inquire`.
+#[test]
+fn an_unsettled_conflict_sweep_opens_no_bar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, drawn) = Printer::for_test_with_live_bars();
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    // No seeded answer: the prompt fails and the sweep falls back to Backup.
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        tmp.path(),
+        &state,
+        &printer,
+        false,
+        OnConflict::Ask,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
+    )
+    .unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&drawn);
+    let label = sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
+    assert!(
+        !out.contains(&label),
+        "a prompting sweep must not animate a bar under the prompt ({label}), got: {out}"
     );
 }

@@ -1243,7 +1243,7 @@ fn build_drift_alert_conditions_critical_severity() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-1"));
-    assert!(conditions[1].message.contains("5 details"));
+    assert!(conditions[1].message.contains("5 drifted system settings"));
     // Critical is escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "True");
@@ -1463,7 +1463,7 @@ fn build_drift_alert_conditions_medium_not_escalated() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-2"));
-    assert!(conditions[1].message.contains("2 details"));
+    assert!(conditions[1].message.contains("2 drifted system settings"));
     // Medium is NOT escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "False");
@@ -1486,7 +1486,10 @@ fn build_drift_alert_conditions_resolved_zero_details() {
     );
     assert_eq!(conditions[1].status, "True");
     assert_eq!(conditions[1].reason, "DriftResolved");
-    assert_eq!(conditions[1].message, "Drift has been resolved");
+    assert_eq!(
+        conditions[1].message,
+        "The device no longer reports these drifted system settings"
+    );
     assert!(conditions[0].observed_generation.is_none());
 }
 
@@ -1617,7 +1620,7 @@ fn log_reconcile_ok_does_not_panic() {
     let result: ReconcileResult<MachineConfig> = Ok((obj_ref.clone(), action));
 
     // log_reconcile is a logging-only callback — it returns ().
-    // We verify both Ok and Err paths complete without panic.
+    // This verifies both Ok and Err paths complete without panic.
     let future = log_fn(result);
     futures::executor::block_on(future);
 
@@ -2010,10 +2013,9 @@ fn record_error_and_requeue_increments_error_counter() {
     let mut registry = Registry::default();
     let metrics = Metrics::new(&mut registry);
 
-    // Build a ControllerContext with a real metrics instance (we can't
-    // call record_error_and_requeue directly because it requires a full
-    // ControllerContext with a kube Client, but we can exercise the same
-    // code path that it runs).
+    // Build a ControllerContext with a real metrics instance (record_error_and_requeue
+    // cannot be called directly because it requires a full ControllerContext with a
+    // kube Client, but this exercises the same code path that it runs).
     let error = OperatorError::Reconciliation("test failure".into());
     let controller = "machine_config";
 
@@ -2054,7 +2056,7 @@ fn record_error_and_requeue_increments_error_counter() {
     );
 
     // Verify action has 30s requeue
-    // (Action doesn't expose its duration, but we verify it's constructed)
+    // (Action doesn't expose its duration, but this verifies it's constructed)
     let _ = action;
 }
 
@@ -2614,8 +2616,8 @@ fn build_drift_alert_conditions_active_message_includes_details_count() {
         .find(|c| c.condition_type == "Resolved")
         .unwrap();
     assert!(
-        resolved.message.contains("42 details"),
-        "message should include detail count: {}",
+        resolved.message.contains("42 drifted system settings"),
+        "message should include the drifted-setting count: {}",
         resolved.message
     );
     assert!(
@@ -2834,7 +2836,7 @@ fn validate_spec_both_empty_returns_both_errors() {
 #[tokio::test]
 async fn namespaced_api_empty_namespace_returns_error() {
     // Construct a dummy kube Client via a tower service that always errors
-    // (we just need the Client type, not actual HTTP calls)
+    // (only the Client type is needed, not actual HTTP calls)
     let client = make_test_client();
     let result = namespaced_api::<MachineConfig>(&client, "");
     assert!(result.is_err());
@@ -2891,8 +2893,8 @@ async fn record_error_and_requeue_returns_30s_action_and_increments_counter() {
         .get();
     assert_eq!(success_count, 0, "success counter should remain 0");
 
-    // Verify the Action is a requeue (we can't inspect duration directly,
-    // but we can confirm the function returned without panic)
+    // Verify the Action is a requeue (duration cannot be inspected directly,
+    // but this confirms the function returned without panic)
     let _ = action;
 }
 
@@ -3169,6 +3171,12 @@ fn make_test_controller_context() -> (ControllerContext, prometheus_client::regi
             client,
             recorder,
             metrics,
+            stores: crate::controllers::test_kube_harness::empty_stores(),
+            artifact_facts: crate::controllers::ArtifactFactsReader::fixed(Default::default()),
+            artifact_verifier: crate::controllers::ArtifactVerifier::fixed(
+                cfgd_core::oci::SignatureCheck::Undetermined("no verifier".to_string()),
+            ),
+            registry_backoff: crate::controllers::RegistryBackoff::default(),
         },
         registry,
     )
@@ -3229,7 +3237,7 @@ async fn record_error_and_requeue_returns_30s_requeue_and_bumps_error_counter() 
     let action = record_error_and_requeue(&err, &ctx, "config_policy");
 
     // Format check: Action does not expose its requeue Duration directly, but
-    // the Debug representation contains the duration we asked for.
+    // the Debug representation contains the duration requested.
     let dbg = format!("{:?}", action);
     assert!(
         dbg.contains("30s") || dbg.contains("30"),
@@ -3302,7 +3310,7 @@ async fn namespaced_api_returns_api_when_namespace_non_empty() {
 #[tokio::test]
 async fn publish_event_does_not_panic_on_failure() {
     // The mock service returns 200 with "{}" which causes the recorder's
-    // publish to fail to deserialize an Event back; we only need to verify
+    // publish to fail to deserialize an Event back; this only needs to verify
     // the function completes (the failure branch is logged at debug!).
     use k8s_openapi::api::core::v1::ObjectReference;
     use kube::runtime::events::{Event, EventType};
@@ -3372,7 +3380,11 @@ mod tests_run {
         );
     }
 
+    // Serial: `POD_NAME` is process-global, and this harness runs on a
+    // multi-threaded runtime where a sibling reading the environment would be
+    // doing so mid-mutation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
     async fn run_with_pod_name_env_uses_it_for_reporter_instance() {
         let _g = cfgd_core::test_helpers::EnvVarGuard::set("POD_NAME", "operator-pod-77");
         let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);

@@ -5,6 +5,11 @@ dotenv: [".env"]
 vars:
   REGISTRY:
     sh: echo "${REGISTRY:-registry.jarvispro.io}"
+  TARGET_MAXSIZE:
+    sh: echo "${CFGD_TARGET_MAXSIZE:-20GB}"
+  # The one spelling of the rustdoc gate's deny-warnings flag. ci.yml gets it
+  # by invoking `task doc` rather than repeating the string.
+  RUSTDOC_DENY_WARNINGS: "-D warnings"
 
 env:
   REGISTRY: '{{.REGISTRY}}'
@@ -78,10 +83,11 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, doc, test, audit)
     cmds:
       - task: fmt:check
       - task: clippy
+      - task: doc
       - task: test
       - task: audit
 
@@ -100,6 +106,14 @@ tasks:
     deps: [_check:tmp-headroom]
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
+
+  doc:
+    desc: Build rustdoc for the workspace, denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...)
+    deps: [_check:tmp-headroom]
+    env:
+      RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
+    cmds:
+      - cargo doc --workspace --no-deps --document-private-items --all-features
 
   test:
     desc: Run all tests. Pass `-- <args>` to forward to cargo test.
@@ -195,6 +209,36 @@ tasks:
     desc: Run project-specific code quality audit
     cmds:
       - bash .claude/scripts/audit.sh
+
+  version-files:check:
+    desc: Verify every file enrolled in .anodizer.yaml version_files still carries its crate's current version (CI drift guard).
+    cmds:
+      # A release that fails after `anodizer tag` never lands its bump on master, and the
+      # next old->new sweep then finds nothing to replace, so the literal freezes forever
+      # (v0.8.0 left the chart and four docs at 0.7.0). Caught here instead of by a user.
+      - '${ANODIZER_BIN:-anodizer} check version-files'
+
+  chart:tags:check:
+    desc: Verify every first-party image the chart renders by default exists on ghcr (CI drift guard).
+    cmds:
+      # The chart's three components version independently (agent = appVersion,
+      # operator/csi = their own crate versions), so a bump that lands on one literal
+      # and not another renders a tag nobody ever pushed. Rendering with every
+      # first-party component enabled and asking the registry is the only check that
+      # cannot be fooled by the literals agreeing with each other.
+      - cmd: |
+          set -e
+          missing=0
+          for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
+              | sed -n 's/^ *image: *"\{0,1\}\(ghcr\.io\/tj-smith47\/cfgd[^" ]*\)"\{0,1\} *$/\1/p' | sort -u); do
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "OK       $ref"
+            else
+              echo "MISSING  $ref"
+              missing=1
+            fi
+          done
+          exit $missing
 
   gen:crds:
     desc: Regenerate every CRD copy (Helm chart + OLM bundle + schemas/crds.yaml) from the cfgd-crd spec types.
@@ -322,6 +366,48 @@ tasks:
     desc: Dry-run package all publishable crates (verify build included)
     deps: [_check:tmp-headroom]
     cmds:
+      # The verify build resolves siblings from target/package/tmp-registry, and
+      # cargo holds a registry package immutable at <name>-<version>: the unpack
+      # under ~/.cargo/registry/src is never refreshed once .cargo-ok exists, and
+      # the rlib built from it is reused without re-reading the source. Between
+      # two version bumps both are stale, so verify compiles the crate under test
+      # against an older copy of its sibling. Drop ours, unpack and build alike;
+      # an index.crates.io-* unpack is a real published crate and is never touched.
+      # The build half globs every profile dir rather than debug/ alone: the
+      # verify runs in dev today, and a profile the flag or config moves it to
+      # would leave the stale rlib in a dir a debug-only scan cannot see.
+      - |
+        tgt="${CARGO_TARGET_DIR:-target}"
+        src="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+        crates=$(cargo metadata --no-deps --format-version 1 \
+          | grep -o '"name":"[^"]*","version":"[^"]*"' \
+          | sed 's/"name":"\([^"]*\)","version":"\([^"]*\)"/\1-\2/')
+        [ -n "$crates" ] || exit 0
+        for crate in $crates; do
+          for d in "$src"/*/"$crate"; do
+            case "$d" in "$src"/index.crates.io-*) continue ;; esac
+            if [ -d "$d" ]; then rm -rf "$d"; fi
+          done
+        done
+        # A version may carry ERE metacharacters (1.0.0+build, and every dot),
+        # and an unescaped pattern matches nothing — the unpack would go while
+        # the stale rlib naming it stayed, which is the staleness this removes.
+        pat=$(printf '%s\n' "$crates" \
+          | sed 's/[][^$.*+?(){}|\\]/\\&/g' \
+          | sed 's|.*|registry/src/[^ ]*/&/|' \
+          | tr '\n' '|' | sed 's/|$//')
+        # A plain newline-delimited read, not `grep -lZ` + `read -d ''`: the
+        # task runs under `sh`, whose `read` has no `-d`, so the NUL form failed
+        # on every iteration and the loop body never ran — silently, exit 0,
+        # one `read: invalid option "-d"` per file — leaving every stale rlib in
+        # place, which is how a `cargo package` verify came to compile the CLI
+        # against a sibling rmeta predating the API it had just been given.
+        # Nothing under `target/` carries a newline.
+        grep -lE "$pat" "$tgt"/*/deps/*.d 2>/dev/null | while IFS= read -r f; do
+          h=${f##*-}; h=${h%.d}
+          d=${f%/deps/*}
+          rm -rf "$d"/deps/*-"$h" "$d"/deps/*-"$h".* "$d"/.fingerprint/*-"$h"
+        done
       # No --no-verify: the verify build compiles each crate FROM ITS TARBALL —
       # the only local gate that catches sources escaping the crate directory
       # (e.g. include_str! of workspace-root files), which packages fine but
@@ -345,10 +431,11 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run)
+    desc: Local pre-commit check (tidy, clippy, doc, audit, build, snapshot dry-run)
     cmds:
       - task: tidy
       - task: clippy
+      - task: doc
       - task: audit
       - task: build
       - task: snapshot
@@ -441,8 +528,11 @@ tasks:
     cmds:
       - task: fmt:check
       - task: clippy
+      - task: doc
       - task: schema:check
       - task: gen:crds:check
+      - task: version-files:check
+      - task: chart:tags:check
       - task: test
       - task: test:threads
       - task: audit
@@ -547,6 +637,11 @@ tasks:
         for tag in $(find ~/.cache/cfgd-debug -maxdepth 3 -name CACHEDIR.TAG 2>/dev/null); do
           rm -rf "$(dirname "$tag")"
         done
+      # target/debug/deps accumulates one set of test binaries per rebuild and cargo
+      # never collects the superseded ones, so it reached 76G in a single day of test
+      # cycles. Age-based sweeping cannot reach it: every run stats every artifact, so
+      # nothing is ever old. Capping by SIZE evicts oldest-first until the cap holds.
+      - cargo sweep --maxsize {{.TARGET_MAXSIZE}} || true
       - df -h / | tail -1
 
   # --- Docker ---
@@ -632,7 +727,7 @@ tasks:
       - docker build -f demo/Dockerfile -t cfgd-demo:latest .
 
   demo:record:
-    desc: Run the VHS tape, producing demo/.out/raw.mp4.
+    desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw/).
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font
@@ -656,6 +751,165 @@ tasks:
     desc: Ramp the raw take into the README GIF (1:1 at both ends, fast in the middle).
     cmds:
       - bash demo/scripts/make-gif.sh
+
+  demo:drift:
+    desc: Record the drift-heal demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record, pointed at demo/drift.tape — see that
+      # target's comment for why both checks read the tape rather than a
+      # separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)" ]
+        msg: "demo/drift.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/drift.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh drift
+      - bash demo/scripts/make-gif-flat.sh drift
+
+  demo:status:
+    desc: Record the status-surfaces demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record, pointed at demo/status.tape — see that
+      # target's comment for why both checks read the tape rather than a
+      # separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/status.tape | head -1)" ]
+        msg: "demo/status.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/status.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/status.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh status
+      - bash demo/scripts/make-gif-flat.sh status
+
+  demo:author:
+    desc: Record the CLI-authoring demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift, pointed at demo/author.tape
+      # — see demo:record's comment for why both checks read the tape rather
+      # than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/author.tape | head -1)" ]
+        msg: "demo/author.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/author.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/author.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh author
+      - bash demo/scripts/make-gif-flat.sh author
+
+  demo:backup:
+    desc: Record the backup-restore demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift/demo:author, pointed at
+      # demo/backup.tape — see demo:record's comment for why both checks read
+      # the tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/backup.tape | head -1)" ]
+        msg: "demo/backup.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/backup.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/backup.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh backup
+      - bash demo/scripts/make-gif-flat.sh backup
+
+  demo:source-trust:
+    desc: Record the source-trust demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift/demo:author/demo:backup,
+      # pointed at demo/source-trust.tape — see demo:record's comment for
+      # why both checks read the tape rather than a separately maintained
+      # value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/source-trust.tape | head -1)" ]
+        msg: "demo/source-trust.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/source-trust.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/source-trust.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh source-trust
+      - bash demo/scripts/make-gif-flat.sh source-trust
+
+  demo:sync:
+    desc: Record the two-machine fleet-sync demo end to end (image, hub + seeded machines, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as every other per-surface target, pointed at
+      # demo/sync.tape — see demo:record's comment for why both checks read
+      # the tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/sync.tape | head -1)" ]
+        msg: "demo/sync.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/sync.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/sync.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      # The seed machine is initialized from cfgd-demo:latest, so the image is
+      # rebuilt first exactly as the single-container tapes do.
+      - task: demo:image
+      - defer: bash demo/scripts/setup-sync-demo.sh down
+      - bash demo/scripts/setup-sync-demo.sh up
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh sync
+      - bash demo/scripts/make-gif-flat.sh sync
+
+  demo:k8s:
+    desc: Record the k8s module-injection demo end to end (kind cluster, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as every other per-surface target, pointed at
+      # demo/k8s.tape — see demo:record's comment for why both checks read the
+      # tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/k8s.tape | head -1)" ]
+        msg: "demo/k8s.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/k8s.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/k8s.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - defer: bash demo/scripts/setup-k8s-demo.sh down
+      - bash demo/scripts/setup-k8s-demo.sh up
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh k8s
+      - bash demo/scripts/make-gif-flat.sh k8s
+
+  demo:connect:
+    desc: Record the module-attachment-on-connect demo end to end (kind cluster, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as every other per-surface target, pointed at
+      # demo/connect.tape — see demo:record's comment for why both checks read
+      # the tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/connect.tape | head -1)" ]
+        msg: "demo/connect.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/connect.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/connect.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - defer: bash demo/scripts/setup-k8s-demo.sh down
+      - bash demo/scripts/setup-k8s-demo.sh up
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh connect
+      - bash demo/scripts/make-gif-flat.sh connect
 
   # --- Deploy ---
 

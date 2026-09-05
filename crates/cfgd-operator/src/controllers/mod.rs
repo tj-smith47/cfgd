@@ -1,22 +1,27 @@
 use std::collections::BTreeMap;
+use std::hash::Hash;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use kube::api::Api;
-use kube::runtime::Controller;
+use k8s_openapi::api::core::v1::Namespace;
+use kube::api::{Api, Patch, PatchParams};
+use kube::core::PartialObjectMeta;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
-use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher::Config as WatcherConfig;
+use kube::runtime::reflector::{ObjectRef, Store};
+use kube::runtime::watcher::{self, Config as WatcherConfig};
+use kube::runtime::{Controller, WatchStreamExt, reflector};
 use kube::{Client, ResourceExt};
 use tracing::{debug, info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicy, Condition, ConfigPolicy, DriftAlert, DriftSeverity, LabelSelector,
-    MachineConfig, Module, SelectorOperator,
+    ClusterConfigPolicy, Condition, ConfigPolicy, CosignSignature, DriftAlert, DriftSeverity,
+    LabelSelector, MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module, SelectorOperator,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, ReconcileLabels};
+use cfgd_core::oci::{ArtifactFacts, SignatureCheck};
 
 #[cfg(test)]
 use crate::crds::{
@@ -27,6 +32,8 @@ use crate::crds::{
 pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
+pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
+pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";
 
 pub(super) fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
     format!("{compliant} compliant, {non_compliant} non-compliant")
@@ -127,6 +134,326 @@ pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
     pub metrics: Metrics,
+    pub stores: ControllerStores,
+    pub artifact_facts: ArtifactFactsReader,
+    pub artifact_verifier: ArtifactVerifier,
+    pub registry_backoff: RegistryBackoff,
+}
+
+/// How long a failed registry visit is remembered before another is attempted.
+///
+/// Equal to the Module controller's requeue period, so a module whose registry
+/// is unreachable costs one visit per requeue instead of one per reconcile: a
+/// status patch, an event, or any other watch event on the object triggers a
+/// reconcile, and a swallowed failure leaves nothing recorded for the next one
+/// to short-circuit on.
+const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// The registry visits that failed recently, so the next reconcile inside
+/// `REGISTRY_RETRY_AFTER` answers from the failure instead of repeating it.
+///
+/// Keyed by what was attempted AND against what, because reading an artifact's
+/// manifests and verifying its signature are two visits that can fail
+/// independently. In-memory by design: it holds no verdict, only the fact that
+/// a visit has already been paid for, so an operator restart simply retries.
+#[derive(Clone, Default)]
+pub struct RegistryBackoff(Arc<parking_lot::Mutex<BTreeMap<String, Instant>>>);
+
+impl RegistryBackoff {
+    /// Whether `key`'s last failure is still recent enough to answer for.
+    fn cooling(&self, key: &str, now: Instant) -> bool {
+        self.0
+            .lock()
+            .get(key)
+            .is_some_and(|failed_at| now.duration_since(*failed_at) < REGISTRY_RETRY_AFTER)
+    }
+
+    /// Record that `key`'s visit failed at `now`.
+    fn record_failure(&self, key: String, now: Instant) {
+        self.0.lock().insert(key, now);
+    }
+
+    /// Forget `key`'s last failure — its visit has since succeeded.
+    fn clear(&self, key: &str) {
+        self.0.lock().remove(key);
+    }
+}
+
+/// How a Module's artifact signature is checked.
+///
+/// Checking one means resolving the artifact's manifest in its registry and
+/// running cosign against it, so — exactly like [`ArtifactFactsReader`] — this
+/// is a value the context carries rather than a call the reconcile makes:
+/// a controller test drives `reconcile_module` end to end and must reach
+/// neither a registry nor a cosign binary to do it.
+type VerifyLookup = Arc<dyn Fn(&str, &CosignSignature) -> SignatureCheck + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ArtifactVerifier(VerifyLookup);
+
+impl Default for ArtifactVerifier {
+    fn default() -> Self {
+        Self::from_registry()
+    }
+}
+
+impl ArtifactVerifier {
+    /// The production verifier: cosign, against the artifact's own registry.
+    #[must_use]
+    pub fn from_registry() -> Self {
+        Self(Arc::new(|reference, cosign| {
+            if cosign.keyless {
+                return cfgd_core::oci::check_signature(
+                    reference,
+                    &cfgd_core::oci::VerifyOptions {
+                        key: None,
+                        identity: cosign.certificate_identity.as_deref(),
+                        issuer: cosign.certificate_oidc_issuer.as_deref(),
+                    },
+                );
+            }
+            let Some(pem) = cosign.public_key.as_deref() else {
+                return SignatureCheck::Undetermined(
+                    "no public key and keyless not enabled".to_string(),
+                );
+            };
+            // cosign takes `--key` as a path, and the key lives in the CRD as
+            // PEM text — so the check needs it on disk for the length of one
+            // cosign run. The public half of a keypair, in a file the process
+            // owns and deletes on drop.
+            let key_file = match write_public_key(pem) {
+                Ok(file) => file,
+                Err(e) => {
+                    return SignatureCheck::Undetermined(format!(
+                        "cannot stage the module's public key for cosign: {e}"
+                    ));
+                }
+            };
+            cfgd_core::oci::check_signature(
+                reference,
+                &cfgd_core::oci::VerifyOptions {
+                    key: Some(&key_file.path().to_string_lossy()),
+                    identity: None,
+                    issuer: None,
+                },
+            )
+        }))
+    }
+
+    /// A verifier that answers `check` for every artifact.
+    #[cfg(test)]
+    #[must_use]
+    pub fn fixed(check: SignatureCheck) -> Self {
+        Self(Arc::new(move |_, _| check.clone()))
+    }
+
+    /// Check `reference` against `cosign`. Blocking: callers dispatch it off
+    /// the reactor.
+    #[must_use]
+    pub fn check(&self, reference: &str, cosign: &CosignSignature) -> SignatureCheck {
+        (self.0)(reference, cosign)
+    }
+}
+
+/// Write `pem` to a temporary file cosign can read with `--key`.
+fn write_public_key(pem: &str) -> std::io::Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new().suffix(".pub").tempfile()?;
+    file.write_all(pem.as_bytes())?;
+    file.flush()?;
+    Ok(file)
+}
+
+/// How a Module's artifact facts — its platforms and its attestations — are read.
+///
+/// Reading them means fetching manifests from the artifact's registry, so this
+/// is a value the context carries rather than a call the reconcile makes
+/// directly: a controller test drives `reconcile_module` end to end, and must
+/// reach no registry to do it. Production installs
+/// [`ArtifactFactsReader::from_registry`]; a test installs
+/// `ArtifactFactsReader::fixed` (test-only) and gets the same reconcile with
+/// a known answer.
+///
+/// One reader, not two: both facts come off the same artifact in one visit,
+/// and a second seam would let a test pin a module whose platforms and
+/// attestations were read from different artifacts.
+type FactsLookup = Arc<dyn Fn(&str) -> ArtifactFacts + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ArtifactFactsReader(FactsLookup);
+
+impl ArtifactFactsReader {
+    /// The production reader: what the artifact's own manifests name.
+    ///
+    /// A registry that cannot be reached, or an artifact that declares
+    /// nothing, answers empty — the `Platforms` column then stays blank,
+    /// which is what an unknown platform set looks like. It is not a
+    /// reconcile failure: the module is still admissible, and the next
+    /// reconcile re-reads.
+    #[must_use]
+    pub fn from_registry() -> Self {
+        Self(Arc::new(|reference| {
+            match cfgd_core::oci::artifact_facts(reference) {
+                Ok(facts) => facts,
+                Err(e) => {
+                    warn!(reference = %reference, error = %e, "cannot read artifact facts");
+                    ArtifactFacts::default()
+                }
+            }
+        }))
+    }
+
+    /// A reader that answers `facts` for every reference.
+    #[cfg(test)]
+    #[must_use]
+    pub fn fixed(facts: ArtifactFacts) -> Self {
+        Self(Arc::new(move |_| facts.clone()))
+    }
+
+    /// Read what `reference` declares. Blocking: callers dispatch it off the
+    /// reactor.
+    #[must_use]
+    pub fn read_facts(&self, reference: &str) -> ArtifactFacts {
+        (self.0)(reference)
+    }
+}
+
+/// How long a reconcile waits for a watch cache to finish its initial list
+/// before giving up and requeuing. Only ever spent on a cache that has not
+/// been populated yet — every later reconcile resolves immediately.
+const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The watch-backed caches every controller reads cross-resource state from.
+///
+/// Five of the six are the primary [`Store`] of the controller that roots that
+/// resource, so they cost no extra watch: the same stream that triggers a
+/// reconcile also populates the cache. `namespaces` is the exception — no
+/// controller roots a Namespace — and is fed by a dedicated reflector driven
+/// alongside the controllers in [`run`].
+#[derive(Clone)]
+pub struct ControllerStores {
+    pub machine_configs: Store<MachineConfig>,
+    pub config_policies: Store<ConfigPolicy>,
+    pub cluster_config_policies: Store<ClusterConfigPolicy>,
+    pub modules: Store<Module>,
+    pub drift_alerts: Store<DriftAlert>,
+    /// Metadata-only: the two reads are `metadata.labels` and `metadata.name`.
+    pub namespaces: Store<PartialObjectMeta<Namespace>>,
+}
+
+/// Wait for `store` to have completed its initial list.
+///
+/// A cache that is not yet populated is indistinguishable from an empty
+/// cluster, and every caller here turns "no objects" into a status it writes —
+/// so a not-yet-ready cache must requeue rather than answer.
+async fn ready_store<K>(store: &Store<K>, kind: &str) -> Result<(), OperatorError>
+where
+    K: kube::runtime::reflector::Lookup + Clone + 'static,
+    K::DynamicType: Eq + Hash + Clone,
+{
+    match tokio::time::timeout(STORE_READY_TIMEOUT, store.wait_until_ready()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(OperatorError::Reconciliation(format!(
+            "{kind} watch cache stopped before it was populated: {e}"
+        ))),
+        Err(_) => {
+            // Logged as well as returned so it correlates with the per-watch
+            // error `warn!`s, which carry the same `kind` field. A timeout with
+            // a matching watch error is a watch that cannot establish; a
+            // timeout alone is an operator still completing its first list.
+            warn!(
+                kind = %kind,
+                timeout_secs = STORE_READY_TIMEOUT.as_secs(),
+                "watch cache never completed its initial list"
+            );
+            Err(OperatorError::Reconciliation(format!(
+                "{kind} watch cache never completed its initial list within {}s — \
+                 the operator is still starting up, or the {kind} watch cannot \
+                 establish (check RBAC and API server connectivity)",
+                STORE_READY_TIMEOUT.as_secs()
+            )))
+        }
+    }
+}
+
+/// Order a cache snapshot by `(namespace, name)`.
+///
+/// A [`Store`] is a hash map, so its snapshot order is arbitrary and differs
+/// between processes. Every caller here walks the snapshot performing writes
+/// and emitting events, and an operator whose write order changes per restart
+/// is one nobody can read a log of.
+fn in_stable_order<K: kube::Resource>(mut objects: Vec<Arc<K>>) -> Vec<Arc<K>> {
+    objects.sort_by(|a, b| {
+        let key = |o: &Arc<K>| {
+            (
+                o.meta().namespace.clone().unwrap_or_default(),
+                o.meta().name.clone().unwrap_or_default(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    objects
+}
+
+impl ControllerStores {
+    /// Every MachineConfig in `namespace`.
+    pub(super) async fn machine_configs_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<MachineConfig>>, OperatorError> {
+        ready_store(&self.machine_configs, "MachineConfig").await?;
+        Ok(in_stable_order(self.machine_configs.state_filter(|mc| {
+            mc.metadata.namespace.as_deref() == Some(namespace)
+        })))
+    }
+
+    /// Every ConfigPolicy in `namespace`.
+    pub(super) async fn config_policies_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<ConfigPolicy>>, OperatorError> {
+        ready_store(&self.config_policies, "ConfigPolicy").await?;
+        Ok(in_stable_order(self.config_policies.state_filter(|cp| {
+            cp.metadata.namespace.as_deref() == Some(namespace)
+        })))
+    }
+
+    /// Every DriftAlert in `namespace`, or across the cluster when `namespace`
+    /// is empty.
+    pub(super) async fn drift_alerts_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<DriftAlert>>, OperatorError> {
+        ready_store(&self.drift_alerts, "DriftAlert").await?;
+        Ok(in_stable_order(if namespace.is_empty() {
+            self.drift_alerts.state()
+        } else {
+            self.drift_alerts
+                .state_filter(|da| da.metadata.namespace.as_deref() == Some(namespace))
+        }))
+    }
+
+    /// Every ClusterConfigPolicy.
+    pub(super) async fn all_cluster_config_policies(
+        &self,
+    ) -> Result<Vec<Arc<ClusterConfigPolicy>>, OperatorError> {
+        ready_store(&self.cluster_config_policies, "ClusterConfigPolicy").await?;
+        Ok(in_stable_order(self.cluster_config_policies.state()))
+    }
+
+    /// Every Module.
+    pub(super) async fn all_modules(&self) -> Result<Vec<Arc<Module>>, OperatorError> {
+        ready_store(&self.modules, "Module").await?;
+        Ok(in_stable_order(self.modules.state()))
+    }
+
+    /// Every Namespace, as metadata only.
+    pub(super) async fn all_namespaces(
+        &self,
+    ) -> Result<Vec<Arc<PartialObjectMeta<Namespace>>>, OperatorError> {
+        ready_store(&self.namespaces, "Namespace").await?;
+        Ok(in_stable_order(self.namespaces.state()))
+    }
 }
 
 /// Get a namespaced API for a resource, or return an error if namespace is empty.
@@ -148,6 +475,59 @@ pub(super) fn namespaced_api<
     }
 }
 
+/// Add `finalizer` to `name`, buying one last reconcile in which to clean up
+/// whatever this controller wrote elsewhere.
+pub(super) async fn add_finalizer<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[String],
+    finalizer: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let mut updated: Vec<&str> = finalizers.iter().map(String::as_str).collect();
+    updated.push(finalizer);
+    patch_finalizers(api, name, &updated, "add finalizer to").await
+}
+
+/// Drop `finalizer`, releasing `name` for deletion.
+pub(super) async fn remove_finalizer<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[String],
+    finalizer: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let remaining: Vec<&str> = finalizers
+        .iter()
+        .map(String::as_str)
+        .filter(|f| *f != finalizer)
+        .collect();
+    patch_finalizers(api, name, &remaining, "remove finalizer from").await
+}
+
+async fn patch_finalizers<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[&str],
+    what: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    api.patch(
+        name,
+        &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+        &Patch::Merge(serde_json::json!({ "metadata": { "finalizers": finalizers } })),
+    )
+    .await
+    .map_err(|e| OperatorError::Reconciliation(format!("failed to {what} {name}: {e}")))?;
+    Ok(())
+}
+
 pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
     let reporter = Reporter {
         controller: "cfgd-operator".into(),
@@ -155,17 +535,61 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     };
     let recorder = Recorder::new(client.clone(), reporter);
 
-    let ctx = Arc::new(ControllerContext {
-        client: client.clone(),
-        recorder,
-        metrics,
-    });
-
     let machines: Api<MachineConfig> = Api::all(client.clone());
     let alerts: Api<DriftAlert> = Api::all(client.clone());
     let policies: Api<ConfigPolicy> = Api::all(client.clone());
     let cluster_policies: Api<ClusterConfigPolicy> = Api::all(client.clone());
     let modules: Api<Module> = Api::all(client.clone());
+
+    // Each controller builder owns the reflector behind its primary watch, so
+    // taking its store here is what lets every OTHER controller read that
+    // resource from a cache instead of listing it per reconcile.
+    let mc_builder = Controller::new(machines, WatcherConfig::default());
+    let da_builder = Controller::new(alerts, WatcherConfig::default());
+    let cp_builder = Controller::new(policies, WatcherConfig::default());
+    let ccp_builder = Controller::new(cluster_policies, WatcherConfig::default());
+    let mod_builder = Controller::new(modules, WatcherConfig::default());
+
+    // Namespaces are read by the ClusterConfigPolicy controller but rooted by
+    // no controller, so this cache carries its own reflector. It is a METADATA
+    // watch: the only reads are `metadata.labels` and `metadata.name`, and a
+    // full-object cache would hold every namespace's spec, status, annotations
+    // and managedFields to answer them.
+    let (ns_store, ns_writer) = reflector::store::<PartialObjectMeta<Namespace>>();
+    let namespace_cache = reflector(
+        ns_writer,
+        watcher::watcher(
+            Api::<PartialObjectMeta<Namespace>>::all(client.clone()),
+            WatcherConfig::default(),
+        ),
+    )
+    .default_backoff()
+    .for_each(|event| {
+        if let Err(error) = event {
+            warn!(kind = "Namespace", error = %error, "watch error");
+        }
+        futures::future::ready(())
+    });
+
+    let stores = ControllerStores {
+        machine_configs: mc_builder.store(),
+        config_policies: cp_builder.store(),
+        cluster_config_policies: ccp_builder.store(),
+        modules: mod_builder.store(),
+        drift_alerts: da_builder.store(),
+        namespaces: ns_store,
+    };
+    let cp_store = stores.config_policies.clone();
+
+    let ctx = Arc::new(ControllerContext {
+        client: client.clone(),
+        recorder,
+        metrics,
+        stores,
+        artifact_facts: ArtifactFactsReader::from_registry(),
+        artifact_verifier: ArtifactVerifier::from_registry(),
+        registry_backoff: RegistryBackoff::default(),
+    });
 
     let mc_ctx = Arc::clone(&ctx);
     let da_ctx = Arc::clone(&ctx);
@@ -177,7 +601,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         "starting controllers: MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module"
     );
 
-    let mc_controller = Controller::new(machines, WatcherConfig::default())
+    let mc_controller = mc_builder
         .owns(
             Api::<DriftAlert>::all(client.clone()),
             WatcherConfig::default(),
@@ -189,7 +613,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
-    let da_controller = Controller::new(alerts, WatcherConfig::default())
+    let da_controller = da_builder
         .run(
             reconcile_drift_alert,
             make_error_policy::<DriftAlert>("drift_alert"),
@@ -197,8 +621,6 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
-    let cp_builder = Controller::new(policies, WatcherConfig::default());
-    let cp_store = cp_builder.store();
     let cp_controller = cp_builder
         .watches(
             Api::<MachineConfig>::all(client.clone()),
@@ -221,7 +643,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<ConfigPolicy>("ConfigPolicy"));
 
-    let ccp_controller = Controller::new(cluster_policies, WatcherConfig::default())
+    let ccp_controller = ccp_builder
         .run(
             reconcile_cluster_config_policy,
             make_error_policy::<ClusterConfigPolicy>("cluster_config_policy"),
@@ -229,7 +651,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<ClusterConfigPolicy>("ClusterConfigPolicy"));
 
-    let mod_controller = Controller::new(modules, WatcherConfig::default())
+    let mod_controller = mod_builder
         .run(
             reconcile_module,
             make_error_policy::<Module>("module"),
@@ -237,12 +659,16 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<Module>("Module"));
 
+    // The namespace cache joins the controllers rather than being spawned: a
+    // reflector only advances while its stream is polled, and a cache nobody
+    // drives never becomes ready.
     tokio::join!(
         mc_controller,
         da_controller,
         cp_controller,
         ccp_controller,
-        mod_controller
+        mod_controller,
+        namespace_cache
     );
 
     Ok(())
@@ -252,15 +678,22 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
 // Condition helpers
 // ---------------------------------------------------------------------------
 
+/// Find an existing condition by type, returning None if not found.
+pub(super) fn find_condition<'a>(
+    conditions: &'a [Condition],
+    condition_type: &str,
+) -> Option<&'a Condition> {
+    conditions
+        .iter()
+        .find(|c| c.condition_type == condition_type)
+}
+
 /// Find an existing condition's status by type, returning None if not found.
 pub(super) fn find_condition_status(
     conditions: &[Condition],
     condition_type: &str,
 ) -> Option<String> {
-    conditions
-        .iter()
-        .find(|c| c.condition_type == condition_type)
-        .map(|c| c.status.clone())
+    find_condition(conditions, condition_type).map(|c| c.status.clone())
 }
 
 /// Find an existing condition's last_transition_time by type.
@@ -268,10 +701,7 @@ pub(super) fn find_condition_transition_time(
     conditions: &[Condition],
     condition_type: &str,
 ) -> Option<String> {
-    conditions
-        .iter()
-        .find(|c| c.condition_type == condition_type)
-        .map(|c| c.last_transition_time.clone())
+    find_condition(conditions, condition_type).map(|c| c.last_transition_time.clone())
 }
 
 /// Build a condition, preserving lastTransitionTime if the status hasn't changed.
@@ -304,6 +734,47 @@ pub(super) fn build_condition(
     }
 }
 
+/// Return `existing` with `condition` replacing the entry of the same type, or
+/// appended when there is none.
+///
+/// A `Patch::Merge` body replaces an array wholesale (RFC 7386), so a status
+/// patch carrying only the condition it computed deletes every sibling
+/// condition on the object. A controller that owns one condition of a shared
+/// status must send the whole list back.
+pub(super) fn upsert_condition(existing: &[Condition], condition: Condition) -> Vec<Condition> {
+    let mut conditions: Vec<Condition> = existing.to_vec();
+    match conditions
+        .iter_mut()
+        .find(|c| c.condition_type == condition.condition_type)
+    {
+        Some(slot) => *slot = condition,
+        None => conditions.push(condition),
+    }
+    conditions
+}
+
+/// Sort a policy's violator list and bound it at [`MAX_NON_COMPLIANT_MACHINES`].
+///
+/// Sorting comes first for two reasons: the cache hands back machines in hash
+/// order, so an unsorted list would compare unequal between reconciles and force
+/// a write; and it makes the truncation deterministic, so the machines that fall
+/// outside a saturated cap are the same ones each time rather than a fresh
+/// arbitrary subset.
+pub(super) fn sort_and_cap_machines(machines: &mut Vec<String>) {
+    machines.sort();
+    machines.truncate(MAX_NON_COMPLIANT_MACHINES);
+}
+
+/// `namespace/name` identity of a MachineConfig, as persisted in a policy's
+/// `status.nonCompliantMachines`.
+pub(super) fn machine_key(machine: &MachineConfig) -> String {
+    format!(
+        "{}/{}",
+        machine.metadata.namespace.as_deref().unwrap_or_default(),
+        machine.name_any()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // DriftAlert condition builder
 // ---------------------------------------------------------------------------
@@ -322,16 +793,16 @@ pub(super) fn build_drift_alert_conditions(
         (
             "True",
             "DriftResolved",
-            "Drift has been resolved".to_string(),
+            "The device no longer reports these drifted system settings".to_string(),
         )
     } else {
         (
             "False",
             "DriftActive",
             format!(
-                "Drift active on device {} — {}",
+                "Device {} reports {}",
                 device_id,
-                cfgd_core::pluralize(details_count, "detail")
+                cfgd_core::pluralize(details_count, "drifted system setting")
             ),
         )
     };
@@ -341,7 +812,7 @@ pub(super) fn build_drift_alert_conditions(
             condition_type: "Acknowledged".to_string(),
             status: "False".to_string(),
             reason: "NotAcknowledged".to_string(),
-            message: "Drift alert has not been acknowledged".to_string(),
+            message: "This DriftAlert has not been acknowledged".to_string(),
             last_transition_time: now.to_string(),
             observed_generation,
         },

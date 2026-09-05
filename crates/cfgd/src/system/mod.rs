@@ -44,8 +44,13 @@ use cfgd_core::providers::SystemDrift;
 // ---------------------------------------------------------------------------
 
 /// Run a command and return its trimmed stdout, or empty string on failure.
+///
+/// Bounded, because every caller is a READ on a `diff()` path: a desktop
+/// settings daemon that stops answering (a dead `xfconfd`, a `defaults` waiting
+/// on a `cfprefsd` that never replies) would otherwise hold `cfgd status`
+/// forever with nothing on screen.
 pub(super) fn read_command_output(cmd: &mut Command) -> String {
-    cmd.output()
+    cfgd_core::command_output_with_timeout(cmd, cfgd_core::COMMAND_TIMEOUT)
         .ok()
         .filter(|o| o.status.success())
         .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
@@ -57,7 +62,18 @@ pub(super) fn read_command_output(cmd: &mut Command) -> String {
 /// Iterates every key in `desired` (which must be a YAML mapping), converts each
 /// value to its string representation via `value_to_string_fn`, looks up
 /// the actual value via `get_actual(key_str)`, and pushes a `SystemDrift` when
-/// they differ.  The `key_prefix` is prepended (with a dot separator) to each
+/// they differ.
+///
+/// **`get_actual` is a LOOKUP, not a read.** Every keyed configurator takes a
+/// bulk snapshot of its natural unit — a gsettings schema, a defaults domain, an
+/// xfconf channel, a registry key, the git config location, the unit-file list —
+/// ONCE per `diff()` call and closes over the resulting map here. A closure that
+/// spawns per key turns a 40-key block into 40 subprocesses on every `status`,
+/// `diff`, `plan` and daemon tick. Where a tool's bulk format cannot reproduce
+/// the per-key read byte-for-byte (a container-valued `defaults` entry, a KDE
+/// value carrying an escape, an xfconf array), the configurator falls back to
+/// the per-key read for THAT key alone — drift output is behavior, so parity
+/// wins over the last spawn.  The `key_prefix` is prepended (with a dot separator) to each
 /// drift key when non-empty — it names an INNER grouping the desired mapping is
 /// nested under (a defaults domain, a registry key path, a kde file+group), and
 /// must never be the configurator's own name: the reconciler already composes

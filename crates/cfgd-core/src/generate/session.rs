@@ -49,7 +49,7 @@ impl GenerateSession {
             }
             .into());
         }
-        let dir = self.repo_root.join("modules").join(name);
+        let dir = crate::declared_modules_dir(&self.repo_root).join(name);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("module.yaml");
         let content = crate::config::with_schema_modeline(
@@ -114,7 +114,7 @@ impl GenerateSession {
     }
 
     pub fn get_existing_modules(&self) -> Result<Vec<String>, CfgdError> {
-        let modules_dir = self.repo_root.join("modules");
+        let modules_dir = crate::declared_modules_dir(&self.repo_root);
         if !modules_dir.exists() {
             return Ok(vec![]);
         }

@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, config_dir, open_state_store};
+use super::{Cli, MSG_RUN_APPLY, config_dir, open_state_store};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -31,7 +31,7 @@ pub struct GenerateArgs {
     pub provider: Option<String>,
 
     /// Skip confirmation prompts
-    #[arg(long, short, global = true, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 
     /// Only scan dotfiles and shell config; print findings without AI generation
@@ -196,12 +196,16 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             break;
         }
         turn += 1;
-        let response = client.send_message(
-            conversation.messages(),
-            conversation.system_prompt(),
-            &tool_defs,
-            8192,
-        )?;
+        // The API round-trip is the loop's only wait, and it prints nothing
+        // until the model's first text block arrives.
+        let response = printer.narrate(format!("Thinking (turn {turn})"), |_| {
+            client.send_message(
+                conversation.messages(),
+                conversation.system_prompt(),
+                &tool_defs,
+                8192,
+            )
+        })?;
 
         tracing::debug!(
             id = %response.id,
@@ -263,16 +267,17 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         .map(|g| {
             serde_json::json!({
                 "name": g.name,
-                "path": g.path.display().to_string(),
+                "path": cfgd_core::to_posix_string(&g.path),
             })
         })
         .collect();
     let mut committed = false;
     if !generated.is_empty() {
         {
-            let sec = printer.section("Generated files");
+            let sec = printer.section("Generated Files");
             for item in &generated {
-                sec.status(Role::Ok, format!("{}: {}", item.name, item.path.posix()));
+                sec.status(Role::Ok, item.name.clone())
+                    .qualifier(cfgd_core::fold_home_in_text(&item.path.posix().to_string()));
             }
         }
 
@@ -298,7 +303,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 printer.status_simple(
                     Role::Warn,
                     format!(
-                        "git add failed: {}",
+                        "`git add` failed: {}",
                         cfgd_core::stderr_lossy_trimmed(&add_out)
                     ),
                 );
@@ -313,12 +318,12 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     .output()?;
                 if commit_out.status.success() {
                     committed = true;
-                    printer.status_simple(Role::Ok, "Changes committed.");
+                    printer.status_simple(Role::Ok, "Committed changes");
                 } else {
                     printer.status_simple(
                         Role::Warn,
                         format!(
-                            "git commit failed: {}",
+                            "`git commit` failed: {}",
                             cfgd_core::stderr_lossy_trimmed(&commit_out)
                         ),
                     );
@@ -342,7 +347,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 "Tokens",
                 format!("{} in, {} out", input_tokens, output_tokens),
             )
-            .hint("Run 'cfgd apply --dry-run' to preview what would be applied.")
+            .hint(MSG_RUN_APPLY)
             .with_data(serde_json::json!({
                 "target": target_label(&args.target),
                 "provider": provider,
@@ -375,7 +380,8 @@ fn handle_present_yaml(
 ) -> anyhow::Result<ContentBlock> {
     let req: PresentYamlRequest = serde_json::from_value(input.clone())?;
 
-    printer.heading(format!("Generated {} — {}", req.kind, req.description));
+    printer.heading(format!("Generated {}", req.kind));
+    printer.kv("Description", &req.description);
     printer.syntax_highlight(&req.content, "yaml");
 
     let response = if auto_accept {
@@ -426,7 +432,9 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         })
         .unwrap_or_else(|| "zsh".to_string());
 
-    let dotfiles = generate::scan::scan_dotfiles(&home_path)?;
+    let dotfiles = printer.narrate("Scanning dotfiles", |_| {
+        generate::scan::scan_dotfiles(&home_path)
+    })?;
     let tool_set: std::collections::HashSet<String> = dotfiles
         .iter()
         .filter_map(|e| e.tool_guess.clone())
@@ -435,20 +443,22 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
     sorted_tools.sort();
 
     {
-        let sec = printer.section("Scanning dotfiles");
+        let sec = printer.section("Scanning Dotfiles");
         if dotfiles.is_empty() {
             sec.status(Role::Info, "No dotfiles found");
         } else {
             sec.kv("Entries", dotfiles.len().to_string());
             if !sorted_tools.is_empty() {
-                sec.kv("Detected tools", sorted_tools.join(", "));
+                sec.kv("Detected Tools", sorted_tools.join(", "));
             }
         }
     }
 
-    let shell_result = generate::scan::scan_shell_config(&detected_shell, &home_path)?;
+    let shell_result = printer.narrate(format!("Scanning {detected_shell} config"), |_| {
+        generate::scan::scan_shell_config(&detected_shell, &home_path)
+    })?;
     {
-        let sec = printer.section(format!("Scanning {} config", detected_shell));
+        let sec = printer.section(format!("Scanning {detected_shell} Config"));
         if !shell_result.aliases.is_empty() {
             sec.kv("Aliases", shell_result.aliases.len().to_string());
         }
@@ -457,12 +467,12 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         }
         if !shell_result.path_additions.is_empty() {
             sec.kv(
-                "PATH additions",
+                "PATH Additions",
                 shell_result.path_additions.len().to_string(),
             );
         }
         if let Some(pm) = &shell_result.plugin_manager {
-            sec.kv("Plugin manager", pm);
+            sec.kv("Plugin Manager", pm);
         }
     }
 
@@ -470,7 +480,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         Doc::new()
             .status(
                 Role::Ok,
-                "Scan complete — use without --scan-only to generate config",
+                "Scanned this host — use without --scan-only to generate config",
             )
             .with_data(serde_json::json!({
                 "target": "scan_only",

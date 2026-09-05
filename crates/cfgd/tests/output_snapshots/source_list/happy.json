@@ -1,9 +1,13 @@
 [
   {
+    "driftCount": null,
+    "lastCommit": "4b8857cd0f1e2a3b4c5d6e7f8091a2b3c4d5e6f7",
     "lastFetched": "2026-05-14T10:00:00Z",
     "name": "team-config",
     "priority": 100,
-    "status": "synced",
+    "requireSignedCommits": true,
+    "signed": true,
+    "status": "active",
     "url": "https://github.com/team/config",
     "version": "1.0.0"
   }

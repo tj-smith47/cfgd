@@ -1,21 +1,27 @@
 Status
   Config   /etc/cfgd/cfgd.yaml
   Profile  default
+  Modules  base, dev-tools
 
 Last Apply
-  Time     2026-05-14T10:00:00Z
-  Profile  default
-  Result   success
+  Result   Success
   Summary  12 actions applied
+  Profile  default
+  Age      5m
 
-Drift
-  ✓ No drift recorded — `cfgd diff` checks the live machine
-
-Modules
-  ✓ module:base      — 5 pkgs, 3 files, installed
-  ✓ module:dev-tools — 18 pkgs, 12 files, installed
+Component Health (checked 5m ago)
+  ✓ profile:default  — Synced (2 packages, 1 file)
+  ✓ cfgd:env         — Synced (1 env file)
+  ✓ module:base      — Synced (5 packages, 3 files)
+  ✓ module:dev-tools — Synced (18 packages, 12 files, 3 scripts)
 
 Managed Resources
-  Type  Resource   Source
-  ───────────────────────
-  file  ~/.bashrc  local 
+  Type     Owner             Resource                                    Source
+  ─────────────────────────────────────────────────────────────────────────────
+  file     profile:default   ~/.bashrc                                   local 
+  package  profile:default   brew: bat, ripgrep                          local 
+  env      cfgd:env          /home/user/.cfgd.env                        local 
+  file     module:dev-tools  /home/user/.config/nvim (12 files)          local 
+  package  module:dev-tools  apt: cargo, gcc, git                        local 
+  package  module:dev-tools  brew: age, fd, neovim                       local 
+  script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local 

@@ -1,6 +1,6 @@
+use super::source::list::last_sync_display;
 use super::*;
-use cfgd_core::output::renderer::Table;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, KvPair, Printer, Role};
 use serde::Serialize;
 
 /// JSON payload for `cfgd daemon install`.
@@ -101,11 +101,45 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 ));
             }
         };
-    printer.emit(build_daemon_status_doc(status.as_ref()));
+    // The daemon reports which sources it is tracking and how each is doing;
+    // the config and the state store hold everything else the shared `Sources`
+    // table shows. A machine with no readable config still renders the table —
+    // the daemon's own rows, with the config-side columns reading `-`.
+    let (catalog, declared_sources) = configured_source_catalog(cli);
+    printer.emit(build_daemon_status_doc(
+        status.as_ref(),
+        &declared_sources,
+        &catalog,
+        &cfgd_core::utc_now_iso8601(),
+        printer.arrow(),
+    ));
     Ok(())
 }
 
-fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
+/// The `spec.sources[]` this machine declares, twice over: the table rows
+/// carrying the columns the daemon does not report, and the subscriptions the
+/// header names. Both empty when the config or the state store cannot be read:
+/// the daemon's status is still worth printing without them.
+fn configured_source_catalog(
+    cli: &Cli,
+) -> (
+    Vec<SourceListEntry>,
+    Vec<cfgd_core::reconciler::ComposedSource>,
+) {
+    let Ok(cfg) = config::load_config(&cli.config) else {
+        return (Vec::new(), Vec::new());
+    };
+    let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
+    let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) else {
+        return (Vec::new(), declared);
+    };
+    (
+        super::source::list::configured_source_entries(&cfg, &state),
+        declared,
+    )
+}
+
+pub(super) fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
     cfgd_core::daemon::DaemonStatusResponse {
         running: false,
         pid: 0,
@@ -116,65 +150,154 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        modules: vec![],
+        profile_inherits: vec![],
     }
 }
 
 /// Build the Doc emitted for `cfgd daemon status`. Pulled out so integration
 /// tests can construct the Doc deterministically without standing up IPC.
-pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusResponse>) -> Doc {
+///
+/// `now` is a parameter rather than a clock read, so every stamp this render
+/// ages against is the caller's one instant and a captured render pins.
+///
+/// `catalog` supplies the `Sources` columns the daemon does not report (the
+/// origin, the priority, the checked-out commit, the signature demand), matched
+/// to the daemon's own rows by name. A running daemon tracks exactly the
+/// `spec.sources[]` it started with, so a row with no match is one the config
+/// lost since then: it keeps the daemon's live facts and reads `-` for the rest
+/// rather than disappearing from a dashboard that is reporting on it.
+pub fn build_daemon_status_doc(
+    status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
+    declared_sources: &[cfgd_core::reconciler::ComposedSource],
+    catalog: &[SourceListEntry],
+    now: &str,
+    arrow: &str,
+) -> Doc {
     let mut doc = Doc::new().heading("Daemon Status");
 
     match status {
         Some(s) => {
-            doc = doc.status(Role::Ok, "Daemon is running");
-            doc = doc.kv_block([
-                ("PID", s.pid.to_string()),
-                ("Uptime", format!("{}s", s.uptime_secs)),
-                ("Drift count", s.drift_count.to_string()),
-            ]);
+            // The config, the sources, the profile and what that profile
+            // resolves to — through the one builder `cfgd status` and every run
+            // header read, ahead of the facts about the process. The modules
+            // are the loop's own resolution, carried on the wire; the sources
+            // are what this machine's config subscribes to, this reader holding
+            // no composition of its own.
+            let mut rows =
+                cfgd_core::output::config_header_rows(&cfgd_core::output::ConfigHeader {
+                    config_path: s.config_path.as_deref().map(std::path::Path::new),
+                    sources: declared_sources,
+                    profile: s.profile.as_deref(),
+                    profile_inherits: &s.profile_inherits,
+                    modules: &s.modules,
+                    arrow,
+                });
+            rows.push(KvPair::new("PID", s.pid.to_string()));
+            // A measured duration, not a declared one: the intervals below
+            // are the operator's own literals and stay verbatim.
+            rows.push(KvPair::new(
+                "Uptime",
+                cfgd_core::humanize_duration_secs(s.uptime_secs),
+            ));
+            // Omitted rather than guessed when the daemon did not report them:
+            // the loop's cadence is whatever it reloaded last, and this command
+            // holds no config of its own to answer from.
+            if let Some(secs) = s.reconcile_interval_secs {
+                rows.push(KvPair::new("Reconcile Interval", format!("{secs}s")));
+            }
+            if let Some(secs) = s.sync_interval_secs {
+                rows.push(KvPair::new("Sync Interval", format!("{secs}s")));
+            }
+            rows.push(KvPair::new("Drift Count", s.drift_count.to_string()));
+            // The stored instant stays in the `-o json` payload below; a
+            // person reading the dashboard is asking how stale the loop is.
+            //
+            // No `Last Sync` counterpart: the daemon syncs per source and the
+            // Sources table below carries a `Last Sync` column, so a single
+            // top-level row is the most recent of them wearing a name that
+            // reads as all of them.
             if let Some(ref last) = s.last_reconcile {
-                doc = doc.kv("Last reconcile", last);
+                rows.push(KvPair::new(
+                    "Last Reconcile",
+                    last_sync_display(Some(last), now),
+                ));
             }
-            if let Some(ref last) = s.last_sync {
-                doc = doc.kv("Last sync", last);
-            }
+            doc = doc.kv_rows(rows);
 
+            // After the facts, the way every other surface reporting on a
+            // resolved configuration orders them: the header block binds to
+            // the heading above it, and a verdict about the run reads at the
+            // report's own depth below. The update notice stays beside the
+            // running verdict — two verdicts about the daemon read as one
+            // report when nothing sits between them.
+            // verdict-row-ok: reports the service's state, not something this run did
+            doc = doc.status(Role::Ok, "Daemon running");
             if let Some(ref version) = s.update_available {
                 doc = doc.status(
                     Role::Warn,
                     format!(
-                        "Update available: {} — run 'cfgd upgrade' to install",
+                        "Update available: {} — run `cfgd upgrade` to install",
                         version
                     ),
                 );
             }
 
-            let rows: Vec<Vec<String>> = s
+            let rows: Vec<SourceListEntry> = s
                 .sources
                 .iter()
-                .map(|src| {
-                    vec![
-                        src.name.clone(),
-                        src.status.clone(),
-                        src.drift_count.to_string(),
-                        src.last_sync.clone().unwrap_or_else(|| "-".to_string()),
-                    ]
-                })
+                .map(|src| daemon_source_row(src, catalog))
                 .collect();
-            let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
-            for row in rows {
-                table = table.row(row);
-            }
-            doc = doc.section("Sources", |sec| sec.table(table));
+            doc = doc.section_if_nonempty(
+                super::source::list::SOURCES_SECTION,
+                &rows,
+                |sec, rows| sec.table(super::source::list::sources_table(rows, false, now)),
+            );
             doc.with_data(s)
         }
         None => {
             let placeholder = placeholder_status();
-            doc.status(Role::Warn, "Daemon is not running")
-                .status(Role::Info, "Start with: cfgd daemon")
-                .status(Role::Info, "Install as service: cfgd daemon install")
+            doc.status(Role::Warn, "Daemon not running")
+                .status(Role::Info, "Start with: `cfgd daemon`")
+                .status(Role::Info, "Install as service: `cfgd daemon install`")
                 .with_data(&placeholder)
         }
+    }
+}
+
+/// One daemon-reported source as a `Sources` row: the daemon's live facts
+/// (status, drift, last sync) over the declared entry of the same name.
+fn daemon_source_row(
+    src: &cfgd_core::daemon::SourceStatus,
+    catalog: &[SourceListEntry],
+) -> SourceListEntry {
+    let declared = catalog.iter().find(|e| e.name == src.name);
+    // Every catalog-sourced slot stays absent for a row the catalog does not
+    // hold (the implicit `local` layer, a source the config dropped): a
+    // substituted default reads as a declared fact.
+    SourceListEntry {
+        name: src.name.clone(),
+        url: declared.and_then(|e| e.url.clone()),
+        priority: declared.and_then(|e| e.priority),
+        version: declared.and_then(|e| e.version.clone()),
+        status: src.status.clone(),
+        last_fetched: src.last_sync.clone(),
+        signed: declared.and_then(|e| e.signed),
+        require_signed_commits: declared.and_then(|e| e.require_signed_commits),
+        // The daemon holds the commit its own pull landed on; the catalog's
+        // is what the last `cfgd sync` recorded, and may be older.
+        last_commit: src
+            .last_commit
+            .clone()
+            .or_else(|| declared.and_then(|e| e.last_commit.clone())),
+        // Straight through: the daemon cannot attribute drift to one source
+        // (see `SourceStatus::drift_count`), so the `Drift` column is dropped
+        // rather than filled with the machine-wide total.
+        drift_count: src.drift_count,
     }
 }
 
@@ -194,8 +317,8 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(Role::Fail, "system-scope install requires root privileges");
-        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon install");
+        printer.status_simple(Role::Fail, "System-scope install requires root privileges");
+        printer.hint("Re-run with `sudo cfgd --scope system daemon install`");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope install"
         ));
@@ -274,34 +397,39 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         }
     };
 
-    printer.emit(build_daemon_install_doc(&payload));
+    printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
     Ok(())
 }
 
 /// Build the Doc emitted for `cfgd daemon install`. Carries the heading,
 /// platform-specific success messages, and `with_data(payload)` so structured
 /// consumers see a stable shape.
-pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
+pub fn build_daemon_install_doc(payload: &DaemonInstallOutput, arrow: &str) -> Doc {
     let mut doc = Doc::new().heading("Install Daemon Service");
     match payload.platform.as_str() {
         "windows" => {
             if payload.started {
-                doc = doc.status(Role::Ok, "cfgd service installed and started");
+                doc = doc.status(Role::Ok, "Installed and started the cfgd service");
             } else {
                 doc = doc
-                    .status(Role::Warn, "cfgd service installed but not yet running")
+                    .status(
+                        Role::Warn,
+                        "Installed the cfgd service but it is not yet running",
+                    )
                     .status(
                         Role::Info,
-                        "Start it with: sc start cfgd  (it is also set to auto-start on boot)",
+                        "Start it with `sc start cfgd` — it is also set to auto-start on boot",
                     );
             }
             doc = doc
                 .status(Role::Info, "The service will start automatically on boot")
-                .status(Role::Info, format!("Logs: {}", payload.path));
+                .status_with(Role::Info, "Logs", |f| f.qualifier(payload.path.clone()));
             if payload.windows_event_log.unwrap_or(false) {
                 doc = doc.status(
                     Role::Info,
-                    "Event Log mirror: Application → Source 'cfgd' (also at the file path above)",
+                    format!(
+                        "Event Log mirror: Application {arrow} Source 'cfgd' (also at the file path above)"
+                    ),
                 );
             } else {
                 doc = doc.status(
@@ -311,27 +439,25 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             }
         }
         "macos" => {
-            doc = doc.status(
-                Role::Ok,
-                format!("Installed launchd service: {}", payload.service),
-            );
+            doc = doc.status_with(Role::Ok, "Installed launchd service", |f| {
+                f.qualifier(payload.service.clone())
+            });
             if !payload.started {
                 doc = doc.status(
                     Role::Info,
-                    format!("Load with: launchctl load {}", payload.path),
+                    format!("Load with `launchctl load {}`", payload.path),
                 );
             }
         }
         _ => {
-            doc = doc.status(
-                Role::Ok,
-                format!("Installed systemd user service: {}", payload.service),
-            );
+            doc = doc.status_with(Role::Ok, "Installed systemd user service", |f| {
+                f.qualifier(payload.service.clone())
+            });
             if !payload.started {
                 doc = doc.status(
                     Role::Info,
                     format!(
-                        "Enable with: systemctl --user enable --now {}",
+                        "Enable with `systemctl --user enable --now {}`",
                         payload.service
                     ),
                 );
@@ -355,9 +481,9 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
         printer.status_simple(
             Role::Fail,
-            "system-scope uninstall requires root privileges",
+            "System-scope uninstall requires root privileges",
         );
-        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon uninstall");
+        printer.hint("Re-run with `sudo cfgd --scope system daemon uninstall`");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope uninstall"
         ));
@@ -416,7 +542,7 @@ pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput, scope: cfgd_c
         }
     };
     doc = doc.status(Role::Info, detail);
-    doc = doc.status(Role::Ok, "Daemon service removed");
+    doc = doc.status(Role::Ok, "Removed daemon service");
     doc.with_data(payload)
 }
 
@@ -429,6 +555,11 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The instant every daemon-status render in this suite ages its stamps
+    /// against, so a captured age is a fact about the fixture rather than about
+    /// the day the suite ran.
+    const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
     use super::*;
     use cfgd_core::test_helpers::test_printer as make_printer;
 
@@ -438,12 +569,12 @@ mod tests {
             pid: if running { 12345 } else { 0 },
             uptime_secs: if running { 300 } else { 0 },
             last_reconcile: if running {
-                Some("2026-05-22T10:00:00Z".to_string())
+                Some("2026-05-14T10:00:00Z".to_string())
             } else {
                 None
             },
             last_sync: if running {
-                Some("2026-05-22T10:01:00Z".to_string())
+                Some("2026-05-14T10:01:00Z".to_string())
             } else {
                 None
             },
@@ -451,6 +582,12 @@ mod tests {
             sources: vec![],
             update_available: None,
             module_reconcile: vec![],
+            reconcile_interval_secs: None,
+            sync_interval_secs: None,
+            config_path: None,
+            profile: None,
+            modules: vec![],
+            profile_inherits: vec![],
         }
     }
 
@@ -466,7 +603,10 @@ mod tests {
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -494,10 +634,12 @@ mod tests {
         let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
             state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
             runtime_dir: Some(std::path::PathBuf::from("C:/cfgd-run")),
+            ..Default::default()
         };
         let state_only = cfgd_core::daemon::DaemonDirOverrides {
             state_dir: Some(std::path::PathBuf::from("C:/cfgd-state")),
             runtime_dir: None,
+            ..Default::default()
         };
         let cases = [
             (None, false, cfgd_core::Scope::User, &no_dirs),
@@ -571,7 +713,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_contains_not_running() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -583,7 +725,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_json_payload() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None);
+        let doc = build_daemon_status_doc(None, &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], false);
@@ -594,7 +736,7 @@ mod tests {
     fn build_daemon_status_doc_some_contains_pid() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -607,7 +749,7 @@ mod tests {
     fn build_daemon_status_doc_some_json_payload() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], true);
@@ -616,11 +758,53 @@ mod tests {
     }
 
     #[test]
+    fn build_daemon_status_doc_renders_the_reported_intervals() {
+        let mut status = make_status(true);
+        status.reconcile_interval_secs = Some(300);
+        status.sync_interval_secs = Some(900);
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            &[],
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
+        let human = cap.human();
+        assert!(
+            human.contains("Reconcile Interval") && human.contains("300s"),
+            "expected the reconcile interval row, got: {human}"
+        );
+        assert!(
+            human.contains("Sync Interval") && human.contains("900s"),
+            "expected the sync interval row, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_omits_intervals_the_daemon_did_not_report() {
+        let status = make_status(true);
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            &[],
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
+        let human = cap.human();
+        assert!(
+            !human.contains("Reconcile Interval") && !human.contains("Sync Interval"),
+            "an unreported cadence must not be rendered at all, got: {human}"
+        );
+    }
+
+    #[test]
     fn build_daemon_status_doc_update_available_renders() {
         let mut status = make_status(true);
         status.update_available = Some("v1.2.3".to_string());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -639,7 +823,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "linux");
@@ -663,7 +847,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "macos");
@@ -685,7 +869,7 @@ mod tests {
             windows_event_log: Some(true),
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "windows");
@@ -708,7 +892,7 @@ mod tests {
             windows_event_log: Some(false),
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["windowsEventLog"], false);
@@ -791,14 +975,15 @@ mod tests {
             windows_event_log: Some(true),
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_install_doc(&payload));
+        printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
         let human = cap.human();
         assert!(
-            human.contains("installed but not yet running") && human.contains("sc start cfgd"),
+            human.contains("Installed the cfgd service but it is not yet running")
+                && human.contains("sc start cfgd"),
             "not-started install must report the real state + start hint, got: {human}"
         );
         assert!(
-            !human.contains("installed and started"),
+            !human.contains("Installed and started"),
             "must NOT over-claim 'started' when the service is not running, got: {human}"
         );
         let json = cap.json().expect("doc must carry JSON payload");
@@ -815,10 +1000,10 @@ mod tests {
             windows_event_log: Some(false),
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_install_doc(&payload));
+        printer.emit(build_daemon_install_doc(&payload, printer.arrow()));
         let human = cap.human();
         assert!(
-            human.contains("installed and started"),
+            human.contains("Installed and started the cfgd service"),
             "a running service must report 'started', got: {human}"
         );
         assert_eq!(cap.json().expect("payload")["started"], true);
@@ -954,58 +1139,223 @@ mod tests {
     fn build_daemon_status_doc_with_sources_emits_table_rows() {
         let mut status = make_status(true);
         status.sources = vec![
+            // Stored tokens, from the constants: `synced` and `stale` are
+            // spellings nothing writes into this field, so a row seeded with
+            // either proves only what an unrecognised token renders as.
             cfgd_core::daemon::SourceStatus {
                 name: "infra".into(),
-                status: "synced".into(),
-                drift_count: 0,
-                last_sync: Some("2026-05-22T10:00:00Z".into()),
-                last_reconcile: None,
+                status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+                drift_count: None,
+                last_sync: Some("2026-05-14T10:00:00Z".into()),
+                last_commit: None,
             },
             cfgd_core::daemon::SourceStatus {
                 name: "apps".into(),
-                status: "stale".into(),
-                drift_count: 3,
+                status: cfgd_core::state::SOURCE_STATUS_ERROR.into(),
+                drift_count: None,
                 last_sync: None,
-                last_reconcile: None,
+                last_commit: None,
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
         assert!(human.contains("apps"), "apps source must appear: {human}");
+        // The words, not the stored tokens: the cell renders through
+        // `source_status_display` like every other source-status cell.
         assert!(
-            human.contains("synced") || human.contains("stale"),
-            "source status must appear: {human}"
+            human.contains("Active") && human.contains("Failed"),
+            "each source's status must render as its display word: {human}"
+        );
+    }
+
+    /// The daemon reports the implicit `local` layer, which no `spec.sources[]`
+    /// entry declares. Its row read `Priority 0` / `Requires Signed no` —
+    /// two facts nobody stated — because the row type could not say absent.
+    /// Alone, the columns nothing can fill are dropped; beside a declared
+    /// source they read `-`; and the row on the wire carries `null`.
+    #[test]
+    fn the_implicit_local_source_declares_no_priority_origin_or_signing_demand() {
+        let mut status = make_status(true);
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: None,
+            last_sync: None,
+            last_commit: None,
+        }];
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            &[],
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
+        let human = cap.human();
+        let header = human
+            .lines()
+            .find(|l| l.trim_start().starts_with("Name"))
+            .unwrap_or_else(|| panic!("a Sources header: {human}"));
+        for column in ["Source", "Priority", "Requires Signed"] {
+            assert!(
+                !header.contains(column),
+                "`{column}` has nothing to say about a row nothing declared and is dropped: {human}"
+            );
+        }
+
+        let declared = SourceListEntry {
+            name: "team".into(),
+            url: Some("https://github.com/team/config".into()),
+            priority: Some(100),
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: Some(true),
+            last_commit: None,
+            drift_count: None,
+        };
+        status.sources.push(cfgd_core::daemon::SourceStatus {
+            name: "team".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: None,
+            last_sync: None,
+            last_commit: None,
+        });
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            std::slice::from_ref(&declared),
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
+        let human = cap.human();
+        let local_row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with("local"))
+            .unwrap_or_else(|| panic!("a local row: {human}"));
+        let cells: Vec<&str> = local_row.split_whitespace().collect();
+        // Name, Source, Priority, Status, Last Sync, Requires Signed —
+        // `Drift` is gone: no row can fill it (see `SourceStatus::drift_count`).
+        assert_eq!(
+            cells,
+            vec!["local", "-", "-", "Active", "never", "-"],
+            "every undeclared slot reads absent, never a default: {human}"
+        );
+
+        let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&declared));
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["url"], serde_json::Value::Null);
+        assert_eq!(json["priority"], serde_json::Value::Null);
+        assert_eq!(json["requiresSignedCommits"], serde_json::Value::Null);
+    }
+
+    /// The daemon names the commit its own pull landed on, so the `Commit`
+    /// column is filled from the live row (shortened) while the payload keeps
+    /// the full id; the catalog's recorded commit is only the fallback.
+    #[test]
+    fn the_commit_column_reads_the_daemons_own_pull_in_full_on_the_wire() {
+        const LANDED: &str = "719956f7587f0a1b2c3d4e5f60718293a4b5c6d7";
+        let mut status = make_status(true);
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            drift_count: None,
+            last_sync: Some("2026-05-14T11:00:00Z".into()),
+            last_commit: Some(LANDED.into()),
+        }];
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            &[],
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
+        let human = cap.human();
+        assert!(human.contains("Commit"), "the column is filled: {human}");
+        assert!(
+            human.contains(cfgd_core::short_commit(LANDED)) && !human.contains(LANDED),
+            "the cell is the short form: {human}"
+        );
+        let json = cap.json().expect("doc captured json");
+        assert_eq!(json["sources"][0]["lastCommit"], LANDED);
+
+        let stale = SourceListEntry {
+            name: cfgd_core::config::LOCAL_LAYER.into(),
+            url: None,
+            priority: None,
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: None,
+            last_commit: Some("0000000000000000000000000000000000000000".into()),
+            drift_count: None,
+        };
+        let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&stale));
+        assert_eq!(
+            row.last_commit.as_deref(),
+            Some(LANDED),
+            "live beats recorded"
         );
     }
 
     #[test]
     fn build_daemon_status_doc_emits_last_reconcile_when_present() {
         let mut status = make_status(true);
-        status.last_reconcile = Some("2026-05-22T10:00:00Z".into());
+        status.last_reconcile = Some("2026-05-14T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), &[], &[], DAEMON_STATUS_NOW, "->");
         printer.emit(doc);
         let human = cap.human();
+        let age = cfgd_core::humanize_age_since("2026-05-14T10:00:00Z", DAEMON_STATUS_NOW)
+            .expect("the fixture stamp precedes the pinned now");
         assert!(
-            human.contains("2026-05-22T10:00:00Z"),
-            "last reconcile timestamp must appear: {human}"
+            human.contains(&format!("Last Reconcile  {age}")),
+            "the last-reconcile row must carry the humanized age {age}: {human}"
         );
     }
 
     #[test]
-    fn build_daemon_status_doc_emits_last_sync_when_present() {
+    fn the_sync_age_is_reported_per_source_and_not_a_second_time_at_the_top() {
         let mut status = make_status(true);
-        status.last_sync = Some("2026-05-22T11:00:00Z".into());
+        status.last_sync = Some("2026-05-14T11:00:00Z".into());
+        status.sources = vec![cfgd_core::daemon::SourceStatus {
+            name: "local".into(),
+            last_sync: Some("2026-05-14T11:00:00Z".into()),
+            drift_count: None,
+            status: "Active".into(),
+            last_commit: None,
+        }];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
-        printer.emit(doc);
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            &[],
+            DAEMON_STATUS_NOW,
+            printer.arrow(),
+        ));
         let human = cap.human();
+        assert_eq!(
+            human.matches("Last Sync").count(),
+            1,
+            "the Sources table's column is the only sync label: a top-level \
+             row would say the same thing twice: {human}"
+        );
+        let age = cfgd_core::humanize_age_since("2026-05-14T11:00:00Z", DAEMON_STATUS_NOW)
+            .expect("the fixture stamp is parseable");
         assert!(
-            human.contains("2026-05-22T11:00:00Z"),
-            "last sync timestamp must appear: {human}"
+            human.contains(&age),
+            "the Sources table must carry the humanized age {age}: {human}"
+        );
+        assert!(
+            !human.contains("2026-05-14T11:00:00Z"),
+            "no surface renders the raw stamp once its age is computable: {human}"
         );
     }
 
@@ -1028,7 +1378,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1047,7 +1397,7 @@ mod tests {
             windows_event_log: None,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_install_doc(&payload);
+        let doc = build_daemon_install_doc(&payload, printer.arrow());
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1091,7 +1441,7 @@ mod tests {
         printer.emit(doc);
         let human = cap.human();
         assert!(
-            human.contains("Daemon service removed"),
+            human.contains("Removed daemon service"),
             "uninstall must emit the Ok-status confirmation line: {human}"
         );
     }

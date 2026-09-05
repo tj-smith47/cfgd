@@ -1,13 +1,26 @@
 use serde::{Deserialize, Serialize};
 
+/// One entry of `spec.origin[]`: a remote this machine's config can sync with.
+///
+/// ```yaml
+/// origin:
+///   - type: Git
+///     url: git@github.com:me/dotfiles.git
+///     branch: main
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OriginSpec {
+    /// Kind of origin: `Git` (a git remote) or `Server` (the device gateway).
     #[serde(rename = "type")]
     pub origin_type: OriginType,
+    /// The origin's URL (a git remote, or the gateway's base URL).
     pub url: String,
+    /// Branch to sync against. Default: `master`.
     #[serde(default = "default_branch")]
     pub branch: String,
+    /// Auth method override for this origin (e.g. a credential-helper name).
+    /// Omitted uses the ambient git/SSH credential configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
     /// SSH `StrictHostKeyChecking` policy for git operations.
@@ -54,6 +67,8 @@ mod ssh_host_key_policy_tests {
     }
 }
 
+/// Kind of an origin: `Git` (a plain git remote) or `Server` (the device
+/// gateway's enrollment/checkin API).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum OriginType {
     Git,

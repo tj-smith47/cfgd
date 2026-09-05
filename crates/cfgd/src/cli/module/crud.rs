@@ -1,6 +1,29 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line, condense_script_label};
+use cfgd_core::output::{
+    Doc, OwnerLabel, Printer, Role, TitleLabel, collapse_to_subject_line, condense_script_label,
+};
+
+/// Parse a `--package` token for a MODULE document.
+///
+/// A module entry names a package and its preferred managers; it has no
+/// per-sub-list slot, so a token whose schema path resolves to a slot that is
+/// not itself a registered manager (`snap.classic`) is refused rather than
+/// silently confirmed as a path the document cannot hold. `snap` installs both
+/// of its lists and retries with `--classic`, so nothing is lost by saying so.
+fn module_package_ref(token: &str, native: &str) -> anyhow::Result<PackageRef> {
+    let pkg = super::parse_package_flag(token, &[], native)?;
+    if let (Some(path), Some(slot), Some(manager)) = (&pkg.schema_path, &pkg.slot, &pkg.manager)
+        && slot != manager
+    {
+        anyhow::bail!(
+            "'{path}' is a profile-only package list; a module entry names a manager \
+             — use {manager}:{}",
+            pkg.name
+        );
+    }
+    Ok(pkg)
+}
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -16,10 +39,10 @@ pub fn cmd_module_create(
     let post_apply = &args.post_apply;
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    printer.heading(format!("Create Module: {}", name));
+    printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
     let module_yaml_path = module_dir.join("module.yaml");
 
     if module_yaml_path.exists() {
@@ -138,24 +161,25 @@ pub fn cmd_module_create(
     }
 
     // Build package entries
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    let native = Platform::current().native_manager().to_string();
     let package_entries: Vec<config::ModulePackageEntry> = pkg_list
         .iter()
         .map(|s| {
-            let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
-            config::ModulePackageEntry {
-                name: pkg,
+            let pkg = module_package_ref(s, &native)?;
+            Ok(config::ModulePackageEntry {
+                name: pkg.name,
                 min_version: None,
-                prefer: mgr.into_iter().collect(),
+                // The REGISTERED manager, never the schema path: `prefer` is a
+                // persisted manager name and `brew.casks` is not one.
+                prefer: pkg.manager.into_iter().collect(),
                 deny: Vec::new(),
                 aliases: std::collections::HashMap::new(),
                 script: None,
                 platforms: Vec::new(),
                 ..Default::default()
-            }
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Build env
     let mut env_entries = Vec::new();
@@ -213,11 +237,9 @@ pub fn cmd_module_create(
     // Write
     scaffold_module_document(&doc, &module_yaml_path)?;
 
-    let summary_sec = printer.section(format!(
-        "Created module '{}' at {}",
-        name,
-        module_dir.posix()
-    ));
+    // The heading above already names the module; a section respelling it
+    // makes the reader check whether two subjects are in play.
+    let summary_sec = printer.section(format!("Created at {}", module_dir.posix()));
     if !doc.spec.packages.is_empty() {
         summary_sec.kv(
             "Packages",
@@ -237,8 +259,10 @@ pub fn cmd_module_create(
     }
     drop(summary_sec);
 
-    printer.hint("Add to a profile with: cfgd profile update <profile> --module <name>");
-    printer.hint("Fine-tune with: cfgd module edit <name>");
+    printer.hint(super::success_next_step(super::Mutation::ModuleCreated {
+        name,
+    }));
+    printer.hint(format!("Fine-tune with `cfgd module edit {name}`"));
 
     update_workflow_best_effort(cli, printer);
 
@@ -255,25 +279,36 @@ pub fn cmd_module_create(
         registry.set_system_config_dir(&config_dir);
         let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
-        let platform = cfgd_core::platform::Platform::detect();
-        let mgr_map = super::managers_map(&registry);
+        let platform = cfgd_core::platform::Platform::current();
+        let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let resolved_modules = modules::resolve_modules(
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+        let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
             &cache_base,
             &[],
-            &platform,
+            platform,
             &mgr_map,
+            Some(&pkg_cx),
             printer,
         )?;
-
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),
             merged: config::MergedProfile::default(),
         };
 
-        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+            .with_config_dir(&config_dir)
+            .diffing_installed(&pkg_cx)
+            // No profile was resolved, so the module this run is about is what
+            // the recorded apply names. Left unset, the row stores an empty
+            // scope and `cfgd status` shows no `Scope` until some later run
+            // happens to name one.
+            .recording_scope(cfgd_core::reconciler::Owner::module(name).token());
+        // Survivor-gated pricing: only a package this plan will surface is
+        // asked for the version its install action renders and persists.
+        reconciler.fill_planned_versions(&mut resolved_modules, &mgr_map);
         let plan = reconciler.plan(
             &resolved,
             Vec::new(),
@@ -283,14 +318,25 @@ pub fn cmd_module_create(
         )?;
 
         // The module just created is the whole of this run: one owner, no
-        // profile, and the same skeleton `cfgd apply` renders.
-        let module_names = vec![name.to_string()];
+        // profile, and the same skeleton `cfgd apply` renders. Its `Modules`
+        // row is delta-only like every other invocation-named run — the verb
+        // already named what it created, so the row appears only if the
+        // resolution folded a `depends:` in. The config the registry was built
+        // from still declares its subscriptions, and where this run's
+        // configuration comes from is a fact about the config, not about
+        // whether a profile resolved.
+        let header_modules = cfgd_core::output::HeaderModule::of_isolate(&resolved_modules);
+        let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
         let ctx = cfgd_core::reconciler::RunContext {
             title: cfgd_core::reconciler::RunTitle::Apply,
             config_path: Some(config_path.as_path()),
             profile: None,
-            modules: &module_names,
+            sources: &declared,
+            modules: &header_modules,
+            profile_inherits: &[],
             trigger: None,
+            subject: None,
+            unit_source: None,
         };
         let run = cfgd_core::reconciler::ApplyRun::new(ctx, &plan);
 
@@ -298,7 +344,13 @@ pub fn cmd_module_create(
             run.header(printer);
             // `module create` exposes no scoping flag, so the verdict takes the
             // filter-less arm of the one helper that owns both spellings.
-            crate::cli::plan_ops::report_plan_verdict(printer, 0, None);
+            crate::cli::plan_ops::report_plan_verdict(
+                printer,
+                0,
+                None,
+                0,
+                &crate::cli::PreviewScope::unscoped(),
+            );
         } else {
             // Same requirement as `cfgd init --apply-module`: the apply records
             // module state from this slice, and regenerates the env files from
@@ -323,14 +375,25 @@ pub fn cmd_module_create(
             match run.execute(printer, confirm, &mut exec)? {
                 cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
                     apply_status = result.status.clone();
+                    // The rows this apply just recorded carry no hash; settle
+                    // them here as every applying verb does, or the daemon's
+                    // next tick backfills them and reports the backfill as
+                    // deployed files having moved.
+                    crate::cli::apply::refresh_link_deployed_hashes(
+                        &reconciler,
+                        &resolved,
+                        &resolved_modules,
+                    );
                     // A module whose packages come from a manager this apply
                     // bootstrapped leaves the invoking shell one `source` away
                     // from reaching them.
-                    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+                    crate::cli::plan_ops::print_caveats(&result, printer);
                     applied = true;
                 }
                 cfgd_core::reconciler::RunDisposition::Declined => {
-                    printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+                    printer
+                        .status(Role::Info, "Skipped")
+                        .detail("run `cfgd apply` to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
                         "path": module_dir.display().to_string(),
@@ -384,10 +447,7 @@ pub fn cmd_module_update_local(
     let description = args.description.as_deref();
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    printer.heading(format!(
-        "Update {}",
-        cfgd_core::reconciler::Owner::module(name).token()
-    ));
+    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
     let (mut doc, module_yaml_path) = match load_module_document(&config_dir, name) {
@@ -404,7 +464,7 @@ pub fn cmd_module_update_local(
             ));
         }
     };
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
     let files_dir = module_dir.join("files");
     let mut changes = 0u32;
 
@@ -422,7 +482,9 @@ pub fn cmd_module_update_local(
     for dep in &add_depends {
         if !doc.spec.depends.contains(dep) {
             doc.spec.depends.push(dep.clone());
-            printer.status_simple(Role::Ok, format!("Added dependency: {}", dep));
+            printer
+                .status(Role::Ok, "Added dependency")
+                .qualifier(dep.clone());
             changes += 1;
         }
     }
@@ -432,50 +494,69 @@ pub fn cmd_module_update_local(
         let before = doc.spec.depends.len();
         doc.spec.depends.retain(|d| d != dep);
         if doc.spec.depends.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed dependency: {}", dep));
+            printer
+                .status(Role::Ok, "Removed dependency")
+                .qualifier(dep.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Dependency '{}' not found", dep));
         }
     }
 
-    // Add packages
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    // Add and remove packages, both through the SAME parser: a prefix legal to
+    // add is legal to remove, and the removal strips it rather than searching
+    // for a name that carries it.
+    let native = Platform::current().native_manager().to_string();
     for pkg_str in &add_packages {
-        let (mgr, pkg) = super::parse_package_flag(pkg_str, &known_refs);
-        if doc.spec.packages.iter().any(|p| p.name == pkg) {
-            printer.status_simple(Role::Info, format!("Package '{}' already in module", pkg));
+        let pkg = module_package_ref(pkg_str, &native)?;
+        if doc.spec.packages.iter().any(|p| p.name == pkg.name) {
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "{} '{}' already in module",
+                    pkg.noun_capitalized(),
+                    pkg.name
+                ),
+            );
             continue;
         }
+        let qualifier = pkg.display(&native);
+        let pkg_noun = pkg.noun();
         doc.spec.packages.push(config::ModulePackageEntry {
-            name: pkg.clone(),
+            name: pkg.name,
             min_version: None,
-            prefer: mgr.into_iter().collect(),
+            // The REGISTERED manager, never the schema path: `prefer` is a
+            // persisted manager name and `brew.casks` is not one.
+            prefer: pkg.manager.into_iter().collect(),
             deny: Vec::new(),
             aliases: std::collections::HashMap::new(),
             script: None,
             platforms: Vec::new(),
             ..Default::default()
         });
-        printer.status_simple(Role::Ok, format!("Added package: {}", pkg));
+        printer
+            .status(Role::Ok, format!("Added {}", pkg_noun))
+            .qualifier(qualifier);
         changes += 1;
     }
 
-    // Remove packages (strip manager prefix if present, e.g. "brew:ripgrep" → "ripgrep")
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-    for pkg in &remove_packages {
-        let (_, canonical) = super::parse_package_flag(pkg, &known_refs);
+    for pkg_str in &remove_packages {
+        let pkg = module_package_ref(pkg_str, &native)?;
         let before = doc.spec.packages.len();
-        doc.spec.packages.retain(|p| p.name != canonical);
+        doc.spec.packages.retain(|p| p.name != pkg.name);
         if doc.spec.packages.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed package: {}", canonical));
+            printer
+                .status(Role::Ok, format!("Removed {}", pkg.noun()))
+                .qualifier(pkg.display(&native));
             changes += 1;
         } else {
             printer.status_simple(
                 Role::Warn,
-                format!("Package '{}' not found in module", canonical),
+                format!(
+                    "{} '{}' not found in module",
+                    pkg.noun_capitalized(),
+                    pkg.name
+                ),
             );
         }
     }
@@ -520,7 +601,9 @@ pub fn cmd_module_update_local(
             encryption: None,
             permissions: None,
         });
-        printer.status_simple(Role::Ok, format!("Added file: {}", target.posix()));
+        printer
+            .status(Role::Ok, "Added file")
+            .qualifier(target.posix().to_string());
         changes += 1;
     }
 
@@ -551,7 +634,9 @@ pub fn cmd_module_update_local(
                     }
                 }
             }
-            printer.status_simple(Role::Ok, format!("Removed file: {}", target));
+            printer
+                .status(Role::Ok, "Removed file")
+                .qualifier(target.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("File '{}' not found in module", target));
@@ -562,7 +647,9 @@ pub fn cmd_module_update_local(
     for e in &add_env {
         let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
-        printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
+        printer
+            .status(Role::Ok, "Set env")
+            .qualifier(crate::cli::helpers::quoted_assignment(&ev.name, &ev.value));
         changes += 1;
     }
 
@@ -571,7 +658,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.env.len();
         doc.spec.env.retain(|ev| ev.name != *key);
         if doc.spec.env.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed env: {}", key));
+            printer
+                .status(Role::Ok, "Removed env")
+                .qualifier(key.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
@@ -582,10 +671,12 @@ pub fn cmd_module_update_local(
     for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
-        printer.status_simple(
-            Role::Ok,
-            format!("Set alias: {}={}", alias.name, alias.command),
-        );
+        printer
+            .status(Role::Ok, "Set alias")
+            .qualifier(crate::cli::helpers::quoted_assignment(
+                &alias.name,
+                &alias.command,
+            ));
         changes += 1;
     }
 
@@ -594,7 +685,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *name);
         if doc.spec.aliases.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed alias: {}", name));
+            printer
+                .status(Role::Ok, "Removed alias")
+                .qualifier(name.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Alias '{}' not found", name));
@@ -612,10 +705,9 @@ pub fn cmd_module_update_local(
         let entry = config::ScriptEntry::Simple(script.clone());
         if !scripts.post_apply.contains(&entry) {
             scripts.post_apply.push(entry);
-            printer.status_simple(
-                Role::Ok,
-                format!("Added post-apply script: {}", condense_script_label(script)),
-            );
+            printer
+                .status(Role::Ok, "Added post-apply script")
+                .qualifier(condense_script_label(script));
             changes += 1;
         }
     }
@@ -636,10 +728,9 @@ pub fn cmd_module_update_local(
             .unwrap_or(false);
         let label_text = condense_script_label(script);
         if removed {
-            printer.status_simple(
-                Role::Ok,
-                format!("Removed post-apply script: {}", label_text),
-            );
+            printer
+                .status(Role::Ok, "Removed post-apply script")
+                .qualifier(label_text);
             changes += 1;
         } else {
             // Echo back the exact raw argument the user searched for — a
@@ -678,11 +769,11 @@ pub fn cmd_module_update_local(
             .status(
                 Role::Ok,
                 format!(
-                    "Updated module '{}' ({})",
-                    name,
+                    "{} written",
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )
+            .hint(super::success_next_step(super::Mutation::ModuleUpdated))
             .with_data(serde_json::json!({
                 "name": name,
                 "changes": changes,
@@ -697,7 +788,9 @@ pub fn cmd_module_update_local(
 pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     let config_dir = config_dir(cli);
-    let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
+    let module_yaml = cfgd_core::declared_modules_dir(&config_dir)
+        .join(name)
+        .join("module.yaml");
 
     if !module_yaml.exists() {
         // Carry the typed ModuleError::NotFound so the exit-code downcast resolves
@@ -727,6 +820,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             }
             Err(e) => {
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!(
                         "Module '{}' has errors: {}",
@@ -745,7 +839,9 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     if valid {
         printer.emit(
             Doc::new()
+                // verdict-row-ok: a validation verdict, not an act cfgd performed
                 .status(Role::Ok, format!("Module '{}' is valid", name))
+                .hint(super::success_next_step(super::Mutation::ModuleUpdated))
                 .with_data(serde_json::json!({
                     "name": name,
                     "path": module_yaml.display().to_string(),
@@ -778,10 +874,10 @@ pub fn cmd_module_delete(
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
-    printer.heading(format!("Delete Module: {}", name));
+    printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);
-    let module_dir = config_dir.join("modules").join(name);
+    let module_dir = cfgd_core::declared_modules_dir(&config_dir).join(name);
 
     if !module_dir.exists() {
         if ignore_not_found {
@@ -836,9 +932,9 @@ pub fn cmd_module_delete(
     {
         if purge {
             // Purge mode: remove all files deployed by this module to target locations.
-            // This replaces symlink restoration — there's nothing to restore if we're
-            // removing everything.
-            let purge_sec = printer.section("Purging files");
+            // This replaces symlink restoration — there's nothing to restore when
+            // everything is being removed.
+            let purge_sec = printer.section("Purging Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 if target.is_symlink() || target.exists() {
@@ -855,8 +951,8 @@ pub fn cmd_module_delete(
         } else {
             // Default: restore symlinked files before deleting the module directory.
             // When module create adopts files, it moves them into the module dir and
-            // symlinks the original location back. On delete, we reverse that.
-            let restore_sec = printer.section("Restoring files");
+            // symlinks the original location back. Delete reverses that.
+            let restore_sec = printer.section("Restoring Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 let source = module_dir.join(&file_entry.source);
@@ -886,13 +982,9 @@ pub fn cmd_module_delete(
     if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope())
         && let Err(e) = state.remove_module_state(name)
     {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Failed to clean module state: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            ),
-        );
+        printer
+            .status(Role::Warn, "Failed to clean module state")
+            .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
     }
 
     // Clean from lockfile if present
@@ -901,12 +993,12 @@ pub fn cmd_module_delete(
     if had_lock {
         lockfile.modules.retain(|e| e.name != name);
         modules::save_lockfile(&config_dir, &lockfile)?;
-        printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", name));
+        printer.status_simple(Role::Info, "Removed from modules.lock");
     }
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Deleted module '{}'", name))
+            .status(Role::Ok, "Deleted")
             .with_data(serde_json::json!({
                 "name": name,
                 "cancelled": false,

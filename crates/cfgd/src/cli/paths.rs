@@ -37,13 +37,18 @@ impl Serialize for DirSource {
     }
 }
 
-/// Effective source of each of the four resolved directory roots.
+/// Effective source of each of the four resolved directory roots, and of the
+/// scope that chose the family they were resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirSources {
     pub config: DirSource,
     pub state: DirSource,
     pub cache: DirSource,
     pub runtime: DirSource,
+    /// Where `--scope` came from. A scope the invocation named itself is not
+    /// restated as a row; a defaulted one is the only thing that can tell the
+    /// reader which family these roots belong to.
+    pub scope: DirSource,
 }
 
 impl DirSources {
@@ -55,6 +60,7 @@ impl DirSources {
             state: DirSource::Default,
             cache: DirSource::Default,
             runtime: DirSource::Default,
+            scope: DirSource::Default,
         }
     }
 
@@ -106,7 +112,14 @@ pub fn config_dir_source(
 #[serde(rename_all = "camelCase")]
 pub struct PathsOutput {
     /// Active installation scope: `"system"` (`--scope system`) or `"user"`.
+    ///
+    /// Always in the payload: a scripting consumer never saw the command line.
+    /// The human `Scope` row renders only when the invocation did not name it
+    /// (see [`PathsOutput::scope_named_by_invocation`]).
     pub scope: &'static str,
+    /// Display-only: whether `--scope` (or `CFGD_SCOPE`) was supplied.
+    #[serde(skip)]
+    pub scope_named_by_invocation: bool,
     pub config: ConfigPaths,
     pub state: StatePaths,
     pub cache: CachePaths,
@@ -168,7 +181,7 @@ pub struct RuntimePaths {
 /// override) reports `null` for that root rather than failing the whole command,
 /// while the home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is
 /// still reported.
-fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
+pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
     let scope = cli.scope();
     // `cli.config` is the already-resolved config FILE (main.rs folds --config /
     // --config-dir / resolve_config_path / macOS migration into it); the config
@@ -245,6 +258,7 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
 
     Ok(PathsOutput {
         scope: if scope.is_system() { "system" } else { "user" },
+        scope_named_by_invocation: sources.scope != DirSource::Default,
         config,
         state,
         cache,
@@ -255,51 +269,58 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
 /// Render an `Option<String>` path for the human Doc: the path, or a clear
 /// unavailable marker when the root could not be resolved.
 fn or_unavailable(value: &Option<String>) -> String {
-    value
-        .clone()
-        .unwrap_or_else(|| "(no home — unavailable)".to_string())
+    value.as_deref().map_or_else(
+        || "(no home — unavailable)".to_string(),
+        cfgd_core::fold_home_in_text,
+    )
 }
 
 /// Build the `paths` human + structured `Doc` from a collected payload.
 pub fn build_paths_doc(output: &PathsOutput) -> Doc {
-    let mut doc = Doc::new().heading("cfgd directories");
-    doc = doc.kv("scope", output.scope);
+    let mut doc = Doc::new().heading("cfgd Directories");
+    // A scope the invocation named is not restated back at the reader; a
+    // defaulted one is the only thing that says which family these roots are.
+    if !output.scope_named_by_invocation {
+        doc = doc.kv("Scope", output.scope);
+    }
 
     let config = &output.config;
     doc = doc.section("Config", |s| {
         s.kv_block([
-            ("dir", config.dir.clone()),
-            ("source", config.source.label().to_string()),
-            ("file", config.file.clone()),
+            ("Directory", cfgd_core::fold_home_in_text(&config.dir)),
+            ("Source", config.source.label().to_string()),
+            ("File", cfgd_core::fold_home_in_text(&config.file)),
         ])
     });
 
     let state = &output.state;
     doc = doc.section("State", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&state.dir)),
-            ("source", state.source.label().to_string()),
-            ("db", or_unavailable(&state.db)),
-            ("applyLock", or_unavailable(&state.apply_lock)),
+            ("Directory", or_unavailable(&state.dir)),
+            ("Source", state.source.label().to_string()),
+            ("Database", or_unavailable(&state.db)),
+            ("Apply Lock", or_unavailable(&state.apply_lock)),
         ])
     });
 
     let cache = &output.cache;
     doc = doc.section("Cache", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&cache.dir)),
-            ("source", cache.source.label().to_string()),
-            ("sources", or_unavailable(&cache.sources)),
-            ("modules", or_unavailable(&cache.modules)),
+            ("Directory", or_unavailable(&cache.dir)),
+            ("Source", cache.source.label().to_string()),
+            // header-row-ok: the sources CACHE directory, not the sources a run composed
+            ("Sources", or_unavailable(&cache.sources)),
+            // modules-row-ok: the cache DIRECTORY modules are fetched into, not a resolved profile's module list
+            ("Modules", or_unavailable(&cache.modules)),
         ])
     });
 
     let runtime = &output.runtime;
     doc = doc.section("Runtime", |s| {
         s.kv_block([
-            ("dir", or_unavailable(&runtime.dir)),
-            ("source", runtime.source.label().to_string()),
-            ("socket", runtime.socket.clone()),
+            ("Directory", or_unavailable(&runtime.dir)),
+            ("Source", runtime.source.label().to_string()),
+            ("Socket", cfgd_core::fold_home_in_text(&runtime.socket)),
         ])
     });
 
@@ -460,6 +481,7 @@ mod tests {
             state: DirSource::Flag,
             cache: DirSource::Flag,
             runtime: DirSource::Default,
+            scope: DirSource::Default,
         };
         let output = collect_paths_output(&cli, &sources).expect("collect must succeed");
 
@@ -589,12 +611,12 @@ mod tests {
         );
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
-        assert!(out.contains("cfgd directories"), "heading missing: {out}");
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(out.contains("cfgd Directories"), "heading missing: {out}");
         for label in ["Config", "State", "Cache", "Runtime"] {
             assert!(out.contains(label), "section {label} missing: {out}");
         }
-        assert!(out.contains("applyLock"), "applyLock kv missing: {out}");
+        assert!(out.contains("Apply Lock"), "apply-lock kv missing: {out}");
     }
 
     #[test]
@@ -609,7 +631,7 @@ mod tests {
         );
         let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         let v: serde_json::Value =
             serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("invalid JSON {e}: {out}"));
         assert!(v["config"]["dir"].is_string(), "config.dir: {v}");
@@ -637,8 +659,8 @@ mod tests {
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
-        assert!(out.contains("scope"), "scope kv missing: {out}");
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(out.contains("Scope"), "scope kv missing: {out}");
         assert!(out.contains("user"), "scope value missing: {out}");
     }
 

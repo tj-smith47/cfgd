@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output::{Doc, Printer, Role, SectionBuilder, renderer::Table};
+use cfgd_core::output::{CommandPair, Doc, KvPair, Printer, SectionBuilder, renderer::Table};
 use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 // cfgd explain — schema documentation for all resource types
@@ -14,8 +14,9 @@ use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 /// A top-level resource type, as `explain` presents it.
 ///
-/// Owned (built per invocation from the registry), so its `fields` are the
-/// schemars-derived [`FieldNode`] tree rather than a hand-maintained static.
+/// Owned (built from the registry the first time `explain` asks), so its
+/// `fields` are the schemars-derived [`FieldNode`] tree rather than a
+/// hand-maintained static.
 pub struct ResourceSchema {
     /// Display name (the `kind`, except the CRD `Module` shown as `Module (CRD)`).
     pub name: String,
@@ -25,6 +26,8 @@ pub struct ResourceSchema {
     pub kind: String,
     /// File-location hint.
     pub location: String,
+    /// Path (plus heading anchor) into the repo's `docs/` tree.
+    pub docs: String,
     /// Short description.
     pub description: String,
     /// Top-level fields under spec (or root for non-KRM), schemars-derived.
@@ -32,10 +35,146 @@ pub struct ResourceSchema {
 }
 
 impl ResourceSchema {
+    /// The URL the `Docs` row opens, pinned to THIS binary's release tag —
+    /// the one derivation both the human row and `-o json`'s `docsUrl` read.
+    pub fn docs_url(&self) -> String {
+        cfgd_core::config::docs_url(&self.docs, env!("CARGO_PKG_VERSION"))
+    }
+
     /// The kind's top-level field tree.
     pub fn field_tree(&self) -> Vec<FieldNode> {
         self.fields.clone()
     }
+
+    /// A drilldown field's own docs pointer: the field's `spec.<path>`
+    /// heading in this kind's own doc page when the committed page carries
+    /// one, or the kind's own pointer otherwise — the same fallback the kind
+    /// page's `Docs` row renders, so a field with no heading of its own reads
+    /// exactly like the page one level up.
+    fn field_docs_path(&self, field_path: &[&str]) -> String {
+        field_heading_anchor(self, field_path).unwrap_or_else(|| self.docs.clone())
+    }
+
+    /// The field pointer above, through the SAME release-pinned derivation
+    /// `docs_url` uses.
+    fn field_docs_url(&self, field_path: &[&str]) -> String {
+        cfgd_core::config::docs_url(&self.field_docs_path(field_path), env!("CARGO_PKG_VERSION"))
+    }
+}
+
+/// The field's own heading anchor in `kind_docs`'s file, when the committed
+/// page carries a `spec.<path>` heading for it. `None` when it does not (a
+/// field nested past what the doc breaks out on its own, or a kind whose
+/// pointer names a page this lookup does not embed), so the caller falls
+/// back to the kind's own pointer.
+fn field_heading_anchor(schema: &ResourceSchema, field_path: &[&str]) -> Option<String> {
+    let (rel, _) = schema.docs.split_once('#')?;
+    let body = doc_body(rel)?;
+    let wanted = github_anchor(&format!("spec.{}", field_path.join(".")));
+    heading_anchors(body)
+        .any(|a| a == wanted)
+        .then(|| format!("{rel}#{wanted}"))
+}
+
+/// The compiled-in body of a `docs/spec/` page, keyed by the SAME relative
+/// path `schema.docs` itself names (before its `#anchor`) — so a field
+/// heading is looked up in the exact file its kind's own pointer names,
+/// never a display-name lookup that could silently name a different one. A
+/// kind whose pointer names a page this table does not embed (`ConfigSource`,
+/// the CRD `Module` status page) falls back to its own kind-level pointer.
+///
+/// Embedded from a crate-local fixture copy, not the workspace-root
+/// `docs/spec/` a reader clicks through to: `cargo package` builds this
+/// binary crate in isolation, and `include_str!` cannot reach a path outside
+/// the crate directory in that tree. The fixture is pinned byte-for-byte to
+/// its canonical `docs/spec/` source by
+/// `explain_docs_ground_truth.rs::embedded_doc_bodies_match_workspace_docs`,
+/// the same shape `cfgd-core`'s `skill_model` examples already use for the
+/// same reason.
+fn doc_body(rel: &str) -> Option<&'static str> {
+    match rel {
+        // docs-pointer-ok: a match key equal to schema.docs's own path, not a rendered pointer.
+        "docs/spec/module.md" => Some(include_str!("../../../tests/fixtures/docs-spec/module.md")),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/profile.md" => {
+            Some(include_str!("../../../tests/fixtures/docs-spec/profile.md"))
+        }
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/config.md" => Some(include_str!("../../../tests/fixtures/docs-spec/config.md")),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/machineconfig.md" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/machineconfig.md"
+        )),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/configpolicy.md" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/configpolicy.md"
+        )),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/clusterconfigpolicy.md" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/clusterconfigpolicy.md"
+        )),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/driftalert.md" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/driftalert.md"
+        )),
+        // docs-pointer-ok: match key, see the arm above.
+        "docs/spec/teamconfig.md" => Some(include_str!(
+            "../../../tests/fixtures/docs-spec/teamconfig.md"
+        )),
+        _ => None,
+    }
+}
+
+/// Every raw heading text in a doc page, in document order. Skips fenced
+/// code blocks, so a `#` inside a shell comment or a YAML key is never read
+/// as a heading. The one heading walk: `heading_anchors` below and the
+/// ground-truth pin in `tests.rs` both read it rather than re-implementing
+/// the fence-skipping scan.
+fn doc_headings(body: &str) -> impl Iterator<Item = &str> + '_ {
+    let mut in_fence = false;
+    body.lines().filter_map(move |line| {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            return None;
+        }
+        if in_fence {
+            return None;
+        }
+        line.strip_prefix('#')
+            .map(|h| h.trim_start_matches('#').trim())
+    })
+}
+
+/// Every heading's anchor in a doc page, in document order.
+fn heading_anchors(body: &str) -> impl Iterator<Item = String> + '_ {
+    doc_headings(body).map(github_anchor)
+}
+
+/// The subset of GitHub's markdown heading slugification a KRM field path
+/// exercises: lowercase, drop every character that is not a letter, digit,
+/// space or hyphen, then fold spaces to hyphens. GitHub also keeps `_`,
+/// which no camelCase field name or `docs/spec/` heading carries, so the
+/// filter is deliberately the narrower one: dropping `_` costs nothing a
+/// resolvable path can spell. `spec.env` and `spec.env[]` collide on the same
+/// anchor (`specenv`) because the dot and the brackets are both dropped, which is
+/// what lets a field's own dotted path double as its heading's anchor with
+/// no bracket bookkeeping at the call site. "Letter" and "digit" are Unicode
+/// classes, matching GitHub's own algorithm, though every heading `explain`
+/// resolves today is ASCII.
+fn github_anchor(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// The `Docs` header row, through the ONE composer both a kind page and a
+/// field drilldown render it with — `KvPair::linked` over a release-pinned
+/// `config::docs_url`, never a second composer for the other page kind.
+fn docs_row(path: &str, url: impl Into<String>) -> KvPair {
+    KvPair::linked("Docs", path, url)
 }
 
 #[cfg(test)]
@@ -46,14 +185,7 @@ mod tests;
 /// expressed directly rather than derived from schemars.
 fn teamconfig_schema() -> ResourceSchema {
     fn leaf(name: &str, type_desc: &str, required: bool, description: &str) -> FieldNode {
-        FieldNode {
-            name: name.to_string(),
-            type_desc: type_desc.to_string(),
-            required,
-            description: description.to_string(),
-            children: Vec::new(),
-            variants: Vec::new(),
-        }
+        obj(name, type_desc, required, description, Vec::new())
     }
     fn obj(
         name: &str,
@@ -65,6 +197,12 @@ fn teamconfig_schema() -> ResourceSchema {
         FieldNode {
             name: name.to_string(),
             type_desc: type_desc.to_string(),
+            // TeamConfig's shapes are declared in a Crossplane XRD rather than
+            // in a Rust type, so there is no `$defs` entry to name and no
+            // schemars enum to enumerate.
+            type_name: String::new(),
+            enum_values: Vec::new(),
+            is_variant: false,
             required,
             description: description.to_string(),
             children,
@@ -77,33 +215,34 @@ fn teamconfig_schema() -> ResourceSchema {
         api_version: cfgd_core::API_VERSION.to_string(),
         kind: "TeamConfig".to_string(),
         location: "Crossplane Composite Resource (XR)".to_string(),
+        docs: "docs/spec/teamconfig.md#fields".to_string(),
         description: "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.".to_string(),
         fields: vec![
-            leaf("team", "string", true, "Team name"),
-            leaf("profile", "string", false, "Default profile for team members"),
-            obj("source", "object", false, "Team config source", vec![
-                leaf("url", "string", true, "Git URL of the team config repo"),
-                leaf("branch", "string", false, "Git branch (default: master)"),
+            leaf("team", "string", true, "Name of the team this document configures. Used as the prefix of every MachineConfig the composition generates, so it must be a valid DNS label."),
+            leaf("profile", "string", false, "Profile every member inherits unless their own entry overrides it. Omitted, each generated MachineConfig carries no profile and the machine keeps whichever profile it already has active."),
+            obj("source", "object", false, "Git repository the team's modules and profiles are pulled from. Omitted, members supply their own sources.", vec![
+                leaf("url", "string", true, "Clone URL of the team config repository, in any form git accepts (HTTPS or SSH)."),
+                leaf("branch", "string", false, "Branch to track. Defaults to the repository's own default branch."),
             ]),
-            obj("modules", "[]object", false, "Modules for the team", vec![
-                leaf("name", "string", true, "Module name"),
-                obj("sourceRef", "object", false, "Remote module source reference", vec![
-                    leaf("url", "string", true, "Git URL"),
-                    leaf("ref", "string", false, "Git ref (tag/commit)"),
+            obj("modules", "[]object", false, "Modules delivered to every member of the team. Each entry becomes a module reference on every generated MachineConfig.", vec![
+                leaf("name", "string", true, "Module name, matching the directory under `modules/` in the source repository."),
+                obj("sourceRef", "object", false, "Repository this module is fetched from, when it does not live in the team's own source. Omitted, the module resolves against `spec.source`.", vec![
+                    leaf("url", "string", true, "Clone URL of the repository holding the module."),
+                    leaf("ref", "string", false, "Tag, branch, or commit to pin the module at. Omitted, the repository's default branch is tracked and the module follows it."),
                 ]),
             ]),
-            obj("policy", "object", false, "Team policy settings", vec![
-                leaf("required", "object", false, "Required configuration items"),
-                leaf("recommended", "object", false, "Recommended configuration items"),
-                leaf("locked", "object", false, "Locked (non-overridable) items"),
-                leaf("requiredModules", "[]string", false, "Modules that must be installed"),
-                leaf("recommendedModules", "[]string", false, "Modules that are recommended"),
+            obj("policy", "object", false, "What the team mandates, suggests, and forbids members from changing. Enforced by the generated ConfigPolicy.", vec![
+                leaf("required", "object", false, "Configuration keys every member must carry, as a mapping of key to required value. A member whose machine disagrees is reported as non-compliant."),
+                leaf("recommended", "object", false, "Configuration keys members are advised to carry, in the same mapping shape as `required`. Reported but never enforced."),
+                leaf("locked", "object", false, "Configuration keys members may not override, as a mapping of key to the value the team pins. A local override of a locked key is rejected."),
+                leaf("requiredModules", "[]string", false, "Modules that must be installed on every member machine. A missing one is a compliance failure."),
+                leaf("recommendedModules", "[]string", false, "Modules members are advised to install. Surfaced in compliance reports without failing them."),
             ]),
-            obj("members", "[]object", false, "Team members", vec![
-                leaf("username", "string", true, "Username"),
-                leaf("sshPublicKey", "string", false, "SSH public key for enrollment"),
-                leaf("profile", "string", false, "Profile override for this member"),
-                leaf("hostname", "string", false, "Hostname override"),
+            obj("members", "[]object", true, "The people on the team. One MachineConfig is generated per entry.", vec![
+                leaf("username", "string", true, "Login the member's machine enrolls as. Becomes the name of the generated MachineConfig."),
+                leaf("sshPublicKey", "string", false, "Public key the member's enrollment request is verified against. Omitted, the member enrolls through the device-flow instead."),
+                leaf("profile", "string", false, "Profile for this member, overriding the team-wide `spec.profile`."),
+                leaf("hostname", "string", false, "Hostname to reconcile this member's machine as, when it differs from the machine's own."),
             ]),
         ],
     }
@@ -113,7 +252,27 @@ fn teamconfig_schema() -> ResourceSchema {
 /// [`KIND_REGISTRY`] entry plus the hand-authored TeamConfig. The CRD `Module`
 /// (which shares the kind string `"Module"` with the local one) is disambiguated
 /// with the display name `"Module (CRD)"`.
-fn all_schemas() -> Vec<ResourceSchema> {
+///
+/// Reflected at most once per process. Every entry's `field_tree()` re-runs
+/// `schemars::schema_for!` over the kind's Rust type and then walks the whole
+/// resulting document, and a single `cfgd explain <typo>` used to pay for all
+/// nine kinds twice — once for the lookup that misses, once to list the
+/// available names in the error. The trees are derived from Rust types compiled
+/// into this binary, so nothing a run does can change them.
+fn all_schemas() -> &'static [ResourceSchema] {
+    static SCHEMAS: std::sync::OnceLock<Vec<ResourceSchema>> = std::sync::OnceLock::new();
+    SCHEMAS.get_or_init(build_all_schemas)
+}
+
+/// How many times this process has reflected the full schema set — the
+/// observable behind the memo, since a reflection is otherwise invisible except
+/// as time spent.
+#[cfg(test)]
+static SCHEMA_REFLECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn build_all_schemas() -> Vec<ResourceSchema> {
+    #[cfg(test)]
+    SCHEMA_REFLECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut schemas: Vec<ResourceSchema> = KIND_REGISTRY
         .iter()
         .map(|e| {
@@ -127,6 +286,7 @@ fn all_schemas() -> Vec<ResourceSchema> {
                 api_version: e.api_version.to_string(),
                 kind: e.kind.to_string(),
                 location: e.location.to_string(),
+                docs: e.docs.to_string(),
                 description: e.description.to_string(),
                 fields: e.field_tree(),
             }
@@ -141,15 +301,15 @@ fn all_schemas() -> Vec<ResourceSchema> {
 /// A bare `Module`/`module` query always resolves the LOCAL module (`!crd`);
 /// the `module-crd` token selects the cluster-side `Module` CRD. The
 /// `source`/`cfgd-source` aliases resolve to `ConfigSource`.
-pub fn find_schema(name: &str) -> Option<ResourceSchema> {
+pub fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
     let lower = name.to_lowercase();
     // The CRD Module is selectable only via the explicit `module-crd` token, so
     // it must be matched before the generic name/kind pass (which would
     // otherwise return whichever Module is iterated first for a bare query).
     if lower == "module-crd" || lower == "module (crd)" {
-        return all_schemas().into_iter().find(|s| s.name == "Module (CRD)");
+        return all_schemas().iter().find(|s| s.name == "Module (CRD)");
     }
-    all_schemas().into_iter().find(|s| {
+    all_schemas().iter().find(|s| {
         // Never let a bare Module query match the CRD variant.
         if s.name == "Module (CRD)" {
             return false;
@@ -176,7 +336,10 @@ pub fn find_schema(name: &str) -> Option<ResourceSchema> {
 /// REST of the path wins, deterministically, so a caller can drill straight
 /// past the variant boundary (`scripts.preApply.run` finds `run` inside the
 /// object variant without ever naming `object` in the path).
-fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a [FieldNode]> {
+pub fn resolve_field_path<'a>(
+    fields: &'a [FieldNode],
+    path_parts: &[&str],
+) -> Option<&'a [FieldNode]> {
     if path_parts.is_empty() {
         return Some(fields);
     }
@@ -204,6 +367,41 @@ fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Optio
     None
 }
 
+/// Find the field a path names, preserving ITS OWN identity — name, type,
+/// description — even when it is an object. The counterpart of
+/// [`resolve_field_path`], which returns what descends FROM a match (its
+/// children, for object drill-in) rather than the match itself: that
+/// contract is right for a caller that only wants the children to list, but
+/// it means a drill-down VIEW built from it alone shows only the children
+/// and silently discards the queried object's own description. Used by
+/// [`build_explain_drilldown_doc`] to render that header before
+/// auto-expanding the object's fields one level, so `cfgd explain
+/// resource.object` never needs `--recursive` to say anything about
+/// `object` itself. Traverses non-terminal segments identically to
+/// `resolve_field_path` (children first, then each variant's children); it
+/// exists only to answer the LAST segment differently.
+fn find_field_node<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a FieldNode> {
+    let (target, rest) = path_parts.split_first()?;
+    for field in fields {
+        if field.name != *target {
+            continue;
+        }
+        if rest.is_empty() {
+            return Some(field);
+        }
+        if !field.children.is_empty() {
+            return find_field_node(&field.children, rest);
+        }
+        for variant in &field.variants {
+            if let Some(found) = find_field_node(&variant.children, rest) {
+                return Some(found);
+            }
+        }
+        return None;
+    }
+    None
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainOutput {
@@ -211,6 +409,12 @@ pub struct ExplainOutput {
     pub api_version: String,
     pub kind: String,
     pub location: String,
+    /// Where this kind is documented in the repo's `docs/` tree. Additive:
+    /// a consumer reading only the fields it already knows sees no change.
+    pub docs: String,
+    /// `docs` as the URL the human row links to, pinned to this binary's
+    /// release tag. Additive beside `docs`, which keeps the bare path.
+    pub docs_url: String,
     pub description: String,
     pub fields: Vec<ExplainField>,
 }
@@ -219,8 +423,20 @@ pub struct ExplainOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainField {
     pub name: String,
+    /// The SHAPE word (`object`, `[]object`, `[](string | object)`) — the wire
+    /// value, byte-identical to what it has always been. The named type a
+    /// human sees instead travels in `typeName`.
     #[serde(rename = "type")]
     pub type_desc: String,
+    /// The named `$defs` type behind this field, when it resolved through one
+    /// (`ModuleFileEntry`). Absent for an inline anonymous schema. Additive:
+    /// `type` is unchanged whether or not this is present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub type_name: String,
+    /// The accepted values of a unit-variant enum field, in declared order.
+    /// Absent for every other field.
+    #[serde(rename = "enum", skip_serializing_if = "Vec::is_empty")]
+    pub enum_values: Vec<String>,
     pub required: bool,
     pub description: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -239,6 +455,12 @@ pub struct ExplainField {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainDrilldownOutput {
     pub path: String,
+    /// Where this field is documented — the same slot the kind page's `docs`
+    /// carries, so a payload consumer reads either shape identically.
+    pub docs: String,
+    /// `docs` as the URL the human row links to. Additive beside `docs`,
+    /// which keeps the bare path.
+    pub docs_url: String,
     pub fields: Vec<ExplainField>,
 }
 
@@ -246,6 +468,8 @@ fn schema_field_to_explain(field: &FieldNode) -> ExplainField {
     ExplainField {
         name: field.name.clone(),
         type_desc: field.type_desc.clone(),
+        type_name: field.type_name.clone(),
+        enum_values: field.enum_values.clone(),
         required: field.required,
         description: field.description.clone(),
         children: field.children.iter().map(schema_field_to_explain).collect(),
@@ -259,36 +483,247 @@ fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
         api_version: schema.api_version.clone(),
         kind: schema.kind.clone(),
         location: schema.location.clone(),
+        docs: schema.docs.clone(),
+        docs_url: schema.docs_url(),
         description: schema.description.clone(),
         fields: schema.fields.iter().map(schema_field_to_explain).collect(),
     }
 }
 
-/// Append a schema field as a Status row, recursively nesting children (and, for
-/// a genuine multi-shape union field, every accepted `variants` shape) under a
-/// subsection when `recursive` is set. Nested indentation comes from the
-/// renderer's section depth — never manual whitespace. A `variants` entry is a
-/// [`FieldNode`] named by its own type description (`string`, `object`, …) —
-/// see `cfgd_core::schema::union_variants` — so it renders through the same
-/// path as a real field, with its own `children` when the shape is an object.
-fn append_field(s: SectionBuilder, f: &FieldNode, recursive: bool) -> SectionBuilder {
-    let expandable = !f.children.is_empty() || !f.variants.is_empty();
-    let req = if f.required { " (required)" } else { "" };
-    let leaf = if expandable && !recursive { " [+]" } else { "" };
-    let header = format!("{} <{}>{}{}", f.name, f.type_desc, req, leaf);
-    let s = s.status_with(Role::Info, header, |sf| sf.detail(f.description.clone()));
-    if recursive && expandable {
-        s.subsection(f.name.clone(), |sub| {
-            let sub = f
-                .variants
-                .iter()
-                .fold(sub, |sub, v| append_field(sub, v, true));
-            f.children
-                .iter()
-                .fold(sub, |sub, c| append_field(sub, c, true))
-        })
+/// The level a field drills into: every accepted shape of a multi-shape
+/// union field, then the object's own children sorted by name.
+///
+/// A node carries one or the other and never both — a union field has no
+/// children of its own (see [`resolve_field_path`]) — so the two are one list
+/// rather than two sections. A `variants` entry is a [`FieldNode`] named by
+/// its own type description (`string`, `object`, …); see
+/// `cfgd_core::schema::union_variants`. Variants keep their declared order —
+/// they are shapes, not names, and the declared order matches the union's own
+/// type description (`string | object`).
+fn drill_level(f: &FieldNode) -> Vec<&FieldNode> {
+    f.variants
+        .iter()
+        .chain(sorted_by_name(f.children.iter()))
+        .collect()
+}
+
+/// A level's fields sorted by name, so a reader scanning for one has an
+/// ordering to rely on. Every rendered level sorts through this — the
+/// schemars-derived kinds happen to arrive alphabetical, but the hand-authored
+/// TeamConfig does not, and nothing guarantees the derived order either.
+/// Display-only: the `-o json` payload keeps schema-walk order.
+fn sorted_by_name<'a>(fields: impl IntoIterator<Item = &'a FieldNode>) -> Vec<&'a FieldNode> {
+    let mut v: Vec<&FieldNode> = fields.into_iter().collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// The `<type>` span of a field row — the substring the renderer paints with
+/// its own type colour, and the one place the angle brackets are composed.
+fn type_span(f: &FieldNode) -> String {
+    format!("<{}>", f.displayed_type())
+}
+
+/// A field's description with its accepted enum values appended, in the one
+/// spelling every surface uses (`enum: Copy, Symlink, Patch`). The description
+/// alone for a field that is not a unit-variant enum.
+fn described_with_enum(f: &FieldNode) -> String {
+    if f.enum_values.is_empty() {
+        return f.description.clone();
+    }
+    let values = enum_line(f);
+    if f.description.is_empty() {
+        return values;
+    }
+    format!("{} {values}", f.description)
+}
+
+/// The enum vocabulary line itself (`enum: Copy, Symlink, Patch`).
+fn enum_line(f: &FieldNode) -> String {
+    format!("enum: {}", f.enum_values.join(", "))
+}
+
+/// One row of a field list: the `name <type>` left column and the description
+/// that follows it.
+///
+/// The name is padded to the level's widest so the type column lines up
+/// beneath itself — the row's OWN two-level alignment, inside the single left
+/// column the renderer then aligns against the other rows — with the same
+/// two-space gap a kv block puts between its key and its value. Char padding
+/// is column padding here because a schema field name is an ASCII identifier.
+/// Whether a field drills in — the ONE predicate behind the `[+]` mark and
+/// behind the legend explaining it, so a list can never mark a field it then
+/// says nothing about (or explain a mark it never printed).
+fn is_expandable(f: &FieldNode) -> bool {
+    // A shape is not a field: its name is a rendered type, never a path
+    // segment, so it never earns the mark that promises one.
+    !f.is_variant && (!f.children.is_empty() || !f.variants.is_empty())
+}
+
+/// The type span a row renders: `<type>` for a field, nothing for a shape,
+/// whose NAME is its type — two columns stating one fact is what
+/// `[]string  <[]string>` read as.
+fn row_type_span(f: &FieldNode) -> String {
+    if f.is_variant {
+        String::new()
     } else {
-        s
+        type_span(f)
+    }
+}
+
+/// The fields a drill-down lists under `Fields`: the node's own, or — for a
+/// union whose ONE object arm is the only shape with fields — that arm's, in
+/// the place a plain object would have listed its own. A `Variants` section
+/// discloses shapes; it never replaces the field list, and `resolve_field_path`
+/// already drills through the arm, so every promoted row is a path segment.
+/// Two arms with fields cannot be merged and stay behind `--recursive`.
+fn own_fields(f: &FieldNode) -> &[FieldNode] {
+    if !f.children.is_empty() {
+        return &f.children;
+    }
+    let mut with_fields = f.variants.iter().filter(|v| !v.children.is_empty());
+    match (with_fields.next(), with_fields.next()) {
+        (Some(only), None) => &only.children,
+        _ => &[],
+    }
+}
+
+/// The `[+]` legend, or `None` when nothing in `fields` carries the mark.
+///
+/// `[+]` is minted only by [`field_row`], so a `--recursive` tree — which has
+/// already expanded every field — never earns it.
+fn expandable_hint(base: &str, fields: &[&FieldNode], recursive: bool) -> Option<String> {
+    (!recursive && fields.iter().any(|f| is_expandable(f)))
+        .then(|| format!("`cfgd explain {base}.<field>` expands a field marked [+]"))
+}
+
+/// The marker `[+]` and the ` (required)` flag each get a COLUMN, not a
+/// concatenation.
+///
+/// The legend tells the reader to scan for `[+]`, and only a column can be
+/// scanned: concatenated onto a variable-width type span it landed at six
+/// different x positions down eight rows, and ` (required)` — which sits
+/// between the type and the mark — moved every mark after it again. Each
+/// width is measured over the LEVEL, the same unit the name column is
+/// measured over, and a level with nothing required spends no width on the
+/// flag, so a list without one is byte-identical to what it always was.
+fn field_row(f: &FieldNode, widths: &LevelWidths) -> CommandPair {
+    let req = if f.required { " (required)" } else { "" };
+    let more = if is_expandable(f) { " [+]" } else { "" };
+    let type_span = row_type_span(f);
+    let key = format!(
+        "{:<name_width$}  {:<type_width$}{:<req_width$}{more}",
+        f.name,
+        type_span,
+        req,
+        name_width = widths.name,
+        type_width = widths.type_span,
+        req_width = widths.required,
+    );
+    // Nothing follows the last filled column, so its padding is trailing
+    // whitespace; `command_list` pads every key to the widest anyway.
+    let key = key.trim_end().to_string();
+    if f.is_variant {
+        CommandPair::new(key, described_with_enum(f))
+    } else {
+        CommandPair::typed(key, type_span, described_with_enum(f))
+    }
+}
+
+/// The three column widths a level's rows pad to, measured over that level.
+#[derive(Default)]
+struct LevelWidths {
+    name: usize,
+    type_span: usize,
+    required: usize,
+}
+
+impl LevelWidths {
+    /// Measured in chars: a schema field name is an ASCII identifier and a
+    /// type description is ASCII too, so char width is column width.
+    fn of(fields: &[&FieldNode]) -> Self {
+        Self {
+            name: fields
+                .iter()
+                .map(|f| f.name.chars().count())
+                .max()
+                .unwrap_or(0),
+            type_span: fields
+                .iter()
+                .map(|f| row_type_span(f).chars().count())
+                .max()
+                .unwrap_or(0),
+            required: if fields.iter().any(|f| f.required) {
+                " (required)".chars().count()
+            } else {
+                0
+            },
+        }
+    }
+}
+
+/// Append one level of fields.
+///
+/// Non-recursive: an aligned `name <type> — description` list, with `[+]`
+/// marking each field that expands.
+///
+/// Recursive: one structure tree — `name <type>` per field, each field's own
+/// level indented directly beneath its row, descriptions omitted (the
+/// `kubectl explain --recursive` shape: the tree is a map of the schema, and
+/// a field's documentation is one drill-down away). The whole tree is one
+/// `command_list`, so a level's siblings share an alignment; the indentation
+/// is tree structure — data, composed into the left column — not a section
+/// nesting, so no field name repeats as a heading.
+fn append_fields(s: SectionBuilder, fields: &[&FieldNode], recursive: bool) -> SectionBuilder {
+    if recursive {
+        let mut rows = Vec::new();
+        push_tree_rows(&mut rows, fields, 0);
+        return s.command_list(rows);
+    }
+    let widths = LevelWidths::of(fields);
+    s.command_list(fields.iter().map(|f| field_row(f, &widths)))
+}
+
+/// Collect the recursive structure tree: a `name <type> (required)` row per
+/// field, then its drill-in level indented one step deeper. Alignment is per
+/// level — siblings pad to their own widest name, measured from the same
+/// indent — so a level's type column lines up beneath itself.
+///
+/// A unit-variant enum's accepted values ride one line below the field, at the
+/// depth its children would occupy: the values ARE what the field expands into,
+/// and the tree has no other place to put a fact about one row.
+fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usize) {
+    let widths = LevelWidths::of(fields);
+    for f in fields {
+        let req = if f.required { " (required)" } else { "" };
+        let type_span = row_type_span(f);
+        // The tree carries no `[+]`, so the flag is last and needs no padding
+        // of its own — but the type span it follows is variable-width, which
+        // is what moved it. Same column, same measurement unit.
+        let key = format!(
+            "{:indent$}{:<name_width$}  {:<type_width$}{req}",
+            "",
+            f.name,
+            type_span,
+            indent = depth * 2,
+            name_width = widths.name,
+            type_width = widths.type_span,
+        );
+        rows.push(if f.is_variant {
+            CommandPair::new(key.trim_end().to_string(), String::new())
+        } else {
+            CommandPair::typed(key.trim_end().to_string(), type_span, String::new())
+        });
+        if !f.enum_values.is_empty() {
+            rows.push(CommandPair::new(
+                format!("{:indent$}{}", "", enum_line(f), indent = (depth + 1) * 2),
+                String::new(),
+            ));
+        }
+        let level = drill_level(f);
+        if !level.is_empty() {
+            push_tree_rows(rows, &level, depth + 1);
+        }
     }
 }
 
@@ -297,7 +732,7 @@ pub fn build_explain_index_doc() -> Doc {
     let schemas = all_schemas();
     let outputs: Vec<ExplainOutput> = schemas.iter().map(schema_to_output).collect();
     let mut table = Table::new(["NAME", "API/KIND", "LOCATION"]);
-    for s in &schemas {
+    for s in schemas {
         table = table.row([
             s.name.clone(),
             format!("{}/{}", s.api_version, s.kind),
@@ -306,31 +741,40 @@ pub fn build_explain_index_doc() -> Doc {
     }
     Doc::new()
         .heading("Available resource types")
-        .table(table)
-        .hint("Use 'cfgd explain <resource>' for details")
-        .hint("Use 'cfgd explain <resource>.<field>' to drill into a field")
-        .hint("Use 'cfgd explain <resource> --recursive' for all fields expanded")
+        .table(table.without_unfillable_columns())
+        .hint("Run `cfgd explain <resource>` for details")
+        .hint("Run `cfgd explain <resource>.<field>` to drill into a field")
+        .hint("Run `cfgd explain <resource> --recursive` for all fields expanded")
         .with_data(outputs)
 }
 
 /// Build the `cfgd explain <resource>` Doc — schema overview + top-level fields.
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
-    Doc::new()
-        .heading(format!("{} ({})", schema.name, schema.kind))
-        .status(Role::Info, schema.description.clone())
-        .kv_block([
-            ("apiVersion", schema.api_version.as_str()),
-            ("kind", schema.kind.as_str()),
-            ("location", schema.location.as_str()),
+    let fields = sorted_by_name(schema.fields.iter());
+    let hint = expandable_hint(&schema.name.to_lowercase(), &fields, recursive);
+    let doc = Doc::new()
+        .heading_title("Explain", schema.name.clone())
+        .paragraph(schema.description.clone())
+        // One block, so every row pads to one key column; the pointer is a
+        // LINK: the short path on a terminal that can open it, the full URL
+        // anywhere else — a partial path is clickable nowhere.
+        .kv_rows([
+            // name-row-ok: a KRM field name, spelled as the YAML spells it
+            KvPair::new("apiVersion", schema.api_version.as_str()),
+            // name-row-ok: a KRM field name, spelled as the YAML spells it
+            KvPair::new("kind", schema.kind.as_str()),
+            KvPair::new("Location", schema.location.as_str()),
+            docs_row(&schema.docs, schema.docs_url()),
         ])
-        .section("FIELDS (under spec)", |s| {
-            schema
-                .fields
-                .iter()
-                .fold(s, |s, f| append_field(s, f, recursive))
-        })
-        .with_data(output)
+        .section("Fields (under spec)", |s| {
+            append_fields(s, &fields, recursive)
+        });
+    match hint {
+        Some(h) => doc.hint(h),
+        None => doc,
+    }
+    .with_data(output)
 }
 
 /// Build the unknown-resource-type error carrying `CliErrorMeta` so the central
@@ -341,9 +785,9 @@ pub fn build_explain_not_found_error(name: &str, available: &[String]) -> anyhow
     crate::cli::cli_error_with_hints(
         name,
         "not_found",
-        format!("Unknown resource type '{name}'. Run 'cfgd explain' to see available types."),
+        format!("Unknown resource type '{name}'. Run `cfgd explain` to see available types."),
         serde_json::json!({ "available": available }),
-        vec!["Run 'cfgd explain' to see available resource types.".to_string()],
+        vec!["Run `cfgd explain` to see available resource types.".into()],
     )
 }
 
@@ -359,39 +803,69 @@ pub fn build_explain_drilldown_doc(
         schema.name.to_lowercase(),
         field_path.join(".")
     );
-    let mut doc = Doc::new().heading(path_str.clone());
-    if let [f] = fields {
-        // resolve_field_path returns a single-element slice in two cases
-        // that are indistinguishable from the slice alone: the path names a
-        // leaf field with no children (the common case), or it names a
-        // parent whose own children list happens to contain exactly one
-        // field. Either way, showing that one field's own name/type/
-        // description is the correct view — a one-field "Fields" listing
-        // and a genuine leaf's own header render identically here — so the
-        // force-expand into `Variants`/`Fields` below is unconditionally
-        // correct regardless of which case produced it.
-        let req = if f.required { " (required)" } else { "" };
-        doc = doc
-            .kv("field", f.name.clone())
-            .kv("type", format!("{}{}", f.type_desc, req))
-            .status(Role::Info, f.description.clone());
-        doc = doc.section_if_nonempty("Variants", &f.variants, |s, variants| {
-            variants
-                .iter()
-                .fold(s, |s, v| append_field(s, v, recursive))
+    // `find_field_node` looks up the field the FULL path names, independent
+    // of `resolve_field_path`'s children-returning contract, so the queried
+    // object's own name/type/description renders even when it has several
+    // children (a `.modules`-shaped query used to show only `registries`
+    // and `security`, with "Module configuration: registries and
+    // security." never appearing anywhere). Falling back to `fields` keeps
+    // this defensive against a path `resolve_field_path` accepted but this
+    // walk did not (should not happen: same schema, same path).
+    let node = find_field_node(&schema.fields, field_path);
+    let docs_path = schema.field_docs_path(field_path);
+    let docs_url = schema.field_docs_url(field_path);
+    // The queried field's own type belongs to the heading — the same
+    // `<type> (required)` vocabulary the field rows render, on the line that
+    // names the field, so no lone kv row repeats it below.
+    // The type reaches the heading through the same named-span slot the field
+    // rows use, so a rendered schema type takes the one type colour wherever
+    // it appears.
+    let mut doc = match node {
+        Some(f) => {
+            let req = if f.required { " (required)" } else { "" };
+            let span = type_span(f);
+            Doc::new().heading_title_typed("Explain", format!("{path_str} {span}{req}"), span)
+        }
+        None => Doc::new().heading_title("Explain", path_str.clone()),
+    };
+    let mut marked: Vec<&FieldNode> = Vec::new();
+    if let Some(f) = node {
+        doc = doc.paragraph(described_with_enum(f));
+        // Same header slot the kind page renders: `KvPair::linked` +
+        // `config::docs_url`, never a second composer.
+        doc = doc.kv_rows([docs_row(&docs_path, docs_url.clone())]);
+        let variants: Vec<&FieldNode> = f.variants.iter().collect();
+        doc = doc.section_if_nonempty("Variants", &variants, |s, variants| {
+            append_fields(s, variants, recursive)
         });
-        doc = doc.section_if_nonempty("Fields", &f.children, |s, children| {
-            children
-                .iter()
-                .fold(s, |s, c| append_field(s, c, recursive))
+        // The object's own fields expand ONE level without `--recursive` —
+        // the auto-expand this view exists for; `--recursive` still governs
+        // whether each of THOSE fields expands further, via `append_fields`.
+        let children = sorted_by_name(own_fields(f).iter());
+        doc = doc.section_if_nonempty("Fields", &children, |s, children| {
+            append_fields(s, children, recursive)
         });
+        // Only a FIELD can be marked: the legend's placeholder must
+        // substitute to a path the CLI resolves, and a shape's name is not one.
+        marked.extend(children.iter().copied());
+        if !recursive && children.is_empty() && f.variants.iter().any(|v| !v.children.is_empty()) {
+            doc = doc.hint(format!(
+                "`cfgd explain {path_str} --recursive` expands the shapes under Variants"
+            ));
+        }
     } else {
-        doc = doc.section("Fields", |s| {
-            fields.iter().fold(s, |s, f| append_field(s, f, recursive))
-        });
+        doc = doc.kv_rows([docs_row(&docs_path, docs_url.clone())]);
+        let all = sorted_by_name(fields.iter());
+        doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
+        marked.extend(all.iter().copied());
+    }
+    if let Some(h) = expandable_hint(&path_str, &marked, recursive) {
+        doc = doc.hint(h);
     }
     doc.with_data(ExplainDrilldownOutput {
         path: path_str,
+        docs: docs_path,
+        docs_url,
         fields: fields.iter().map(schema_field_to_explain).collect(),
     })
 }
@@ -416,7 +890,7 @@ pub(super) fn cmd_explain(
     let schema = match find_schema(resource_name) {
         Some(s) => s,
         None => {
-            let available: Vec<String> = all_schemas().into_iter().map(|s| s.name).collect();
+            let available: Vec<String> = all_schemas().iter().map(|s| s.name.clone()).collect();
             return Err(build_explain_not_found_error(resource_name, &available));
         }
     };
@@ -430,17 +904,17 @@ pub(super) fn cmd_explain(
     };
 
     let doc = if field_path.is_empty() {
-        build_explain_schema_doc(&schema, recursive)
+        build_explain_schema_doc(schema, recursive)
     } else {
         let fields = resolve_field_path(&schema.fields, field_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown field path '{}.{}'. Use 'cfgd explain {}' to see available fields.",
+                "Unknown field path '{}.{}'. Run `cfgd explain {}` to see available fields.",
                 resource_name,
                 field_path.join("."),
                 resource_name,
             )
         })?;
-        build_explain_drilldown_doc(&schema, field_path, fields, recursive)
+        build_explain_drilldown_doc(schema, field_path, fields, recursive)
     };
     printer.emit(doc);
     Ok(())

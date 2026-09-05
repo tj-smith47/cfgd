@@ -80,7 +80,7 @@ pub(crate) fn enforce_signature_policy(
         Ok(modules::TagSignatureStatus::SignaturePresent) => {
             match verify_tag_signature_cryptographic(&repo_dir, tag) {
                 Ok(true) => {
-                    printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
+                    printer.status_simple(Role::Ok, format!("Verified signature on tag '{}'", tag))
                 }
                 Ok(false) => {
                     return Err(crate::cli::cli_error(
@@ -156,7 +156,10 @@ mod tests {
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,

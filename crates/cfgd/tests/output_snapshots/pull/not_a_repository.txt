@@ -1,0 +1,2 @@
+Pull
+∅ Nothing to pull — the config directory is not a git repository

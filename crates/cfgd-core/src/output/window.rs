@@ -28,13 +28,17 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use super::renderer::StatusFields;
+use super::renderer::finalize_subject;
+use super::renderer::indent_prefix;
 use super::renderer::wrap::{available_width, clamp as clamp_line};
 use super::spinner::Spinner;
 use super::status_builder::StatusBuilder;
 use super::{Role, Verbosity};
 
-/// Lines of tail kept on screen under the spinner.
-const VISIBLE_LINES: usize = 5;
+/// Lines of tail kept on screen under the spinner, and the same ceiling every
+/// captured-output fold in [`super`] bounds a rendered slot to: what the reader
+/// watched live is what the settled row keeps.
+pub(super) const VISIBLE_LINES: usize = 5;
 
 /// Strip child ANSI, collapse any in-place rewrite to what it settled on, then
 /// render a control byte that still survived as visible `\xNN`.
@@ -56,8 +60,10 @@ fn sanitize(line: &str) -> String {
 /// [`super::Printer::output_window`], feed with [`OutputWindow::push_line`],
 /// close with one of the `finish_*` methods.
 ///
-/// Dropping without an explicit finish collapses the window and emits a
-/// `Status(Info)`, so an abandoned step still leaves one line behind.
+/// Dropping without an explicit finish collapses the window and settles it
+/// via the inner [`Spinner`]'s own Drop — `Role::Skipped` with an
+/// "(interrupted)" suffix — so an abandoned step still leaves one line
+/// behind, distinct from a real success or failure.
 pub struct OutputWindow<'p> {
     spinner: Spinner<'p>,
     ring: VecDeque<String>,
@@ -89,17 +95,27 @@ impl<'p> OutputWindow<'p> {
         if announce && !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
             // No window to hold the label, so the step announces itself the way
             // `run_streaming` does: a Running status, then its lines.
+            //
+            // Routed through `finalize_subject` like every other status
+            // subject rather than written straight into the fields — its fold
+            // takes the live-region COAT back off the label
+            // `compose_in_flight_subject` handed over (the text underneath is
+            // already folded, so nothing else changes), which is what keeps
+            // this permanent arm rendering the same bytes as the settled line
+            // that replaces it.
+            let announced = finalize_subject(&spinner.renderer.theme, &label, None, None, None);
             spinner.renderer.render_status(
                 spinner.sink.as_ref(),
                 spinner.depth,
                 &StatusFields {
                     role: Role::Running,
-                    subject: &label,
+                    subject: &announced,
                     detail: None,
                     duration: None,
                     target: None,
                     subject_style: None,
                     detail_style: None,
+                    verdict: None,
                 },
             );
         }
@@ -110,6 +126,15 @@ impl<'p> OutputWindow<'p> {
             windowed,
             body_depth,
         }
+    }
+
+    /// Join the spinner's steady-tick thread, so a test reading the emulated
+    /// screen is the only writer to it — its redraws otherwise interleave
+    /// with this thread's draws and corrupt the screen's cursor-move and
+    /// clear sequences.
+    #[cfg(test)]
+    pub(crate) fn disable_steady_tick(&self) {
+        self.spinner.bar.disable_steady_tick();
     }
 
     /// Feed one raw line of child output. Blank lines are dropped — they cost a
@@ -134,6 +159,7 @@ impl<'p> OutputWindow<'p> {
         // The ring's rows are rewritten in place by `repaint` below — indicatif
         // has no way to reach a second row for an over-wide one — so this is
         // the one path that must clamp rather than wrap.
+        // plain-clamp-ok: foreign captured bytes, with no row above them to match a retreated head against
         let clamped = clamp_line(
             text,
             available_width(self.spinner.sink.as_ref(), self.body_depth),
@@ -145,15 +171,15 @@ impl<'p> OutputWindow<'p> {
         self.repaint();
     }
 
-    fn repaint(&self) {
-        let indent = "  ".repeat(self.body_depth);
+    fn repaint(&mut self) {
+        let indent = indent_prefix(self.body_depth);
         let mut msg = self.label.clone();
         for line in &self.ring {
             msg.push('\n');
             msg.push_str(&indent);
             msg.push_str(&self.spinner.renderer.theme.muted.apply_to(line).to_string());
         }
-        self.spinner.set_message(msg);
+        self.spinner.set_composed_message(msg);
     }
 
     /// Collapse the window and replace it with a single Status in `role`.
@@ -256,7 +282,7 @@ impl super::Printer {
     /// this — there is no second tail implementation to drift from it.
     /// Open a bounded output window at the ambient depth — the innermost open
     /// section while a `DepthInheritGuard` is held, column 0 otherwise. The
-    /// same relationship [`Printer::run`] has to `run_command`: a caller
+    /// same relationship [`super::printer::Printer::run`] has to `run_command`: a caller
     /// inside a section gets its window indented under the line it belongs to
     /// without naming a depth it would have to keep in sync.
     #[must_use]
@@ -266,7 +292,7 @@ impl super::Printer {
 
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
-        let label = label.into();
+        let label = super::spinner::compose_in_flight_subject(&self.renderer.theme, label);
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
@@ -296,7 +322,6 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::strip_ansi;
 
     fn window(depth: usize, verbosity: Verbosity) -> (OutputWindow<'static>, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -370,7 +395,7 @@ mod tests {
         w.push_line("first");
         w.push_line("second");
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("first"), "got: {out:?}");
         assert!(out.contains("second"), "got: {out:?}");
         assert!(out.contains("step done"), "got: {out:?}");
@@ -385,7 +410,7 @@ mod tests {
         let long = "x".repeat(200);
         w.push_line(&long);
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains(&long), "long line was truncated: {out:?}");
     }
 
@@ -394,7 +419,7 @@ mod tests {
         let (mut w, buf) = window(0, Verbosity::Quiet);
         w.push_line("noise");
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(!out.contains("noise"), "quiet leaked output: {out:?}");
     }
 
@@ -404,7 +429,7 @@ mod tests {
         w.push_line("   ");
         w.push_line("kept");
         let _ = w.finish_ok("done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let body: Vec<&str> = out.lines().filter(|l| l.trim() == "kept").collect();
         assert_eq!(body.len(), 1, "got: {out:?}");
     }
@@ -456,7 +481,7 @@ mod tests {
         w.windowed = true;
         w.push_line("some noise nobody needs");
         let _ = w.finish_fail("step failed");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("step failed"), "got: {out:?}");
         assert!(
             !out.contains("some noise nobody needs"),
@@ -488,10 +513,10 @@ mod tests {
         // The Windowed script arm picks its role from `non_fatal` at the call
         // site, so the primitive has to carry an arbitrary role through rather
         // than offering three fixed collapses.
-        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "—")] {
+        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "∅")] {
             let (w, buf) = window(0, Verbosity::Normal);
             let _ = w.finish_with(role, "script finished");
-            let out = strip_ansi(&buf.lock().unwrap());
+            let out = crate::test_helpers::captured_text(&buf);
             assert!(
                 out.contains(&format!("{glyph} script finished")),
                 "role {role:?} did not reach the status line: {out:?}"

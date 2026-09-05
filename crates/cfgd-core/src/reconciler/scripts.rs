@@ -1,9 +1,9 @@
 use std::io::IsTerminal;
 
 use crate::PathDisplayExt;
-use crate::config::{ScriptEntry, ScriptShell};
+use crate::config::{ScriptCommand, ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::{OutputWindow, Printer, Role, collapse_to_subject_line, condense_script_label};
+use crate::output::{OutputWindow, Printer, Role, condense_script_label};
 
 use super::format::DisplaySubject;
 use super::types::{ReconcileContext, ScriptPhase};
@@ -575,10 +575,16 @@ pub(crate) fn execute_script_with_tty(
         shell_override,
         abort,
     );
+    // A user script is the one thing cfgd runs whose effects it cannot predict:
+    // a `preApply` hook that installs a toolchain must be visible to everything
+    // planned after it, so no memoized command resolution outlives one.
+    crate::invalidate_command_resolution();
     if !st.reported() {
         match &out {
             Ok(_) => st.finish_ok(started.elapsed()),
-            Err(e) => st.finish_fail(&collapse_to_subject_line(e), None),
+            // A failed hook's message carries the script's own captured output,
+            // the same shape a failed package command's does.
+            Err(e) => st.finish_fail(&crate::output::captured_output_detail(e), None),
         }
     }
     out
@@ -614,9 +620,9 @@ fn execute_script_inner(
     // deploy dir (`workdir: ~/.local/share/app`), the module source
     // (`workdir: $CFGD_MODULE_DIR`), or any absolute path.
     let workdir_override = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             workdir: Some(w), ..
-        } => Some(resolve_script_workdir(w, env_vars)),
+        }) => Some(resolve_script_workdir(w, env_vars)),
         _ => None,
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
@@ -639,13 +645,13 @@ fn execute_script_inner(
     // then `onlyIf` (run only on zero exit), then `unless` (run only on
     // non-zero exit). Any guard that says "skip" short-circuits with
     // changed=false. A skip is a clean no-op, not a failure.
-    if let ScriptEntry::Full {
+    if let ScriptEntry::Full(ScriptCommand {
         only_if,
         unless,
         creates,
         shell,
         ..
-    } = entry
+    }) = entry
     {
         let guard_shell = shell_override.unwrap_or(*shell);
 
@@ -698,9 +704,9 @@ fn execute_script_inner(
     // must NOT inherit `default_timeout` — only an author-declared `timeout:`
     // bounds an interactive step (see the disposition match below).
     let explicit_timeout = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             timeout: Some(t), ..
-        } => Some(
+        }) => Some(
             crate::parse_duration_str(t)
                 .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
         ),
@@ -708,10 +714,10 @@ fn execute_script_inner(
     };
     let effective_timeout = explicit_timeout.unwrap_or(default_timeout);
     let idle_timeout = match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             idle_timeout: Some(t),
             ..
-        } => Some(
+        }) => Some(
             crate::parse_duration_str(t)
                 .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
         ),
@@ -719,17 +725,17 @@ fn execute_script_inner(
     };
 
     let entry_shell = match entry {
-        ScriptEntry::Full { shell, .. } => *shell,
+        ScriptEntry::Full(ScriptCommand { shell, .. }) => *shell,
         ScriptEntry::Simple(_) => ScriptShell::Auto,
     };
     let shell = shell_override.unwrap_or(entry_shell);
 
     let interactive = matches!(
         entry,
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             interactive: true,
             ..
-        }
+        })
     );
     let disposition = interactive_disposition(interactive, stdin_is_tty);
     // Every other arm still gets its own process group, so a timeout/idle
@@ -888,7 +894,7 @@ fn execute_script_inner(
     st.open_window();
 
     // Channel for live display + Arc buffers for final capture.
-    // Reader threads feed both so we get live scrolling output AND full capture.
+    // Reader threads feed both, for live scrolling output AND full capture.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -972,7 +978,7 @@ fn execute_script_inner(
                     }
                 }
                 // Cooperative abort: abort flag was set while the script was running.
-                // Kill immediately (no grace period — we're already in an interrupt path).
+                // Kill immediately (no grace period — already in an interrupt path).
                 if kill_reason.is_none()
                     && let Some(a) = abort
                     && a.aborted().is_some()
@@ -982,7 +988,7 @@ fn execute_script_inner(
                     for line in rx.try_iter() {
                         st.push_line(&line);
                     }
-                    st.finish_fail("interrupted", Some(elapsed));
+                    st.finish_fail("Interrupted", Some(elapsed));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -999,7 +1005,7 @@ fn execute_script_inner(
                         Some(elapsed),
                     );
                     kill_script_child(&mut child, true);
-                    // Join reader threads so we capture partial output
+                    // Join reader threads to capture partial output
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     let stdout_str = std::sync::Arc::try_unwrap(stdout_buf)
@@ -1066,7 +1072,7 @@ fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()
 ///
 /// A `fork` in any other thread duplicates every open write descriptor, so a
 /// script this process just finished writing can still be held open by an
-/// unrelated child when we `exec` it — the kernel answers `ETXTBSY`. The window
+/// unrelated child at the moment it `exec`s — the kernel answers `ETXTBSY`. The window
 /// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
 /// so a short bounded retry converges where a single attempt fails at random.
 /// Every other spawn error is returned untouched on the first attempt.
@@ -1492,10 +1498,10 @@ pub(super) fn default_continue_on_error(phase: &ScriptPhase) -> bool {
 /// Resolve the effective `continue_on_error` for a script entry in a given phase.
 pub(crate) fn effective_continue_on_error(entry: &ScriptEntry, phase: &ScriptPhase) -> bool {
     match entry {
-        ScriptEntry::Full {
+        ScriptEntry::Full(ScriptCommand {
             continue_on_error: Some(v),
             ..
-        } => *v,
+        }) => *v,
         _ => default_continue_on_error(phase),
     }
 }

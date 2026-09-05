@@ -31,8 +31,21 @@ pub use windows::service_binpath_argv;
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
 
-/// The `--state-dir` / `--runtime-dir` tokens an installed service must carry,
-/// in a fixed order, for whichever of the two were set.
+/// The detail line every platform's start path shows when the unit landed on
+/// disk but nothing is running yet.
+///
+/// Three start paths reach it — systemd with no `systemctl`, systemd with no
+/// user session bus, launchd with no `launchctl` — and each pairs it with its
+/// own subject and its own hint. Only the middle clause, the state of the
+/// machine, is shared, and a user comparing two hosts must read the same
+/// words for the same state. Unix-only: the Windows installer never reports
+/// this state statically — it polls the SCM and states the real post-start
+/// outcome instead.
+#[cfg(unix)]
+pub(crate) const INSTALLED_NOT_STARTED: &str = "daemon installed but not started";
+
+/// The `--state-dir` / `--runtime-dir` / `--cache-dir` tokens an installed
+/// service must carry, in a fixed order, for whichever were set.
 ///
 /// One source of truth for all three generators: the systemd unit, the launchd
 /// plist, and the Windows binPath must agree on which flags are baked in, or
@@ -46,14 +59,17 @@ pub(crate) fn service_dir_flags(dirs: &DaemonDirOverrides) -> Vec<(&'static str,
     if let Some(dir) = dirs.runtime_dir.as_deref() {
         flags.push(("--runtime-dir", dir));
     }
+    if let Some(dir) = dirs.cache_dir.as_deref() {
+        flags.push(("--cache-dir", dir));
+    }
     flags
 }
 
 /// Install cfgd as a platform service.
 ///
-/// `dirs` is the invoking process's `--state-dir` / `--runtime-dir`; both are
-/// baked into the generated unit so the installed daemon resolves the same
-/// directories the operator's CLI does.
+/// `dirs` is the invoking process's `--state-dir` / `--runtime-dir` /
+/// `--cache-dir`; all three are baked into the generated unit so the installed
+/// daemon resolves the same directories the operator's CLI does.
 pub fn install_service(
     config_path: &Path,
     profile: Option<&str>,

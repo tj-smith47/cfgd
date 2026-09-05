@@ -38,13 +38,19 @@ impl<'a> super::Reconciler<'a> {
                         if sc.name() == configurator {
                             sc.apply(desired_value, &cx)?;
                             return Ok(format!(
-                                "system:{}.{} ({} → {})",
-                                configurator, key, current, desired
+                                "system:{} ({} {} {})",
+                                super::system_resource_key(configurator, key),
+                                current,
+                                printer.arrow(),
+                                desired
                             ));
                         }
                     }
                 }
-                Ok(format!("system:{}.{}", configurator, key))
+                Ok(format!(
+                    "system:{}",
+                    super::system_resource_key(configurator, key)
+                ))
             }
             SystemAction::Skip { configurator, .. } => {
                 Ok(format!("system:{} (skipped)", configurator))

@@ -22,7 +22,7 @@ pub fn run_inherit(args: &[&str]) -> std::io::Result<i32> {
 }
 
 /// Run an arbitrary argv with inherited stdio — used for `cfgd plugin exec`
-/// where argv[0] is already `kubectl` but was built as a full vector. Keeps
+/// where `argv[0]` is already `kubectl` but was built as a full vector. Keeps
 /// the `std::process::Command` allocation out of `plugin.rs`.
 pub fn run_argv_inherit(argv: &[String]) -> std::io::Result<i32> {
     if argv.is_empty() {
@@ -46,20 +46,36 @@ pub fn run_with_stdin(args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
     run_with_stdin_at("kubectl", args, stdin_data)
 }
 
+/// Feed `stdin_data` to a spawned child, then close the pipe so it sees EOF.
+///
+/// A closed pipe is the CHILD's answer, not an error of ours: a kubectl that
+/// rejects the invocation exits before reading the manifest, and propagating
+/// the resulting `BrokenPipe` reports `Broken pipe (os error 32)` — a sentence
+/// that says nothing about what kubectl objected to, while discarding the exit
+/// code and the stderr that do. Swallowed here so the caller's non-zero-code
+/// arm speaks instead.
+fn feed_stdin(child: &mut std::process::Child, stdin_data: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    // Taken, so the handle drops at the end of this function.
+    let Some(mut stdin) = child.stdin.take() else {
+        return Ok(());
+    };
+    match stdin.write_all(stdin_data.as_bytes()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 /// Inner of [`run_with_stdin`] parameterized on the binary so the success path
 /// is testable (drive it through `/usr/bin/cat`) without kubectl on PATH.
 fn run_with_stdin_at(bin: &str, args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
-    use std::io::Write;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?;
-    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_data.as_bytes())?;
-    }
+    feed_stdin(&mut child, stdin_data)?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
 }
@@ -81,17 +97,13 @@ fn run_with_stdin_capture_stdout_at(
     args: &[&str],
     stdin_data: &str,
 ) -> std::io::Result<(i32, String)> {
-    use std::io::Write;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_data.as_bytes())?;
-    }
+    feed_stdin(&mut child, stdin_data)?;
     let out = child.wait_with_output()?;
     let code = out.status.code().unwrap_or(1);
     Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
@@ -100,7 +112,7 @@ fn run_with_stdin_capture_stdout_at(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    //! Unit coverage for the kubectl shell-out helpers. We drive `run_argv_inherit`
+    //! Unit coverage for the kubectl shell-out helpers. This drives `run_argv_inherit`
     //! through `/bin/true`, `/bin/false`, and a nonexistent binary so the
     //! Ok(0) / Ok(non-zero) / spawn-Err arms each fire. The `run_inherit`
     //! entry deliberately scrubs PATH to pin its spawn-Err arm without
@@ -119,7 +131,7 @@ mod tests {
         // `/usr/bin/true` is silent and exits 0 on every POSIX system —
         // present on both Linux (coreutils) and macOS (BSD). `/bin/true`
         // does NOT exist on modern macOS, so prefer the /usr/bin path.
-        // If it's absent we skip rather than fail — this test is about
+        // If it's absent this skips rather than fails — this test is about
         // exercising the success branch, not the platform.
         if !std::path::Path::new("/usr/bin/true").exists() {
             return;

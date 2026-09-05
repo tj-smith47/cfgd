@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use console::Term;
 
-use super::renderer::{Renderer, StatusFields, Table, Writer};
+use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 use super::{OutputFormat, Role, Theme, Verbosity};
 
 /// One canned prompt response. Used by tests to drive prompt_* past
@@ -102,7 +102,7 @@ pub struct Printer {
 pub enum ColorChoice {
     /// Colour when the terminal and the output format both allow it —
     /// `console`'s own tty/`CLICOLOR` detection, read once, minus the cases
-    /// [`colors_must_be_disabled`] rules out.
+    /// `colors_must_be_disabled` rules out.
     Auto,
     /// Colour whatever the terminal says, short of the one case that would
     /// corrupt data. What `--color always` selects, for a run piped into a
@@ -114,7 +114,11 @@ pub enum ColorChoice {
 
 impl ColorChoice {
     /// Resolve to the concrete decision this printer will hold for its lifetime.
-    fn resolve(self, output_format: &OutputFormat) -> bool {
+    ///
+    /// `pub(crate)` so a pin asserting what a `--color never` run puts on the
+    /// stream can take the decision from the production function rather than
+    /// restating `false` and proving nothing about it.
+    pub(crate) fn resolve(self, output_format: &OutputFormat) -> bool {
         match self {
             // The colour question is asked of STDERR, because stderr is where
             // every human emission goes: stdout carries structured data only,
@@ -151,6 +155,29 @@ pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
         || output_format.is_structured()
 }
 
+/// Stamp OSC 8 hyperlinks onto `theme` iff colour resolved on and the terminal
+/// is a known emitter. Read by the two PRODUCTION constructors only: a capture
+/// never detects, so no golden can pick up an escape from the developer's own
+/// terminal. `build` re-applies the same `colors`, and `with_colors` withdraws
+/// the stamp with the colour, so the two cannot end up disagreeing.
+fn stamp_hyperlinks(theme: Theme, colors: bool) -> Theme {
+    // Colour off already settles the answer, so the terminal is never asked:
+    // the probe reads several environment variables on every construction, and
+    // `with_hyperlinks` would discard what it learned. `-o json`, `NO_COLOR`
+    // and a piped stdout are the common case, not the rare one.
+    if !colors {
+        return theme.with_colors(false);
+    }
+    theme
+        .with_colors(true)
+        .with_hyperlinks(super::terminal_supports_hyperlinks())
+}
+
+/// The depth an action row renders at in a report: under its phase's section
+/// and its owner's group. A sole-lane phase draws a level shallower, which
+/// only leaves such a row more room than it was budgeted.
+pub const ACTION_ROW_DEPTH: usize = 2;
+
 impl Printer {
     /// Production constructor: stderr/stdout via `console::Term`.
     pub fn new(verbosity: Verbosity) -> Self {
@@ -182,7 +209,12 @@ impl Printer {
     ) -> Self {
         let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
         let colors = colors.resolve(&output_format);
-        Self::build(verbosity, theme, output_format, colors)
+        Self::build(
+            verbosity,
+            stamp_hyperlinks(theme, colors),
+            output_format,
+            colors,
+        )
     }
 
     /// Production constructor for a printer built from the user's `spec.theme`
@@ -201,7 +233,12 @@ impl Printer {
     ) -> Self {
         let theme = Theme::from_config(theme);
         let colors = colors.resolve(&output_format);
-        Self::build(verbosity, theme, output_format, colors)
+        Self::build(
+            verbosity,
+            stamp_hyperlinks(theme, colors),
+            output_format,
+            colors,
+        )
     }
 
     fn build(
@@ -222,14 +259,16 @@ impl Printer {
         // whose stderr sink is that MultiProgress's own draw target, which is
         // what makes routing lines through it correct.
         let multi_progress = indicatif::MultiProgress::new();
+        let sink_stderr: Arc<dyn Writer> = Arc::new(Term::stderr());
         Self {
             renderer: Arc::new(Renderer::with_bars(
                 theme,
                 verbosity,
                 multi_progress.clone(),
+                sink_stderr.clone(),
             )),
             output_format,
-            sink_stderr: Arc::new(Term::stderr()),
+            sink_stderr,
             sink_stdout: Arc::new(Term::stdout()),
             multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
@@ -254,7 +293,7 @@ impl Printer {
     /// is written closes that gap.
     ///
     /// Inherits every ambient terminal decision and test channel from `self` —
-    /// see [`Printer::build_derived`]. `cmd_init` re-themes mid-run and keeps
+    /// see `Printer::build_derived`. `cmd_init` re-themes mid-run and keeps
     /// using the derived printer for the apply that follows; a re-probed
     /// `interactive_stdin`/`live_region` there is the pty-hang shape this
     /// closes (a `prompt_queue` reset to `None` would also silently drop a
@@ -269,7 +308,7 @@ impl Printer {
 
     /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
     /// `spec.theme.overrides`) and every ambient terminal decision and test
-    /// channel from `self` — see [`Printer::build_derived`].
+    /// channel from `self` — see `Printer::build_derived`.
     ///
     /// The one way to mint the quiet sink a command hands to a library call, and
     /// the daemon's own printer. Deriving `live_region`/`multi_progress` from
@@ -300,6 +339,10 @@ impl Printer {
     /// call (the daemon's own printer) would stand up a second
     /// `MultiProgress` doing independent cursor arithmetic on the one real
     /// stderr the process printer already owns.
+    ///
+    /// The live-bar bookkeeping travels with the `MultiProgress` rather than
+    /// being minted fresh — see [`super::renderer::LiveBarState`] for the
+    /// stranded-paint bug a per-renderer count causes.
     fn build_derived(
         &self,
         verbosity: Verbosity,
@@ -316,11 +359,22 @@ impl Printer {
         // re-resolving: re-reading the terminal would let the two disagree
         // mid-run, which is the whole class of bug the field exists to close.
         let theme = theme.with_colors(self.colors);
+        // The derived renderer writes the SAME sink as `self.renderer` (both
+        // clone `sink_stderr`/`sink_stdout` below rather than opening new
+        // ones), so it has to continue `self`'s blank-line bookkeeping rather
+        // than starting fresh — a bare `Renderer::with_bars` here defaults
+        // `leading: true`, which reads as "nothing has been written yet" even
+        // when `self` just closed a section that owes the next heading a
+        // blank line. See `RenderState::continued_from`.
+        let seed = self.renderer.continuation_seed();
         Self {
-            renderer: Arc::new(Renderer::with_bars(
+            renderer: Arc::new(Renderer::with_bars_continued(
                 theme,
                 verbosity,
                 self.multi_progress.clone(),
+                seed,
+                self.renderer.live.clone(),
+                self.renderer.hints_enabled(),
             )),
             output_format,
             sink_stderr: self.sink_stderr.clone(),
@@ -346,6 +400,20 @@ impl Printer {
         self
     }
 
+    /// Enable or disable closing `→` usage hints for this printer's lifetime.
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
+    /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.usageHints`).
+    ///
+    /// The decision lives on the `Renderer` rather than on `Printer` itself:
+    /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
+    /// clone of `self.renderer` and reach `render_hint` directly, never
+    /// asking the `Printer`, so a flag stored only here would not reach them.
+    pub fn with_hints_enabled(self, enabled: bool) -> Self {
+        self.renderer.set_hints_enabled(enabled);
+        self
+    }
+
     pub fn verbosity(&self) -> Verbosity {
         self.renderer.verbosity
     }
@@ -364,19 +432,83 @@ impl Printer {
         self.colors
     }
 
+    /// The ONE arrow glyph for a rendered `old -> new` / `source -> target`
+    /// relationship — see [`Theme::arrow`], which this delegates to. A caller
+    /// composing such a string interpolates this instead of hardcoding ASCII
+    /// `->`, so a preset override applies uniformly rather than leaving some
+    /// relationships themed and others not.
+    pub fn arrow(&self) -> &str {
+        self.renderer.theme.arrow()
+    }
+
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {
         let depth = self.renderer.enforce_structural_top_level(0);
         // render_heading is hardcoded to depth 0 today; for the runtime-check
-        // re-route path we emit a styled bold line at the section's depth so
+        // re-route path a styled bold line is emitted at the section's depth so
         // the output stays readable despite the shape being wrong.
         if depth == 0 {
             self.renderer
                 .render_heading(self.sink_stderr.as_ref(), &text.into());
         } else {
-            let text = text.into();
-            let styled = self.renderer.theme.header.apply_to(&text).to_string();
+            let styled = heading_fallback_line(&self.renderer.theme, &text.into());
+            self.renderer
+                .write_line(self.sink_stderr.as_ref(), depth, &styled);
+        }
+    }
+}
+
+/// The line [`Printer::heading`] writes on its re-route branch — a heading
+/// asked for at column 0 while a section is open.
+///
+/// A free function rather than three inline statements because the branch
+/// itself is behind a `debug_assert!(false)` and so cannot be entered from a
+/// test build at all: without this seam the fold on it would be provable only
+/// by reading it, which is how a slot ends up unfolded in the first place.
+pub(super) fn heading_fallback_line(theme: &super::Theme, text: &str) -> String {
+    theme.header.apply_to(super::cursor_safe(text)).to_string()
+}
+
+impl Printer {
+    /// Top-level `Label: value` heading (`Status: dev-tools`), styled through
+    /// [`super::TitleLabel`]'s three slots instead of `heading`'s single
+    /// `theme.header` coat.
+    pub fn heading_title(&self, title: &super::TitleLabel) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let styled = title.styled(&self.renderer.theme);
+        // See `heading`'s comment: render_heading_styled is hardcoded to
+        // depth 0, so the runtime re-route path writes the same styled line
+        // at the section's actual depth instead.
+        if depth == 0 {
+            self.renderer
+                .render_heading_styled(self.sink_stderr.as_ref(), &styled);
+        } else {
+            self.renderer
+                .write_line(self.sink_stderr.as_ref(), depth, &styled);
+        }
+    }
+
+    /// Top-level `<Verb> <owner>` heading (`Add source:acme`), styled through
+    /// [`super::OwnerLabel`]'s three slots for the token instead of folding
+    /// the whole line into `heading`'s single `theme.header` coat.
+    ///
+    /// Named `_prefixed` because the verb is the point: an owner token names
+    /// WHOSE the rows below it are, which is a section's job
+    /// ([`Printer::section_owner`], [`super::Doc::section_owner`]), so a bare
+    /// `kind:name` never occupies a top-level heading slot. There is
+    /// deliberately no unprefixed counterpart on either the streaming or the
+    /// buffered side.
+    pub fn heading_owner_prefixed(&self, prefix: impl Into<String>, owner: &super::OwnerLabel) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let styled = owner.styled_with_prefix(&self.renderer.theme, &prefix.into());
+        // See `heading`'s comment: render_heading_styled is hardcoded to
+        // depth 0, so the runtime re-route path writes the same styled line
+        // at the section's actual depth instead.
+        if depth == 0 {
+            self.renderer
+                .render_heading_styled(self.sink_stderr.as_ref(), &styled);
+        } else {
             self.renderer
                 .write_line(self.sink_stderr.as_ref(), depth, &styled);
         }
@@ -385,7 +517,7 @@ impl Printer {
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
-        // through, but we still want the warn/assert at the call site.
+        // through, but the warn/assert is still wanted at the call site.
         let _depth = self.renderer.enforce_structural_top_level(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }
@@ -397,18 +529,60 @@ impl Printer {
         V: Into<String>,
     {
         let depth = self.renderer.enforce_structural_top_level(0);
-        let pairs: Vec<(String, String)> = pairs
+        let pairs: Vec<crate::output::KvPair> = pairs
             .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
+            .map(|(k, v)| crate::output::KvPair::new(k, v))
             .collect();
         self.renderer
             .render_kv_block(self.sink_stderr.as_ref(), depth, &pairs);
     }
 
-    pub fn hint(&self, text: impl Into<String>) {
+    /// `kv_block` over hand-built [`KvPair`]s, so a top-level block can reach
+    /// the renderer-owned `annotated` / `nested` / `role_valued` slots.
+    ///
+    /// Without it a command with no section open had to hand-build
+    /// `format!("{value} ({note})")`, which paints the note the same weight as
+    /// the value and misaligns nothing the renderer can see.
+    ///
+    /// [`KvPair`]: crate::output::KvPair
+    pub fn kv_rows<I>(&self, rows: I)
+    where
+        I: IntoIterator<Item = crate::output::KvPair>,
+    {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let rows: Vec<crate::output::KvPair> = rows.into_iter().collect();
+        self.renderer
+            .render_kv_block(self.sink_stderr.as_ref(), depth, &rows);
+    }
+
+    /// A "command — description" list — `kv_block`'s counterpart for a left
+    /// column that is a shell command rather than a data-carrying key. See
+    /// `Renderer::render_command_list` for why it needs its own layout.
+    pub fn command_list<I>(&self, pairs: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<crate::output::CommandPair>,
+    {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let pairs: Vec<crate::output::CommandPair> = pairs.into_iter().map(Into::into).collect();
+        self.renderer
+            .render_command_list(self.sink_stderr.as_ref(), depth, &pairs);
+    }
+
+    pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) {
+        let hint = hint.into();
         let depth = self.renderer.inherit_depth();
         self.renderer
-            .render_hint(self.sink_stderr.as_ref(), depth, &text.into());
+            .render_hint(self.sink_stderr.as_ref(), depth, &hint.text, &hint.commands);
+    }
+
+    /// A hint whose colon-introduced payload is one or more commands, dropped
+    /// onto their own indented `$ ` lines. See [`crate::output::HintCommands`].
+    pub fn hint_commands(&self, prose: impl Into<String>, commands: &[&str]) {
+        self.hint(crate::output::HintCommands::new(
+            prose,
+            commands.iter().copied(),
+        ));
     }
 
     pub fn note(&self, text: impl Into<String>) {
@@ -423,6 +597,12 @@ impl Printer {
     /// deprecation diagnostic reaches the user even under `-o json` / `--jsonpath`.
     /// It writes only to `sink_stderr`, never to `sink_stdout`, keeping the
     /// `-o` data channel pure.
+    ///
+    /// Keeps the top-level structural assert that [`Printer::alert`] gives up:
+    /// a deprecation is drained at the command boundary that owns the terminal
+    /// (`CfgdConfig.deprecations`, drained once per command), so reaching one
+    /// from inside an open section means the drain moved, not that the notice
+    /// was discovered there.
     pub fn deprecation(&self, msg: impl Into<String>) {
         let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
@@ -438,8 +618,15 @@ impl Printer {
     /// SPELLING and stays true until the surface is removed, while an alert is
     /// about the command's EFFECT this time. Routing both through one name makes
     /// them indistinguishable to a reader and to a grep.
+    ///
+    /// Correct at ANY depth (see `Renderer::advisory_depth`): unlike a
+    /// deprecation, which is drained at the command boundary that owns the
+    /// terminal, an alert is emitted where the effect is discovered — mid
+    /// composition, inside whatever section the caller opened — and a message
+    /// the user must see may not be the thing that panics a debug build for
+    /// being nested.
     pub fn alert(&self, msg: impl Into<String>) {
-        let depth = self.renderer.enforce_structural_top_level(0);
+        let depth = self.renderer.advisory_depth();
         self.renderer
             .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
     }
@@ -461,21 +648,129 @@ impl Printer {
         super::renderer::DepthInheritGuard::acquire(&self.renderer)
     }
 
-    /// `theme.muted` applied to `text` — the one way a caller composes a
-    /// subordinate fragment into a value the renderer receives as a single
-    /// string (a kv row whose tail qualifies its head, and which therefore has
-    /// no field of its own to carry a style). A colour-disabled stream answers
-    /// the text unchanged, because `ThemedStyle` decides that and not the
-    /// caller. Never reach for `console` to do this at a call site.
-    pub fn muted(&self, text: &str) -> String {
-        self.renderer.theme.muted.apply_to(text).to_string()
+    /// The columns an action row's SUBJECT may occupy on this printer's
+    /// terminal, or `None` for a sink that never wraps (a capture, a
+    /// redirected stream). A subject past it is not cut — an operand list
+    /// names every operand and WRAPS — but it is a row the report's
+    /// alignment column is no longer measured over: its detail lands on its
+    /// last physical row, and only its duration is anchored at the column.
+    ///
+    /// Half of what the complete-line budget at [`ACTION_ROW_DEPTH`] leaves
+    /// after the glyph and the wait framing
+    /// ([`WAIT_FRAMING_WIDTH`](super::renderer::status::WAIT_FRAMING_WIDTH)):
+    /// the widest row a report can print is a subject at the budget, ` —
+    /// queued behind `, and ANOTHER subject at the budget, so a budget that
+    /// halved the whole line let a filled subject and the report's claimed
+    /// column contradict each other — every row reached the budget T5
+    /// grants, and the claim's retreat then refused every report a column.
+    /// Sized this way the two agree by construction: the widest subject the
+    /// budget permits is always a column the widest wait reason still fits
+    /// beside. Read once per report and threaded to every reader of
+    /// `action_display_subject_within`, so the preview, the alignment column,
+    /// the apply ledger, the live tree and the wait lines name one action one
+    /// way.
+    ///
+    /// The FLOOR, not always the answer: a report that measured its own
+    /// trailing allowance claims a wider budget through
+    /// [`Printer::report_column_beside`], and this answers that claim while
+    /// it is held — so a subject cut inside the claim (a preview bullet, a
+    /// settled row, a wait line) is cut once, to the report's budget.
+    pub fn subject_budget(&self) -> Option<usize> {
+        self.renderer
+            .report_subject_budget()
+            .or_else(|| self.subject_budget_floor())
+    }
+
+    /// The budget [`Printer::subject_budget`] answers when no report has
+    /// claimed a wider one: the constant-reserved half of the line.
+    pub fn subject_budget_floor(&self) -> Option<usize> {
+        self.action_row_line_budget().map(|line| {
+            line.saturating_sub(
+                super::renderer::status::GLYPH_PREFIX_WIDTH
+                    + super::renderer::status::WAIT_FRAMING_WIDTH,
+            ) / 2
+        })
+    }
+
+    /// The columns an action row has in total on this terminal — the whole
+    /// line at [`ACTION_ROW_DEPTH`] — or `None` for a sink that never wraps.
+    pub fn action_row_line_budget(&self) -> Option<usize> {
+        self.sink_stderr
+            .wrap_columns()
+            .map(|cols| super::renderer::wrap::line_budget(cols, ACTION_ROW_DEPTH))
+    }
+
+    /// Declare the alignment column every action row of THIS report pads to,
+    /// for as long as the guard lives.
+    ///
+    /// The trailing column — an elapsed time, a detail, a target — is the one
+    /// a reader's eye scans straight down, so it belongs to the report, not to
+    /// whichever phase happens to be drawing. A section that declares a live
+    /// column takes this in preference to its own.
+    ///
+    /// Claimed by whoever can see the whole report: an apply run measures its
+    /// plan AND the backup labels it will print after it, and the preview
+    /// nested inside that run leaves the wider claim alone.
+    #[must_use = "the column is released when the guard drops; bind it"]
+    pub fn report_column(&self, width: usize) -> super::renderer::ReportColumnGuard<'_> {
+        super::renderer::ReportColumnGuard::acquire(&self.renderer, width, None)
+    }
+
+    /// [`Printer::report_column`] for a report that knows what its rows will
+    /// carry BESIDE the subject: `trailing` is the widest non-subject content
+    /// any row of it may print after the glyph — a wait reason, a produced
+    /// count — and the column is claimed only if that content still fits
+    /// beside it on this terminal, else the report claims no column at all.
+    ///
+    /// The live twin of the buffered path's `group_trailing_allowance`. A
+    /// live group's rows arrive one at a time, so its column used to be
+    /// judged against the glyph alone, and on a 44-column terminal a padded
+    /// `brew install gum` pushed its `queued behind provision brew via
+    /// homebrew` off the line, where the repaint cut it to `via h…`. Judged
+    /// once here, the same answer reaches every reader of the column: the
+    /// section's own live column defers to the claim, and a live tree asks
+    /// [`Printer::live_column_for`] for it.
+    #[must_use = "the column is released when the guard drops; bind it"]
+    ///
+    /// `budget` is the subject budget the report settled for its rows
+    /// (`reconciler::report_subject_budget`), held with the column so every
+    /// reader of [`Printer::subject_budget`] inside the claim answers it.
+    pub fn report_column_beside(
+        &self,
+        budget: Option<usize>,
+        width: usize,
+        trailing: usize,
+    ) -> super::renderer::ReportColumnGuard<'_> {
+        let column = super::renderer::status::group_column(
+            self.sink_stderr.wrap_columns(),
+            ACTION_ROW_DEPTH,
+            width,
+            super::renderer::status::GLYPH_PREFIX_WIDTH + trailing,
+        );
+        super::renderer::ReportColumnGuard::acquire(&self.renderer, column, budget)
+    }
+
+    /// The column a live painter pads a row to: the report's claimed column
+    /// when one is held, else `width` — the ONE rule, shared with the
+    /// section's own live column, so a row's repaint and the line that
+    /// replaces it at commit cannot pad to two different columns.
+    pub fn live_column_for(&self, width: usize) -> usize {
+        self.renderer.report_column_or(width)
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
+    ///
+    /// The subject is finalized exactly as the builder path finalizes its own
+    /// — no marker, no qualifier, no label, which is what "simple" means — so
+    /// the two produce the same bytes for the same string. That is also the
+    /// only sanitation this slot gets: a subject can be a gateway-supplied or
+    /// tool-supplied value, and a `\x1b[2K` inside one erases the line it is
+    /// being written to, while any foreign escape mis-measures every column
+    /// downstream of it.
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {
         let depth = self.renderer.inherit_depth();
-        let subject = subject.into();
+        let subject = finalize_subject(&self.renderer.theme, &subject.into(), None, None, None);
         self.renderer.render_status(
             self.sink_stderr.as_ref(),
             depth,
@@ -487,6 +782,7 @@ impl Printer {
                 target: None,
                 subject_style: None,
                 detail_style: None,
+                verdict: None,
             },
         );
     }
@@ -499,7 +795,7 @@ impl Printer {
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        let style = self.renderer.theme.primary.clone();
+        let style = super::renderer::action_subject_style(&self.renderer.theme, role);
         self.status(role, subject).with_subject_style(style)
     }
 
@@ -529,7 +825,7 @@ impl Printer {
     /// reconciler/scripts.rs).
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
-        let message = message.into();
+        let message = super::spinner::compose_in_flight_subject(&self.renderer.theme, message);
         let depth = self.renderer.inherit_depth();
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
@@ -551,22 +847,133 @@ impl Printer {
         }
     }
 
+    /// Run `work` under a spinner that narrates its own steps, settling it on
+    /// every exit path.
+    ///
+    /// `running` labels the first animated frame; `work` receives the live
+    /// spinner and renames it per step with [`Spinner::set_message`], so the
+    /// line always names the manager being enumerated, the source being
+    /// fetched, the probe being run — real state, never decoration.
+    ///
+    /// A success retires the bar SILENTLY. Narration is live-region-only: the
+    /// permanent output of a successful run is byte-identical to the same run
+    /// before the spinner existed, which is what lets every golden in the
+    /// suite stay a golden. A failure settles `Fail` at whatever step was
+    /// running, because that is the one fact the propagated error does not
+    /// carry — and it carries no detail of its own, since the error itself is
+    /// about to be rendered at the CLI boundary.
+    ///
+    /// That last clause is a PRECONDITION on the caller, not a description:
+    /// only wrap work whose failure is not reported by anybody else. Three
+    /// shapes break it, and each would print the same fact twice — once here
+    /// and once from whoever owns the outcome. The caller swallows the `Err`
+    /// and words it; the caller already emitted a permanent line naming this
+    /// same wait; or the site settles its own outcome afterwards. Because
+    /// `Fail` is the one role that survives `Verbosity::Quiet`, the duplicate
+    /// lands on stderr even under `-o json`. Any of the three reaches for
+    /// [`Printer::narrate_silent`] instead.
+    ///
+    /// The settle discipline is the whole point: a caller that opens a spinner
+    /// by hand and hits an early `?` between creation and its matching finish
+    /// abandons it to `Drop`, which can only report the generic
+    /// `(interrupted)` because it cannot know whether the work succeeded. Here
+    /// the match is written once and no call site can forget it.
+    ///
+    /// Correct at ANY depth: the bar is opened through
+    /// `Printer::narration_bar`, which carries the depth-inheritance guard.
+    ///
+    /// [`Spinner::set_message`]: super::spinner::Spinner::set_message
+    /// [`Printer::narrate_silent`]: Printer::narrate_silent
+    pub fn narrate<T, E>(
+        &self,
+        running: impl Into<String>,
+        work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut sp = self.narration_bar(running);
+        match work(&mut sp) {
+            Ok(value) => {
+                sp.finish_silent();
+                Ok(value)
+            }
+            Err(e) => {
+                let step = sp.message.clone();
+                let _ = sp.finish_fail(step);
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Printer::narrate`] for a wait whose OUTCOME LINE belongs to somebody
+    /// else: the bar is retired SILENTLY on both arms, so nothing here can
+    /// state a result a second time.
+    ///
+    /// It exists because the alternative — a `Fail` settle stacked under a
+    /// line that already says the same thing — survives `Verbosity::Quiet`
+    /// and so lands beside a `-o json` payload carrying the identical fact.
+    /// The three shapes that need it are listed on `narrate`; production
+    /// currently holds two, both of them waits asked from INSIDE a section
+    /// their caller opened: a package manager's enumeration, whose five
+    /// callers each render their own row, and a device-gateway round-trip,
+    /// whose callers each print a permanent line naming the request first.
+    ///
+    /// The settle discipline is the reason to reach for this rather than a
+    /// hand-built bar: an early `?` between a bar's creation and its matching
+    /// finish abandons it to `Drop`, which can only report the generic
+    /// `(interrupted)`. Here the finish is written once and no call site can
+    /// skip it.
+    pub fn narrate_silent<T, E>(
+        &self,
+        running: impl Into<String>,
+        work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut sp = self.narration_bar(running);
+        let out = work(&mut sp);
+        sp.finish_silent();
+        out
+    }
+
+    /// Open a narrated wait's bar at whatever depth the caller is standing at.
+    ///
+    /// The guard is what makes a narrated wait correct at any depth: without
+    /// it the spinner is a depth-0 non-structural emit, which trips the
+    /// top-level structural assert the moment any caller has a section open —
+    /// and both `narrate_silent` sites are asked from inside one.
+    ///
+    /// It covers the construction and nothing else, deliberately. The guard
+    /// is a counter on the SHARED renderer, so while it is alive the assert
+    /// that catches a misplaced top-level emit is disarmed for every emit on
+    /// every thread, and the bodies these wrappers cover are whole commands.
+    /// Nothing longer is needed: `spinner` reads the ambient depth once and
+    /// stores it, and both `set_message` and every `finish_*` render from
+    /// that stored field rather than re-reading the renderer.
+    fn narration_bar(&self, running: impl Into<String>) -> super::spinner::Spinner<'_> {
+        let _inherit = self.depth_inheritance();
+        self.spinner(running)
+    }
+
     #[must_use]
     pub fn progress_bar(
         &self,
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
+        let message = super::spinner::compose_in_flight_subject(&self.renderer.theme, message);
+        let depth = self.renderer.inherit_depth();
         let (bar, live) = super::spinner::make_progress_bar(
             &self.multi_progress,
             &self.renderer,
             total,
             self.live_bars(),
-            self.renderer.inherit_depth(),
-            &message.into(),
+            depth,
+            &message,
         );
         super::spinner::ProgressBar {
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth,
             bar,
+            message,
+            finished: false,
             _live: live,
             _phantom: std::marker::PhantomData,
         }
@@ -689,10 +1096,36 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
             /*keep_when_empty=*/ true,
         );
         self.renderer
             .render_section_commit_header(&*self.sink_stderr);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    /// Open a section headed by a `Label: value` title (`Restore: notes`).
+    ///
+    /// [`Printer::heading_title`]'s sectioned counterpart, and the only way a
+    /// titled heading can carry a block of rows: a heading plus a top-level
+    /// `kv_block` puts the rows at the heading's own indent, so they read as
+    /// the command's output rather than as facts about the run above them.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_title(
+        &self,
+        label: &super::TitleLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            None,
+            /*keep_when_empty=*/ true,
+        );
         super::section_guard::SectionGuard {
             printer: self,
             renderer: self.renderer.clone(),
@@ -710,6 +1143,65 @@ impl Printer {
         self.renderer.render_section_open_styled(
             &label.plain(),
             Some(label.styled(&self.renderer.theme)),
+            None,
+            /*keep_when_empty=*/ true,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    /// [`Printer::section_owner`] for a caller that cannot know whether the
+    /// owner has anything to say until after it has said it — the top-level
+    /// counterpart of [`super::section_guard::SectionGuard::section_owner_or_collapse`].
+    ///
+    /// `cfgd source update` opens one group per source before it knows whether
+    /// the fetch, the permission review or the knob writes will render a row,
+    /// and an owner heading over nothing reads as a source that was consulted
+    /// and had nothing wrong with it.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner_or_collapse(
+        &self,
+        label: &super::OwnerLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            None,
+            /*keep_when_empty=*/ false,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    /// Open the run's closing `Caveats` section — provider narration
+    /// collected during the run, grouped under the owner that produced it and
+    /// rendered once at the very end instead of inline under each action.
+    ///
+    /// Styled through the same `Role::Accent` slot [`super::PhaseLabel`]
+    /// paints its name in: Caveats is a phase-class heading meant to draw the
+    /// eye, and accent is the slot that draws attention without alarm, so it
+    /// reads apart from every ordinary `theme.header` section title while
+    /// still reading as part of the run's phase structure. No `.bold()` —
+    /// bold never pairs with colour on a colour-bearing slot (every named
+    /// colour preset), and `minimal`'s accent already carries the
+    /// distinction as italic rather than as an attribute this heading would
+    /// have to add on top.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
+        let label = super::AccentHeading::new("Caveats");
+        let styled = label.styled(&self.renderer.theme);
+        self.renderer.render_section_open_styled(
+            label.plain(),
+            Some(styled),
+            None,
             /*keep_when_empty=*/ true,
         );
         super::section_guard::SectionGuard {
@@ -781,10 +1273,69 @@ impl Drop for ColorGlobalOn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "test-helpers")]
-    use crate::output::strip_ansi;
+
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
+
+    /// The top-level counterpart of the section-guard case: the same subject
+    /// slot, the same untrusted sources (a gateway JSON field, a tool's
+    /// captured stderr), and the same erasure if an escape survives it.
+    #[test]
+    fn top_level_status_subject_is_stripped_of_foreign_escapes() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status_simple(Role::Ok, "Enrolled as user '\x1b[2Kroot\x1b[31m'");
+        p.flush();
+        // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !raw.contains("\x1b[2K") && !raw.contains("\x1b[31m"),
+            "a foreign escape reached the terminal: {raw:?}"
+        );
+        assert!(
+            crate::output::strip_ansi(&raw).contains("Enrolled as user 'root'"),
+            "stripping must keep the visible text: {raw:?}"
+        );
+    }
+
+    /// A quiet library sink derived from a printer that has a spinner running
+    /// must clear and repaint that spinner around its own line, not write over
+    /// the top of it.
+    ///
+    /// The bug: `cfgd sync` hands `load_source` a `Verbosity::Quiet` printer,
+    /// whose `Fail` statuses and `alert()`s are printed anyway. Derived from a
+    /// renderer with its own zero live-bar count, each of those took the raw
+    /// branch and left the "Syncing sources" frame on the terminal for the rest
+    /// of the session — the frozen spinner the user recorded on camera.
+    ///
+    /// Read from the emulated screen, the only live capture that can see a
+    /// paint the region never took back.
+    #[test]
+    fn a_derived_printers_line_does_not_strand_the_parents_live_bar() {
+        let (parent, screen) = Printer::for_test_live_terminal(24, 100);
+        let sp = parent.spinner("Syncing sources");
+        // Joins the steady-tick thread, so this thread is the only writer and
+        // the bar has already painted one frame — no sleep, no race.
+        sp.bar.disable_steady_tick();
+        let quiet = parent.at_verbosity(Verbosity::Quiet);
+        quiet.status_simple(crate::output::Role::Fail, "source acme: fetch failed");
+        sp.finish_ok("Synced sources");
+        parent.flush();
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("Syncing sources"),
+            "the running spinner's paint was stranded on the terminal: {held:?}"
+        );
+        assert_eq!(
+            held.matches("source acme: fetch failed").count(),
+            1,
+            "the derived line must land exactly once: {held:?}"
+        );
+        assert!(
+            held.contains("Synced sources"),
+            "the settled line went missing: {held:?}"
+        );
+    }
 
     #[test]
     fn structured_format_auto_quiets() {
@@ -1069,7 +1620,7 @@ mod tests {
         p.deprecation("--jsonpath is deprecated");
         p.flush();
 
-        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("ordinary warning"),
             "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
@@ -1093,7 +1644,7 @@ mod tests {
         p.alert("2 package actions will not apply");
         p.flush();
 
-        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("ordinary warning"),
             "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
@@ -1124,6 +1675,72 @@ mod tests {
         );
     }
 
+    /// An alert is emitted where the effect is DISCOVERED, and that site cannot
+    /// know whether its caller opened a section — a source-constraint bypass is
+    /// found while composing, under whichever group the command opened. The
+    /// structural assert would make that call a debug-build panic over a message
+    /// the user must see, so the advisory channel takes the open depth instead
+    /// and renders there.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_alert_renders_inside_an_open_section() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let section = p.section("Sources");
+        p.alert("source 'team' bypassed requireSignedCommits");
+        drop(section);
+        p.flush();
+
+        let out = crate::test_helpers::captured_text(&buf);
+        let line = out
+            .lines()
+            .find(|l| l.contains("bypassed requireSignedCommits"))
+            .unwrap_or_else(|| panic!("the alert must still be emitted; got: {out:?}"));
+        assert!(
+            line.starts_with("  "),
+            "the alert renders at the open section's depth, not at column 0: {line:?}"
+        );
+    }
+
+    /// The indent is half the claim; the other half is that an in-section alert
+    /// still goes through the live region. The depth change is what made this
+    /// call reachable mid-composition, where a spinner is exactly what is on
+    /// screen — a raw write there strands the spinner's last paint for the rest
+    /// of the session. Read from the emulated screen, the only capture that can
+    /// see a paint the region never took back.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_in_section_alert_does_not_strand_the_live_region() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Sources");
+        // A spinner is a non-structural emit and needs the guard to render
+        // inside a section; the alert deliberately needs no such arrangement.
+        let inherit = printer.depth_inheritance();
+        let sp = printer.spinner("Composing sources");
+        // Joins the steady-tick thread, so this thread is the only writer and
+        // the bar has already painted one frame — no sleep, no race.
+        sp.bar.disable_steady_tick();
+        printer.alert("source 'team': --allow-unsigned bypassed requireSignedCommits");
+        sp.finish_ok("Composed sources");
+        drop(inherit);
+        drop(section);
+        printer.flush();
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("Composing sources"),
+            "the running spinner's paint was stranded on the terminal: {held:?}"
+        );
+        assert_eq!(
+            held.matches("bypassed requireSignedCommits").count(),
+            1,
+            "the alert must land exactly once: {held:?}"
+        );
+        assert!(
+            held.contains("Composed sources"),
+            "the settled line went missing: {held:?}"
+        );
+    }
+
     #[cfg(feature = "test-helpers")]
     #[test]
     fn emit_threads_list_envelope_through_to_structured_output() {
@@ -1134,7 +1751,7 @@ mod tests {
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         let p = p.with_list_envelope(true);
         p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
         assert_eq!(parsed["kind"], "List");
@@ -1147,9 +1764,77 @@ mod tests {
         let payload = serde_json::json!([{"name": "alpha"}]);
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed, payload, "default emit must keep the bare array");
+    }
+
+    /// `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
+    /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
+    /// BOTH the hint text AND its leading blank line — a bare blank left
+    /// behind would be a visible artifact of a feature that is supposed to
+    /// leave no trace. `render_hint`'s early return fires before
+    /// `open_top_group` arms that blank, so a run with hints off ends at its
+    /// last content line exactly as if `hint` had never been called.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hints_off_suppresses_the_hint_and_its_leading_blank() {
+        let (on, buf_on) = Printer::for_test_at(Verbosity::Normal);
+        on.status_simple(Role::Ok, "did thing");
+        on.hint("run `cfgd apply`");
+        on.flush();
+        let with_hints = crate::test_helpers::captured_text(&buf_on);
+        assert!(
+            with_hints.ends_with("did thing\n\n→ run `cfgd apply`\n"),
+            "hints-on baseline shape changed: {with_hints:?}"
+        );
+
+        let (off, buf_off) = Printer::for_test_at(Verbosity::Normal);
+        let off = off.with_hints_enabled(false);
+        off.status_simple(Role::Ok, "did thing");
+        off.hint("run `cfgd apply`");
+        off.flush();
+        let without_hints = crate::test_helpers::captured_text(&buf_off);
+        assert!(
+            without_hints.ends_with("did thing\n"),
+            "hints off left a trailing blank line or the hint itself: {without_hints:?}"
+        );
+        assert!(
+            !without_hints.contains('→'),
+            "hint glyph leaked with hints off: {without_hints:?}"
+        );
+    }
+
+    /// `note`/`deprecation`/`alert` are NOT hints — they report what a run
+    /// did or will do, not what to run next — so `--no-hints` and its env/config
+    /// twins must never touch them. Only `render_hint` checks `hints_enabled`.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hints_off_leaves_note_deprecation_and_alert_visible() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Verbose);
+        let p = p.with_hints_enabled(false);
+        p.note("a note");
+        p.deprecation("a deprecation");
+        p.alert("an alert");
+        p.hint("a hint");
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("a note"),
+            "note suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            out.contains("a deprecation"),
+            "deprecation suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            out.contains("an alert"),
+            "alert suppressed by hints-off: {out:?}"
+        );
+        assert!(
+            !out.contains("a hint"),
+            "hint text leaked with hints off: {out:?}"
+        );
     }
 
     #[cfg(feature = "test-helpers")]
@@ -1162,7 +1847,7 @@ mod tests {
             s.bullet("bar.txt");
         } // section closes
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Files\n"), "got: {out:?}");
         assert!(out.contains("\n  - foo.txt\n"), "got: {out:?}");
         assert!(out.contains("\n  - bar.txt\n"), "got: {out:?}");
@@ -1176,7 +1861,7 @@ mod tests {
             let _s = p.section_or_collapse("Empty");
         }
         p.flush();
-        assert!(buf.lock().unwrap().trim().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).trim().is_empty());
     }
 
     #[cfg(feature = "test-helpers")]
@@ -1191,7 +1876,7 @@ mod tests {
             }
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Outer\n"));
         assert!(out.contains("\n  Inner\n"));
         assert!(out.contains("\n    - deep\n"));
@@ -1207,7 +1892,7 @@ mod tests {
             s.kv("Version", "0.3.5");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Details\n"), "got: {out:?}");
         assert!(out.contains("Name"), "got: {out:?}");
         assert!(out.contains("cfgd"), "got: {out:?}");
@@ -1222,7 +1907,7 @@ mod tests {
             s.kv_block([("Profile", "default"), ("Source", "local")]);
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Config\n"), "got: {out:?}");
         assert!(out.contains("Profile"), "got: {out:?}");
         assert!(out.contains("default"), "got: {out:?}");
@@ -1238,7 +1923,7 @@ mod tests {
             s.hint("Run cfgd init first");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Setup\n"), "got: {out:?}");
         assert!(out.contains("cfgd init"), "got: {out:?}");
     }
@@ -1252,7 +1937,7 @@ mod tests {
             s.note("All modules up to date");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status\n"), "got: {out:?}");
         assert!(out.contains("up to date"), "got: {out:?}");
     }
@@ -1268,7 +1953,7 @@ mod tests {
             s.table(table);
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Packages\n"), "got: {out:?}");
         assert!(out.contains("curl"), "got: {out:?}");
     }
@@ -1283,7 +1968,7 @@ mod tests {
             s.status_simple(Role::Fail, "file copy failed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Apply\n"), "got: {out:?}");
         assert!(out.contains("package installed"), "got: {out:?}");
         assert!(out.contains("file copy failed"), "got: {out:?}");
@@ -1299,7 +1984,7 @@ mod tests {
                 .detail("already installed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
         assert!(out.contains("already installed"), "got: {out:?}");
     }
@@ -1313,7 +1998,7 @@ mod tests {
             s.empty_state("no modules configured");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Modules\n"), "got: {out:?}");
         assert!(out.contains("no modules configured"), "got: {out:?}");
     }
@@ -1327,7 +2012,7 @@ mod tests {
             s.bullet("present");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Optional\n"), "got: {out:?}");
         assert!(out.contains("present"), "got: {out:?}");
     }
@@ -1342,7 +2027,7 @@ mod tests {
             s.close();
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Closing\n"), "got: {out:?}");
         assert!(out.contains("item"), "got: {out:?}");
     }
@@ -1359,7 +2044,7 @@ mod tests {
             }
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Outer\n"), "got: {out:?}");
         assert!(out.contains("Inner\n"), "got: {out:?}");
         assert!(out.contains("done"), "got: {out:?}");
@@ -1376,11 +2061,26 @@ mod tests {
             .section("Files", |s| s.bullet("foo.txt").bullet("bar.txt"));
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status\n"));
         assert!(out.contains("Profile  dev"));
         assert!(out.contains("Files\n"));
         assert!(out.contains("\n  - foo.txt\n"));
+    }
+
+    /// `Printer::heading_title` composes the same three slots
+    /// [`super::TitleLabel::styled`] tests directly — this proves the
+    /// composer's output actually reaches the terminal through the
+    /// imperative `Printer` entry point, not only through its own unit tests.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn heading_title_reaches_the_terminal_styled() {
+        use super::super::TitleLabel;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.heading_title(&TitleLabel::new("Status", "dev-tools"));
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(out.trim_end(), "Status: dev-tools");
     }
 
     #[cfg(feature = "test-helpers")]
@@ -1393,7 +2093,7 @@ mod tests {
             .section_or_collapse::<_>("Empty", |s| s);
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status"));
         assert!(!out.contains("Empty"), "got: {out:?}");
     }
@@ -1409,7 +2109,7 @@ mod tests {
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         let doc = Doc::new().heading("S").with_data(P { foo: 7 });
         p.emit(doc);
-        let out = buf.lock().unwrap();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("\"foo\": 7"), "got: {out:?}");
     }
 
@@ -1421,7 +2121,7 @@ mod tests {
         let doc = Doc::new().heading("Title").kv("k", "v");
         p.emit(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Title"));
         assert!(out.contains("k  v"));
     }
@@ -1451,7 +2151,7 @@ mod tests {
             .hint("Run cfgd init to get started");
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Setup"), "got: {out:?}");
         assert!(out.contains("cfgd init"), "got: {out:?}");
     }
@@ -1464,7 +2164,7 @@ mod tests {
         let doc = Doc::new().heading("Info").note("This is supplementary");
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Info"), "got: {out:?}");
         assert!(out.contains("supplementary"), "got: {out:?}");
     }
@@ -1483,7 +2183,7 @@ mod tests {
             });
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
         assert!(out.contains("already installed"), "got: {out:?}");
     }
@@ -1498,7 +2198,7 @@ mod tests {
             .section("Installed", |s| s.empty_state("no modules found"));
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Modules"), "got: {out:?}");
         assert!(out.contains("Installed"), "got: {out:?}");
         assert!(out.contains("no modules found"), "got: {out:?}");
@@ -1514,7 +2214,7 @@ mod tests {
             .kv_block([("Profile", "dev"), ("Source", "local")]);
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Config"), "got: {out:?}");
         assert!(out.contains("Profile"), "got: {out:?}");
         assert!(out.contains("dev"), "got: {out:?}");
@@ -1526,7 +2226,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status(Role::Ok, "package check").detail_opt(None);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("package check"), "got: {out:?}");
     }
 
@@ -1536,7 +2236,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status(Role::Ok, "installed").detail_opt(Some("v1.2.3"));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("installed"), "got: {out:?}");
         assert!(out.contains("v1.2.3"), "got: {out:?}");
     }
@@ -1548,7 +2248,7 @@ mod tests {
         p.status(Role::Ok, "file deployed")
             .target(std::path::Path::new("/home/user/.zshrc"));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("file deployed"), "got: {out:?}");
     }
 
@@ -1559,12 +2259,12 @@ mod tests {
         p.status(Role::Ok, "brew install curl")
             .duration(std::time::Duration::from_secs(3));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
     }
 
     /// In debug builds, a top-level emit reached while a section is open
-    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. We catch
+    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. This catches
     /// the panic to verify the assert fires.
     #[cfg(feature = "test-helpers")]
     #[test]
@@ -1590,7 +2290,7 @@ mod tests {
             p.heading("MidSection"); // would assert in debug; reroutes in release
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // The heading rendered at depth 1 (inside the section), not column 0.
         assert!(
             out.contains("\n  MidSection\n"),
@@ -1616,7 +2316,7 @@ mod tests {
             p.status_simple(Role::Ok, "wrote init.lua");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("\n    ✓ wrote init.lua\n"),
             "expected depth 2; got: {out:?}"
@@ -1672,7 +2372,7 @@ mod tests {
             .expect("echo must succeed");
         assert!(out.status.success());
         p.flush();
-        let rendered = strip_ansi(&buf.lock().unwrap());
+        let rendered = crate::test_helpers::captured_text(&buf);
         let line = rendered
             .lines()
             .find(|l| l.contains("echo step"))
@@ -1695,8 +2395,312 @@ mod tests {
             owner.bullet("installed ripgrep");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.starts_with("profile:work\n"), "got: {out:?}");
         assert!(out.contains("\n  - installed ripgrep\n"), "got: {out:?}");
+    }
+
+    /// Every narrated wait in the workspace goes through `Printer::narrate`,
+    /// so the settle discipline is proven once here rather than once per call
+    /// site: the sites differ only in what they narrate, never in how the bar
+    /// is opened, renamed or retired.
+    ///
+    /// A successful wait must leave NOTHING behind. Narration is
+    /// live-region-only by contract — that is what lets every golden in the
+    /// suite keep describing a run as if no spinner had ever existed — so a
+    /// success that committed even one line would move goldens across the
+    /// whole product.
+    #[test]
+    fn narrate_commits_nothing_when_the_work_succeeds() {
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let out: Result<u8, std::io::Error> = printer.narrate("Scanning packages", |sp| {
+            sp.set_message("Enumerating apt");
+            sp.set_message("Enumerating brew");
+            Ok(7)
+        });
+        printer.flush();
+        assert_eq!(out.ok(), Some(7));
+
+        let committed = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            committed, "",
+            "a successful narrated wait committed a permanent line: {committed:?}"
+        );
+    }
+
+    /// A bar paints the moment it is opened, so a wait that returns straight
+    /// away flashes its label and takes it back. Both halves are pinned here:
+    /// the label is on the terminal while the work runs, and the screen holds
+    /// nothing once the wait ends.
+    ///
+    /// The flash is the accepted behaviour rather than an oversight. indicatif
+    /// hands cfgd no timer callback — the steady tick drives its own redraw
+    /// internally and never calls back — so deferring the first paint until a
+    /// bar outlives a threshold needs a trigger cfgd owns, and it owns only
+    /// two: `set_message` and `finish_*`. The waits that most need narrating
+    /// (one blocking probe, one network round-trip) fire neither for seconds
+    /// at a time, so a hook-checked reveal would silence the longest waits to
+    /// spare the shortest a flicker. Nothing is stranded and no permanent line
+    /// is written either way, which is what this asserts.
+    #[test]
+    fn narrate_paints_at_once_and_clears_a_wait_that_returns_immediately() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate("Enumerating apt packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and whatever is on screen was painted by the construction above.
+            sp.bar.disable_steady_tick();
+            assert!(
+                screen.contents().contains("Enumerating apt packages"),
+                "the label must be on the terminal before the work returns: {:?}",
+                screen.contents()
+            );
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let held = screen.contents();
+        assert_eq!(
+            held.trim(),
+            "",
+            "an instant wait left its flashed label behind: {held:?}"
+        );
+    }
+
+    /// A failure settles `Fail` at the step that was actually running, and the
+    /// live region is left holding nothing — neither the opening label, nor an
+    /// earlier step, nor `Drop`'s generic `(interrupted)` record.
+    ///
+    /// Read from the emulated screen: it is the only capture that can see a
+    /// line the region painted and never took back. The hidden target draws
+    /// nothing at all, and the recording buffer holds every repaint, where one
+    /// paint too many is indistinguishable from one repaint too many.
+    #[test]
+    fn narrate_settles_fail_at_the_last_step_and_strands_no_running_line() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate("Scanning packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and the bar has already painted a frame — no sleep, no race.
+            sp.bar.disable_steady_tick();
+            sp.set_message("Enumerating apt");
+            sp.set_message("Enumerating brew");
+            Err(std::io::Error::other("brew exploded"))
+        });
+        printer.flush();
+        assert!(out.is_err(), "the closure's error must propagate");
+
+        let held = screen.contents();
+        assert_eq!(
+            held.matches("Enumerating brew").count(),
+            1,
+            "the failing step must be on screen exactly once: {held:?}"
+        );
+        for gone in ["Scanning packages", "Enumerating apt", "(interrupted)"] {
+            assert!(
+                !held.contains(gone),
+                "{gone:?} was stranded on the terminal: {held:?}"
+            );
+        }
+        let line = held
+            .lines()
+            .find(|l| l.contains("Enumerating brew"))
+            .unwrap_or_default();
+        assert!(
+            line.contains(Theme::default().icon_fail.as_str()),
+            "the settled step is not a Fail line: {line:?}"
+        );
+        assert!(
+            !line.contains("brew exploded"),
+            "the settle must carry no detail — the error is rendered at the \
+             CLI boundary and would print twice: {line:?}"
+        );
+    }
+
+    /// The per-step renames reach the terminal in the order the work made
+    /// them, so the line always names the step actually running rather than
+    /// the one the wait opened with.
+    ///
+    /// `for_test_with_live_bars` is the constructor that can answer this: it
+    /// records every paint in the order it was made, where the emulated screen
+    /// holds only the last one and the hidden target holds none.
+    #[test]
+    fn narrate_paints_each_step_in_the_order_the_work_named_it() {
+        let (printer, buf) = Printer::for_test_with_live_bars();
+        let steps = ["Checking files", "Checking packages", "Checking system"];
+        let out: Result<(), std::io::Error> = printer.narrate("Verifying", |sp| {
+            sp.bar.disable_steady_tick();
+            for step in steps {
+                sp.set_message(step);
+            }
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let painted = crate::test_helpers::captured_text(&buf);
+        let mut cursor = 0usize;
+        for step in steps {
+            let at = painted[cursor..].find(step).unwrap_or_else(|| {
+                panic!("{step:?} never painted, or painted out of order: {painted:?}")
+            });
+            cursor += at + step.len();
+        }
+    }
+
+    /// `Quiet` — what a `-o json` run derives, and what a command hands its
+    /// library work — narrates nothing at all: the bar is hidden, so no step
+    /// ever reaches the terminal and the structured channel stays pure.
+    ///
+    /// Read through the emulated screen at `Quiet`, the ONE capture that can
+    /// state this. Every other constructor pins `live_region: false`, so its
+    /// bar is hidden for a reason that has nothing to do with the verbosity —
+    /// the claim would hold with the `Quiet` gate deleted outright, which is
+    /// the definition of a test that cannot go red.
+    #[test]
+    fn narrate_under_quiet_paints_no_step() {
+        let (printer, screen) = Printer::for_test_live_terminal_at(Verbosity::Quiet, 24, 100);
+        assert!(
+            printer.live_region,
+            "the capture must own a real live region, or the claim below is vacuous"
+        );
+        assert!(
+            !printer.live_bars(),
+            "Quiet must be what closes the region here, nothing else"
+        );
+        let out: Result<(), std::io::Error> = printer.narrate("Collecting snapshot", |sp| {
+            assert!(sp.bar.is_hidden(), "Quiet must yield a hidden bar");
+            sp.set_message("Checking packages");
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let held = screen.contents();
+        assert_eq!(
+            held.trim(),
+            "",
+            "a Quiet narrated wait painted on the terminal: {held:?}"
+        );
+    }
+
+    /// A narrated wait reached from INSIDE an open section renders at that
+    /// section's depth instead of tripping the top-level structural assert.
+    ///
+    /// This is not a theoretical arrangement, and both wrappers open their bar
+    /// through the same guarded constructor: `PackageContext::installed_for`
+    /// narrates the per-manager enumeration silently, and `cfgd diff` asks it
+    /// from inside its open Packages section while a bare `status` asks it at
+    /// top level. A wrapper that opened its bar at a hard depth 0 panicked the
+    /// first caller in a debug build.
+    #[test]
+    fn narrate_renders_inside_a_section_its_caller_opened() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Packages");
+        // Read from INSIDE the wait: `narrate` clears its own bar on the way
+        // out, so after it returns there is nothing left on screen to place.
+        let mut running = String::new();
+        let out: Result<(), std::io::Error> = printer.narrate("Enumerating apt packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and the bar has already painted a frame — no sleep, no race.
+            sp.bar.disable_steady_tick();
+            running = screen.contents();
+            Ok(())
+        });
+        assert!(out.is_ok());
+        drop(section);
+        printer.flush();
+
+        let line = running
+            .lines()
+            .find(|l| l.contains("Enumerating apt packages"))
+            .unwrap_or_default();
+        assert!(
+            line.starts_with("  ") && !line.starts_with("   "),
+            "the wait did not paint in the section's glyph column: {line:?}"
+        );
+    }
+
+    /// The silent wrapper is the one production actually reaches from inside a
+    /// section, so it is placed here too rather than being inferred from its
+    /// sibling: both open their bar through the same guarded constructor, and
+    /// a change that dropped the guard from only one of them would leave this
+    /// pair disagreeing instead of both passing.
+    #[test]
+    fn narrate_silent_renders_inside_a_section_its_caller_opened() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Packages");
+        let mut running = String::new();
+        let out: Result<(), std::io::Error> =
+            printer.narrate_silent("Enumerating apt packages", |sp| {
+                sp.bar.disable_steady_tick();
+                running = screen.contents();
+                Ok(())
+            });
+        assert!(out.is_ok());
+        drop(section);
+        printer.flush();
+
+        let line = running
+            .lines()
+            .find(|l| l.contains("Enumerating apt packages"))
+            .unwrap_or_default();
+        assert!(
+            line.starts_with("  ") && !line.starts_with("   "),
+            "the wait did not paint in the section's glyph column: {line:?}"
+        );
+    }
+
+    /// A silent wait says nothing on EITHER arm: the failure belongs to
+    /// whoever already named the request, and the `Err` still reaches them.
+    ///
+    /// The failing half is what separates this from `narrate` — a `Fail`
+    /// settle survives `Verbosity::Quiet` and would land beside a `-o json`
+    /// payload carrying the identical fact — so it is read from the emulated
+    /// screen, the only capture that can see a line the region drew and never
+    /// took back.
+    #[test]
+    fn narrate_silent_leaves_no_line_on_either_arm() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate_silent("Enumerating apt", |sp| {
+            sp.bar.disable_steady_tick();
+            sp.set_message("Enumerating brew");
+            Err(std::io::Error::other("brew exploded"))
+        });
+        printer.flush();
+        assert!(out.is_err(), "the closure's error must still propagate");
+
+        let held = screen.contents();
+        assert_eq!(
+            held.trim(),
+            "",
+            "a silent wait settled a line its caller already owns: {held:?}"
+        );
+    }
+
+    /// A `Quiet` FAILURE still settles its one `Fail` line, because `Fail` is
+    /// the single role the renderer shows at `Quiet` — the step that was
+    /// running is the one fact the propagated error does not carry, and a
+    /// silent Quiet failure would drop it. It lands on stderr like every other
+    /// status, so a `-o json` run's data channel is untouched.
+    #[test]
+    fn narrate_under_quiet_still_settles_the_failing_step() {
+        let (printer, stdout, stderr) = Printer::for_test_split_streams(Verbosity::Quiet);
+        let out: Result<(), std::io::Error> = printer.narrate("Collecting snapshot", |sp| {
+            sp.set_message("Checking packages");
+            Err(std::io::Error::other("nope"))
+        });
+        printer.flush();
+        assert!(out.is_err());
+
+        assert_eq!(
+            crate::test_helpers::captured_text(&stdout),
+            "",
+            "the data channel must stay pure"
+        );
+        let diagnostics = crate::test_helpers::captured_text(&stderr);
+        assert!(
+            diagnostics.contains("Checking packages"),
+            "the failing step went unreported: {diagnostics:?}"
+        );
     }
 }

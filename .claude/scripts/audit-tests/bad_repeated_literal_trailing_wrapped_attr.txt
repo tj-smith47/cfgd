@@ -1,0 +1,19 @@
+# EXPECTED: caught — the same 30+ char string literal appears 3 times, each
+# trailing a multi-line attribute's closing bracket on its own physical line
+# (`)] pub const ... = "...";`), the literal itself containing a `]`. Before
+# `code_only` padded stripped literals to their original length instead of
+# deleting them, `strip_attr_lines` could only recover a trailing declaration
+# when the line held no string at all (`code == line`); a line whose tail
+# carried a string — this shape exactly — was dropped in full, so none of the
+# 3 occurrences ever reached the DRY gate and it reported clean.
+#[cfg(
+    test
+)] pub const NOTE_A: &str = "range: [0, 10] please stay off the shared bus";
+
+#[cfg(
+    test
+)] pub const NOTE_B: &str = "range: [0, 10] please stay off the shared bus";
+
+#[cfg(
+    test
+)] pub const NOTE_C: &str = "range: [0, 10] please stay off the shared bus";

@@ -1,7 +1,7 @@
-Scanning dotfiles
-  ⊙ No dotfiles found
+Scanning Dotfiles
+  ◉ No dotfiles found
 
-Scanning zsh config
+Scanning zsh Config
   (none)
 
-✓ Scan complete — use without --scan-only to generate config
+✓ Scanned this host — use without --scan-only to generate config

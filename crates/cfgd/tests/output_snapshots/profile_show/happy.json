@@ -40,7 +40,16 @@
       }
     ],
     "merged": {
-      "aliases": [],
+      "aliases": [
+        {
+          "command": "git status",
+          "name": "gs"
+        },
+        {
+          "command": "ls -lah",
+          "name": "ll"
+        }
+      ],
       "backups": [],
       "env": [
         {

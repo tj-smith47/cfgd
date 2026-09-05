@@ -2,6 +2,21 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
+/// An env var or alias as the `name="value"` cfgd renders it.
+///
+/// The value is quoted unconditionally, through the same
+/// [`cfgd_core::posix_double_quoted`] the generated env file's `export EDITOR="nvim"`
+/// and `alias catn="cat -n"` lines are written with, so the line that confirms
+/// a write and the file it wrote spell one assignment one way. Unquoted, a
+/// value holding a space is a different value to the eye: `catn=cat -n` reads
+/// as the alias `cat` with a stray `-n` beside it, which is exactly the
+/// ambiguity the user's own `--alias catn='cat -n'` quoting existed to remove.
+/// Conditional quoting would trade that for a shape the reader has to decode
+/// before knowing which rule produced it.
+pub(in crate::cli) fn quoted_assignment(name: &str, value: &str) -> String {
+    format!("{name}={}", cfgd_core::posix_double_quoted(value))
+}
+
 /// Write a freshly scaffolded manifest: prepend the editor schema modeline and
 /// write atomically.
 ///
@@ -27,7 +42,7 @@ pub(in crate::cli) fn write_scaffold(
 /// Counterpart to `write_scaffold`: scaffolds inject a modeline; rewrites only
 /// preserve what the file already had — never inject. Mid-document comments
 /// cannot survive the serde round-trip and remain lost.
-pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
+pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize + serde::de::DeserializeOwned>(
     path: &Path,
     value: &T,
 ) -> anyhow::Result<()> {
@@ -46,17 +61,163 @@ pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
 
 /// [`rewrite_user_yaml`] for callers that already hold the file's pre-read
 /// content, avoiding a second read of the same file.
-pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
+pub(in crate::cli) fn rewrite_user_yaml_with_original<
+    T: serde::Serialize + serde::de::DeserializeOwned,
+>(
     path: &Path,
     original: &str,
     value: &T,
 ) -> anyhow::Result<()> {
-    let yaml = serde_yaml::to_string(value)?;
+    let mut tree = serde_yaml::to_value(value)?;
+    prune_absent_sections(&mut tree, 0);
+    // An original that does not parse declared nothing; every default is then
+    // undeclared, and dropping one changes nothing a reader gets back.
+    let declared = serde_yaml::from_str(original).unwrap_or(serde_yaml::Value::Null);
+    prune_undeclared_defaults::<T>(&mut tree, &declared);
+    let yaml = serde_yaml::to_string(&tree)?;
     cfgd_core::atomic_write_str(
         path,
         &cfgd_core::config::with_leading_comments(original, &yaml),
     )?;
     Ok(())
+}
+
+/// Drop every mapping entry whose value is `null`, `[]` or `{}` — what a
+/// typed config's `None` and empty-collection fields serialize as. A serde
+/// round-trip of a user's `cfgd.yaml` otherwise writes `daemon: null`,
+/// `origin: []`, `secrets: null`, … for every section they never declared,
+/// and a `daemon: null` is also what `config set daemon.…` used to refuse to
+/// traverse. Pruning here, at the one write every doc rewrite funnels through,
+/// covers every doc type and every field added later without a per-field
+/// `skip_serializing_if`. Deserialization is unaffected: every one of those
+/// fields is `#[serde(default)]`, so an absent key reads back as the same
+/// `None`/empty value that was written. The document's own top-level keys
+/// (`spec`, `metadata`) are never dropped, and a sequence element is data and
+/// is never dropped either.
+fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for entry in map.values_mut() {
+                prune_absent_sections(entry, depth + 1);
+            }
+            if depth > 0 {
+                map.retain(|_, v| !is_absent_section(v));
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for entry in seq.iter_mut() {
+                prune_absent_sections(entry, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_absent_section(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(seq) => seq.is_empty(),
+        serde_yaml::Value::Mapping(map) => map.is_empty(),
+        _ => false,
+    }
+}
+
+/// One step of a path into a YAML tree: a mapping key or a sequence index.
+#[derive(Clone)]
+enum YamlStep {
+    Key(serde_yaml::Value),
+    Index(usize),
+}
+
+/// Drop every scalar the author never declared whose value is the field's own
+/// default (`fileStrategy: Symlink` on a config that never named a strategy).
+/// The null/empty prune above cannot see one, and a per-field
+/// `skip_serializing_if` would drop it from every `-o json` payload the same
+/// struct serializes into, not just from the user's file. The default is
+/// detected without naming any type's fields: the tree is re-parsed as `T`
+/// with the key removed, and when it re-serializes to the same tree the key
+/// carried nothing but what an absent key reads back as. A key the original
+/// file declares is kept whatever its value, so a user who wrote the default
+/// out on purpose keeps it. Only scalars are candidates: a mapping or sequence
+/// is either data or already pruned as an absent section.
+fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
+    tree: &mut serde_yaml::Value,
+    declared: &serde_yaml::Value,
+) {
+    let mut candidates = Vec::new();
+    collect_undeclared_scalars(tree, declared, &mut Vec::new(), &mut candidates);
+    for path in candidates {
+        let mut probe = tree.clone();
+        remove_at(&mut probe, &path);
+        let Ok(parsed) = serde_yaml::from_value::<T>(probe) else {
+            continue;
+        };
+        let Ok(mut round_trip) = serde_yaml::to_value(&parsed) else {
+            continue;
+        };
+        prune_absent_sections(&mut round_trip, 0);
+        if round_trip == *tree {
+            remove_at(tree, &path);
+        }
+    }
+}
+
+fn collect_undeclared_scalars(
+    tree: &serde_yaml::Value,
+    declared: &serde_yaml::Value,
+    path: &mut Vec<YamlStep>,
+    out: &mut Vec<Vec<YamlStep>>,
+) {
+    match tree {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, value) in map {
+                path.push(YamlStep::Key(key.clone()));
+                // The document's own top-level keys are never candidates.
+                let is_scalar = matches!(
+                    value,
+                    serde_yaml::Value::Bool(_)
+                        | serde_yaml::Value::Number(_)
+                        | serde_yaml::Value::String(_)
+                );
+                if is_scalar {
+                    if path.len() > 1 && lookup(declared, path).is_none() {
+                        out.push(path.clone());
+                    }
+                } else {
+                    collect_undeclared_scalars(value, declared, path, out);
+                }
+                path.pop();
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for (index, value) in seq.iter().enumerate() {
+                path.push(YamlStep::Index(index));
+                collect_undeclared_scalars(value, declared, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lookup<'a>(tree: &'a serde_yaml::Value, path: &[YamlStep]) -> Option<&'a serde_yaml::Value> {
+    path.iter().try_fold(tree, |node, step| match step {
+        YamlStep::Key(key) => node.as_mapping()?.get(key),
+        YamlStep::Index(index) => node.as_sequence()?.get(*index),
+    })
+}
+
+fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let parent = parents.iter().try_fold(tree, |node, step| match step {
+        YamlStep::Key(key) => node.as_mapping_mut()?.get_mut(key),
+        YamlStep::Index(index) => node.as_sequence_mut()?.get_mut(*index),
+    });
+    if let (Some(map), YamlStep::Key(key)) = (parent.and_then(|p| p.as_mapping_mut()), last) {
+        map.remove(key);
+    }
 }
 
 /// Surface every deprecation message `warn_on_legacy_theme_keys` collected
@@ -78,22 +239,39 @@ pub(in crate::cli) fn load_config_and_profile(
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
+    let (profile_name, resolved) = resolve_profile_for(cli, &cfg)?;
+    Ok((cfg, profile_name, resolved))
+}
+
+/// The profile in force for `cli` against an already-parsed `cfg`: the explicit
+/// `--profile`, else the config's active profile, resolved through the profiles
+/// directory with the source-delivered-profile decoration on a miss.
+///
+/// The resolution half of [`load_config_and_profile`], factored out so the
+/// run-scoped [`RunContext::config_and_profile`] answers the same question the
+/// same way instead of restating the rule beside it.
+pub(in crate::cli) fn resolve_profile_for(
+    cli: &Cli,
+    cfg: &CfgdConfig,
+) -> anyhow::Result<(String, ResolvedProfile)> {
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
     };
-    let resolved = match config::resolve_profile(&profile_name, &profiles_dir(cli)) {
-        Ok(resolved) => resolved,
-        Err(e) => return Err(decorate_profile_not_found(cli, &cfg, &profile_name, e)),
-    };
-    Ok((cfg, profile_name, resolved))
+    match config::resolve_profile(&profile_name, &profiles_dir(cli)) {
+        Ok(resolved) => Ok((profile_name, resolved)),
+        Err(e) => Err(decorate_profile_not_found(cli, cfg, &profile_name, e)),
+    }
 }
 
-/// Load config and resolve a profile, with the `--module` degrade shared by
-/// `cmd_apply` and `cmd_plan`: when `module_filter` names a single module
-/// and no profile resolves (unset, or named but not found), fall back to
-/// module-only mode instead of erroring, since a module-only run needs no
-/// profile at all.
+/// Load config and resolve a profile, with the `--module` isolate mode
+/// shared by `cmd_apply` and `cmd_plan`: when `module_filter` names one or
+/// more modules and `with_profile` is false, the run is ISOLATED from the
+/// active profile unconditionally — a profile is never even resolved, so a
+/// profile that DOES resolve can no longer leak its packages/files/env/
+/// aliases/system/scripts into a run the caller asked to isolate. `--module
+/// --with-profile` (or no `--module` at all) behaves exactly like a normal
+/// run: the active profile must resolve, same as `cfgd apply` with no flags.
 ///
 /// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
 /// is taken. The two call sites this replaces each called
@@ -105,12 +283,13 @@ pub(in crate::cli) fn load_config_and_profile(
 pub(in crate::cli) fn load_config_and_profile_module_scoped(
     cli: &Cli,
     printer: &Printer,
-    module_filter: Option<&str>,
+    module_filter: &[String],
+    with_profile: bool,
 ) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
-    let Some(mod_name) = module_filter else {
+    if module_filter.is_empty() || with_profile {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
         return Ok((cfg, resolved, Some(profile_name), true));
-    };
+    }
 
     // `minimal_config()` subscribes to nothing, and that fabricated empty
     // list must never reach the decision sweep: it would read as "no
@@ -125,22 +304,21 @@ pub(in crate::cli) fn load_config_and_profile_module_scoped(
         Err(_) => (config::minimal_config(), false),
     };
 
-    let profile_name = cli
-        .profile
-        .as_deref()
-        .map(str::to_string)
-        .or_else(|| cfg.active_profile().ok().map(str::to_string));
-    let resolved = profile_name
-        .as_deref()
-        .and_then(|name| config::resolve_profile(name, &profiles_dir(cli)).ok());
-
-    match resolved {
-        Some(resolved) => Ok((cfg, resolved, profile_name, config_parsed)),
-        None => {
-            let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-            Ok((cfg, resolved, None, config_parsed))
-        }
+    // Isolation skips composing the profile's CONTENT, but an explicit
+    // `--profile` still names a real thing every module script reads back as
+    // `CFGD_PROFILE` — a typo here must not silently become the literal
+    // string a script trusts. `active_profile_name`'s own fallback path (no
+    // `--profile`, config's own `active_profile()`) stays best-effort: that
+    // name was never user-typed on THIS invocation, so there is no operator
+    // input to validate.
+    if let Some(name) = cli.profile.as_deref()
+        && let Err(e) = config::resolve_profile(name, &profiles_dir(cli))
+    {
+        return Err(decorate_profile_not_found(cli, &cfg, name, e));
     }
+
+    let resolved = empty_resolved_profile(module_filter, &active_profile_name(cli, Some(&cfg)));
+    Ok((cfg, resolved, None, config_parsed))
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -187,13 +365,17 @@ fn decorate_profile_not_found(
     // wires the source profile in (see docs/sources.md); spec.profile is the
     // local active profile.
     let hints = vec![
-        cfgd_core::output::collapse_to_subject_line(format!(
-            "Profile '{profile_name}' is delivered by {}: {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one.",
-            cfgd_core::plural_noun(providers.len(), "source")
+        cfgd_core::output::HintCommands::from(cfgd_core::output::collapse_to_subject_line(
+            format!(
+                "Profile '{profile_name}' is delivered by {}: {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one.",
+                cfgd_core::plural_noun(providers.len(), "source")
+            ),
         )),
-        cfgd_core::output::collapse_to_subject_line(format!(
-            "Set the source's subscription.profile in {}:",
-            config_file.posix()
+        cfgd_core::output::HintCommands::from(cfgd_core::output::collapse_to_subject_line(
+            format!(
+                "Set the source's subscription.profile in {}:",
+                config_file.posix()
+            ),
         )),
     ];
 
@@ -248,21 +430,201 @@ fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) ->
         .collect()
 }
 
-/// Parse a `--package` flag value. If it contains `:` and the prefix is a known
-/// package manager name, split into (Some(manager), package). Otherwise treat
-/// the entire string as a bare package name.
+/// One resolved `--package` token.
+///
+/// Three names, because three different surfaces need three different ones and
+/// collapsing any two of them is how a token lands somewhere the user cannot
+/// find it: `schema_path` is what the user typed and what a confirmation line
+/// echoes back (`brew.taps`), `slot` is the key the package spec is written
+/// through, and `manager` is the REGISTERED manager name — the only one of the
+/// three that is ever persisted as a manager (a module entry's `prefer`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::cli) struct PackageRef {
+    /// `None` for a bare name, which takes the platform's native manager.
+    pub schema_path: Option<String>,
+    pub slot: Option<String>,
+    pub manager: Option<String>,
+    pub name: String,
+}
+
+impl PackageRef {
+    /// The key [`crate::packages::add_package`] / `remove_package` write through.
+    pub(in crate::cli) fn slot_or<'a>(&'a self, native: &'a str) -> &'a str {
+        self.slot.as_deref().unwrap_or(native)
+    }
+
+    /// The word a confirmation line calls this entry — `Added tap:` for
+    /// `brew.taps`, `Added cask:` for `brew.casks`, `Added package:` for
+    /// everything else including a bare name and a custom manager.
+    ///
+    /// Read off the schema table rather than decided here, so the add verb and
+    /// the remove verb cannot disagree and a new sub-list gets its noun from
+    /// one place.
+    pub(in crate::cli) fn noun(&self) -> &'static str {
+        self.schema_path
+            .as_deref()
+            .and_then(cfgd_core::config::package_schema_path)
+            .map_or(cfgd_core::config::DEFAULT_PACKAGE_NOUN, |p| p.noun())
+    }
+
+    /// [`Self::noun`] opening a sentence (`Tap 'x' not found in brew.taps`).
+    /// Every noun in the table is one plain ASCII word.
+    pub(in crate::cli) fn noun_capitalized(&self) -> String {
+        let noun = self.noun();
+        let mut chars = noun.chars();
+        match chars.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+            None => noun.to_string(),
+        }
+    }
+
+    /// `charmbracelet/tap (brew.taps)` — the schema path the value was written
+    /// to, so the confirmation names a path the user can go and look at.
+    pub(in crate::cli) fn display(&self, native: &str) -> String {
+        format!(
+            "{} ({})",
+            self.name,
+            self.schema_path.as_deref().unwrap_or(native)
+        )
+    }
+}
+
+/// Parse a `--package` flag value into the schema path it names.
+///
+/// ```text
+/// --package <manager>[.<list>]:<name>   brew:ripgrep  brew.taps:charmbracelet/tap  apt:libc6:amd64
+/// --package <name>                      the platform's native manager
+/// ```
+///
+/// A colon-carrying token whose prefix names nothing is an ERROR, never a bare
+/// name: `--package brew.tap:charmbracelet/tap` used to be accepted as an apt
+/// package literally called `brew.tap:charmbracelet/tap`, which installs
+/// nothing and is discovered only when the apply fails. The name keeps every
+/// colon after the first, so `apt:libc6:amd64` is the apt package `libc6:amd64`.
 pub(in crate::cli) fn parse_package_flag(
     s: &str,
-    known_managers: &[&str],
-) -> (Option<String>, String) {
-    if let Some((prefix, suffix)) = s.split_once(':')
-        && !prefix.is_empty()
-        && !suffix.is_empty()
-        && known_managers.contains(&prefix)
-    {
-        return (Some(prefix.to_string()), suffix.to_string());
+    custom_managers: &[String],
+    native: &str,
+) -> anyhow::Result<PackageRef> {
+    let Some((prefix, name)) = s.split_once(':') else {
+        return Ok(PackageRef {
+            schema_path: None,
+            slot: None,
+            manager: None,
+            name: s.to_string(),
+        });
+    };
+    if prefix.is_empty() || name.is_empty() {
+        anyhow::bail!(
+            "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
+        );
     }
-    (None, s.to_string())
+    if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
+        return Ok(PackageRef {
+            schema_path: Some(path.path.to_string()),
+            slot: Some(path.slot.to_string()),
+            manager: Some(path.manager.to_string()),
+            name: name.to_string(),
+        });
+    }
+    if custom_managers.iter().any(|c| c == prefix) {
+        return Ok(PackageRef {
+            schema_path: Some(prefix.to_string()),
+            slot: Some(prefix.to_string()),
+            manager: Some(prefix.to_string()),
+            name: name.to_string(),
+        });
+    }
+    Err(unknown_package_prefix(
+        s,
+        prefix,
+        name,
+        custom_managers,
+        native,
+    ))
+}
+
+/// The `--package` tokens that WOULD remove `name` from `packages`, for a bare
+/// removal that resolved to the native manager and found nothing there.
+///
+/// A bare token means "the platform's native manager", so `--package -ripgrep`
+/// on a Debian host looks in `apt` alone and reports a miss for a package
+/// sitting in `brew.formulae`. Naming the token that works is the only useful
+/// answer; one path per write SLOT, since two paths reaching the same list
+/// (`apt` and `apt.packages`) would offer the same removal twice.
+pub(in crate::cli) fn removal_tokens_for(
+    name: &str,
+    packages: &cfgd_core::config::PackagesSpec,
+) -> Vec<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut tokens = Vec::new();
+    for entry in cfgd_core::config::PACKAGE_SCHEMA_PATHS {
+        if seen.contains(&entry.slot) {
+            continue;
+        }
+        seen.push(entry.slot);
+        if cfgd_core::config::desired_packages_for_spec(entry.slot, packages)
+            .iter()
+            .any(|p| p == name)
+        {
+            tokens.push(format!("--package -{}:{name}", entry.path));
+        }
+    }
+    for custom in &packages.custom {
+        if custom.packages.iter().any(|p| p == name) {
+            tokens.push(format!("--package -{}:{name}", custom.name));
+        }
+    }
+    tokens
+}
+
+/// The error a `--package` prefix that names nothing gets, with whichever hint
+/// its shape earns.
+fn unknown_package_prefix(
+    token: &str,
+    prefix: &str,
+    name: &str,
+    custom_managers: &[String],
+    native: &str,
+) -> anyhow::Error {
+    // A REGISTERED manager name that is not a schema path is one of the two
+    // virtual brew managers: the user reached for the wire spelling, and the
+    // schema spells the same thing differently.
+    if let Some(path) = cfgd_core::config::PACKAGE_SCHEMA_PATHS
+        .iter()
+        .find(|p| p.slot == prefix && p.path != prefix)
+    {
+        return anyhow::anyhow!(
+            "unknown package manager '{prefix}' in '--package {token}'; \
+             use {}:{name}",
+            path.path
+        );
+    }
+    let mut known: Vec<String> = cfgd_core::config::PACKAGE_SCHEMA_PATHS
+        .iter()
+        .map(|p| p.path.to_string())
+        .collect();
+    known.extend(custom_managers.iter().cloned());
+    known.sort();
+    let known = known.join(", ");
+    // A prefix whose first dot-segment names no manager either is not a
+    // mis-spelled schema path at all — it is part of the package's own name
+    // (`libc6:amd64`), and what the user wants is the native manager in front.
+    let manager_shaped = cfgd_core::config::package_schema_path(
+        prefix
+            .split_once('.')
+            .map(|(head, _)| head)
+            .unwrap_or(prefix),
+    )
+    .is_some();
+    if manager_shaped {
+        anyhow::anyhow!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
+    } else {
+        anyhow::anyhow!(
+            "unknown package manager '{prefix}' in '--package {token}'; \
+             did you mean {native}:{token}? (known: {known})"
+        )
+    }
 }
 
 /// Best-effort name of the profile a module-only command runs under: the
@@ -309,7 +671,7 @@ pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -
 /// scripts see as `CFGD_PROFILE`. Its spec is empty, so the layer contributes
 /// nothing to the merged profile.
 pub(in crate::cli) fn empty_resolved_profile(
-    module_name: &str,
+    module_names: &[String],
     profile_name: &str,
 ) -> ResolvedProfile {
     ResolvedProfile {
@@ -321,37 +683,13 @@ pub(in crate::cli) fn empty_resolved_profile(
             spec: cfgd_core::config::ProfileSpec::default(),
         }],
         merged: MergedProfile {
-            modules: vec![module_name.to_string()],
+            modules: module_names.to_vec(),
             ..Default::default()
         },
     }
 }
 
-/// Suffix of the sidecar copy cfgd leaves beside a target it adopted.
-pub(in crate::cli) const CFGD_BACKUP_SUFFIX: &str = ".cfgd-backup";
-
-/// The sidecar path for `target`, suffixed with `extra` (empty for the primary
-/// `<target>.cfgd-backup`).
-///
-/// The ONE derivation of that name: the adoption path writes it, module removal
-/// and profile update offer to restore it, and a byte of disagreement between
-/// them orphans a user's only copy of their original file. Built by appending
-/// to the target's `OsStr` rather than to a rendered `Display`, so a filename
-/// no `str` can round-trip still names the file beside it.
-pub(in crate::cli) fn cfgd_backup_path(target: &Path, extra: &str) -> PathBuf {
-    let mut name = target.as_os_str().to_os_string();
-    name.push(CFGD_BACKUP_SUFFIX);
-    name.push(extra);
-    PathBuf::from(name)
-}
-
-/// Collect known package manager names from the registry.
-pub(in crate::cli) fn known_manager_names() -> Vec<String> {
-    packages::all_package_managers()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect()
-}
+pub(in crate::cli) use cfgd_core::reconciler::{CFGD_BACKUP_SUFFIX, cfgd_backup_path};
 
 /// Parse a `--file` value into (source_path, target_path).
 /// - `<path>` without `:` → adopt in place: source=path, target=path
@@ -359,7 +697,7 @@ pub(in crate::cli) fn known_manager_names() -> Vec<String> {
 pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
     // On Windows, paths like C:\foo contain colons that are NOT source:target separators.
     // A drive letter is a single ASCII letter followed by `:` and `\` or `/`.
-    // We skip the first colon if it's part of a drive letter prefix.
+    // The first colon is skipped when it's part of a drive letter prefix.
     let split_pos = spec.char_indices().find_map(|(i, c)| {
         if c == ':' {
             // Skip if this colon is at position 1 and preceded by a single ASCII letter
@@ -534,7 +872,7 @@ pub(in crate::cli) fn update_workflow_best_effort(cli: &Cli, printer: &Printer) 
         printer.status_simple(
             Role::Warn,
             format!(
-                "workflow regeneration failed ({}); the on-disk workflow is stale until this is resolved and the workflow is regenerated",
+                "Workflow regeneration failed ({}); the on-disk workflow is stale until this is resolved and the workflow is regenerated",
                 cfgd_core::output::collapse_to_subject_line(&*e)
             ),
         );
@@ -654,17 +992,6 @@ pub(in crate::cli) fn scan_module_names(
 
 // --- Registry / state / editor helpers ---
 
-/// Build a HashMap of manager name → &dyn PackageManager from the registry.
-pub(in crate::cli) fn managers_map(
-    registry: &ProviderRegistry,
-) -> std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> {
-    registry
-        .package_managers
-        .iter()
-        .map(|m| (m.name().to_string(), m.as_ref()))
-        .collect()
-}
-
 pub(in crate::cli) fn module_state_map(
     state: &cfgd_core::state::StateStore,
 ) -> std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> {
@@ -720,7 +1047,7 @@ pub(in crate::cli) fn module_cache_dir_for(
     cache_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
-    Ok(cfgd_core::resolve_cache_dir(cache_over, scope)?.join("modules"))
+    Ok(cfgd_core::module_cache_root(cache_over, scope)?)
 }
 
 /// The ONE state directory a run uses — `state.db`, the apply mutex
@@ -833,7 +1160,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
     Ok(())
 }
 
-// --- Plan integration with sources (Phase 9) ---
+// --- Plan integration with sources ---
 
 /// Effective desired state every command resolves through.
 ///
@@ -844,12 +1171,49 @@ pub(in crate::cli) fn set_nested_yaml_value(
 pub(in crate::cli) struct DesiredState {
     pub resolved: ResolvedProfile,
     pub modules: Vec<cfgd_core::modules::ResolvedModule>,
+    /// The config-aware provider registry that maps module packages onto
+    /// managers — the ONE registry a composing run needs, handed back rather
+    /// than rebuilt by the caller. Reached through [`Self::take_registry`],
+    /// which builds it if the resolution did not already need it, so a command
+    /// that never asks (`decide` classifies sources and reads no manager) pays
+    /// nothing. `set_system_config_dir` is the caller's to apply: the read paths
+    /// that never set it must keep not setting it.
+    registry: std::cell::OnceCell<ProviderRegistry>,
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`cfgd_core::reconciler::ComposedSource::from_declared`]), in
+    /// declaration order; present whether or not this machine has synced. Read
+    /// off the declaration rather than off the composed layers, which compose
+    /// from the source CACHE alone — derived from the layers, the row vanished
+    /// on a machine that had not synced yet and silently answered "has this
+    /// machine run `cfgd sync`" instead of what the config subscribes to.
+    pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
     /// Source security-constraint violations surfaced when the caller composed in
-    /// [`ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
+    /// [`cfgd_core::composition::ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
     /// (apply/plan), which abort on the first violation instead.
     pub constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
+}
+
+impl DesiredState {
+    /// Whether the resolution itself already built the registry.
+    #[cfg(test)]
+    pub(in crate::cli) fn registry_built(&self) -> bool {
+        self.registry.get().is_some()
+    }
+
+    /// Take the run's config-aware registry, building it on first ask.
+    ///
+    /// `cfg` is a parameter rather than a field because the registry's other
+    /// input is `self.resolved.merged.packages` — a sibling field, which no
+    /// `OnceCell` initializer stored beside it could borrow. Owned, because
+    /// every caller mutates what it gets (`set_system_config_dir`) or hands it
+    /// to a `Reconciler` that wants it by value.
+    pub(in crate::cli) fn take_registry(&mut self, cfg: &config::CfgdConfig) -> ProviderRegistry {
+        self.registry.take().unwrap_or_else(|| {
+            build_registry_with_config_and_packages(Some(cfg), Some(&self.resolved.merged.packages))
+        })
+    }
 }
 
 /// Compose the local profile with configured sources into an effective profile.
@@ -860,13 +1224,14 @@ pub(in crate::cli) struct DesiredState {
 /// single composition code path in [`SourceManager::compose`], then displays and
 /// persists any conflicts.
 pub(in crate::cli) fn compose_with_sources(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
 ) -> anyhow::Result<composition::CompositionResult> {
+    let cli = ctx.cli();
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is
         return Ok(composition::CompositionResult {
@@ -882,6 +1247,7 @@ pub(in crate::cli) fn compose_with_sources(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_announce_cache_skips(ctx.announce_cache_skips());
     if refresh {
         mgr.load_sources(&cfg.spec.sources, printer)?;
     } else {
@@ -890,7 +1256,7 @@ pub(in crate::cli) fn compose_with_sources(
     }
 
     let result = mgr.compose(&cfg.spec.sources, local_resolved, mode)?;
-    display_and_persist_conflicts(cli, &result, printer);
+    display_and_persist_conflicts(ctx, &result, printer);
 
     // Report mode accumulates violations instead of aborting; without this the
     // only surface that ever showed them was a compliance snapshot, so an
@@ -901,7 +1267,7 @@ pub(in crate::cli) fn compose_with_sources(
             .status(
                 Role::Warn,
                 format!(
-                    "source '{}' violates its constraints",
+                    "Source '{}' violates its constraints",
                     violation.source_name
                 ),
             )
@@ -941,7 +1307,7 @@ pub(in crate::cli) fn compose_with_sources(
                 .status(
                     Role::Warn,
                     format!(
-                        "source '{}' scripts will run because allowScripts is set",
+                        "Source '{}' scripts will run because `allowScripts` is set",
                         spec.name
                     ),
                 )
@@ -955,11 +1321,21 @@ pub(in crate::cli) fn compose_with_sources(
     Ok(result)
 }
 
+/// Reword `conflict.details`'s persisted `" <- "` arrow to `" from "` for
+/// terminal display. `conflict.details` is `composition::record`'s
+/// persisted string and keeps its own `<-` shape in storage (see that
+/// module's doc comment); this is the ONE display-side reword, shared by
+/// `display_and_persist_conflicts` below and `source::helpers::format_conflict_preview_lines`,
+/// so a raw ASCII arrow reaches the terminal from neither surface.
+pub(in crate::cli) fn reword_conflict_arrow_for_display(details: &str) -> String {
+    details.replace(" <- ", " from ")
+}
+
 /// Render composition conflicts under a section and persist them to the state
 /// store for `status`/history. Best-effort persistence: a state error is logged,
 /// not fatal, so a read-only filesystem never blocks a compose.
 fn display_and_persist_conflicts(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     result: &composition::CompositionResult,
     printer: &Printer,
 ) {
@@ -968,21 +1344,19 @@ fn display_and_persist_conflicts(
     }
     let guard = printer.section("Source Conflicts");
     for conflict in &result.conflicts {
-        match conflict.resolution_type {
-            composition::ResolutionType::Locked => {
-                guard.status_simple(Role::Warn, &conflict.details);
-            }
+        let role = match conflict.resolution_type {
+            composition::ResolutionType::Locked => Role::Warn,
             composition::ResolutionType::Required
             | composition::ResolutionType::Rejected
-            | composition::ResolutionType::Override => {
-                guard.status_simple(Role::Info, &conflict.details);
-            }
-            composition::ResolutionType::Default => {}
-        }
+            | composition::ResolutionType::Override => Role::Info,
+            // A default resolution settled itself; nothing to tell the operator.
+            composition::ResolutionType::Default => continue,
+        };
+        guard.status_simple(role, reword_conflict_arrow_for_display(&conflict.details));
     }
     drop(guard);
 
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    if let Some(state) = ctx.state_opt() {
         for conflict in &result.conflicts {
             if let Err(e) = state.record_source_conflict(
                 &conflict.winning_source,
@@ -1011,23 +1385,56 @@ fn display_and_persist_conflicts(
 /// local profile's own modules with empty source maps — identical to the old
 /// per-command path, so the no-sources case is a pure regression.
 ///
-/// `module_filter` scopes module resolution to a single module (apply/diff
-/// `--module`); `None` resolves the whole effective profile.
+/// `module_filter` scopes module resolution to the named modules
+/// (apply/plan `--module`, repeatable); empty resolves the whole effective
+/// profile. A non-empty `module_filter` with `with_profile = false`
+/// ISOLATES: the returned `resolved` is replaced outright by a zeroed
+/// profile carrying only those module names, so every profile-owned
+/// contribution is zeroed, not just packages/files. `with_profile = true`
+/// instead UNIONS the named modules into the full composed profile's own
+/// module list, so an out-of-profile module can be added without dropping
+/// anything the profile already declares.
 ///
 /// Errors from `compose` (constraint violations, malformed cached manifest,
 /// failed signature) propagate so an invalid source config fails every command
 /// consistently — a command that reports state must not silently report empty
-/// when the desired state is broken.
+/// when the desired state is broken. Module-resolution errors (including a
+/// genuinely unknown `--module` name, or a source's `ScriptsNotAllowed`
+/// constraint) propagate the same way — atomically over the whole requested
+/// list, never swallowed to an empty result.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn resolve_desired_state(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
-    module_filter: Option<&str>,
+    module_filter: &[String],
+    with_profile: bool,
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
 ) -> anyhow::Result<DesiredState> {
-    let composition = compose_with_sources(cli, cfg, local_resolved, printer, refresh, mode)?;
+    let composition = compose_with_sources(ctx, cfg, local_resolved, printer, refresh, mode)?;
+    resolve_desired_from_composition(ctx, cfg, composition, module_filter, with_profile, printer)
+}
+
+/// The resolution half of [`resolve_desired_state`], over a composition the
+/// caller already holds.
+///
+/// The split is for a caller that has to tell a COMPOSITION failure from a
+/// MODULE-RESOLUTION one — `cfgd backup restore` and `cfgd backup rollback`
+/// degrade the second and refuse the first. Composing a second time to answer
+/// that question is not free: `compose_with_sources` renders the
+/// `Source Conflicts` section and records every conflict it found, so a retry
+/// prints the section twice and doubles the conflict history.
+pub(in crate::cli) fn resolve_desired_from_composition(
+    ctx: &RunContext<'_>,
+    cfg: &config::CfgdConfig,
+    composition: composition::CompositionResult,
+    module_filter: &[String],
+    with_profile: bool,
+    printer: &Printer,
+) -> anyhow::Result<DesiredState> {
+    let cli = ctx.cli();
     let composition::CompositionResult {
         resolved,
         source_env,
@@ -1037,50 +1444,109 @@ pub(in crate::cli) fn resolve_desired_state(
         ..
     } = composition;
 
-    let config_dir = config_dir(cli);
-    let module_names = match module_filter {
-        Some(name) => vec![name.to_string()],
-        None => resolved.merged.modules.clone(),
+    let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
+
+    let config_dir = ctx.config_dir();
+
+    // `--module` without `--with-profile` isolates: only the named modules
+    // (plus their dependencies) plan. `--with-profile` keeps the fully
+    // composed profile and UNIONS the named modules into its own module
+    // list instead of replacing it, so an out-of-profile module can be
+    // added without dropping any module the profile already declares.
+    let module_names: Vec<String> = if module_filter.is_empty() {
+        resolved.merged.modules.clone()
+    } else if with_profile {
+        let mut names = resolved.merged.modules.clone();
+        for name in module_filter {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
+    } else {
+        module_filter.to_vec()
     };
+
+    // The isolation itself: replace the whole composed profile with a zeroed
+    // one carrying only the requested module names, so every profile-owned
+    // contribution — packages, files, env, aliases, system, scripts,
+    // secrets, backups — is zeroed regardless of whether a profile resolved
+    // or a source layered its own content into the composition above. A
+    // half-isolation that zeroed only packages/files (leaving env/aliases/
+    // system/scripts to flow through from `resolved.merged`) is exactly the
+    // bug this replaces: `Reconciler::plan` derives ALL of those from
+    // `resolved.merged`, not just packages/files.
+    // `desired.modules` (built from `module_names` below) is what
+    // `Reconciler::plan` actually resolves against — `resolved.merged.modules`
+    // itself is never read there. It IS read by callers outside the plan/apply
+    // path that take a `ResolvedProfile` at face value (the daemon's own
+    // resolution, `cfgd doctor`, `cfgd module list/show`, `cfgd init`), so it
+    // must still agree with what this run resolved: a `--with-profile` caller
+    // reading it back would otherwise see the profile's ORIGINAL module list
+    // with the named module silently missing from it, even though that module
+    // is what `desired.modules` — and therefore the plan — actually carries.
+    let mut resolved = if !module_filter.is_empty() && !with_profile {
+        empty_resolved_profile(module_filter, &active_profile_name(cli, Some(cfg)))
+    } else {
+        resolved
+    };
+    if !module_filter.is_empty() && with_profile {
+        resolved.merged.modules = module_names.clone();
+    }
+
+    // Config-aware registry so a module that references a custom package manager
+    // (declared in cfg / composed packages) resolves identically on every
+    // command — matching the apply path's registry. Filled HERE when the module
+    // walk needs it and handed back on `DesiredState` either way, so the caller
+    // reuses it: every command that composes a desired state then built a
+    // second, identical registry of its own, and a registry build constructs
+    // every package manager and every configurator this host supports.
+    //
+    // `build_registry_with_config_and_packages` already registers the spec's
+    // custom managers; the second `extend_package_managers` this replaced added
+    // each of them a SECOND time, so `package_managers()` answered with two
+    // entries per custom manager.
+    let registry: std::cell::OnceCell<ProviderRegistry> = std::cell::OnceCell::new();
 
     let modules = if module_names.is_empty() {
         Vec::new()
     } else {
-        // Config-aware registry so a module that references a custom package
-        // manager (declared in cfg / composed packages) resolves identically on
-        // every command — matching the apply path's registry.
-        let mut registry =
-            build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
-        registry
-            .package_managers
-            .extend(packages::custom_managers(&resolved.merged.packages.custom));
-        let platform = Platform::detect();
-        let mgr_map = managers_map(&registry);
+        let platform = Platform::current();
+        let mgr_map = registry
+            .get_or_init(|| {
+                build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages))
+            })
+            .manager_map();
         let cache_base = module_cache_dir(cli)?;
-        match modules::resolve_modules(
+        // The run's own installed-state memo: a bare entry resolves to the
+        // manager that already holds it, and the plan's elision then reads
+        // the same enumeration. A run with no state to open keeps the
+        // platform default.
+        let pkg_cx = ctx.package_context().ok();
+        // Resolution is atomic over the whole requested-name list: any
+        // failure — including a genuinely unknown module name, or a source
+        // constraint (`ScriptsNotAllowed`) — propagates as the error it is.
+        // "Not found" is reserved for a name that truly does not resolve;
+        // swallowing every error here as a silent empty Vec previously made
+        // a source-constraint violation on `--module x` report as "module
+        // not found" instead of the constraint failure it actually was.
+        modules::resolve_modules(
             &module_names,
-            &config_dir,
+            config_dir,
             &cache_base,
             &source_module_roots,
-            &platform,
+            platform,
             &mgr_map,
+            pkg_cx.as_ref(),
             printer,
-        ) {
-            Ok(mods) => mods,
-            // A `--module` filter naming a module that does not resolve degrades
-            // to empty (the command reports "module not found"), matching apply's
-            // module-filter behavior. A full-profile resolution error propagates.
-            Err(e) if module_filter.is_some() => {
-                tracing::debug!("module filter '{}' not found: {}", module_names[0], e);
-                Vec::new()
-            }
-            Err(e) => return Err(e.into()),
-        }
+        )?
     };
 
     Ok(DesiredState {
         resolved,
         modules,
+        registry,
+        sources,
         source_env,
         source_commits,
         constraint_violations,
@@ -1125,10 +1591,9 @@ pub(in crate::cli) fn sign_and_attest(
         let repo = cfgd_core::detect_git_remote();
         let commit = cfgd_core::detect_git_head();
         if repo.is_none() || commit.is_none() {
-            printer.status_simple(
-                Role::Warn,
-                "No git remote/HEAD detected — SLSA provenance will record source as \"unknown\"",
-            );
+            printer
+                .status(Role::Warn, "No git remote/HEAD detected")
+                .detail("SLSA provenance will record source as \"unknown\"");
         }
         let repo = repo.unwrap_or_else(|| "unknown".to_string());
         let commit = commit.unwrap_or_else(|| "unknown".to_string());
@@ -1174,5 +1639,7 @@ pub(in crate::cli) fn sign_and_attest(
     })
 }
 
+pub(in crate::cli) use cfgd_core::short_commit;
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

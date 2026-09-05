@@ -1,10 +1,13 @@
 Profile: workstation
-  Config   /etc/cfgd/cfgd.yaml
-  Profile  workstation
+  Config  /etc/cfgd/cfgd.yaml
 
 Layers
   base         source=local priority=1000
   workstation  source=local priority=1000
+
+Aliases
+  gs  git status
+  ll  ls -lah
 
 Env
   EDITOR  nvim

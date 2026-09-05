@@ -136,7 +136,7 @@ pub(crate) fn install_windows_service(
         ])
         .output()
     {
-        tracing::warn!(error = %e, "failed to set Windows Service description");
+        tracing::warn!(error = %e, "daemon: failed to set the Windows Service description");
     }
 
     if enable_event_log {
@@ -147,10 +147,11 @@ pub(crate) fn install_windows_service(
     // poll the SCM and report the TRUE post-start state — an install that also
     // fired `sc start` here would swallow the outcome and force callers to
     // over-claim "started".
-    tracing::info!(
+    tracing::debug!(
         event_log = enable_event_log,
-        "installed Windows Service: cfgd"
+        "daemon: Windows Service install options"
     );
+    tracing::info!("daemon: installed Windows Service cfgd");
     Ok(())
 }
 
@@ -165,7 +166,9 @@ pub(crate) fn start_windows_service() -> Result<bool> {
     let _ = std::process::Command::new("sc.exe")
         .args(["start", "cfgd"])
         .output()
-        .map_err(|e| tracing::warn!(error = %e, "failed to issue sc start for the cfgd service"));
+        .map_err(
+            |e| tracing::warn!(error = %e, "daemon: failed to issue sc start for the cfgd service"),
+        );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
@@ -173,7 +176,9 @@ pub(crate) fn start_windows_service() -> Result<bool> {
             return Ok(true);
         }
         if std::time::Instant::now() >= deadline {
-            tracing::warn!("cfgd Windows Service did not reach RUNNING within the start timeout");
+            tracing::warn!(
+                "daemon: Windows Service cfgd did not reach RUNNING within the start timeout"
+            );
             return Ok(false);
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -193,13 +198,13 @@ fn windows_service_is_running() -> bool {
 
 /// Register the `cfgd` source in the Application Event Log so Event Viewer
 /// renders ReportEventW messages cleanly. Best-effort — the service install
-/// already succeeded by the time we get here, and a missing source only
+/// already succeeded by the time this runs, and a missing source only
 /// degrades to "the description for Event ID X cannot be found" warnings in
 /// Event Viewer rather than dropping events.
 ///
 /// `EventCreate.exe` ships with every supported Windows version and contains
 /// generic message templates (`%1`...`%n`) that just echo the inserted
-/// strings — so we get readable Event Viewer rendering without owning a
+/// strings — giving readable Event Viewer rendering without owning a
 /// resource DLL.
 #[cfg(windows)]
 fn register_event_source() {
@@ -221,8 +226,8 @@ fn register_event_source() {
         .output();
 
     // TypesSupported = 0x7 → ERROR | WARNING | INFORMATION (the three the
-    // Layer emits). Higher bits would cover audit success/failure if we ever
-    // surface those.
+    // Layer emits). Higher bits would cover audit success/failure if those
+    // are ever surfaced.
     let _ = std::process::Command::new("reg.exe")
         .args([
             "add",
@@ -252,7 +257,7 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
         .args(["stop", "cfgd"])
         .output()
     {
-        tracing::debug!(error = %e, "sc.exe stop (pre-uninstall)");
+        tracing::debug!(error = %e, "daemon: sc.exe stop (pre-uninstall)");
     }
 
     let output = std::process::Command::new("sc.exe")
@@ -267,7 +272,7 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
         // Error 1060 = "The specified service does not exist as an installed service."
         // Treat this as a noop — uninstalling a non-existent service is idempotent.
         if stdout.contains("1060") || stdout.contains("does not exist") {
-            tracing::debug!("cfgd Windows Service not found; nothing to remove");
+            tracing::debug!("daemon: Windows Service cfgd not found, nothing to remove");
             return Ok(());
         }
         return Err(DaemonError::ServiceInstallFailed {
@@ -286,7 +291,7 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
         ])
         .output();
 
-    tracing::info!("removed Windows Service: cfgd");
+    tracing::info!("daemon: removed Windows Service cfgd");
     Ok(())
 }
 
@@ -329,7 +334,7 @@ pub fn run_as_windows_service(_hooks: Arc<dyn DaemonHooks>, _cfgd_version: &str)
 #[cfg(windows)]
 extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
     if let Err(e) = windows_service_main() {
-        tracing::error!(error = %e, "windows service main failed");
+        tracing::error!(error = %e, "daemon: Windows Service main failed");
     }
 }
 
@@ -377,6 +382,7 @@ pub(crate) fn init_windows_logging() {
     };
 
     let file_layer = tracing_subscriber::fmt::layer()
+        // unfolded-writer-ok: a log FILE the service writes under its own state dir, never a terminal
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .with_target(false);
@@ -415,7 +421,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     let status_handle = service_control_handler::register("cfgd", event_handler)?;
 
-    // Report StartPending while we initialize
+    // Report StartPending during initialization
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::StartPending,
@@ -479,7 +485,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         .ok_or("SERVICE_VERSION not initialized — run_as_windows_service must be called first")?
         .clone();
 
-    // Create the tokio runtime on the main service thread so we can shut it down gracefully
+    // Create the tokio runtime on the main service thread so it can shut down gracefully
     let rt = tokio::runtime::Runtime::new()?;
     let printer = Arc::new(crate::output::Printer::silent());
 
@@ -496,7 +502,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         )
         .await
         {
-            tracing::error!(error = %e, "daemon error");
+            tracing::error!(error = %e, "daemon: run failed");
         }
     });
 

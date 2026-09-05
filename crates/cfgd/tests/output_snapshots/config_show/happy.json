@@ -77,7 +77,8 @@
           "optIn": [],
           "overrides": null,
           "priority": 500,
-          "reject": null
+          "reject": null,
+          "requireSignedCommits": false
         },
         "sync": {
           "autoApply": false,
@@ -99,7 +100,8 @@
           "optIn": [],
           "overrides": null,
           "priority": 500,
-          "reject": null
+          "reject": null,
+          "requireSignedCommits": false
         },
         "sync": {
           "autoApply": false,
@@ -111,6 +113,7 @@
     "theme": {
       "name": "dracula"
     },
-    "update": null
+    "update": null,
+    "usageHints": null
   }
 }

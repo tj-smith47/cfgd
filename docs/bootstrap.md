@@ -1,6 +1,6 @@
 # Bootstrap
 
-`cfgd init` is designed to be the only command you run on a brand-new machine. It scaffolds a configuration repository — creating `cfgd.yaml`, directory structure, and optionally cloning an existing config repo. With `--apply`, it also reconciles the machine in one shot.
+`cfgd init` is designed to be the only command you run on a brand-new machine. It scaffolds a configuration repository (`cfgd.yaml` plus directory structure), or clones an existing config repo. With `--apply`, it also reconciles the machine in one shot.
 
 ## From a Config Repo
 
@@ -11,11 +11,11 @@ cfgd init --from git@github.com:you/machine-config.git
 ### Naming the Repo
 
 `--from` takes any git URL, a local path, or the GitHub shorthand `owner/repo`. All
-three are equally supported — the shorthand is a convenience for GitHub, never a
+three are equally supported: the shorthand is a convenience for GitHub, never a
 requirement, and cfgd hands every other value to git exactly as you wrote it.
 
 ```sh
-# GitHub shorthand — expands to https://github.com/you/machine-config.git
+# GitHub shorthand, expands to https://github.com/you/machine-config.git
 cfgd init --from you/machine-config
 
 # Any git URL, on any host
@@ -38,13 +38,16 @@ going to GitHub.
 
 The flow:
 
-1. **Check prerequisites** — verifies git is installed
-2. **Clone** the config repo into the target directory (or pull if already cloned)
-3. **Generate** release workflow if profiles/modules are present
-4. **Init git** if the directory isn't already a repository
+1. **Check prerequisites**: verifies git is installed (exits non-zero if missing)
+2. **Clone** the config repo into the target directory (skipped if already cloned)
+3. **Init git** if the directory isn't already a repository
+
+A cloned repo is never given a release workflow: it already has whatever
+workflows its authors committed. Only a scaffolded repo ([Fresh Start](#fresh-start))
+gets one.
 
 The clone step is skipped entirely when the target already contains a
-`cfgd.yaml` — cfgd reports `Already initialized at <dir>` and leaves the existing
+`cfgd.yaml`: cfgd reports `Already initialized at <dir>` and leaves the existing
 config untouched. Re-running `init --from` is therefore safe: it moves straight
 to whatever `--apply` / `--apply-module` work you asked for.
 
@@ -54,7 +57,7 @@ to whatever `--apply` / `--apply-module` work you asked for.
 cfgd init --from git@github.com:you/machine-config.git --branch dev
 ```
 
-If the branch isn't `master`, cfgd checks out the specified branch after cloning.
+Without `--branch`, the clone stays on the remote's default branch.
 
 ## Fresh Start
 
@@ -62,7 +65,9 @@ If the branch isn't `master`, cfgd checks out the specified branch after cloning
 cfgd init
 ```
 
-Creates `cfgd.yaml`, `profiles/`, `modules/`, `files/`, and `.gitignore` in the current directory. No profile is set — create one afterward:
+Creates `cfgd.yaml`, `profiles/`, `modules/`, `.gitignore`, and the release
+workflow `.github/workflows/cfgd-release.yml` (the one `cfgd workflow generate`
+writes) in the current directory. No profile is set; create one afterward:
 
 ```sh
 cfgd profile create base
@@ -112,10 +117,10 @@ Without `--apply-profile`, cfgd falls back to:
 
 ### Applying Specific Modules
 
-Use `--apply-module` (repeatable) to apply specific modules — with or without a profile:
+Use `--apply-module` (repeatable) to apply specific modules, with or without a profile:
 
 ```sh
-# Apply just the nvim and tmux modules (no profile needed)
+# Apply only the nvim and tmux modules (no profile needed)
 cfgd init --from git@github.com:you/machine-config.git --apply-module nvim --apply-module tmux
 
 # Apply a profile plus additional modules
@@ -150,6 +155,13 @@ cfgd init --from git@github.com:you/machine-config.git --theme minimal
 
 For fresh repos, the theme is written into `cfgd.yaml`. For cloned repos, the theme is injected into the existing `cfgd.yaml`.
 
+To try a preset without persisting it, the global `--theme` flag (or `CFGD_THEME`) overrides `spec.theme.name` for one invocation:
+
+```sh
+cfgd status --theme nord
+CFGD_THEME=minimal cfgd plan
+```
+
 ## Team Onboarding
 
 When `cfgd init --from` clones a repository that contains a `cfgd-source.yaml` at its root, cfgd enters a source-aware onboarding flow instead of treating it as a plain config repo.
@@ -160,21 +172,21 @@ cfgd init --from git@github.com:acme/dev-config.git
 
 The flow:
 
-1. **Clone and detect** — clones the repo and checks for `cfgd-source.yaml`. If found, continues with the team flow below. If not found, falls back to the standard config repo flow.
+1. **Clone and detect**: clones the repo and checks for `cfgd-source.yaml`. If found, continues with the team flow below. If not found, falls back to the standard config repo flow.
 
-2. **Platform auto-detection** — detects your OS and distribution. If the source provides platform-specific profiles (macOS, Debian, Fedora, etc.), the matching one is automatically selected as a layer. If no match exists, the platform layer is skipped and you're informed.
+2. **Platform auto-detection**: detects your OS and distribution. If the source provides platform-specific profiles (macOS, Debian, Fedora, etc.), the matching one is automatically selected as a layer. If no match exists, the platform layer is skipped and you're informed.
 
-3. **Profile selection** — shows available profiles with their descriptions. If `--apply-profile` was passed, that profile is used without prompting. If only one profile exists, it's auto-selected with confirmation.
+3. **Profile selection**: shows available profiles with their descriptions. If `--apply-profile` was passed, that profile is used without prompting. If only one profile exists, it's auto-selected with confirmation.
 
-4. **Policy tier review** — after profile selection, cfgd loads the merged profile and groups items by policy tier:
-   - **Required + Locked** — shown for transparency, applied unconditionally
-   - **Recommended** — prompted with default yes
-   - **Optional** — prompted with default no
+4. **Policy tier review**: after profile selection, cfgd loads the merged profile and groups items by policy tier:
+   - **Required + Locked**: shown for transparency, applied unconditionally
+   - **Recommended**: prompted with default yes
+   - **Optional**: prompted with default no
    - With `--yes`: all recommended are accepted, all optional are skipped
 
-5. **Config creation** — creates `~/.config/cfgd/cfgd.yaml` with a source subscription pointing to the team repo, and a local `profiles/default/profile.yaml` for your personal additions.
+5. **Config creation**: creates `~/.config/cfgd/cfgd.yaml` with a source subscription pointing to the team repo, and a local `profiles/default/profile.yaml` for your personal additions.
 
-6. **Bootstrap apply** — runs `cfgd plan`, shows the plan, confirms, applies, and verifies. Offers to install the daemon for continuous sync.
+6. **Bootstrap apply**: runs `cfgd plan`, shows the plan, confirms, applies, and verifies. Offers to install the daemon for continuous sync.
 
 If the cloned repo contains both a `cfgd.yaml` (personal config) and a `cfgd-source.yaml` (team source), cfgd uses the `cfgd.yaml` as the base config and registers the source as a subscription within it. This supports repos that serve as both a team baseline and a ready-to-use config.
 
@@ -203,15 +215,15 @@ cfgd apply                 # apply to the machine
 
 The `generate` flow:
 
-1. **Scan** — detects installed packages, dotfiles, shell config (aliases, exports, PATH), and system settings across all available package managers.
-2. **Propose** — the AI proposes a module and profile structure based on what it found. Each tool typically becomes one module (`nvim`, `tmux`, `zsh`, etc.).
-3. **Review** — each generated YAML file is shown to you before it is written. You can accept, request changes, or skip individual files.
-4. **Write** — accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>/profile.yaml` in the current config repo.
+1. **Scan**: detects installed packages, dotfiles, shell config (aliases, exports, PATH), and system settings across all available package managers.
+2. **Propose**: the AI proposes a module and profile structure based on what it found. Each tool typically becomes one module (`nvim`, `tmux`, `zsh`, etc.).
+3. **Review**: each generated YAML file is shown to you before it is written. You can accept, request changes, or skip individual files.
+4. **Write**: accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>/profile.yaml` in the current config repo.
 
 You can also target a single tool or profile:
 
 ```sh
-cfgd generate module nvim    # generate just the nvim module
+cfgd generate module nvim    # generate only the nvim module
 cfgd generate profile work   # generate a work profile interactively
 ```
 
@@ -221,7 +233,7 @@ Use `--scan-only` to preview what cfgd finds without starting the AI conversatio
 cfgd generate --scan-only
 ```
 
-Requires `ANTHROPIC_API_KEY` in your environment, or `spec.ai.api-key` set in `cfgd.yaml`. See [cli-reference.md](cli-reference.md#cfgd-generate) for all flags.
+Requires an API key in your environment: `ANTHROPIC_API_KEY` by default, or the variable named by `spec.ai.apiKeyEnv` in `cfgd.yaml`. See [cli-reference.md](cli-reference.md#cfgd-generate) for all flags.
 
 ## Adding Modules
 
@@ -240,14 +252,14 @@ See [modules.md](modules.md) for module details.
 The install script handles downloading the binary and optionally bootstrapping:
 
 ```sh
-# Just install the binary
+# install the binary only
 curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | sh
 
 # Install and bootstrap in one step
 curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | sh -s -- init --from git@github.com:you/config.git
 ```
 
-The script detects your OS and architecture, downloads the right binary from GitHub releases, verifies the SHA256 checksum, and places it in your PATH.
+The script detects your OS and architecture, downloads the right binary from GitHub releases, verifies the SHA256 checksum (and the cosign signature when the `cosign` CLI is installed), and places it in your PATH. See [installation.md](installation.md) for every install channel.
 
 ### Homebrew
 
@@ -275,25 +287,11 @@ cfgd enroll --server-url https://cfgd.acme.com --gpg-key ABCD1234
 
 After enrollment, the device receives a permanent API key and pulls configuration from the device gateway. See [operator.md](operator.md#device-gateway) for enrollment details.
 
-## Windows Installation
+## Windows
 
-Download the latest release from GitHub, or install via a Windows package manager:
-
-```powershell
-# Direct download (extract and add to PATH)
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.7.0-windows-amd64.zip -OutFile cfgd.zip
-Expand-Archive cfgd.zip -DestinationPath "$env:LOCALAPPDATA\cfgd"
-
-# Self-upgrade
-cfgd upgrade
-```
-
-Each release archive is signed with keyless cosign and ships a per-artifact
-`<archive>.sha256` checksum. To verify a direct download by hand, see
-[Verifying downloads](installation.md#verifying-downloads) in the installation
-guide.
-
-After installation, bootstrap works the same as on Unix:
+Install via winget, Scoop, Chocolatey, or direct download; see
+[installation.md](installation.md#windows). Bootstrap then works the same as
+on Unix:
 
 ```powershell
 cfgd init --from git@github.com:you/machine-config.git --apply --yes --install-daemon

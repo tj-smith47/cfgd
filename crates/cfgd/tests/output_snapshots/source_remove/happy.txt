@@ -1,2 +1,4 @@
 Remove source:team-config
-✓ removed
+✓ Removed
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

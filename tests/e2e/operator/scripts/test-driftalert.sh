@@ -43,9 +43,9 @@ spec:
     name: e2e-drift-mc-${E2E_RUN_ID}
   severity: Medium
   driftDetails:
-    - field: packages.ripgrep
-      expected: installed
-      actual: missing
+    - field: sysctl.vm.max_map_count
+      expected: "262144"
+      actual: "65530"
 EOF
 
 # Wait for DriftAlert controller to mark MC as drifted (via DriftDetected condition)

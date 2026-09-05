@@ -76,7 +76,7 @@ impl BackupTask {
             tracing::warn!(
                 backup = %spec.name,
                 schedule = %schedule_str,
-                "backup timer: schedule is neither an interval nor a cron expression — no timer installed"
+                "daemon: backup schedule is neither an interval nor a cron expression — no timer installed"
             );
             return None;
         };
@@ -87,7 +87,7 @@ impl BackupTask {
                 tracing::warn!(
                     backup = %spec.name,
                     schedule = %schedule_str,
-                    "backup timer: schedule has no upcoming occurrence — retrying later"
+                    "daemon: backup schedule has no upcoming occurrence — retrying later"
                 );
                 now + SCHEDULE_STALL_RETRY
             });
@@ -166,7 +166,7 @@ impl BackupTask {
                 tracing::warn!(
                     backup = %self.spec.name,
                     schedule = %self.schedule_str,
-                    "backup timer: schedule has no upcoming occurrence — retrying later"
+                    "daemon: backup schedule has no upcoming occurrence — retrying later"
                 );
                 self.next_fire = now + SCHEDULE_STALL_RETRY;
                 return missed;
@@ -449,7 +449,7 @@ impl BackupTimers {
                 tracing::warn!(
                     backup = %task.spec.name,
                     missed_fires = missed,
-                    "backup: schedule elapsed while the daemon was busy — skipped the missed {}",
+                    "daemon: backup schedule elapsed while the daemon was busy — skipped the missed {}",
                     crate::plural_noun(missed as usize, "fire")
                 );
             }
@@ -510,6 +510,7 @@ impl BackupTimers {
 /// cannot damage source-delivered state the way the pruning reconcile could.
 /// The `degraded` flag is what stops that softness from becoming permanent —
 /// see [`BackupTimers`].
+#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_backup_tasks(
     cfg: &CfgdConfig,
     config_path: &Path,
@@ -517,18 +518,21 @@ pub(super) fn resolve_backup_tasks(
     printer: &Printer,
     scope: crate::Scope,
     state_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
     now: Instant,
 ) -> Result<ResolvedBackupTasks> {
     let (profiles_dir, profile_name) = super::profile_context(config_path, cfg, profile_override);
 
     let local = config::resolve_profile(profile_name, &profiles_dir)?;
 
-    let (specs, degraded) = match super::compose_daemon_desired_state(cfg, &local, printer, scope) {
-        Ok((resolved, _)) => (resolved.merged.backups, None),
+    let (specs, degraded) = match super::compose_daemon_desired_state(
+        cfg, &local, printer, scope, cache_dir,
+    ) {
+        Ok(composed) => (composed.resolved.merged.backups, None),
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: source composition failed — falling back to locally-declared backups"
+                "daemon: backup timers — source composition failed, falling back to locally-declared backups"
             );
             (
                 local.merged.backups.clone(),
@@ -545,7 +549,7 @@ pub(super) fn resolve_backup_tasks(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: state store unavailable — interval schedules restart from now"
+                "daemon: backup timers — state store unavailable, interval schedules restart from now"
             );
             None
         }
@@ -561,6 +565,22 @@ pub(super) fn resolve_backup_tasks(
         tasks: build_backup_tasks(&specs, profile_name, now, &last_finished),
         degraded,
     })
+}
+
+/// The configuration an unattended run reports under, snapshotted out of the
+/// daemon's state so it names what a hand-run does without composing a second
+/// time.
+///
+/// `sources` is the config's own declaration, seeded at startup and refreshed
+/// by every tick that read a config; `profile` and `modules` are what the last
+/// profile-wide reconcile tick resolved and stay empty until one completes,
+/// which is what [`Default`] stands for.
+#[derive(Default)]
+pub(super) struct ResolvedConfiguration {
+    pub(super) profile: Option<String>,
+    pub(super) sources: Vec<crate::reconciler::ComposedSource>,
+    pub(super) modules: Vec<crate::output::HeaderModule>,
+    pub(super) profile_inherits: Vec<String>,
 }
 
 /// Run every due scheduled backup as ONE run: a `Backup` header, the `Backups`
@@ -587,6 +607,7 @@ pub(super) fn run_scheduled_backups(
     config_path: &Path,
     config_dir: &Path,
     state_dir: &Path,
+    resolved: &ResolvedConfiguration,
     printer: &Printer,
     abort: &crate::AbortFlag,
 ) {
@@ -598,7 +619,7 @@ pub(super) fn run_scheduled_backups(
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "scheduled backup: state store error — runs skipped"
+                "daemon: scheduled backup state store error — runs skipped"
             );
             return;
         }
@@ -622,18 +643,48 @@ pub(super) fn run_scheduled_backups(
         .map(|(profile, _)| profile.as_str())
         .filter(|first| due.iter().all(|(profile, _)| profile == first));
 
+    // The loop's own resolution, never a second one: the reconcile tick records
+    // what the active profile composed to. A due set naming a different profile
+    // — or one no tick has resolved yet — names no module set, exactly as a
+    // heterogeneous set names no profile.
+    let under_resolved_profile =
+        single_profile.is_some() && single_profile == resolved.profile.as_deref();
+    // The subscriptions are the CONFIG's, seeded at startup and re-stated by
+    // every tick, so they describe this fire whichever profile it is about.
+    // Only the module set is the resolution's, and a due set the last tick did
+    // not resolve — a different profile, or none resolved yet — has none this
+    // fire may report.
+    let modules: &[crate::output::HeaderModule] = if under_resolved_profile {
+        &resolved.modules
+    } else {
+        &[]
+    };
+    // Same gating as `modules` above: the inheritance chain is a fact about
+    // the loop's OWN resolution, meaningless beside a due unit from another
+    // profile.
+    let profile_inherits: &[String] = if under_resolved_profile {
+        &resolved.profile_inherits
+    } else {
+        &[]
+    };
+    // no-modules-row-ok: the loop's own resolution is the only module set this
+    // fire may report, and on that arm it is about another profile.
     let ctx = crate::reconciler::RunContext {
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
         profile: single_profile,
-        modules: &[],
+        sources: &resolved.sources,
+        modules,
+        profile_inherits,
         trigger: Some(SCHEDULE_TRIGGER),
+        subject: None,
+        unit_source: None,
     };
     let run = crate::reconciler::ApplyRun::backups(ctx, &units, &store);
     let reports = match run.execute_backups(printer) {
         Ok((_, reports)) => reports,
         Err(e) => {
-            tracing::error!(error = %e, "scheduled backup: run could not be rendered");
+            tracing::error!(error = %e, "daemon: scheduled backup run could not be rendered");
             return;
         }
     };
@@ -650,24 +701,27 @@ pub(super) fn run_scheduled_backups(
     for ((_, spec), report) in due.iter().zip(&reports) {
         match (&report.skipped, &report.error, &report.record) {
             (Some(holder), _, _) => {
-                tracing::info!(backup = %spec.name, holder = %holder, "scheduled backup skipped: the unit is already running elsewhere");
+                tracing::info!(
+                    "daemon: scheduled backup {} skipped — already running under {holder}",
+                    spec.name
+                );
             }
             (None, Some(e), _) => {
-                tracing::warn!(backup = %spec.name, error = %e, "scheduled backup: the run could not be recorded");
+                tracing::warn!(backup = %spec.name, error = %e, "daemon: scheduled backup run could not be recorded");
             }
             (None, None, Some(record)) => match &record.error {
                 Some(e) => {
-                    tracing::warn!(backup = %record.name, error = %e, "scheduled backup completed with errors");
+                    tracing::warn!(backup = %record.name, error = %e, "daemon: scheduled backup completed with errors");
                 }
                 None => {
-                    tracing::info!(backup = %record.name, "scheduled backup completed");
+                    tracing::info!("daemon: scheduled backup {} completed", record.name);
                 }
             },
             // Unreachable while `run_backup_group` fills exactly one of the
             // three: a report with none of them is a unit whose outcome was
             // lost, which is worth a line rather than silence.
             (None, None, None) => {
-                tracing::warn!(backup = %spec.name, "scheduled backup produced no outcome");
+                tracing::warn!(backup = %spec.name, "daemon: scheduled backup produced no outcome");
             }
         }
     }

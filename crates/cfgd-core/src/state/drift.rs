@@ -4,12 +4,28 @@ use super::StateStore;
 use super::types::DriftEvent;
 use crate::errors::Result;
 
+/// Keys bound per statement while staging a drift-key set. Two parameters per
+/// key against SQLite's 32766-parameter ceiling leaves the bound two orders of
+/// magnitude clear, and the staging table takes the rest of the set on the
+/// next statement.
+const DRIFT_KEY_CHUNK: usize = 500;
+
 impl StateStore {
     /// Record a drift event for a resource currently diverging from desired
     /// state. Upserts: if an unresolved row already exists for
     /// `(resource_type, resource_id)`, its timestamp and expected/actual values
     /// are refreshed instead of inserting a duplicate, so a resource that drifts
     /// across N reconcile ticks keeps exactly one outstanding row.
+    ///
+    /// A `None` operand LEAVES the stored one alone (`COALESCE`) rather than
+    /// blanking it. Producers know their findings to different depths: a live
+    /// check words a missing package `installed` / `not installed`, while a
+    /// daemon tick re-affirming the same row from its plan knows only that the
+    /// package is planned. Overwriting with NULL let the tick erase the words a
+    /// reader acts on, and the row then rendered as a version mismatch on a
+    /// package that was simply absent. Clearing an operand deliberately is not
+    /// a thing any producer needs; re-wording one is, and passing `Some` still
+    /// does it.
     pub fn record_drift(
         &self,
         resource_type: &str,
@@ -20,7 +36,11 @@ impl StateStore {
     ) -> Result<i64> {
         let timestamp = crate::utc_now_iso8601();
         let updated = self.conn.execute(
-            "UPDATE drift_events SET timestamp = ?1, expected = ?2, actual = ?3, source = ?4
+            "UPDATE drift_events
+                 SET timestamp = ?1,
+                     expected = COALESCE(?2, expected),
+                     actual = COALESCE(?3, actual),
+                     source = ?4
                  WHERE resource_type = ?5 AND resource_id = ?6
                  AND resolved_by IS NULL AND resolved_at IS NULL",
             params![
@@ -67,6 +87,112 @@ impl StateStore {
         Ok(())
     }
 
+    /// The ONE composite-key UPDATE the three set-based resolvers share: set
+    /// `set_clause` on every unresolved row whose `(resource_type,
+    /// resource_id)` satisfies `membership` (`IN` / `NOT IN`) against `keys`.
+    /// The key is matched as a row value — `(resource_type, resource_id)
+    /// IN (SELECT …)` — rather than a concatenation, because only the
+    /// row-value form is a shape `idx_drift_events_resource` can seek; an
+    /// expression over the columns forces a scan however the index is built.
+    /// (`NOT IN` still examines every unresolved row — inherent to a
+    /// complement, not to the SQL shape.) Every value is a bound param —
+    /// nothing is interpolated into the SQL, so it stays injection-safe.
+    /// Empty-set semantics are each caller's to decide BEFORE calling; an
+    /// empty `keys` here is a caller bug, and each of the three callers
+    /// short-circuits it.
+    ///
+    /// The keys land in a per-connection temp table in
+    /// [`DRIFT_KEY_CHUNK`]-sized inserts rather than in one inline `VALUES`
+    /// list, because a single statement binds at most SQLite's
+    /// `SQLITE_MAX_VARIABLE_NUMBER` parameters (32766 since 3.32) and this
+    /// list is two per key: a tick resolving more than 16k rows would error
+    /// out of the caller's transaction. Chunking is applied to the INSERTS
+    /// and never to the UPDATE, because a COMPLEMENT cannot be split — one
+    /// `NOT IN` statement per chunk resolves every row the other chunks name.
+    /// The temp table's own primary key is what the `IN`-operator seeks, so
+    /// the index plan is the one the inline list had.
+    fn update_unresolved_by_keys(
+        &self,
+        set_clause: &str,
+        membership: &str,
+        first_param: &dyn rusqlite::ToSql,
+        keys: &[(String, String)],
+    ) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS drift_key_set (
+                 resource_type TEXT NOT NULL,
+                 resource_id   TEXT NOT NULL,
+                 PRIMARY KEY (resource_type, resource_id)
+             ) WITHOUT ROWID;
+             DELETE FROM drift_key_set;",
+        )?;
+
+        // Every full chunk's SQL is byte-identical, so the statement is
+        // prepared once and reused; only the trailing partial chunk builds its
+        // own.
+        for chunk in keys.chunks(DRIFT_KEY_CHUNK) {
+            let placeholders = std::iter::repeat_n("(?, ?)", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "INSERT OR IGNORE INTO drift_key_set (resource_type, resource_id)
+                     VALUES {placeholders}",
+            );
+            let mut refs: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 * chunk.len());
+            for (rtype, rid) in chunk {
+                refs.push(rtype);
+                refs.push(rid);
+            }
+            self.conn.prepare_cached(&sql)?.execute(refs.as_slice())?;
+        }
+
+        let sql = format!(
+            "UPDATE drift_events SET {set_clause}
+                 WHERE resolved_by IS NULL AND resolved_at IS NULL
+                 AND (resource_type, resource_id) {membership}
+                     (SELECT resource_type, resource_id FROM drift_key_set)",
+        );
+        let refs: [&dyn rusqlite::ToSql; 1] = [first_param];
+        self.conn.execute(&sql, &refs[..])?;
+        self.conn.execute("DELETE FROM drift_key_set", [])?;
+        Ok(())
+    }
+
+    /// Resolve every unresolved drift row whose `(resource_type, resource_id)`
+    /// IS in `keys`, linking each to `apply_id`.
+    ///
+    /// The set-based counterpart of [`Self::resolve_drift`], for a caller
+    /// holding many keys at once: one statement whose row-value `IN` seeks
+    /// `idx_drift_events_resource`, instead of a statement per merged env var
+    /// and alias, paid inside the apply transaction. Only `resolved_by` is
+    /// written — the stored operands describe the row they were recorded with
+    /// and must stay byte-exact.
+    pub fn resolve_drift_keys(&self, apply_id: i64, keys: &[(String, String)]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.update_unresolved_by_keys("resolved_by = ?1", "IN", &apply_id, keys)
+    }
+
+    /// Mark every unresolved drift row whose `(resource_type, resource_id)`
+    /// IS in `healed` as resolved, with no apply to link it to. The SCOPED
+    /// counterpart of [`Self::resolve_drift_not_in`]: a `--module` live check
+    /// proves clean only the rows it actually re-checked, so it names them
+    /// outright — the complement of a scoped scan's findings is mostly rows
+    /// the scan never looked at, which it cannot vouch for either way.
+    ///
+    /// `resolved_at` (not `resolved_by`) carries the marker because no apply
+    /// ran, exactly as in the complement method. The empty-set meaning
+    /// INVERTS between the pair: an empty `healed` set is a scan that
+    /// verified nothing clean, and resolves nothing.
+    pub fn resolve_drift_in(&self, healed: &[(String, String)]) -> Result<()> {
+        if healed.is_empty() {
+            return Ok(());
+        }
+        let timestamp = crate::utc_now_iso8601();
+        self.update_unresolved_by_keys("resolved_at = ?1", "IN", &timestamp, healed)
+    }
+
     /// Mark every unresolved drift row whose `(resource_type, resource_id)` is
     /// NOT in `current` as resolved. Used by the daemon reconcile snapshot: the
     /// plan's action set is the ground truth for what is drifting right now, so
@@ -76,35 +202,12 @@ impl StateStore {
     /// — `resolved_by` is a foreign key into applies(id) and cannot take a
     /// synthetic value.
     pub fn resolve_drift_not_in(&self, current: &[(String, String)]) -> Result<()> {
-        let timestamp = crate::utc_now_iso8601();
-
         // Empty current set → every unresolved row healed.
         if current.is_empty() {
             return self.resolve_all_drift();
         }
-
-        // Single set-based UPDATE: keep rows whose (resource_type, resource_id)
-        // is in `current`, resolve the rest. The composite key is matched via a
-        // `\x1f`-joined concatenation (unit-separator never appears in a
-        // resource type or POSIX-folded id), and all values are bound params —
-        // no value is interpolated into the SQL, so it stays injection-safe.
-        let placeholders = std::iter::repeat_n("?", current.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "UPDATE drift_events SET resolved_at = ?1
-                 WHERE resolved_by IS NULL AND resolved_at IS NULL
-                 AND (resource_type || char(31) || resource_id) NOT IN ({placeholders})",
-        );
-
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(current.len() + 1);
-        bound.push(Box::new(timestamp));
-        for (rtype, rid) in current {
-            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
-        }
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
-        self.conn.execute(&sql, refs.as_slice())?;
-        Ok(())
+        let timestamp = crate::utc_now_iso8601();
+        self.update_unresolved_by_keys("resolved_at = ?1", "NOT IN", &timestamp, current)
     }
 
     /// Mark every unresolved drift row as resolved. Used by the daemon reconcile
@@ -116,6 +219,96 @@ impl StateStore {
             params![timestamp],
         )?;
         Ok(())
+    }
+
+    /// Record that a live drift scan just ran against this machine (a
+    /// `diff`/`verify`/`status --scan` pass, or a daemon reconcile tick) —
+    /// the recorded-state `status` header's staleness signal on a host with
+    /// no outstanding drift rows to date it by. Upserts the single row.
+    ///
+    /// Infallible by design, unlike every other write on this store: all four
+    /// callers are read-only commands that already have their answer by the
+    /// time they stamp, and a store that refuses the stamp must cost the NEXT
+    /// run's header its age line rather than fail the run that found it. The
+    /// warning lives here so the four cannot drift into four policies and
+    /// four spellings of the same message.
+    ///
+    /// Returns the timestamp it stamped, so a caller rendering a payload in
+    /// the same breath can describe THIS scan rather than re-reading the row
+    /// or reporting the previous one — and `None` when the write was refused,
+    /// because a stamp no row holds would report the machine as scanned more
+    /// recently than the store can prove and then go backwards on the next
+    /// run that reads the row instead. A caller that ignores the value is
+    /// unaffected either way.
+    pub fn record_scan(&self) -> Option<String> {
+        let timestamp = crate::utc_now_iso8601();
+        let written = self.conn.execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp",
+            params![timestamp],
+        );
+        if let Err(e) = written {
+            tracing::warn!(error = %e, "failed to record scan timestamp");
+            return None;
+        }
+        Some(timestamp)
+    }
+
+    /// Pin the recorded scan stamp at `timestamp` and refuse every later
+    /// write to it, so a crate that cannot reach the connection can still
+    /// drive the refused-write branch of [`record_scan`] and see what its own
+    /// fallback renders. Reached as
+    /// [`crate::test_helpers::freeze_last_scan_at`], the crate's surface for
+    /// every test-only affordance; crate-visible here so the shipped type
+    /// carries no public method a reader could mistake for product API.
+    ///
+    /// A pair of `RAISE(ABORT)` triggers is the one refusal that is selective:
+    /// dropping the table would also fail the read a caller makes before it
+    /// scans, and a read-only database file refuses nothing to a process
+    /// running as root. Both the INSERT and the UPDATE half are installed
+    /// because the write is an upsert and either half can be the one that
+    /// lands.
+    ///
+    /// Repeatable, and re-pinnable at a new stamp: the triggers are dropped
+    /// before the seed and re-created after it, so the seed itself is not
+    /// refused by the freeze a previous call installed.
+    ///
+    /// [`record_scan`]: StateStore::record_scan
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn freeze_last_scan_at(&self, timestamp: &str) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS cfgd_frozen_last_scan_insert;
+             DROP TRIGGER IF EXISTS cfgd_frozen_last_scan_update;",
+        )?;
+        self.conn.execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp",
+            params![timestamp],
+        )?;
+        self.conn.execute_batch(
+            "CREATE TRIGGER cfgd_frozen_last_scan_insert BEFORE INSERT ON last_scan
+                 BEGIN SELECT RAISE(ABORT, 'last_scan is frozen'); END;
+             CREATE TRIGGER cfgd_frozen_last_scan_update BEFORE UPDATE ON last_scan
+                 BEGIN SELECT RAISE(ABORT, 'last_scan is frozen'); END;",
+        )?;
+        Ok(())
+    }
+
+    /// The timestamp of the most recent [`record_scan`], `None` if this
+    /// machine has never been scanned.
+    ///
+    /// [`record_scan`]: StateStore::record_scan
+    pub fn last_scan_at(&self) -> Result<Option<String>> {
+        let result =
+            self.conn
+                .query_row("SELECT timestamp FROM last_scan WHERE id = 1", [], |row| {
+                    row.get(0)
+                });
+        match result {
+            Ok(ts) => Ok(Some(ts)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(crate::errors::StateError::Database(e.to_string()).into()),
+        }
     }
 
     /// Get unresolved drift events.
@@ -138,6 +331,8 @@ impl StateStore {
                     actual: row.get(5)?,
                     resolved_by: row.get(6)?,
                     source: row.get(7)?,
+                    want: None,
+                    have: None,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

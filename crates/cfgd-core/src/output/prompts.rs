@@ -29,6 +29,38 @@ fn non_interactive_err(structured: bool, prompt: &str) -> inquire::InquireError 
     inquire::InquireError::Custom(format!("refusing to prompt for '{prompt}': {reason}").into())
 }
 
+/// The one fold every prompt applies to the text it draws.
+///
+/// `inquire` writes straight to the terminal without passing the renderer, so
+/// nothing else sanitizes a prompt's message or its option list — and both
+/// routinely carry text cfgd did not author: a remote source manifest's
+/// profile names, a module name, a file path a plan is asking about.
+///
+/// It ESCAPES rather than folding through `cursor_safe`, because a prompt is a
+/// pre-approval surface: the fold strips an ANSI sequence, and an operator
+/// answering "yes" to a value they never saw has approved something other than
+/// what they read.
+fn shown(text: &str) -> String {
+    crate::escape_control_chars(text)
+}
+
+/// The fold a prompt applies to a DEFAULT, which is a different slot from the
+/// text a prompt shows.
+///
+/// A message is text being shown, so [`shown`] escapes it and hides none of
+/// it. A default is a value cfgd is PROPOSING: `inquire` pre-fills it into the
+/// editable buffer and hands it straight back as the answer when the user
+/// presses enter. Escaping it would write `\x0d` into the value instead of
+/// merely showing it, and leaving it raw lets a proposal repaint the line
+/// offering it — a directory basename may legally carry a `\r`, and one is
+/// offered as the default source name. Dropping the character is the only
+/// resolution under which what is DRAWN and what is RETURNED are the same
+/// string. An `ESC` goes with the rest, leaving its payload (`[2K`) standing
+/// as ordinary visible text rather than as a sequence.
+fn proposed(default: &str) -> String {
+    default.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// True when the current process can interact with a human — stdin is a TTY.
 /// Windows' `inquire` doesn't self-reject the non-TTY case, so the explicit
 /// gate goes here.
@@ -44,7 +76,7 @@ pub(super) fn stdin_is_terminal() -> bool {
 impl Printer {
     /// Whether a `prompt_*` call could reach a human at all.
     ///
-    /// The predicate behind [`non_interactive_err`], exposed so a caller that
+    /// The predicate behind `non_interactive_err`, exposed so a caller that
     /// wraps a prompt failure in its own error can tell "nowhere to ask" apart
     /// from a prompt that was reached and then failed — and word the two
     /// differently instead of quoting the prompt's message back inside its own.
@@ -61,7 +93,9 @@ impl Printer {
         if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
-        inquire::Confirm::new(message).with_default(false).prompt()
+        inquire::Confirm::new(&shown(message))
+            .with_default(false)
+            .prompt()
     }
 
     pub fn prompt_select<'a>(
@@ -84,11 +118,22 @@ impl Printer {
         if options.is_empty() {
             return Err(inquire::InquireError::Custom("no options available".into()));
         }
-        let chosen = inquire::Select::new(message, options.to_vec()).prompt()?;
-        Ok(options
-            .iter()
-            .find(|o| **o == chosen)
-            .unwrap_or(&options[0]))
+        // The list is drawn escaped, so the selection comes back by INDEX
+        // rather than by value: matching the drawn string against the raw
+        // options would miss exactly the option that carried a control
+        // character, and silently answer with the first one instead.
+        let shown_options: Vec<String> = options.iter().map(|o| shown(o)).collect();
+        let chosen = inquire::Select::new(&shown(message), shown_options).raw_prompt()?;
+        options.get(chosen.index).ok_or_else(|| {
+            inquire::InquireError::Custom(
+                format!(
+                    "inquire returned index {} out of range for {} option(s)",
+                    chosen.index,
+                    options.len()
+                )
+                .into(),
+            )
+        })
     }
 
     pub fn prompt_text(
@@ -104,7 +149,9 @@ impl Printer {
         if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
-        inquire::Text::new(message).with_default(default).prompt()
+        inquire::Text::new(&shown(message))
+            .with_default(&proposed(default))
+            .prompt()
     }
 
     pub(crate) fn pop_prompt_answer(&self) -> Option<PromptAnswer> {
@@ -131,6 +178,58 @@ mod tests {
         );
         let r = p.prompt_confirm("really?");
         assert!(r.is_err());
+    }
+
+    /// `inquire` draws to the terminal itself, so nothing downstream folds a
+    /// prompt's message or its option list — the escape here is the only one
+    /// they get. It ESCAPES (a pre-approval surface shows what it is asking
+    /// about) rather than folding, so the ANSI stays visible as text.
+    #[test]
+    fn drawn_prompt_text_shows_control_characters_instead_of_obeying_them() {
+        let drawn = shown("profile\r\x1b[2Kevil");
+        assert_eq!(drawn, "profile\\x0d\\x1b[2Kevil");
+        assert!(!drawn.contains('\r') && !drawn.contains('\u{1b}'));
+    }
+
+    /// The drawn list is escaped but the ANSWER is the caller's own option,
+    /// byte-exact — which is why the selection comes back by index. Matching
+    /// the drawn string against the raw list would miss precisely the option
+    /// that carried a control character.
+    #[test]
+    fn escaping_the_drawn_options_preserves_their_order_and_count() {
+        let options = [
+            "a\rb".to_string(),
+            "plain".to_string(),
+            "c\x1b[2K".to_string(),
+        ];
+        let drawn: Vec<String> = options.iter().map(|o| shown(o)).collect();
+        assert_eq!(drawn.len(), options.len());
+        assert_eq!(drawn[1], "plain", "an untouched option must not move");
+        assert!(drawn[0].contains("\\x0d") && drawn[2].contains("\\x1b[2K"));
+    }
+
+    /// The DEFAULT is a proposal, not a display, and the two slots are folded
+    /// differently for that reason: `inquire` pre-fills it into the editable
+    /// buffer and hands it back as the answer, so a `\r` left in it repaints
+    /// the line offering it and an escaped copy would put `\x0d` into the
+    /// value the user accepts. Dropping the control characters is what makes
+    /// the drawn string and the returned string the same string.
+    #[test]
+    fn a_proposed_default_carries_no_control_character_either_way() {
+        let cleaned = proposed("my\rconfig\x1b[2K");
+        assert_eq!(
+            cleaned, "myconfig[2K",
+            "the escape's payload must stand as visible text, not as a sequence"
+        );
+        assert!(
+            !cleaned.contains('\r') && !cleaned.contains('\u{1b}'),
+            "a proposed value must not be able to move a cursor: {cleaned:?}"
+        );
+        assert_eq!(
+            proposed("acme-config"),
+            "acme-config",
+            "an ordinary basename must reach the prompt untouched"
+        );
     }
 
     #[test]

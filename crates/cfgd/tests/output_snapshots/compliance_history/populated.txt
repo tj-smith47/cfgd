@@ -1,7 +1,6 @@
 Compliance History
-
-ID  Timestamp             Compliant  Warning  Violation
-───────────────────────────────────────────────────────
-3   2026-05-14T12:00:00Z  12         1        0        
-2   2026-05-13T09:00:00Z  11         0        1        
-1   2026-05-12T08:00:00Z  10         0        0        
+ID  Age  Compliant  Warning  Violation
+──────────────────────────────────────
+3   0s   12         1        0        
+2   1d   11         0        1        
+1   2d   10         0        0        

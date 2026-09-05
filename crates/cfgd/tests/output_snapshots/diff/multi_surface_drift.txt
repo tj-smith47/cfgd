@@ -1,0 +1,16 @@
+Diff
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Files
+  profile:tiny
+    ◉ <TARGET> (new file)
+    hello world
+
+Packages
+  profile:tiny
+    ⚠ drift-mgr: not installed — drifted-pkg
+
+⚠ Drift detected — 1 file, 1 package (shell, system clean)
+
+→ Run `cfgd apply` to reconcile

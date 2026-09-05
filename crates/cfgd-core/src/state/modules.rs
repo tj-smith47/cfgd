@@ -6,6 +6,12 @@ use crate::errors::{Result, StateError};
 
 impl StateStore {
     /// Insert or update module state.
+    ///
+    /// `installed_at` is re-stamped on every upsert, not only on the insert.
+    /// Every reader labels it `Last Applied` (`cfgd status <module>`,
+    /// `cfgd module show`, the `lastApplied` payload key), so a column frozen
+    /// at the first apply misdated the machine for the life of the row —
+    /// nothing in the workspace reads it as a first-install date.
     pub fn upsert_module_state(
         &self,
         module_name: &str,
@@ -21,7 +27,8 @@ impl StateStore {
                 "INSERT INTO module_state (module_name, installed_at, last_applied, packages_hash, files_hash, git_sources, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(module_name) DO UPDATE SET
-                    last_applied = ?3,
+                    installed_at = ?2,
+                    last_applied = COALESCE(?3, last_applied),
                     packages_hash = ?4,
                     files_hash = ?5,
                     git_sources = ?6,
@@ -140,11 +147,54 @@ impl StateStore {
         Ok(records)
     }
 
+    /// Whether any module has deployed the file at `file_path`.
+    ///
+    /// `file_path` is the [`crate::to_posix_fs_key`] form the manifest is
+    /// written with; a caller holding a `Path` folds it the same way or the
+    /// row a Windows apply wrote is never found.
+    pub fn is_module_deployed_file(&self, file_path: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM module_file_manifest WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Delete all manifest entries for a module.
     pub fn delete_module_files(&self, module_name: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM module_file_manifest WHERE module_name = ?1",
             params![module_name],
+        )?;
+        Ok(())
+    }
+
+    /// Drop every manifest row of `module_name` whose `file_path` is not in
+    /// `declared` (the [`crate::to_posix_fs_key`] forms of the module's
+    /// currently declared targets).
+    ///
+    /// [`Self::upsert_module_file`] alone never removes a row, so without this
+    /// the manifest answers "every file the module has EVER deployed" — and a
+    /// dropped `files:` declaration leaves a stale row that inflates every
+    /// surface counting or listing the manifest. Called from the deploy path,
+    /// where the declaration is in hand, so the manifest mirrors the
+    /// last-applied declared set.
+    pub fn prune_module_files_except(&self, module_name: &str, declared: &[String]) -> Result<()> {
+        if declared.is_empty() {
+            return self.delete_module_files(module_name);
+        }
+        let placeholders = std::iter::repeat_n("?", declared.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!(
+                "DELETE FROM module_file_manifest
+                 WHERE module_name = ? AND file_path NOT IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(
+                std::iter::once(module_name).chain(declared.iter().map(String::as_str)),
+            ),
         )?;
         Ok(())
     }

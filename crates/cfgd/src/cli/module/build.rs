@@ -25,15 +25,13 @@ pub fn cmd_module_build(
         ));
     }
 
-    printer.heading("Build Module");
     let mut header = vec![("Directory".to_string(), dir.to_string())];
     if let Some(t) = target {
         header.push(("Target".to_string(), t.to_string()));
     }
     if let Some(img) = base_image {
-        header.push(("Base image".to_string(), img.to_string()));
+        header.push(("Base Image".to_string(), img.to_string()));
     }
-    printer.kv_block(header);
 
     let default_platform = cfgd_core::oci::current_platform();
     let targets: Vec<&str> = target
@@ -43,9 +41,21 @@ pub fn cmd_module_build(
     let mut output_artifacts: Vec<String> = Vec::new();
     let mut digest_value: Option<String> = None;
 
-    if targets.len() == 1 {
-        let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
-            .map_err(|e| {
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being built, each build's verdict, the push, the digest and the
+    // signing verdict. A second section named `Push` under a `Build Module`
+    // title reads as a separate command rather than as this one's result, and
+    // it is also what gives `push_module` — a bare-`&Printer` library call with
+    // no `SectionGuard` of its own — a depth to inherit through
+    // `depth_inheritance` instead of rendering at depth 0.
+    {
+        let build_sec = printer.section("Build Module");
+        let _inherit = printer.depth_inheritance();
+        build_sec.kv_block(header);
+
+        if targets.len() == 1 {
+            let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
+                .map_err(|e| {
                 crate::cli::cli_error(
                     dir,
                     "build_failed",
@@ -53,88 +63,101 @@ pub fn cmd_module_build(
                     serde_json::json!({ "dir": dir, "target": targets[0] }),
                 )
             })?;
-        printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
-        output_artifacts.push(output_dir.display().to_string());
+            printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
+            output_artifacts.push(output_dir.display().to_string());
 
-        if let Some(art) = artifact {
-            let digest =
-                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
-                    .map_err(|e| {
+            if let Some(art) = artifact {
+                let cfgd_core::oci::PushOutcome { digest, .. } =
+                    cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                        .map_err(|e| {
+                            crate::cli::cli_error(
+                                art,
+                                "push_failed",
+                                cfgd_core::output::collapse_to_subject_line(&e),
+                                serde_json::json!({ "artifact": art, "target": targets[0] }),
+                            )
+                        })?;
+                if sign {
+                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
                             art,
-                            "push_failed",
+                            "sign_failed",
                             cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art, "target": targets[0] }),
+                            serde_json::json!({ "artifact": art }),
                         )
                     })?;
-            printer.kv("Digest", &digest);
-            digest_value = Some(digest);
+                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
+                }
+                digest_value = Some(digest);
+            }
+        } else {
+            let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
+            for t in &targets {
+                // One `target:<t>` owner group per platform, the same idiom
+                // `cli/sync.rs` uses per source: a bare loop of spinners has no
+                // owner to attribute a build to when several run in sequence.
+                let owner = build_sec.section_owner(&cfgd_core::output::OwnerLabel::new(
+                    "target",
+                    (*t).to_string(),
+                ));
+                let sp = owner.spinner(format!("Building for {t}"));
+                let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
+                    Ok(d) => {
+                        sp.finish_ok(format!("Built {t} to {}", d.posix()));
+                        d
+                    }
+                    Err(e) => {
+                        sp.finish_fail(format!("Build failed for {t}"))
+                            .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                        return Err(crate::cli::cli_error(
+                            dir,
+                            "build_failed",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                            serde_json::json!({ "dir": dir, "target": *t }),
+                        ));
+                    }
+                };
+                output_artifacts.push(output_dir.display().to_string());
+                builds.push((output_dir, t.to_string()));
+            }
 
-            if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "sign_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art }),
-                    )
-                })?;
-                printer.status_simple(Role::Ok, "Signed artifact");
+            if let Some(art) = artifact {
+                let build_refs: Vec<(&Path, &str)> = builds
+                    .iter()
+                    .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
+                    .collect();
+                let digest =
+                    cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
+                        .map_err(|e| {
+                            crate::cli::cli_error(
+                                art,
+                                "push_failed",
+                                cfgd_core::output::collapse_to_subject_line(&e),
+                                serde_json::json!({ "artifact": art, "targets": &targets }),
+                            )
+                        })?;
+                if sign {
+                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
+                        crate::cli::cli_error(
+                            art,
+                            "sign_failed",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                            serde_json::json!({ "artifact": art }),
+                        )
+                    })?;
+                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
+                }
+                digest_value = Some(digest);
             }
         }
-    } else {
-        let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
-        for t in &targets {
-            let sp = printer.spinner(format!("Building for {t}..."));
-            let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
-                Ok(d) => {
-                    sp.finish_ok(format!("Built {t} to {}", d.posix()));
-                    d
-                }
-                Err(e) => {
-                    sp.finish_fail(format!("Build failed for {t}"))
-                        .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                    return Err(crate::cli::cli_error(
-                        dir,
-                        "build_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "dir": dir, "target": *t }),
-                    ));
-                }
-            };
-            output_artifacts.push(output_dir.display().to_string());
-            builds.push((output_dir, t.to_string()));
-        }
-
-        if let Some(art) = artifact {
-            let build_refs: Vec<(&Path, &str)> = builds
-                .iter()
-                .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
-                .collect();
-            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
-                .map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "push_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art, "targets": &targets }),
-                    )
-                })?;
-            printer.kv("Digest", &digest);
-            digest_value = Some(digest);
-
-            if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "sign_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art }),
-                    )
-                })?;
-                printer.status_simple(Role::Ok, "Signed artifact");
-            }
-        }
+        // `output_artifacts[0]` is the module directory the push would take:
+        // the single build's output, or the first platform's for a
+        // multi-platform build whose one index artifact is already pushed.
+        let built = output_artifacts.first().map_or(dir, String::as_str);
+        build_sec.hint(super::success_next_step(match artifact {
+            Some(_) => super::Mutation::ModulePushed { applied: None },
+            None => super::Mutation::ModuleBuilt { output: built },
+        }));
     }
 
     let mut payload = serde_json::Map::new();
@@ -271,7 +294,7 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("linux/amd64"),
             "target must appear in header kv block: {output}"
@@ -334,10 +357,58 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("linux/amd64") || output.contains("linux/arm64"),
             "spinner output must mention at least one target: {output}"
+        );
+    }
+
+    /// The multi-target loop's `target:<t>` owner header used
+    /// to have nothing under it at depth 0 — a bare top-level spinner had no
+    /// owner to nest under. It now opens via `printer.section_owner(&OwnerLabel)`
+    /// per platform, so a build failure's settle line nests one level deeper
+    /// than its `target:<t>` header. An unreachable base image fails FAST
+    /// (connection refused) on the first target, so this needs no successful
+    /// docker build and no push.
+    #[test]
+    fn build_failure_settle_line_nests_under_the_target_owner_header() {
+        // `cmd_module_build` shells out to `docker build`/`podman build` even
+        // for a base image it will fail to reach — the runtime binary itself
+        // has to be present on PATH before the "connection refused" failure
+        // this test depends on is even reachable. A bare `return` here left
+        // no trace in the run's output when neither runtime is on the host,
+        // so the test silently proved nothing rather than being visibly
+        // skipped; `eprintln!` inside a `#[cfg(test)]` block is exempt from
+        // the output-centralization audit (`strip_test_blocks_from_file`).
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            eprintln!(
+                "SKIPPED build_failure_settle_line_nests_under_the_target_owner_header: \
+                 neither docker nor podman is on PATH"
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        crate::cli::test_support::assert_nests_under(
+            &output,
+            "target:linux/amd64",
+            "Build failed for linux/amd64",
         );
     }
 
@@ -407,7 +478,7 @@ mod tests {
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         // No --target and no --base-image. The build will still fail because
-        // the default base (ubuntu:22.04) requires network — but we get to
+        // the default base (ubuntu:22.04) requires network — but this gets to
         // exercise the default-platform branch and the header-construction
         // logic that omits the optional kv entries first.
         let _ = cmd_module_build(
@@ -421,7 +492,7 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Build Module"),
             "heading must be emitted before the build fails: {output}"
@@ -433,7 +504,7 @@ mod tests {
         // Negative: when None was passed, the optional kv entries must be
         // absent from the header.
         assert!(
-            !output.contains("Base image"),
+            !output.contains("Base Image"),
             "Base image kv entry must be absent when base_image=None: {output}"
         );
     }

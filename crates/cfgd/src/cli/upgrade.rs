@@ -2,6 +2,45 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role};
 
+/// Report a completed upgrade — the human render and the structured payload
+/// together — for both install paths (`cfgd upgrade` and the startup policy
+/// update).
+///
+/// The daemon fact is minted HERE, on both channels at once, so the two cannot
+/// disagree: a call site that could emit the payload without the line is what
+/// let the `-o json` field and the human render describe the same event
+/// differently. `terminated`, not `restarted`, because that is all
+/// `terminate_daemon_if_running` does — a service manager brings a managed
+/// daemon back, while one started by hand stays down and reconciles nothing
+/// until the user starts it again, which is exactly the thing the reader has to
+/// act on.
+/// Takes the payload as PAIRS rather than a `Value`, so the daemon key always
+/// has somewhere to land: handed a `Value`, an array or a scalar would take the
+/// insert silently and ship a human line the payload does not carry — the
+/// disagreement this builder exists to make unrepresentable.
+fn upgraded_doc(
+    version: &str,
+    installed_path: String,
+    daemon_terminated: bool,
+    data: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
+) -> Doc {
+    let mut doc = Doc::new()
+        .status(Role::Ok, format!("Upgraded to {version}"))
+        .kv("Installed to", installed_path);
+    if daemon_terminated {
+        doc = doc.kv("Daemon", "terminated to pick up the new binary");
+    }
+    let mut payload: serde_json::Map<String, serde_json::Value> = data
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    payload.insert("daemonTerminated".into(), daemon_terminated.into());
+    doc.with_data(serde_json::Value::Object(payload))
+}
+
+// constant-payload-ok: each branch of this command IS the verification outcome
+// it reports — the up-to-date arm ran no install to verify, and the applied arm
+// is reached only after `install_update` verified the downloaded artifact.
 pub fn cmd_upgrade(
     printer: &Printer,
     config_path: &std::path::Path,
@@ -41,9 +80,14 @@ pub fn cmd_upgrade(
                 Doc::new()
                     .status(
                         Role::Info,
-                        format!("Update available: {} -> {}", check.current, check.latest),
+                        format!(
+                            "Update available: {} {} {}",
+                            check.current,
+                            printer.arrow(),
+                            check.latest
+                        ),
                     )
-                    .hint("Run 'cfgd upgrade' to install")
+                    .hint("Run `cfgd upgrade` to install")
                     .with_data(serde_json::json!({
                         "currentVersion": check.current.to_string(),
                         "latestVersion": check.latest.to_string(),
@@ -57,7 +101,8 @@ pub fn cmd_upgrade(
         } else {
             printer.emit(
                 Doc::new()
-                    .status(Role::Ok, format!("cfgd {} is up to date", check.current))
+                    // verdict-row-ok: nothing was installed; this reports the version's state
+                    .status(Role::Ok, format!("Up to date at {}", check.current))
                     .with_data(serde_json::json!({
                         "currentVersion": check.current.to_string(),
                         "latestVersion": check.latest.to_string(),
@@ -86,10 +131,8 @@ pub fn cmd_upgrade(
     if !check.update_available {
         printer.emit(
             Doc::new()
-                .status(
-                    Role::Ok,
-                    format!("cfgd {} is already the latest version", check.current),
-                )
+                // verdict-row-ok: nothing was installed; this reports the version's state
+                .status(Role::Ok, format!("Up to date at {}", check.current))
                 .with_data(serde_json::json!({
                     "currentVersion": check.current.to_string(),
                     "targetVersion": check.current.to_string(),
@@ -133,10 +176,11 @@ pub fn cmd_upgrade(
     })?;
 
     {
-        let sec = printer.section(format!(
-            "Update available: {} -> {}",
-            check.current, check.latest
-        ));
+        let sec = printer.section("Update Available");
+        sec.kv(
+            "Version",
+            format!("{} {} {}", check.current, printer.arrow(), check.latest),
+        );
         sec.kv("Binary", &asset.name);
         if asset.size > 0 {
             sec.kv("Size", format_bytes(asset.size));
@@ -180,21 +224,32 @@ pub fn cmd_upgrade(
     })?;
     let report = &applied.report;
 
-    printer.emit(
-        Doc::new()
-            .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-            .kv("Installed to", report.installed_path.display_posix())
-            .with_data(serde_json::json!({
-                "currentVersion": check.current.to_string(),
-                "targetVersion": check.latest.to_string(),
-                "downloaded": true,
-                "installed": true,
-                "verified": true,
-                "daemonRestarted": applied.daemon_restarted,
-                "installedPath": report.installed_path.display().to_string(),
-                "verificationMode": report.verification_mode.as_wire_str(),
-            })),
-    );
+    printer.emit(upgraded_doc(
+        &check.latest.to_string(),
+        report.installed_path.display_posix(),
+        applied.daemon_terminated,
+        [
+            (
+                "currentVersion",
+                serde_json::json!(check.current.to_string()),
+            ),
+            ("targetVersion", serde_json::json!(check.latest.to_string())),
+            ("downloaded", serde_json::json!(true)),
+            ("installed", serde_json::json!(true)),
+            ("verified", serde_json::json!(true)),
+            (
+                "installedPath",
+                // fs-key fold: consumers reopen this value as a real file
+                // path, and a backslash is a legal POSIX filename character,
+                // so the fold must be Windows-only and POSIX-exact.
+                serde_json::json!(cfgd_core::to_posix_fs_key(&report.installed_path)),
+            ),
+            (
+                "verificationMode",
+                serde_json::json!(report.verification_mode.as_wire_str()),
+            ),
+        ],
+    ));
 
     Ok(())
 }
@@ -205,7 +260,7 @@ pub fn cmd_upgrade(
 /// (so it never pollutes the `-o json` stdout channel), and otherwise
 /// interval-gates against the persisted last-checked timestamp *before* any
 /// network call — a within-interval startup makes no API request. `Manual`
-/// short-circuits inside [`run_update_check`].
+/// short-circuits inside [`cfgd_core::upgrade::run_update_check`].
 ///
 /// Best-effort: any error is swallowed (logged via tracing) so a self-update
 /// check never fails a normal command.
@@ -246,8 +301,10 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
         confirm: Box::new(|c| {
             printer
                 .prompt_confirm(&format!(
-                    "Update available: {} -> {}. Install now?",
-                    c.current, c.latest
+                    "Update available: {} {} {}. Install now?",
+                    c.current,
+                    printer.arrow(),
+                    c.latest
                 ))
                 .unwrap_or(false)
         }),
@@ -256,9 +313,14 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
                 Doc::new()
                     .status(
                         Role::Info,
-                        format!("Update available: {} -> {}", c.current, c.latest),
+                        format!(
+                            "Update available: {} {} {}",
+                            c.current,
+                            printer.arrow(),
+                            c.latest
+                        ),
                     )
-                    .hint("Run 'cfgd upgrade' to install"),
+                    .hint("Run `cfgd upgrade` to install"),
             );
         }),
         apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),
@@ -282,12 +344,12 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 ///
 /// The decision + effectful orchestration (rule 1 suppression, the
 /// policy→action mapping, `Auto` refresh → re-aggregate → project-only
-/// remainder) is single-sourced in [`run_standalone_skill_action`]; this
-/// function only renders the returned [`StandaloneSkillOutcome`] as a
+/// remainder) is single-sourced in [`cfgd_core::upgrade::run_standalone_skill_action`]; this
+/// function only renders the returned [`cfgd_core::upgrade::StandaloneSkillOutcome`] as a
 /// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
 /// not rendered text.
 ///
-/// Only [`StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
+/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
 /// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
 fn surface_stale_skills(
     printer: &Printer,
@@ -328,9 +390,9 @@ fn emit_skill_stale_notice(printer: &Printer, staleness: cfgd_core::upgrade::Ski
     );
 }
 
-/// Extract the inner [`UpgradeError`] from a [`CfgdError`] for the startup
+/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`] for the startup
 /// check's fetch closure, which must yield the module-level error type that
-/// [`run_update_check`] threads.
+/// [`cfgd_core::upgrade::run_update_check`] threads.
 fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::UpgradeError {
     match e {
         cfgd_core::errors::CfgdError::Upgrade(u) => u,
@@ -370,18 +432,23 @@ fn apply_startup_update(
     ) {
         Ok(applied) => {
             let report = &applied.report;
-            printer.emit(
-                Doc::new()
-                    .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-                    .kv("Installed to", report.installed_path.display_posix())
-                    .with_data(serde_json::json!({
-                        "currentVersion": check.current.to_string(),
-                        "targetVersion": check.latest.to_string(),
-                        "installed": true,
-                        "daemonRestarted": applied.daemon_restarted,
-                        "verificationMode": report.verification_mode.as_wire_str(),
-                    })),
-            );
+            printer.emit(upgraded_doc(
+                &check.latest.to_string(),
+                report.installed_path.display_posix(),
+                applied.daemon_terminated,
+                [
+                    (
+                        "currentVersion",
+                        serde_json::json!(check.current.to_string()),
+                    ),
+                    ("targetVersion", serde_json::json!(check.latest.to_string())),
+                    ("installed", serde_json::json!(true)),
+                    (
+                        "verificationMode",
+                        serde_json::json!(report.verification_mode.as_wire_str()),
+                    ),
+                ],
+            ));
             true
         }
         Err(e) => {
@@ -407,6 +474,130 @@ mod tests {
     fn upgrade_error_meta(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
         err.downcast_ref::<crate::cli::CliErrorMeta>()
             .expect("upgrade handler returns a CliErrorMeta carrier")
+    }
+
+    /// One builder is only one builder while both install paths still call it.
+    /// A helper that appended only the daemon line, with the payload key minted
+    /// at each call site, let the two channels disagree; a builder minting both
+    /// still lets an install path go silent by dropping its emit. This reads the
+    /// module back and pins both halves: the success sentence exists once, and
+    /// the production half of the file still emits it twice.
+    #[test]
+    fn the_success_doc_is_minted_in_exactly_one_place() {
+        let source = include_str!("upgrade.rs");
+        // Split so this test's own literals are not what it counts.
+        let sentence = format!("Upgraded {}", "to {version}");
+        assert_eq!(
+            source.matches(sentence.as_str()).count(),
+            1,
+            "both install paths must emit through upgraded_doc, not their own Doc"
+        );
+        let retired_key = format!("daemon{}", "Restarted");
+        assert_eq!(
+            source.matches(retired_key.as_str()).count(),
+            0,
+            "the payload key says what the code does: the daemon is terminated, \
+             never restarted"
+        );
+        // Everything above the test module: this module's own calls must not
+        // stand in for the install paths' calls.
+        let production = cfgd_core::test_helpers::production_slice(source);
+        assert_eq!(
+            production.matches("printer.emit(upgraded_doc(").count(),
+            2,
+            "both install paths — cfgd upgrade and the startup policy update — \
+             must still emit the upgraded doc"
+        );
+    }
+
+    /// The human render and the `-o json` payload owe the reader the SAME
+    /// daemon fact: a terminated daemon that no service manager owns stays down
+    /// until the user starts it, so a payload saying one thing while the human
+    /// line says another (or says nothing) sends half the readers the wrong way.
+    /// One builder mints both, and this pins them together.
+    #[test]
+    fn a_terminated_daemon_is_reported_to_both_readers() {
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "/usr/local/bin/cfgd".to_string(),
+            true,
+            [("installed", serde_json::json!(true))],
+        ));
+        let human = strip_ansi(&cap.human());
+        assert!(
+            human.contains("Daemon") && human.contains("terminated"),
+            "a terminated daemon must be reported to the human reader, got: {human:?}"
+        );
+        let json = cap.json().expect("the doc carries a payload");
+        assert_eq!(
+            json["daemonTerminated"], true,
+            "the payload must say what the human line says: {json}"
+        );
+
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "/usr/local/bin/cfgd".to_string(),
+            false,
+            [("installed", serde_json::json!(true))],
+        ));
+        let human = strip_ansi(&cap.human());
+        assert!(
+            !human.contains("Daemon"),
+            "no daemon was running, so no daemon line is owed, got: {human:?}"
+        );
+        let json = cap.json().expect("the doc carries a payload");
+        assert_eq!(
+            json["daemonTerminated"], false,
+            "the payload still states the fact when it is false: {json}"
+        );
+    }
+
+    /// The payload's `installedPath` is serialized AND reopened as a real file
+    /// path by consumers, so it takes the fs-key fold: Windows-only, where `\`
+    /// cannot occur in a filename and the substitution is reversible. On POSIX
+    /// a backslash is a legal filename byte and the value must stay exact —
+    /// which also means the behavioral half of this pin only discriminates
+    /// between the two folds on Windows; the winserver run is what gives it
+    /// its teeth there, and the source pin is what guards the call site here.
+    #[test]
+    fn the_installed_path_payload_takes_the_fs_key_fold() {
+        let source = include_str!("upgrade.rs");
+        let production = cfgd_core::test_helpers::production_slice(source);
+        // Split so this test's own literals are not what it counts.
+        let unconditional = format!("to_posix_{}", "string(");
+        assert_eq!(
+            production.matches(unconditional.as_str()).count(),
+            0,
+            "installedPath names a real file consumers reopen; the unconditional \
+             comparison fold renames it on POSIX where a backslash is a legal \
+             filename byte"
+        );
+        let fs_key = format!("to_posix_{}", "fs_key(");
+        assert_eq!(
+            production.matches(fs_key.as_str()).count(),
+            1,
+            "the installedPath payload entry takes the fs-key fold"
+        );
+
+        let path = std::path::Path::new(r"C:\Program Files\cfgd\cfgd.exe");
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "C:/Program Files/cfgd/cfgd.exe".to_string(),
+            false,
+            [(
+                "installedPath",
+                serde_json::json!(cfgd_core::to_posix_fs_key(path)),
+            )],
+        ));
+        let json = cap.json().expect("the doc carries a payload");
+        if cfg!(windows) {
+            assert_eq!(json["installedPath"], "C:/Program Files/cfgd/cfgd.exe");
+        } else {
+            assert_eq!(json["installedPath"], r"C:\Program Files\cfgd\cfgd.exe");
+        }
     }
 
     fn current_version_tag() -> String {

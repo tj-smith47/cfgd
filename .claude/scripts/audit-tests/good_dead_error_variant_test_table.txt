@@ -1,0 +1,28 @@
+# EXPECTED: NOT flagged — a #[cfg(test)] table pairing a variant name with
+# Some(...) must not be misread as a second dead variant named "Some".
+#[derive(Debug, thiserror::Error)]
+pub enum FixtureError {
+    #[error("boom: {0}")]
+    Boom(String),
+}
+
+fn make_error() -> FixtureError {
+    FixtureError::Boom("oops".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_variant_is_classified() {
+        let verdicts: &[(&str, Option<&str>, &str)] = &[
+            (
+                "Boom",
+                Some("boom label"),
+                "reason",
+            ),
+        ];
+        let _ = verdicts;
+    }
+}

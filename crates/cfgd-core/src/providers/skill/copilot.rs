@@ -53,7 +53,7 @@ impl SkillProvider for CopilotProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
         // `mode: agent` is the native Copilot prompt-file field; the shared
         // `frontmatter_envelope` appends the `cfgd-version` / `cfgd-min-version`
@@ -66,7 +66,7 @@ impl SkillProvider for CopilotProvider {
                 "mode: agent".to_string(),
                 format!("description: {}", model.description),
             ],
-            &render_skill_body(model),
+            &render_skill_body(model, scope),
         );
         Ok(RenderedSkill {
             relative_path: relative_prompt_path(token),
@@ -85,7 +85,7 @@ mod tests {
     fn copilot_renders_prompt_md_with_agent_mode() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = CopilotProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module.prompt.md"));
         assert!(r.contents.contains("mode: agent"));
@@ -110,7 +110,7 @@ mod tests {
     fn frontmatter_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = CopilotProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.contents.contains(&format!(
             "cfgd-version: {}",

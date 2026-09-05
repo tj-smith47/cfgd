@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
@@ -197,7 +198,10 @@ impl CliTestHarness {
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: Some(self.state_dir.path().to_path_buf()),
             config_dir: None,
             cache_dir: Some(self.cache_dir.path().to_path_buf()),
@@ -205,7 +209,9 @@ impl CliTestHarness {
             scope_arg: crate::cli::ScopeArg::User,
             command: Some(Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
+                show_values: false,
             }),
         }
     }
@@ -363,6 +369,318 @@ fn cli_has_jsonpath_flag() {
 }
 
 #[test]
+fn every_value_taking_global_flag_is_skipped_by_the_subcommand_locator() {
+    // `is_value_taking_flag` / `_inline` mirror the `global = true` flags on
+    // `Cli` by hand, and a flag missing from them makes `find_subcommand_index`
+    // read the flag's VALUE as the subcommand (`cfgd --scope system status`
+    // once expanded aliases against `system`). Walk the real clap definition
+    // so the next global flag trips here instead of in a user's alias.
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let mut walked = 0;
+    for arg in cmd
+        .get_arguments()
+        .filter(|a| a.is_global_set() && a.get_action().takes_values())
+    {
+        walked += 1;
+        let long = format!(
+            "--{}",
+            arg.get_long().expect("global flags carry a long form")
+        );
+        assert!(
+            super::is_value_taking_flag(&long),
+            "{long} takes a value but is_value_taking_flag does not know it"
+        );
+        assert!(
+            super::is_value_taking_flag_inline(&format!("{long}=x")),
+            "{long}=VALUE is not recognised by is_value_taking_flag_inline"
+        );
+        if let Some(short) = arg.get_short() {
+            let short = format!("-{short}");
+            assert!(super::is_value_taking_flag(&short), "{short} is unknown");
+            assert!(
+                super::is_value_taking_flag_inline(&format!("{short}=x")),
+                "{short}=VALUE is unknown"
+            );
+        }
+    }
+    assert!(walked >= 10, "the walk found only {walked} global flags");
+}
+
+/// `--yes` / `-y` / `CFGD_YES` is ONE global flag on `Cli`. A subcommand that
+/// wants it mirrors the global with `#[arg(from_global)]`; one that declares
+/// its own `--yes` (or claims `-y` for anything else) shadows the global and
+/// collides with it at parse time. Walk every subcommand recursively so the
+/// next local copy trips here.
+#[test]
+fn no_subcommand_declares_its_own_yes_flag() {
+    use clap::CommandFactory;
+
+    fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
+        for arg in cmd.get_arguments().filter(|a| !a.is_global_set()) {
+            let long = arg.get_long();
+            let aliases = arg.get_all_aliases().unwrap_or_default();
+            assert!(
+                long != Some("yes") && !aliases.contains(&"yes"),
+                "`{path}` declares a local --yes; the global on `Cli` already covers it"
+            );
+            assert!(
+                arg.get_short() != Some('y'),
+                "`{path}` claims -y, which is the global --yes short"
+            );
+        }
+        for sub in cmd.get_subcommands() {
+            *seen += 1;
+            walk(sub, &format!("{path} {}", sub.get_name()), seen);
+        }
+    }
+
+    let root = Cli::command();
+    let global = root
+        .get_arguments()
+        .find(|a| a.get_long() == Some("yes"))
+        .expect("Cli carries a --yes");
+    assert!(global.is_global_set(), "--yes on Cli must be global");
+    assert_eq!(global.get_short(), Some('y'));
+    assert_eq!(global.get_env().and_then(|e| e.to_str()), Some("CFGD_YES"));
+
+    let mut seen = 0;
+    walk(&root, "cfgd", &mut seen);
+    assert!(seen >= 50, "the walk found only {seen} subcommands");
+
+    // Both placements and the env spelling reach the same field.
+    for argv in [
+        ["cfgd", "--yes", "rollback", "42"],
+        ["cfgd", "rollback", "42", "--yes"],
+        ["cfgd", "rollback", "42", "-y"],
+    ] {
+        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        assert!(cli.yes, "{argv:?} did not set cli.yes");
+        let Some(Command::Rollback { yes, .. }) = cli.command else {
+            panic!("{argv:?} did not parse as rollback");
+        };
+        assert!(yes, "{argv:?} did not reach the from_global mirror");
+    }
+}
+
+/// Every `cfgd backup` verb that OVERWRITES live data mirrors the global
+/// `--yes`, so the operator can always answer the prompt without one.
+///
+/// The two that do — `restore` and `rollback` — are the only commands in cfgd
+/// that write over a file the user, not cfgd, authored, and a verb that prompts
+/// but cannot be answered non-interactively is unusable from a script.
+/// `from_global` is not visible through clap introspection (the field is filled
+/// from the root matches, and the subcommand declares no argument of its own),
+/// so the declaration is read from the source and the behaviour from the
+/// parser. A new `BackupCommand` variant trips here by not being in the table.
+#[test]
+fn every_destructive_backup_verb_mirrors_the_global_yes() {
+    // Each variant, and whether it overwrites data the user authored.
+    const VARIANTS: &[(&str, bool)] = &[
+        ("Run", false),
+        ("List", false),
+        ("Restore", true),
+        ("Rollback", true),
+    ];
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .expect("cli/mod.rs is checked out");
+    let block = source
+        .split("pub enum BackupCommand {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("BackupCommand is declared in cli/mod.rs");
+
+    let declared: Vec<&str> = block
+        .lines()
+        .filter_map(|l| l.strip_suffix(" {"))
+        .map(str::trim)
+        .filter(|v| v.chars().next().is_some_and(char::is_uppercase))
+        .collect();
+    let expected: Vec<&str> = VARIANTS.iter().map(|(v, _)| *v).collect();
+    assert_eq!(
+        declared, expected,
+        "a new BackupCommand variant is classified here as destructive or not"
+    );
+
+    for (variant, destructive) in VARIANTS {
+        let body = block
+            .split(&format!("    {variant} {{"))
+            .nth(1)
+            .and_then(|rest| rest.split("\n    },").next())
+            .unwrap_or_else(|| panic!("BackupCommand::{variant} has a body"));
+        let mirrors = body.contains("from_global") && body.contains("yes: bool");
+        assert_eq!(
+            mirrors, *destructive,
+            "BackupCommand::{variant} overwrites live data: {destructive}, mirrors --yes: {mirrors}"
+        );
+    }
+
+    for argv in [
+        ["cfgd", "--yes", "backup", "rollback", "notes"],
+        ["cfgd", "backup", "rollback", "notes", "--yes"],
+        ["cfgd", "backup", "rollback", "notes", "-y"],
+    ] {
+        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        let Some(Command::Backup {
+            command: BackupCommand::Rollback { yes, .. },
+        }) = cli.command
+        else {
+            panic!("{argv:?} did not parse as backup rollback");
+        };
+        assert!(yes, "{argv:?} did not reach the from_global mirror");
+    }
+}
+
+/// Every boolean SUBSCRIPTION knob `cfgd source update` can set comes as a
+/// `--x` / `--no-x` pair: a single `--x` could only ever turn a knob on, so a
+/// demand once recorded would be unrevokable from the CLI. The pair is what
+/// keeps "the caller said nothing" distinct from "the caller said false", so an
+/// ordinary `cfgd source update` never resets a stored `true`. Walk the real
+/// clap definition so the next knob added to this subcommand trips here.
+#[test]
+fn every_source_update_toggle_is_a_settable_unsettable_pair() {
+    use clap::CommandFactory;
+
+    let root = Cli::command();
+    let source = root
+        .get_subcommands()
+        .find(|c| c.get_name() == "source")
+        .expect("cfgd source exists");
+    let update = source
+        .get_subcommands()
+        .find(|c| c.get_name() == "update")
+        .expect("cfgd source update exists");
+
+    let longs: Vec<&str> = update
+        .get_arguments()
+        .filter_map(|a| a.get_long())
+        .collect();
+    let positives: Vec<&str> = longs
+        .iter()
+        .copied()
+        .filter(|l| !l.starts_with("no-"))
+        .collect();
+    assert!(
+        !positives.is_empty(),
+        "source update declares no toggles at all"
+    );
+
+    for positive in &positives {
+        let negative = format!("no-{positive}");
+        assert!(
+            longs.contains(&negative.as_str()),
+            "`--{positive}` has no `--{negative}` counterpart; a toggle must be unsettable"
+        );
+        // clap 4 exposes no `requires`/`conflicts` getters, so both properties
+        // are asserted through the parser itself — which is the stronger claim
+        // anyway: what matters is that the argv is refused, not how.
+        for half in [positive.to_string(), negative.clone()] {
+            assert!(
+                !update
+                    .get_arguments()
+                    .any(|a| a.get_long() == Some(half.as_str()) && a.get_action().takes_values()),
+                "`--{half}` is a toggle and must take no value"
+            );
+            assert!(
+                Cli::try_parse_from(["cfgd", "source", "update", &format!("--{half}")]).is_err(),
+                "`--{half}` with no named source must be refused; without one it edits nothing"
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "cfgd",
+                "source",
+                "update",
+                "acme",
+                &format!("--{positive}"),
+                &format!("--{negative}"),
+            ])
+            .is_err(),
+            "`--{positive}` and `--{negative}` at once must be refused"
+        );
+    }
+
+    // The pair really does reach the two ends, and silence really is neither.
+    let parse = |args: &[&str]| {
+        let cli = Cli::try_parse_from(args).expect("parses");
+        match cli.command {
+            Some(Command::Source {
+                command:
+                    SourceCommand::Update {
+                        require_signed_commits,
+                        no_require_signed_commits,
+                        ..
+                    },
+            }) => super::paired_flag(require_signed_commits, no_require_signed_commits),
+            _ => panic!("not a source update"),
+        }
+    };
+    assert_eq!(parse(&["cfgd", "source", "update", "acme"]), None);
+    assert_eq!(
+        parse(&[
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--require-signed-commits"
+        ]),
+        Some(true)
+    );
+    assert_eq!(
+        parse(&[
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--no-require-signed-commits"
+        ]),
+        Some(false)
+    );
+    assert!(
+        Cli::try_parse_from([
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--require-signed-commits",
+            "--no-require-signed-commits",
+        ])
+        .is_err(),
+        "both halves at once must be refused"
+    );
+    assert!(
+        Cli::try_parse_from(["cfgd", "source", "update", "--require-signed-commits"]).is_err(),
+        "a toggle with no named source must be refused"
+    );
+}
+
+#[test]
+fn theme_flag_is_global_and_refuses_an_unknown_preset() {
+    let cli = Cli::try_parse_from(["cfgd", "status", "--theme", "dracula"])
+        .expect("--theme parses after the subcommand");
+    assert_eq!(cli.theme.as_deref(), Some("dracula"));
+    let err = match Cli::try_parse_from(["cfgd", "--theme", "bogus", "status"]) {
+        Ok(_) => panic!("an unknown preset must be refused at the flag"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("possible values"),
+        "the refusal lists the presets: {err}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn theme_flag_reads_cfgd_theme_from_the_environment() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+    let _g = EnvVarGuard::set("CFGD_THEME", "nord");
+    let cli = Cli::try_parse_from(["cfgd", "status"]).expect("parse");
+    assert_eq!(cli.theme.as_deref(), Some("nord"));
+}
+
+#[test]
 fn cli_output_flag_has_short_alias() {
     use clap::CommandFactory;
     let cmd = Cli::command();
@@ -374,6 +692,116 @@ fn cli_output_flag_has_short_alias() {
         output_arg.get_short(),
         Some('o'),
         "--output should have -o short alias"
+    );
+}
+
+#[test]
+fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
+    // Both entry points build their printer from this, so an `overrides` block
+    // dropped here is a themed machine rendering the default palette.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  theme:\n    name: dracula\n    overrides:\n      header: \"#ff0000\"\n",
+    )
+    .expect("write config");
+
+    let theme = super::resolve_theme_config(&path, None).expect("spec.theme must resolve");
+    assert_eq!(theme.name, "dracula");
+    assert_eq!(
+        theme.overrides.header.as_deref(),
+        Some("#ff0000"),
+        "the overrides block must travel with the preset name"
+    );
+
+    // `--theme` replaces the name and nothing else, exactly what
+    // `cfgd config set theme.name nord` would have persisted.
+    let overridden = super::resolve_theme_config(&path, Some("nord")).expect("override resolves");
+    assert_eq!(overridden.name, "nord");
+    assert_eq!(overridden.overrides.header.as_deref(), Some("#ff0000"));
+}
+
+#[test]
+fn resolve_theme_config_override_stands_alone_without_a_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let theme = super::resolve_theme_config(&dir.path().join("absent.yaml"), Some("minimal"))
+        .expect("the flag needs no config file behind it");
+    assert_eq!(theme.name, "minimal");
+    assert!(theme.overrides.is_empty());
+}
+
+#[test]
+fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one() {
+    // A printer has to exist before there is anything to report a config
+    // failure ON, so neither absence nor malformed YAML may be an error here.
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        super::resolve_theme_config(&dir.path().join("absent.yaml"), None).is_none(),
+        "a missing config resolves no theme rather than failing"
+    );
+
+    let broken = dir.path().join("broken.yaml");
+    std::fs::write(&broken, "spec: [this is not a mapping\n").expect("write broken config");
+    assert!(
+        super::resolve_theme_config(&broken, None).is_none(),
+        "an unparseable config resolves no theme rather than failing"
+    );
+}
+
+#[test]
+fn resolve_hints_enabled_defaults_on_with_no_config_flag_or_env() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        super::resolve_hints_enabled(&dir.path().join("absent.yaml"), false),
+        "hints render by default"
+    );
+}
+
+#[test]
+fn resolve_hints_enabled_reads_spec_usage_hints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  usageHints: false\n",
+    )
+    .expect("write config");
+    assert!(
+        !super::resolve_hints_enabled(&path, false),
+        "spec.usageHints: false must turn hints off"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  usageHints: false\n",
+    )
+    .expect("write config");
+
+    // spec.usageHints: false, no env, no flag -> off.
+    let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    assert!(!super::resolve_hints_enabled(&path, false));
+
+    // The env var beats a config that says the opposite.
+    let _on_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    assert!(
+        super::resolve_hints_enabled(&path, false),
+        "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
+    );
+
+    // The flag beats an env var that says the opposite.
+    let _off_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    assert!(
+        !super::resolve_hints_enabled(&path, true),
+        "--no-hints must outrank CFGD_USAGE_HINTS=true"
     );
 }
 
@@ -523,6 +951,50 @@ fn cli_has_alias_subcommand() {
     assert!(Cli::try_parse_from(["cfgd", "alias", "list"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "ls"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "show", "n"]).is_ok());
+}
+
+/// `--scan` is the explicitly named form of the live drift scan `--exit-code`
+/// has always implied. It is a plain long flag with no short form and no env
+/// binding, it composes with `-e` and `--module`, and it never changes the
+/// exit code on its own — `-e` alone still owns that.
+#[test]
+fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
+    let cases: [(&[&str], bool, bool, Option<&str>); 6] = [
+        (&["cfgd", "status"], false, false, None),
+        (&["cfgd", "status", "--scan"], true, false, None),
+        (&["cfgd", "status", "--exit-code"], false, true, None),
+        (&["cfgd", "status", "-e"], false, true, None),
+        (&["cfgd", "status", "--scan", "-e"], true, true, None),
+        (
+            &["cfgd", "status", "--scan", "--module", "nvim"],
+            true,
+            false,
+            Some("nvim"),
+        ),
+    ];
+    for (argv, want_scan, want_exit_code, want_module) in cases {
+        let parsed = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        let Some(Command::Status {
+            module,
+            scan,
+            exit_code,
+            show_values: _,
+        }) = parsed.command
+        else {
+            panic!("{argv:?} did not parse as status");
+        };
+        assert_eq!(scan, want_scan, "{argv:?} scan");
+        assert_eq!(exit_code, want_exit_code, "{argv:?} exit_code");
+        assert_eq!(module.as_deref(), want_module, "{argv:?} module");
+    }
+
+    // No short form: `-s` would collide with the next single-letter flag any
+    // sibling command claims, and the CLI convention reserves short forms for
+    // the handful of flags used constantly.
+    assert!(
+        Cli::try_parse_from(["cfgd", "status", "-s"]).is_err(),
+        "--scan must not have grown a short form"
+    );
 }
 
 /// `--model` / `--provider` / `--yes` govern every `generate` target, not just
@@ -713,7 +1185,7 @@ fn default_noninteractive_priority_is_midpoint() {
     assert_eq!(super::DEFAULT_NONINTERACTIVE_PRIORITY, 500);
 }
 
-// --- display_source_manifest ---
+// --- source_manifest_doc_sections ---
 
 fn manifest_yaml(extra_spec: &str) -> cfgd_core::config::ConfigSourceDocument {
     let yaml = format!(
@@ -730,56 +1202,241 @@ spec:
     serde_yaml::from_str(&yaml).expect("manifest fixture must parse")
 }
 
-#[test]
-fn display_source_manifest_returns_provided_profiles_in_listed_order() {
-    let manifest = manifest_yaml("  provides:\n    profiles: [dev, prod, ci]\n");
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest(&printer, &manifest);
-    assert_eq!(profiles, vec!["dev", "prod", "ci"]);
+/// Render the shared composer with no subscription and no checked-out
+/// profiles — the shape `cfgd source add` reaches before it has either.
+fn manifest_sections_text(manifest: &cfgd_core::config::ConfigSourceDocument) -> String {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Derived once and handed in, exactly as `source show` does it — the
+    // builder never re-derives a policy of its own.
+    let policy = crate::cli::source::show::effective_source_policy(
+        None,
+        &manifest.spec.policy.constraints,
+        false,
+    );
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        manifest,
+        Some(&policy),
+        None,
+    ));
+    drop(printer);
+    cfgd_core::test_helpers::captured_text(&buf)
 }
 
 #[test]
-fn display_source_manifest_emits_metadata_header_kv_lines() {
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("Source Manifest"), "header missing: {out}");
+fn source_manifest_sections_render_the_metadata_rows() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
+    assert!(out.contains("Manifest"), "Manifest header missing: {out}");
     assert!(
         out.contains("Name") && out.contains("acme-platform"),
-        "Name kv missing: {out}"
+        "Name row missing: {out}"
     );
     assert!(
         out.contains("Version") && out.contains("1.4.0"),
-        "Version kv missing: {out}"
+        "Version row missing: {out}"
     );
     assert!(
         out.contains("Description") && out.contains("Acme platform baseline"),
-        "Description kv missing: {out}"
+        "Description row missing: {out}"
     );
 }
 
 #[test]
-fn display_source_manifest_omits_profiles_kv_when_empty() {
-    // When the manifest provides no profiles, the "Profiles:" key/value
-    // line is suppressed entirely (rather than printing an empty value).
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest(&printer, &manifest);
-    assert!(profiles.is_empty());
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
+fn source_manifest_sections_omit_optional_metadata_when_absent() {
+    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: minimal
+spec:
+  provides: {}
+"#,
+    )
+    .unwrap();
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Name") && out.contains("minimal"));
+    assert!(
+        !out.contains("Version"),
+        "Version row must be suppressed when None: {out}"
+    );
+    assert!(
+        !out.contains("Description"),
+        "Description row must be suppressed when None: {out}"
+    );
+}
+
+#[test]
+fn source_manifest_sections_omit_the_profiles_block_when_none_are_provided() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
     assert!(
         !out.contains("Profiles"),
-        "Profiles label must be suppressed when none provided, got: {out}"
+        "the Profiles block must be suppressed when none provided, got: {out}"
     );
 }
 
+/// Every provided profile is headed by the same `profile:<name>` owner token
+/// an apply header names a layer with, and its manifest description stands as
+/// prose beneath it.
 #[test]
-fn display_source_manifest_summarizes_required_recommended_locked_counts() {
-    // Each tier with a non-zero count emits a labeled line.
+fn source_manifest_sections_head_each_provided_profile_with_its_owner_token() {
+    let manifest = manifest_yaml(
+        "  provides:\n    profileDetails:\n      - name: dev\n        description: Developer workstation\n      - name: ci\n",
+    );
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Profiles"), "Profiles header missing: {out}");
+    assert!(
+        out.contains("profile:dev"),
+        "dev owner token missing: {out}"
+    );
+    assert!(out.contains("profile:ci"), "ci owner token missing: {out}");
+    assert!(
+        out.contains("Developer workstation"),
+        "the entry's description must render: {out}"
+    );
+}
+
+/// The subscriber must see what a profile DECLARES before subscribing — env
+/// values included — rendered through the same inventory `cfgd profile show`
+/// builds rather than a second renderer of this screen's own.
+#[test]
+fn source_manifest_sections_render_a_provided_profiles_own_content() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      - ripgrep\n",
+    )
+    .unwrap();
+    let manifest = manifest_yaml("  provides:\n    profiles: [dev]\n");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        &manifest,
+        None,
+        Some(dir.path()),
+    ));
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("EDITOR") && out.contains("vim"),
+        "an env value must be visible before subscribing: {out}"
+    );
+    assert!(
+        out.contains("brew formulae") && out.contains("ripgrep"),
+        "packages must render through the profile inventory: {out}"
+    );
+}
+
+/// A manifest promising a profile the checkout does not carry says so — and
+/// only when there was somewhere to look. With no profiles directory at all
+/// the profile is left unelaborated, because "not shipped" and "could not
+/// look" are different facts.
+#[test]
+fn source_manifest_sections_report_a_profile_the_source_does_not_ship() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = manifest_yaml("  provides:\n    profiles: [dev]\n");
+    let render = |profiles_dir: Option<&std::path::Path>| {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+            cfgd_core::output::Doc::new(),
+            &manifest,
+            None,
+            profiles_dir,
+        ));
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let missing = render(Some(dir.path()));
+    assert!(
+        missing.contains("not found in the source"),
+        "a promised profile the tree does not carry must be reported: {missing}"
+    );
+
+    let uncached = render(None);
+    assert!(
+        !uncached.contains("not found in the source"),
+        "with no checkout to look in, absence must not be claimed: {uncached}"
+    );
+    assert!(
+        uncached.contains("profile:dev"),
+        "the promised profile is still named: {uncached}"
+    );
+}
+
+/// One polarity for every constraint — `Scripts Allowed  false`, never a
+/// `Scripts: blocked` status line beside it on the other surface.
+#[test]
+fn source_manifest_sections_render_policy_rows_in_one_polarity() {
+    let manifest = manifest_yaml(
+        r#"  provides: {}
+  policy:
+    constraints:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths: ["/etc/cfgd", "/var/lib/cfgd"]
+"#,
+    );
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Policy"), "Policy header missing: {out}");
+    assert!(
+        out.contains("Scripts Allowed") && out.contains("no"),
+        "scripts row missing: {out}"
+    );
+    assert!(
+        out.contains("Secrets Read Allowed"),
+        "secrets row missing: {out}"
+    );
+    assert!(
+        out.contains("Allowed Target Paths") && out.contains("/etc/cfgd, /var/lib/cfgd"),
+        "allowed-paths row must be comma-joined, got: {out}"
+    );
+    assert!(
+        !out.contains("Scripts: blocked") && !out.contains("Secret access: blocked"),
+        "the old status-line polarity must be gone: {out}"
+    );
+}
+
+/// With a subscription in hand the policy is EFFECTIVE: the subscriber's own
+/// `allowScripts` opt-in outranks the manifest's `noScripts`.
+#[test]
+fn source_manifest_sections_render_the_effective_policy_when_a_spec_is_given() {
+    let manifest =
+        manifest_yaml("  provides: {}\n  policy:\n    constraints:\n      noScripts: true\n");
+    let mut spec: cfgd_core::config::SourceSpec = serde_yaml::from_str(
+        "name: acme\norigin:\n  type: Git\n  url: https://example.com/acme.git\n",
+    )
+    .unwrap();
+    spec.subscription.allow_scripts = true;
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let policy = crate::cli::source::show::effective_source_policy(
+        Some(&spec),
+        &manifest.spec.policy.constraints,
+        false,
+    );
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        &manifest,
+        Some(&policy),
+        None,
+    ));
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.lines().any(|l| {
+            l.trim_start().starts_with("Scripts Allowed") && l.trim_end().ends_with("yes")
+        }),
+        "the subscriber's opt-in must win: {out}"
+    );
+}
+
+/// The rows ARE the count: a tier renders its items and no `Count` row above
+/// them.
+#[test]
+fn source_manifest_sections_render_tier_items_without_a_count_row() {
     let manifest = manifest_yaml(
         r#"  provides: {}
   policy:
@@ -799,122 +1456,49 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
           value: locked-value
 "#,
     );
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("Policy"), "Policy header missing: {out}");
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Locked"), "Locked tier missing: {out}");
+    assert!(out.contains("Required"), "Required tier missing: {out}");
     assert!(
-        out.contains("1 item locked") && out.contains("cannot override"),
-        "locked tier line missing: {out}"
+        out.contains("Recommended"),
+        "Recommended tier missing: {out}"
     );
     assert!(
-        out.contains("1 item required") && out.contains("team requirement"),
-        "required tier line missing: {out}"
+        out.contains("LOCKED_VAR") && out.contains("REQUIRED_VAR") && out.contains("REC_TWO"),
+        "each tier must render its own items: {out}"
     );
     assert!(
-        out.contains("2 items recommended"),
-        "recommended count line missing: {out}"
+        !out.contains("Count"),
+        "a Count row restates what the rows already say: {out}"
     );
 }
 
 #[test]
-fn display_source_manifest_omits_zero_count_tiers() {
-    // When a tier has zero items its line must NOT appear.
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
+fn source_manifest_sections_omit_tiers_that_declare_nothing() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
     assert!(
-        !out.contains("item required") && !out.contains("items recommended"),
-        "zero-count tiers must be suppressed, got: {out}"
+        !out.contains("Locked") && !out.contains("Required") && !out.contains("Recommended"),
+        "empty tiers must be suppressed, got: {out}"
     );
 }
 
+/// The `-o json` counterpart carries the same facts the human render shows.
 #[test]
-fn display_source_manifest_constraints_render_each_blocked_axis() {
+fn source_manifest_output_carries_the_provided_profiles() {
     let manifest = manifest_yaml(
-        r#"  provides: {}
-  policy:
-    constraints:
-      noScripts: true
-      noSecretsRead: true
-      allowedTargetPaths: ["/etc/cfgd", "/var/lib/cfgd"]
-"#,
+        "  provides:\n    profileDetails:\n      - name: dev\n        description: Developer workstation\n      - name: backend\n        inherits: [dev]\n    modules: [nvim]\n",
     );
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let v =
+        serde_json::to_value(crate::cli::source::show::source_manifest_output(&manifest)).unwrap();
+    assert_eq!(v["name"], "acme-platform");
+    assert_eq!(v["version"], "1.4.0");
+    assert_eq!(v["profiles"][0]["name"], "dev");
+    assert_eq!(v["profiles"][0]["description"], "Developer workstation");
+    assert_eq!(v["profiles"][1]["inherits"][0], "dev");
+    assert_eq!(v["modules"][0], "nvim");
     assert!(
-        out.contains("Scripts: blocked"),
-        "no-scripts line missing: {out}"
-    );
-    assert!(
-        out.contains("Secret access: blocked"),
-        "no-secrets line missing: {out}"
-    );
-    assert!(
-        out.contains("Allowed paths") && out.contains("/etc/cfgd, /var/lib/cfgd"),
-        "allowed-paths line must be comma-joined, got: {out}"
-    );
-}
-
-#[test]
-fn display_source_manifest_constraints_omitted_when_unrestricted() {
-    // noScripts and noSecretsRead default to true via default_true; turn
-    // them off to verify the suppression branches.
-    let manifest = manifest_yaml(
-        r#"  provides: {}
-  policy:
-    constraints:
-      noScripts: false
-      noSecretsRead: false
-      allowedTargetPaths: []
-"#,
-    );
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        !out.contains("Scripts: blocked")
-            && !out.contains("Secret access: blocked")
-            && !out.contains("Allowed paths"),
-        "no constraint lines should appear when all unrestricted, got: {out}"
-    );
-}
-
-#[test]
-fn display_source_manifest_omits_optional_metadata_kv_when_absent() {
-    // Manifest with only the required `name` field — no version, no
-    // description. The Name kv must still appear; the other two suppressed.
-    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
-        r#"apiVersion: cfgd.io/v1alpha1
-kind: ConfigSource
-metadata:
-  name: minimal
-spec:
-  provides: {}
-"#,
-    )
-    .unwrap();
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("Name") && out.contains("minimal"));
-    assert!(
-        !out.contains("Version"),
-        "Version kv must be suppressed when None: {out}"
-    );
-    assert!(
-        !out.contains("Description"),
-        "Description kv must be suppressed when None: {out}"
+        v["profiles"][0].get("inherits").is_none(),
+        "an empty inherits list is omitted from the wire: {v}"
     );
 }
 
@@ -1058,13 +1642,33 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
         "package:apt:curl",
         cfgd_core::composition::ResolutionType::Locked,
         "acme-baseline",
-        "policy locks installation",
+        "LOCKED curl <- acme-baseline",
     )];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "package:apt:curl: LOCKED curl from acme-baseline");
+}
+
+#[test]
+fn format_conflict_preview_lines_rewords_the_persisted_arrow_for_display_only() {
+    // `details` keeps its persisted `<-` shape in storage (composition::record);
+    // this formatter is a display path and must reword it without a raw ASCII
+    // arrow ever reaching the terminal.
+    let conflicts = vec![conflict(
+        "curl",
+        cfgd_core::composition::ResolutionType::Rejected,
+        "local",
+        "REJECTED curl <- local rejected acme-baseline recommendation",
+    )];
+    let lines = super::format_conflict_preview_lines(&conflicts);
     assert_eq!(
         lines[0],
-        "  LOCKED package:apt:curl <- acme-baseline (policy locks installation)"
+        "curl: REJECTED curl from local rejected acme-baseline recommendation"
+    );
+    assert!(
+        !lines[0].contains("<-"),
+        "leaked a raw arrow: {:?}",
+        lines[0]
     );
 }
 
@@ -1072,37 +1676,40 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
 fn format_conflict_preview_lines_renders_each_resolution_type_label() {
     // All five ResolutionType variants must produce their canonical UPPER
     // label — pin so a future rename of `Override` → `Overridden` is
-    // intentional, not silent.
+    // intentional, not silent. `details` carries the label in production
+    // (composition::record is the only real producer), so the fixture
+    // mirrors that instead of asserting on text the formatter no longer
+    // restates itself.
     let conflicts = vec![
         conflict(
             "a",
             cfgd_core::composition::ResolutionType::Locked,
             "src",
-            "d",
+            "LOCKED a <- src",
         ),
         conflict(
             "b",
             cfgd_core::composition::ResolutionType::Required,
             "src",
-            "d",
+            "REQUIRED b <- src",
         ),
         conflict(
             "c",
             cfgd_core::composition::ResolutionType::Override,
             "src",
-            "d",
+            "OVERRIDE c <- src",
         ),
         conflict(
             "d",
             cfgd_core::composition::ResolutionType::Rejected,
             "src",
-            "d",
+            "REJECTED d <- local rejected src recommendation",
         ),
         conflict(
             "e",
             cfgd_core::composition::ResolutionType::Default,
             "src",
-            "d",
+            "DEFAULT e <- src",
         ),
     ];
     let lines = super::format_conflict_preview_lines(&conflicts);
@@ -1136,22 +1743,23 @@ fn format_conflict_preview_lines_preserves_input_order() {
     ];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert!(
-        lines[0].contains(" z "),
+        lines[0].starts_with("z:"),
         "first line must be `z`: {:?}",
         lines
     );
     assert!(
-        lines[1].contains(" a "),
+        lines[1].starts_with("a:"),
         "second line must be `a`: {:?}",
         lines
     );
 }
 
 #[test]
-fn format_conflict_preview_lines_uses_two_space_indent() {
-    // The output is indented under the "Conflicts with Current Config"
-    // subheader so the eye groups them. Two spaces is the project-wide
-    // indent convention.
+fn format_conflict_preview_lines_carries_no_leading_indent() {
+    // The renderer (a `status_simple` under the "Conflicts with Current
+    // Config" section) supplies the section's own indent — a hand-built
+    // leading indent here would be dead formatting the caller immediately
+    // strips.
     let conflicts = vec![conflict(
         "a",
         cfgd_core::composition::ResolutionType::Default,
@@ -1160,13 +1768,8 @@ fn format_conflict_preview_lines_uses_two_space_indent() {
     )];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert!(
-        lines[0].starts_with("  "),
-        "must start with two-space indent: {:?}",
-        lines[0]
-    );
-    assert!(
-        !lines[0].starts_with("   "),
-        "must not be three-space indent: {:?}",
+        !lines[0].starts_with(' '),
+        "must carry no leading indent: {:?}",
         lines[0]
     );
 }
@@ -1240,7 +1843,10 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir,
         config_dir: None,
         cache_dir,
@@ -1248,7 +1854,9 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         scope_arg: crate::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }
@@ -1837,7 +2445,7 @@ fn profiles_inheriting_warns_on_unparseable_manifest_and_keeps_real_inheritors()
         vec!["work"],
         "unparseable manifest must not hide the parseable inheritor"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("broken.yaml"),
         "unparseable manifest must be surfaced as a warn naming its path; got: {out:?}"
@@ -1863,7 +2471,7 @@ fn profile_delete_still_refuses_when_parseable_inheritor_exists_beside_broken_ma
         dir.path().join("profiles").join("default.yaml").exists(),
         "refused delete must leave the profile on disk"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("broken.yaml"),
         "delete guard scan must surface the unparseable manifest; got: {out:?}"
@@ -1886,9 +2494,9 @@ fn profile_create_succeeds_despite_unrelated_ambiguous_profile() {
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
     assert!(pdir.join("fresh").join("profile.yaml").exists());
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Created profile 'fresh'"),
+        out.contains("Created at"),
         "success Doc must still render; got: {out:?}"
     );
     assert!(
@@ -1908,69 +2516,15 @@ fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
     profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
 
     assert!(!pdir.join("work.yaml").exists());
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Deleted profile 'work'"),
+        out.contains("Deleted"),
         "success Doc must still render; got: {out:?}"
     );
     assert!(
         out.contains("Skipping profile 'amb'"),
         "ambiguous profile must surface as a warn, not an error; got: {out:?}"
     );
-}
-
-#[test]
-fn parse_manager_package_valid() {
-    let (mgr, pkg) = profile::parse_manager_package("brew:curl").unwrap();
-    assert_eq!(mgr, "brew");
-    assert_eq!(pkg, "curl");
-}
-
-#[test]
-fn parse_manager_package_invalid() {
-    assert!(profile::parse_manager_package("no-colon").is_err());
-    assert!(profile::parse_manager_package(":curl").is_err());
-    assert!(profile::parse_manager_package("brew:").is_err());
-    assert!(profile::parse_manager_package(":").is_err());
-}
-
-#[test]
-fn parse_package_flag_with_known_manager() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = parse_package_flag("brew:curl", known);
-    assert_eq!(mgr, Some("brew".to_string()));
-    assert_eq!(pkg, "curl");
-}
-
-#[test]
-fn parse_package_flag_bare_name() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = parse_package_flag("ripgrep", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "ripgrep");
-}
-
-#[test]
-fn parse_package_flag_unknown_prefix_treated_as_bare() {
-    let known = &["brew", "apt", "cargo"];
-    // "python3:amd64" — "python3" is not a known manager
-    let (mgr, pkg) = parse_package_flag("python3:amd64", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "python3:amd64");
-}
-
-#[test]
-fn parse_package_flag_empty_parts() {
-    let known = &["brew"];
-    // ":curl" — empty prefix, not a known manager
-    let (mgr, pkg) = parse_package_flag(":curl", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, ":curl");
-
-    // "brew:" — empty suffix
-    let (mgr, pkg) = parse_package_flag("brew:", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:");
 }
 
 #[test]
@@ -2117,13 +2671,10 @@ fn profile_update_scripts() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // Emptied of every hook, the scripts section is pruned from the file
+    // rather than left behind as `scripts: {preApply: [], …}`.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let scripts = doc.spec.scripts.as_ref().unwrap();
-    assert!(scripts.pre_apply.is_empty());
-    assert!(scripts.post_apply.is_empty());
-    assert!(scripts.pre_reconcile.is_empty());
-    assert!(scripts.post_reconcile.is_empty());
-    assert!(scripts.on_change.is_empty());
+    assert!(doc.spec.scripts.is_none(), "got {:?}", doc.spec.scripts);
 }
 
 #[test]
@@ -2333,7 +2884,7 @@ use cfgd_core::test_helpers::EditorGuard;
 #[serial_test::serial]
 fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // EDITOR=/bin/true → open_in_editor exits 0 without touching the
-    // file, so the post-edit validation reads the same valid manifest we
+    // file, so the post-edit validation reads the same valid manifest this test
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -2516,7 +3067,7 @@ fn workflow_generate_empty_repo() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No profiles") || output.contains("nothing to generate"),
         "should warn about no profiles/modules, got: {output}"
@@ -2931,6 +3482,26 @@ fn find_subcommand_index_skips_value_taking_global_flags() {
             "--profile inline",
         ),
         (
+            &["cfgd", "--theme", "nord", "status"],
+            Some(3),
+            "--theme space",
+        ),
+        (
+            &["cfgd", "--theme=nord", "status"],
+            Some(2),
+            "--theme inline",
+        ),
+        (
+            &["cfgd", "--scope", "system", "status"],
+            Some(3),
+            "--scope space",
+        ),
+        (
+            &["cfgd", "--color", "never", "status"],
+            Some(3),
+            "--color space",
+        ),
+        (
             &["cfgd", "--verbose", "apply"],
             Some(2),
             "--verbose boolean",
@@ -3017,37 +3588,68 @@ fn parse_file_spec_empty_target_errors() {
 #[test]
 fn is_unmanaged_file_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("does-not-exist");
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 fn is_unmanaged_file_regular_file() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("existing-file");
     std::fs::write(&target, "content").unwrap();
-    assert!(is_unmanaged_file(&target, dir.path(), &state));
+    assert!(is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 #[cfg(unix)]
 fn is_unmanaged_file_cfgd_symlink() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
-    let source = dir.path().join("source-file");
+    let source = config_dir.join("source-file");
     std::fs::write(&source, "content").unwrap();
     let target = dir.path().join("subdir").join("symlink");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&source, &target).unwrap();
     // Symlink points into config_dir, so it's managed
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 #[test]
 fn is_unmanaged_file_tracked_in_state() {
     let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_cache = dir.path().join("cache");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&module_cache).unwrap();
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("tracked-file");
     std::fs::write(&target, "content").unwrap();
@@ -3057,7 +3659,12 @@ fn is_unmanaged_file_tracked_in_state() {
     state
         .upsert_managed_resource("file", &target_str, "local", None, None)
         .unwrap();
-    assert!(!is_unmanaged_file(&target, dir.path(), &state));
+    assert!(!is_unmanaged_file(
+        &target,
+        &config_dir,
+        &module_cache,
+        &state
+    ));
 }
 
 // --- config get/set/unset helpers ---
@@ -3529,7 +4136,7 @@ fn scan_profile_names_warns_and_skips_malformed() {
         "good profiles scanned, malformed one absent"
     );
 
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("bad.yaml"),
         "warning must name the malformed profile path; got: {out:?}"
@@ -3560,7 +4167,7 @@ fn scan_profile_names_returns_stem_and_warns_on_divergent_metadata_name() {
         vec!["work".to_string()],
         "scan must return the resolvable filename stem, not the divergent metadata.name"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("metadata.name 'other'") && out.contains("using 'work'"),
         "divergence warn must name both the metadata.name and the stem in use; got: {out:?}"
@@ -3592,7 +4199,7 @@ fn scan_profile_names_warns_and_skips_ambiguous() {
         vec!["alpha".to_string()],
         "ambiguous profile skipped, scan continues"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile 'amb'"),
         "warning must name the ambiguous profile; got: {out:?}"
@@ -4016,7 +4623,7 @@ fn scan_profile_names_skips_invalid_stem() {
         vec!["work".to_string()],
         "invalid stem must be skipped"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("invalid characters"),
         "invalid stem must warn with the Skipping-profile shape; got: {out:?}"
@@ -4043,7 +4650,7 @@ fn scan_module_names_skips_invalid_stem() {
         vec!["git".to_string()],
         "invalid stem must be skipped"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping module") && out.contains("invalid characters"),
         "invalid stem must warn with the Skipping-module shape; got: {out:?}"
@@ -4353,32 +4960,6 @@ fn resolve_profile_name_explicit_from_name() {
     assert_eq!(result, "work");
 }
 
-// --- parse_package_flag ---
-
-#[test]
-fn parse_package_flag_known_manager_splits() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = super::parse_package_flag("brew:ripgrep", known);
-    assert_eq!(mgr, Some("brew".to_string()));
-    assert_eq!(pkg, "ripgrep");
-}
-
-#[test]
-fn parse_package_flag_unknown_manager_passthrough() {
-    let known = &["brew", "apt"];
-    let (mgr, pkg) = super::parse_package_flag("unknown:ripgrep", known);
-    assert!(mgr.is_none());
-    assert_eq!(pkg, "unknown:ripgrep");
-}
-
-#[test]
-fn parse_package_flag_bare_name_passthrough() {
-    let known = &["brew"];
-    let (mgr, pkg) = super::parse_package_flag("ripgrep", known);
-    assert!(mgr.is_none());
-    assert_eq!(pkg, "ripgrep");
-}
-
 // --- builtin_aliases ---
 
 #[test]
@@ -4406,7 +4987,7 @@ fn cmd_doctor_with_valid_config() {
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(output.contains("Config file"), "missing config file status");
     assert!(
@@ -4441,14 +5022,14 @@ fn cmd_doctor_without_config() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(
         output.contains("not found"),
         "should report config not found, got: {output}"
     );
     assert!(
-        output.contains("run 'cfgd init' to create one"),
+        output.contains("run `cfgd init` to create one"),
         "fresh-machine Warn should carry the init hint, got: {output}"
     );
 }
@@ -4473,7 +5054,7 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains(&format!(
             "Config file: {} — not found",
@@ -4512,7 +5093,7 @@ fn cmd_doctor_json_missing_config_shape_is_unchanged() {
         super::doctor::run_doctor(&cli, &printer).unwrap();
         printer.flush();
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = match format {
             cfgd_core::output::OutputFormat::Json => extract_json(&output),
             _ => serde_yaml::from_str(output.trim()).unwrap(),
@@ -4555,7 +5136,7 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -4563,7 +5144,15 @@ fn cmd_status_with_empty_state() {
 #[test]
 fn cmd_status_module_not_found() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("nonexistent"), false).unwrap();
+    super::status::cmd_status(
+        &h.cli(),
+        h.printer(),
+        Some("nonexistent"),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
     h.assert_output_contains("nonexistent");
 }
 
@@ -4572,7 +5161,8 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false, false, false)
+        .unwrap();
     h.assert_output_contains("test-mod");
 }
 
@@ -4619,7 +5209,8 @@ fn cmd_apply_dry_run_empty_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4657,7 +5248,12 @@ fn cmd_apply_from_flag_parses() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("dev-tools".to_string()),
+        // No --module here deliberately: this test is about --from wiring,
+        // not module resolution. A `--module` name that does not resolve now
+        // propagates as its own error (deliverable 4), which would otherwise
+        // mask whatever `--from` actually did.
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4714,7 +5310,10 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -4722,7 +5321,9 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         scope_arg: crate::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
+            show_values: false,
         }),
     };
     let printer = test_printer();
@@ -4734,7 +5335,8 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4777,7 +5379,8 @@ fn cmd_apply_dry_run_with_phase_filter() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4797,7 +5400,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("actions exist in phase: Prerequisites"),
+        output.contains("Actions exist in phase: Prerequisites"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -4817,7 +5420,8 @@ fn cmd_apply_dry_run_with_skip() {
         yes: true,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4842,7 +5446,8 @@ fn cmd_apply_dry_run_with_only() {
         yes: true,
         skip: vec![],
         only: vec!["files".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4876,7 +5481,8 @@ fn cmd_apply_real_with_empty_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4916,16 +5522,17 @@ fn cmd_status_after_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    super::status::cmd_status(&cli, &printer, None, false).unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Status"),
         "should contain Status heading, got: {output}"
@@ -4954,7 +5561,8 @@ fn cmd_log_after_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4971,7 +5579,7 @@ fn cmd_log_after_apply() {
     )
     .unwrap();
     drop(log_printer);
-    let output = log_buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&log_buf);
     assert!(
         output.contains("Apply History"),
         "should contain Apply History header, got: {output}"
@@ -5030,7 +5638,8 @@ fn cmd_apply_dry_run_with_files() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5046,7 +5655,7 @@ fn cmd_apply_dry_run_with_files() {
     assert!(!target.exists());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
@@ -5089,7 +5698,8 @@ fn cmd_apply_creates_file() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5138,7 +5748,8 @@ fn cmd_apply_idempotent() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5160,7 +5771,7 @@ fn cmd_apply_idempotent() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Nothing to do"),
         "second apply should say nothing to do, got: {output}"
@@ -5199,7 +5810,7 @@ fn cmd_diff_with_files() {
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Diff"), "missing Diff header");
     assert!(
         output.contains("-current content") || output.contains("+desired content"),
@@ -5210,7 +5821,7 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert!(
         parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -5254,7 +5865,10 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: Some(h.state_path().to_path_buf()),
         config_dir: None,
         cache_dir: None,
@@ -5264,7 +5878,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
     };
     // The contract: exit 0 (Ok). winget/chocolatey treat any non-zero exit
     // from `<bin>` (no args) as a failed install. Clap's `print_help()`
-    // writes directly to stdout (not through Printer), so we don't assert
+    // writes directly to stdout (not through Printer), so this does not assert
     // on captured output here — exit-code 0 is the part of the contract that
     // moves the needle if it regresses.
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
@@ -5276,7 +5890,9 @@ fn execute_status_command() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Status {
         module: None,
+        scan: false,
         exit_code: false,
+        show_values: false,
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Status");
@@ -5385,6 +6001,58 @@ fn execute_config_set() {
 }
 
 #[test]
+fn execute_alias_show_unknown_name_is_a_typed_not_found_error() {
+    // `alias show`/`alias delete` dispatch straight into cmd_config_get/unset
+    // with an "aliases." prefix (see the Command::Alias match arm in mod.rs) —
+    // this proves that dispatch path, not just the underlying config_cmd
+    // functions, resolves to the typed ConfigError::KeyNotFound and exit 6,
+    // matching every other named-resource lookup in the CLI.
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Alias {
+        command: AliasCommand::Show {
+            name: "no-such-alias".to_string(),
+        },
+    });
+    let err =
+        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("alias show of an unknown name must carry the typed ConfigError::KeyNotFound");
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound { .. }
+            )
+        ),
+        "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+    );
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
+}
+
+#[test]
+fn execute_alias_delete_unknown_name_is_a_typed_not_found_error() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Alias {
+        command: AliasCommand::Delete {
+            name: "no-such-alias".to_string(),
+        },
+    });
+    let err =
+        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("alias delete of an unknown name must carry the typed ConfigError::KeyNotFound");
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
+}
+
+#[test]
 fn execute_apply_dry_run() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Apply(ApplyArgs {
@@ -5395,7 +6063,8 @@ fn execute_apply_dry_run() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5419,7 +6088,7 @@ fn execute_completions_bash() {
     };
     let printer = test_printer();
     // Completions write directly to stdout via clap_complete, not through Printer.
-    // We verify execution succeeds; output content is clap_complete's responsibility.
+    // This verifies execution succeeds; output content is clap_complete's responsibility.
     let result = super::execute(&cli, &printer, &super::paths::DirSources::all_default());
     assert!(
         result.is_ok(),
@@ -5585,7 +6254,8 @@ fn cmd_apply_with_module_filter() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("test-mod".to_string()),
+        module: vec!["test-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5595,7 +6265,7 @@ fn cmd_apply_with_module_filter() {
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("test-mod") || output.contains("Nothing"),
         "apply with module filter should reference module or show plan, got: {output}"
@@ -5629,10 +6299,23 @@ const SESSION_FILE_TARGETS: u32 = 1;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 const SESSION_FILE_TARGETS: u32 = 0;
 
+/// The live-session publish, priced. It is PLANNED on every host but only
+/// COUNTED where a session manager exists to perform it: `pre_skip_reason`
+/// withholds it otherwise and `Phase::action_count` prices it out, so FreeBSD
+/// — which runs neither systemd, launchd nor `setx` — reports one action fewer
+/// than a host that can publish. Answered through the product's own predicate
+/// because the plan, the apply's skip detail and `status`'s session row all
+/// answer from that one function; a second opinion here would be asserting
+/// about a different host than the one the run saw.
+fn session_refresh_targets() -> u32 {
+    u32::from(cfgd_core::session_manager_available())
+}
+
 /// Shared body for the zsh-present / no-zsh env-target-count variants below.
 /// `expected_actions` is the exact `env_targets` count for the declared shape
 /// (see `EnvHostProbe`'s field docs for which target each flag adds/removes):
-/// `.cfgd.env` + interactive rc + `.profile` + live-session refresh (4), plus
+/// `.cfgd.env` + interactive rc + `.profile` (3), plus the live-session
+/// publish when this host can perform one (`session_refresh_targets`), plus
 /// the platform's session file when it has one (`SESSION_FILE_TARGETS`), plus
 /// `.zshenv` only when `zsh_present`.
 fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
@@ -5664,7 +6347,8 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5710,22 +6394,357 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars() {
-    cmd_apply_with_env_vars_for_host(true, 5 + SESSION_FILE_TARGETS);
+    cmd_apply_with_env_vars_for_host(true, 4 + SESSION_FILE_TARGETS + session_refresh_targets());
 }
 
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars_no_zsh() {
-    cmd_apply_with_env_vars_for_host(false, 4 + SESSION_FILE_TARGETS);
+    cmd_apply_with_env_vars_for_host(false, 3 + SESSION_FILE_TARGETS + session_refresh_targets());
 }
 
 // The Windows env plan never consults the probe's shell shape: its target set
-// is `.cfgd-env.ps1` + both PowerShell profile injections + the live-session
-// refresh, all under the test home — 4 actions on every Windows host.
+// is `.cfgd-env.ps1` + both PowerShell profile injections (3), all under the
+// test home, plus the live-session publish when `setx` is reachable.
 #[test]
 #[cfg(windows)]
 fn cmd_apply_with_env_vars_windows() {
-    cmd_apply_with_env_vars_for_host(false, 4);
+    cmd_apply_with_env_vars_for_host(false, 3 + session_refresh_targets());
+}
+
+/// `-o wide` is the fleet dashboard's full-granularity view: the Managed
+/// Resources table blows a module's `files:<n>` aggregate up into one row per
+/// deployed file and fills the Method column from what each producer recorded
+/// — the manifest's strategy for a module file, the resolved declaration for
+/// a profile file, the generated-vs-injected verb for an env target. The
+/// default table keeps the aggregates (the Method column settles away through
+/// `Table::without_unfillable_columns`), except that a count of one is no
+/// aggregate: a single-file module renders the file's own folded path. The
+/// `-o json` payload is a pinned wire contract and keeps the raw aggregate
+/// resource id either way.
+#[test]
+#[cfg(unix)]
+fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe =
+        cfgd_core::reconciler::with_env_host_probe_override_guard(declared_env_host_probe(false));
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("gitconfig.txt"), "[user]\n").unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  files:\n    managed:\n      - source: files/gitconfig.txt\n        target: ~/.gitconfig-cfgd\n        strategy: Copy\n  modules:\n    - nvim\n    - solo\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+
+    create_module_in_dir(
+        config_dir.path(),
+        "nvim",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  files:\n    - source: files/init.lua\n      target: ~/.config/nvim/init.lua\n      strategy: Copy\n    - source: files/keys.lua\n      target: ~/.config/nvim/keys.lua\n",
+    );
+    let nvim_files = config_dir.path().join("modules").join("nvim").join("files");
+    std::fs::write(nvim_files.join("init.lua"), "-- init\n").unwrap();
+    std::fs::write(nvim_files.join("keys.lua"), "-- keys\n").unwrap();
+
+    create_module_in_dir(
+        config_dir.path(),
+        "solo",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: solo\nspec:\n  files:\n    - source: files/solorc\n      target: ~/.solorc\n      strategy: Copy\n",
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("solo")
+            .join("files")
+            .join("solorc"),
+        "solo\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+
+    // The default table keeps the aggregate — and renders a manifest of one
+    // as the file's own path, because a count of one is not an aggregate.
+    let (printer, buf) = test_printer_capture();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let table = out
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{out}"));
+    assert!(
+        table.contains("(2 files)"),
+        "the default table keeps the aggregate: {out}"
+    );
+    assert!(
+        table.contains("~/.solorc"),
+        "a one-file module names its file outright: {out}"
+    );
+    assert!(
+        !table.contains("(1 file)"),
+        "a count of one is not an aggregate: {out}"
+    );
+    assert!(
+        !out.contains("Method"),
+        "the Method column settles off the default table: {out}"
+    );
+
+    // `-o wide`: one row per deployed file, the Method cell filled from what
+    // each producer recorded.
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let rendered = cfgd_core::output::strip_ansi(&cap.human());
+    // Only the table's own rows: the Component Health headline above it
+    // legitimately keeps its `(2 files)` tally.
+    let wide = rendered
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{rendered}"));
+    let row_of = |path: &str| -> &str {
+        wide.lines()
+            .find(|l| l.contains(path))
+            .unwrap_or_else(|| panic!("no `{path}` row in:\n{wide}"))
+    };
+    for (path, method) in [
+        ("~/.config/nvim/init.lua", "copy"),
+        ("~/.config/nvim/keys.lua", "symlink"),
+        ("~/.gitconfig-cfgd", "copy"),
+        ("~/.cfgd.env", "write"),
+        ("~/.bashrc", "inject"),
+    ] {
+        let row = row_of(path);
+        assert!(
+            row.contains(method),
+            "the `{path}` row carries method `{method}`: {row}\nin:\n{wide}"
+        );
+    }
+    let pos = |path: &str| {
+        wide.lines()
+            .position(|l| l.contains(path))
+            .unwrap_or_else(|| panic!("no `{path}` row in:\n{wide}"))
+    };
+    assert!(
+        pos("~/.config/nvim/init.lua") < pos("~/.config/nvim/keys.lua"),
+        "a module's per-file rows land path-sorted: {wide}"
+    );
+    assert!(
+        !wide.contains("(2 files)"),
+        "wide blows the aggregate up into per-file rows: {wide}"
+    );
+
+    // `-o json` is a pinned wire contract: the raw aggregate resource id
+    // survives untouched.
+    let mut json_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    super::status::cmd_status(&json_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
+    assert!(
+        json.contains("nvim:files:2"),
+        "json keeps the raw aggregate resource id: {json}"
+    );
+}
+
+/// One file, one method, two surfaces: the plan settles a strategy-less
+/// file's CONFIGURED default into the action, so the apply tree's child row
+/// and the wide table's Method cell speak one word. Before the settle, the
+/// tree resolved the type's own default (`Symlink`) while the executor and
+/// the manifest resolved `spec.fileStrategy` — under `fileStrategy: Copy`
+/// the tree said `symlink` for a file the run copied.
+#[test]
+#[cfg(unix)]
+fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  fileStrategy: Copy\n",
+    )
+    .unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - onefile\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+    create_module_in_dir(
+        config_dir.path(),
+        "onefile",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: onefile\nspec:\n  files:\n    - source: files/rc\n      target: ~/.mrc\n",
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("onefile")
+            .join("files")
+            .join("rc"),
+        "rc\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, buf) = test_printer_capture();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &printer, &args);
+    assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let tree_row = out
+        .lines()
+        .find(|l| l.contains("~/.mrc"))
+        .unwrap_or_else(|| panic!("no `~/.mrc` child row in:\n{out}"));
+    assert!(
+        tree_row.contains("copy") && !tree_row.contains("symlink"),
+        "the tree's child row speaks the configured default: {tree_row}\nin:\n{out}"
+    );
+
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let wide = cfgd_core::output::strip_ansi(&cap.human());
+    let table_row = wide
+        .lines()
+        .find(|l| l.contains("~/.mrc"))
+        .unwrap_or_else(|| panic!("no `~/.mrc` table row in:\n{wide}"));
+    assert!(
+        table_row.contains("copy") && !table_row.contains("symlink"),
+        "the table's Method cell speaks the same word: {table_row}\nin:\n{wide}"
+    );
+}
+
+/// A dropped `files:` declaration cannot resurrect the one-file aggregate:
+/// the deploy prunes the manifest to the declared set, so the `files:1` the
+/// next apply records and the manifest it leaves agree — the default table
+/// names the surviving file, and the wide table no longer lists the file the
+/// module stopped declaring.
+#[test]
+#[cfg(unix)]
+fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - pair\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+    create_module_in_dir(
+        config_dir.path(),
+        "pair",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pair\nspec:\n  files:\n    - source: files/pa\n      target: ~/.pa\n      strategy: Copy\n    - source: files/pb\n      target: ~/.pb\n      strategy: Copy\n",
+    );
+    let files = config_dir.path().join("modules").join("pair").join("files");
+    std::fs::write(files.join("pa"), "a\n").unwrap();
+    std::fs::write(files.join("pb"), "b\n").unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "first apply: {:?}", result.err());
+
+    // Drop `~/.pb` from the declaration and change the survivor's source so
+    // the next run plans the module's files again.
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("pair")
+            .join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pair\nspec:\n  files:\n    - source: files/pa\n      target: ~/.pa\n      strategy: Copy\n",
+    )
+    .unwrap();
+    std::fs::write(files.join("pa"), "a changed\n").unwrap();
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "second apply: {:?}", result.err());
+
+    let (printer, buf) = test_printer_capture();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let table = out
+        .split_once("Managed Resources")
+        .map(|(_, after)| after)
+        .unwrap_or_else(|| panic!("no Managed Resources section:\n{out}"));
+    assert!(
+        table.contains("~/.pa"),
+        "the surviving file is named outright: {out}"
+    );
+    assert!(
+        !table.contains("(1 file)"),
+        "a stale manifest row must not resurrect the aggregate: {out}"
+    );
+
+    let mut wide_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let wide = cfgd_core::output::strip_ansi(&cap.human());
+    assert!(
+        !wide.contains("~/.pb"),
+        "the manifest no longer lists the dropped file: {wide}"
+    );
 }
 
 #[test]
@@ -5751,12 +6770,12 @@ fn cmd_status_with_modules() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(&cli, &printer, None, false).is_ok(),
+        super::status::cmd_status(&cli, &printer, None, false, false, false).is_ok(),
         "status should succeed when profile references modules"
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Status"), "missing Status heading");
     assert!(
         output.contains("test-mod"),
@@ -5788,7 +6807,8 @@ fn cmd_status_with_drift_events() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5811,10 +6831,10 @@ fn cmd_status_with_drift_events() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&cli, &printer, None, false).unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("curl"),
         "drift output should mention resource 'curl', got: {output}"
@@ -5880,7 +6900,7 @@ fn cmd_decide_accept_all_empty() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -5891,7 +6911,7 @@ fn cmd_decide_accept_all_empty() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("0 decision"),
         "should report no pending decisions, got: {output}"
@@ -5908,7 +6928,7 @@ fn cmd_decide_reject_all_empty() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         None,
         true,
@@ -5919,7 +6939,7 @@ fn cmd_decide_reject_all_empty() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("0 decision"),
         "should report no pending decisions, got: {output}"
@@ -5940,7 +6960,7 @@ fn cmd_decide_accept_specific_resource() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("packages.brew.curl"),
         None,
         false,
@@ -5952,7 +6972,7 @@ fn cmd_decide_accept_specific_resource() {
     let pending = state.pending_decisions().unwrap();
     assert_eq!(pending.len(), 0, "no decisions should remain pending");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decision")
             || output.contains("ACCEPTED")
@@ -5971,7 +6991,7 @@ fn cmd_decide_reject_by_source() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("acme"),
         false,
@@ -5991,7 +7011,7 @@ fn cmd_decide_reject_by_source() {
         "no decisions should remain pending after reject"
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions")
             || output.contains("REJECTED")
@@ -6048,7 +7068,7 @@ fn execute_module_list() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list should show modules header, got: {output}"
@@ -6069,7 +7089,7 @@ fn execute_workflow_generate() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("workflow")
             || output.contains("Workflow")
@@ -6090,7 +7110,7 @@ fn cmd_sync_no_sources() {
 
     super::sync::cmd_sync(&cli, &printer).unwrap();
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No sources") || output.contains("Sync"),
         "sync with no sources should report no-sources or show header, got: {output}"
@@ -6107,7 +7127,7 @@ fn cmd_pull_no_sources() {
     super::pull::cmd_pull(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No sources") || output.contains("Pull") || output.contains("no origin"),
         "pull with no sources should report no-sources, got: {output}"
@@ -6142,7 +7162,8 @@ fn cmd_apply_dry_run_each_phase() {
             yes: true,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
             shell: None,
@@ -6187,7 +7208,8 @@ fn cmd_verify_after_apply_with_env() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6199,7 +7221,7 @@ fn cmd_verify_after_apply_with_env() {
     super::verify::cmd_verify(&cli, &verify_printer, None, false).unwrap();
     verify_printer.flush();
 
-    let output = verify_buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&verify_buf);
     assert!(
         output.contains("Verify"),
         "verify after apply should show Verify header, got: {output}"
@@ -6310,7 +7332,8 @@ fn cmd_plan_empty_profile() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6318,7 +7341,7 @@ fn cmd_plan_empty_profile() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan should show Plan header or phase info, got: {output}"
@@ -6336,7 +7359,8 @@ fn cmd_plan_reconcile_context() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "reconcile".to_string(),
     };
@@ -6344,7 +7368,7 @@ fn cmd_plan_reconcile_context() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with reconcile context should show plan info, got: {output}"
@@ -6362,7 +7386,8 @@ fn cmd_plan_invalid_context() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "bogus".to_string(),
     };
@@ -6383,14 +7408,15 @@ fn cmd_plan_with_phase_filter() {
         phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Packages"),
         "plan with phase filter should show plan, got: {output}"
@@ -6412,14 +7438,15 @@ fn cmd_plan_with_skip_filter() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip filter should show plan, got: {output}"
@@ -6437,14 +7464,15 @@ fn cmd_plan_with_only_filter() {
         phase: None,
         skip: vec![],
         only: vec!["files".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with only filter should show plan, got: {output}"
@@ -6462,14 +7490,15 @@ fn cmd_plan_with_skip_scripts() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: true,
         context: "apply".to_string(),
     };
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip-scripts should show plan, got: {output}"
@@ -6493,14 +7522,15 @@ fn cmd_plan_with_module_filter() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("plan-mod".to_string()),
+        module: vec!["plan-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("plan-mod"),
         "plan with module filter should reference module, got: {output}"
@@ -6522,7 +7552,29 @@ fn cmd_rollback_invalid_id_empty_state() {
         cfgd_core::Scope::User,
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("no apply found"));
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("no apply found"));
+
+    // A rollback naming an apply ID that isn't in the log is the same
+    // scriptable "you asked for a thing that is not there" condition as an
+    // unknown backup name or module — it must carry the typed
+    // StateError::ApplyNotFound so the exit code resolves to NotFound (6).
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("an unknown apply ID must carry the typed StateError::ApplyNotFound");
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::State(
+                cfgd_core::errors::StateError::ApplyNotFound { .. }
+            )
+        ),
+        "expected StateError::ApplyNotFound, got: {cfgd_err}"
+    );
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
 }
 
 #[test]
@@ -6559,7 +7611,8 @@ fn cmd_rollback_after_file_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6591,7 +7644,7 @@ fn cmd_rollback_after_file_apply() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "rollback output should mention rollback or restoration, got: {output}"
@@ -6639,7 +7692,8 @@ fn apply_one_file_and_record(
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6675,7 +7729,7 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "should produce rollback output: {output}"
@@ -6705,7 +7759,7 @@ fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
     );
     assert!(result.is_ok(), "prompt-declined rollback must return Ok");
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Aborted"),
         "should print Aborted when prompt is false: {output}"
@@ -6926,12 +7980,12 @@ fn managers_map_round_trips_registry_managers_by_name() {
     // Build a registry, then check every name reachable via managers_map
     // matches a manager in the original registry.
     let registry = super::build_registry();
-    let map = super::managers_map(&registry);
+    let map = registry.manager_map();
     assert!(
         !map.is_empty(),
         "registry must produce at least one manager"
     );
-    for m in &registry.package_managers {
+    for m in registry.package_managers() {
         assert!(
             map.contains_key(m.name()),
             "managers_map missing entry for {}",
@@ -6968,7 +8022,7 @@ fn default_device_id_returns_the_hostname_string() {
 
 #[test]
 fn empty_resolved_profile_contains_module_name() {
-    let resolved = super::empty_resolved_profile("my-module", "work");
+    let resolved = super::empty_resolved_profile(&["my-module".to_string()], "work");
     assert_eq!(resolved.merged.modules, vec!["my-module".to_string()]);
     assert_eq!(resolved.profile_name(), "work");
     assert!(resolved.merged.packages.brew.is_none());
@@ -7011,7 +8065,8 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: true,
         context: "apply".to_string(),
         shell: None,
@@ -7025,7 +8080,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")
@@ -7047,7 +8102,8 @@ fn execute_plan_command() {
             phase: None,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
         })),
@@ -7057,7 +8113,7 @@ fn execute_plan_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "execute Plan should show plan info, got: {output}"
@@ -7077,7 +8133,7 @@ fn execute_compliance_snapshot() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
         "execute Compliance should show compliance info, got: {output}"
@@ -7099,7 +8155,7 @@ fn execute_compliance_export() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance")
             || output.contains("compliance")
@@ -7123,7 +8179,7 @@ fn execute_compliance_history() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("History") || output.contains("No"),
         "compliance history should show info, got: {output}"
@@ -7174,16 +8230,6 @@ spec:
     assert_eq!(backend, "sops-age");
 }
 
-// --- known_manager_names ---
-
-#[test]
-fn known_manager_names_is_not_empty() {
-    let names = super::known_manager_names();
-    assert!(!names.is_empty());
-    // Should at least contain "cargo" which is always available in Rust projects
-    assert!(names.contains(&"cargo".to_string()));
-}
-
 // --- Structured output mode tests ---
 
 #[test]
@@ -7202,7 +8248,8 @@ fn cmd_plan_structured_json() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -7210,7 +8257,7 @@ fn cmd_plan_structured_json() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -7246,7 +8293,7 @@ fn cmd_verify_structured_json() {
     super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -7284,7 +8331,7 @@ fn cmd_doctor_structured_json() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert!(
@@ -7323,7 +8370,7 @@ fn cmd_compliance_snapshot_structured_json() {
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("snapshot").is_some(),
@@ -7362,7 +8409,7 @@ fn cmd_compliance_history_structured_json() {
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -7395,7 +8442,7 @@ fn cmd_diff_with_module_filter() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Diff") || output.contains("diff-mod"),
         "diff with module filter should mention the module, got: {output}"
@@ -7421,7 +8468,7 @@ fn cmd_verify_module_not_found() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Verify") || output.contains("No managed"),
         "verify for nonexistent module should mention verify or no managed resources, got: {output}"
@@ -7455,7 +8502,8 @@ fn cmd_plan_module_with_packages() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -7468,7 +8516,7 @@ fn cmd_plan_module_with_packages() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan")
             || output.contains("Phase")
@@ -7509,7 +8557,7 @@ fn open_state_store_default() {
         "open_state_store with default path should not panic: {:?}",
         result.err()
     );
-    // Verify we can actually use the store
+    // Verify the store can actually be used
     let state = result.unwrap();
     assert!(
         state.history(1).is_ok(),
@@ -7523,11 +8571,15 @@ fn open_state_store_default() {
 fn build_registry_has_package_managers() {
     let registry = super::build_registry();
     assert_eq!(
-        registry.package_managers.len(),
+        registry.package_managers().len(),
         20,
         "registry should have all 20 package managers"
     );
-    let names: Vec<&str> = registry.package_managers.iter().map(|m| m.name()).collect();
+    let names: Vec<&str> = registry
+        .package_managers()
+        .iter()
+        .map(|m| m.name())
+        .collect();
     assert!(names.contains(&"brew"), "should include brew");
     assert!(names.contains(&"cargo"), "should include cargo");
     assert!(names.contains(&"apt"), "should include apt");
@@ -7537,30 +8589,56 @@ fn build_registry_has_package_managers() {
 #[test]
 fn build_registry_has_system_configurators() {
     let registry = super::build_registry();
-    // On Linux we get: shell, systemd, gsettings, kdeConfig, xfconf, environment, sshKeys,
-    // plus conditionally gpg and git (both available in CI/dev). At minimum we should have
-    // the unconditional ones.
     assert!(
-        registry.system_configurators.len() >= 6,
+        registry.system_configurators().len() >= 6,
         "registry should have at least 6 system configurators on Linux, got: {}",
-        registry.system_configurators.len()
+        registry.system_configurators().len()
     );
     let names: Vec<&str> = registry
-        .system_configurators
+        .system_configurators()
         .iter()
         .map(|c| c.name())
         .collect();
+    for expected in ["shell", "environment", "sshKeys", "gpgKeys", "git"] {
+        assert!(
+            names.contains(&expected),
+            "the {expected} configurator is registered on every host it compiles for, got: {names:?}"
+        );
+    }
+}
+
+/// Registration answers "does cfgd have a configurator for this key"; only
+/// `is_available()` answers "can this host run it". A tool probe in the
+/// registration block conflates the two, and it does so in a spelling that
+/// misses the configurator's own `CFGD_*_BIN` seam: `gpgKeys` was gated on a
+/// bare `command_available("gpg")`, so on a host whose gpg is off `PATH` — or
+/// pointed at by `CFGD_GPG_BIN` — every drift surface reported a clean scan
+/// over a check it never ran, and `plan` called a registered configurator
+/// "not registered" rather than "not available on this host".
+#[test]
+fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
+    let body = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/registry.rs"))
+        .unwrap();
+    let production = cfgd_core::test_helpers::production_slice(&body);
+    // The floor: an empty offender set means nothing only while the walk is
+    // still reading the block it judges.
     assert!(
-        names.contains(&"shell"),
-        "should include shell configurator"
+        production.matches("add_system_configurator").count() >= 5,
+        "the walk reads the registration block itself, not a renamed remnant"
     );
+    let offenders: Vec<&str> = production
+        .lines()
+        .filter(|l| {
+            let code = l.split("//").next().unwrap_or("");
+            code.contains("command_available")
+        })
+        .collect();
     assert!(
-        names.contains(&"sshKeys"),
-        "should include sshKeys configurator"
-    );
-    assert!(
-        names.contains(&"environment"),
-        "should include environment configurator"
+        offenders.is_empty(),
+        "a configurator's availability is `is_available()`'s answer, filtered by \
+         `available_system_configurators`; a probe in the registration block \
+         drops it before its own seam is consulted:\n{}",
+        offenders.join("\n")
     );
 }
 
@@ -7616,7 +8694,7 @@ fn module_list_empty_config_dir() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list with empty dir should show header or no-modules, got: {output}"
@@ -7645,7 +8723,7 @@ fn module_list_with_modules() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("vim"), "module list should contain 'vim'");
     assert!(output.contains("git"), "module list should contain 'git'");
 }
@@ -7661,7 +8739,7 @@ fn module_list_no_modules_dir() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No modules") || output.contains("Modules"),
         "module list without modules dir should show header or no-modules, got: {output}"
@@ -7691,7 +8769,7 @@ fn module_list_with_config_and_profile() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("bat"), "module list should contain 'bat'");
 }
 
@@ -7769,7 +8847,7 @@ spec:
     module::cmd_module_show(&cli, &printer, "dev-tools", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("dev-tools"),
         "show should contain module name"
@@ -7809,7 +8887,7 @@ spec:
 
     module::cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
     {
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(output.contains("API_KEY"), "show should list env var name");
     }
 
@@ -7817,7 +8895,7 @@ spec:
     buf.lock().unwrap().clear();
     module::cmd_module_show(&cli, &printer, "secrets-mod", true).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("API_KEY"),
         "show with values should list env"
@@ -7868,7 +8946,7 @@ spec:
     module::cmd_module_show(&cli, &printer, "scripted", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("scripted"),
         "show should contain module name"
@@ -8608,7 +9686,7 @@ fn module_registry_list_no_config() {
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No registries") || output.contains("Registries"),
         "registry list without config should show message, got: {output}"
@@ -8626,7 +9704,7 @@ fn module_registry_list_empty_registries() {
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Registries") || output.contains("No registries"),
         "registry list with none should report no registries, got: {output}"
@@ -8660,7 +9738,7 @@ spec:
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("community"),
         "registry list should contain 'community'"
@@ -8950,7 +10028,7 @@ spec:
     module::cmd_module_registry_remove(&cli, &printer, "community", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("community"),
         "output should mention removed registry name, got: {output}"
@@ -9117,7 +10195,7 @@ fn module_keys_list_no_keys() {
     module::cmd_module_keys_list(&printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Keys") || output.contains("No") || output.contains("cosign"),
         "keys list should show key info or no-keys, got: {output}"
@@ -9134,7 +10212,7 @@ fn module_keys_list_with_pub_key() {
     module::cmd_module_keys_list(&printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Keys") || output.contains("cosign"),
         "keys list should show key info, got: {output}"
@@ -9177,7 +10255,7 @@ fn module_list_structured_output_empty() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON output: {e}, got: {output}"));
     assert!(parsed.is_array(), "JSON should be an array");
@@ -9199,7 +10277,7 @@ fn module_show_structured_output() {
     module::cmd_module_show(&cli, &printer, "json-mod", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "json-mod", "JSON should have module name");
@@ -9355,9 +10433,14 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
     let meta = err
         .downcast_ref::<super::CliErrorMeta>()
         .expect("smart error carries CliErrorMeta");
-    let joined = meta.hints.join("\n");
+    let joined = meta
+        .hints
+        .iter()
+        .map(|h| h.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        meta.hints.iter().any(|h| h.contains("acme-corp")),
+        meta.hints.iter().any(|h| h.text.contains("acme-corp")),
         "wrap hint must name the providing source, got: {joined}"
     );
     // The YAML wrap lives in the code block, not the hints.
@@ -9378,7 +10461,8 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
     assert!(
         meta.hints
             .iter()
-            .chain(meta.code_block.iter())
+            .map(|h| h.text.as_str())
+            .chain(meta.code_block.iter().map(String::as_str))
             .all(|l| !l.contains('\n')),
         "each carried line must be newline-free, got hints={joined} block={:?}",
         meta.code_block
@@ -9394,7 +10478,7 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::error::render_cli_error(&printer, &err);
     printer.flush();
-    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     let block = "spec:\n  sources:\n    - name: acme-corp\n      subscription:\n        profile: acme-backend\n";
     assert!(
         out.contains(block),
@@ -9440,7 +10524,7 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         .downcast_ref::<super::CliErrorMeta>()
         .expect("smart error carries CliErrorMeta");
     assert!(
-        meta.hints.iter().any(|h| h.contains("team-base")),
+        meta.hints.iter().any(|h| h.text.contains("team-base")),
         "wrap hint must name the providing source, got: {:?}",
         meta.hints
     );
@@ -9690,6 +10774,7 @@ fn action_type_str_manager_variants() {
         super::action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -9732,6 +10817,7 @@ fn action_type_str_secret_variants() {
             provider: "onepassword".into(),
             reference: "op://vault/item".into(),
             target: "/b".into(),
+            template: None,
             origin: "local".into(),
         })),
         "resolve"
@@ -9742,6 +10828,7 @@ fn action_type_str_secret_variants() {
             provider: "vault".into(),
             reference: "secret/data/app".into(),
             envs: vec!["TOKEN".into(), "API_KEY".into()],
+            template: None,
             origin: "local".into(),
         })),
         "resolve-env"
@@ -9765,6 +10852,8 @@ fn action_type_str_env_variants() {
         super::action_type_str(&Action::Env(EnvAction::WriteEnvFile {
             path: "/tmp/env".into(),
             content: String::new(),
+            vars: 0,
+            aliases: 0,
         })),
         "write"
     );
@@ -9820,7 +10909,10 @@ fn action_type_str_module_variants() {
     assert_eq!(
         super::action_type_str(&Action::Module(ModuleAction {
             module_name: "m".into(),
-            kind: ModuleActionKind::DeployFiles { files: vec![] },
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![],
+                declared_total: 0
+            },
             origin: None,
         })),
         "deploy"
@@ -9872,7 +10964,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default());
+    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -9892,7 +10984,7 @@ fn build_plan_output_with_actions() {
         )],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default());
+    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -9934,6 +11026,7 @@ fn build_plan_output_with_phase_filter() {
         Some(&PhaseFilter::Phase(reconciler::PhaseName::Files)),
         &[],
         &Default::default(),
+        &[],
     );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -10021,7 +11114,10 @@ fn strip_scripts_removes_module_run_script_actions() {
                 &reconciler::Owner::profile("test"),
                 vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
-                    kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![],
+                        declared_total: 0,
+                    },
                     origin: None,
                 })],
             ),
@@ -10081,6 +11177,7 @@ fn filter_plan_skip_file_by_target() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10109,6 +11206,7 @@ fn filter_plan_empty_skip_and_only_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10137,6 +11235,7 @@ fn filter_plan_skip_uninstall_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -10171,6 +11270,7 @@ fn filter_plan_only_with_uninstall() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -10287,7 +11387,7 @@ spec:
 fn cmd_source_list_structured_output() {
     let (config_dir, state_dir) = setup_test_env();
 
-    // Write config with a source so we can verify the source name appears in output
+    // Write config with a source to verify the source name appears in output
     let config_with_source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-config\n      origin:\n        url: https://github.com/team/config\n        branch: main\n        type: Git\n      subscription:\n        priority: 100\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
@@ -10361,7 +11461,7 @@ spec:
     super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("team-config"),
         "source show should display source name, got: {output}"
@@ -10378,7 +11478,7 @@ fn cmd_source_remove_not_found() {
     let printer = test_printer();
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false, false);
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false, false, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -10390,7 +11490,8 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true, false);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, "anything", true, true, false, false);
     assert!(result.is_err());
     assert!(
         result
@@ -10556,7 +11657,7 @@ fn cmd_decide_no_args_shows_pending() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -10564,11 +11665,68 @@ fn cmd_decide_no_args_shows_pending() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("Pending"),
         "decide should show pending decisions info, got: {output}"
     );
+}
+
+// The listing must be reachable as the CLI's own bare spelling — the docs
+// promise `cfgd decide` lists pending decisions, and the parse layer is the
+// only place that promise can break while every direct cmd_decide test stays
+// green.
+#[test]
+fn decide_bare_parses_and_lists() {
+    assert!(Cli::try_parse_from(["cfgd", "decide"]).is_ok());
+
+    let state_dir = tempfile::tempdir().unwrap();
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
+        &printer,
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("No pending") || output.contains("Pending"),
+        "bare decide should render the pending listing, got: {output}"
+    );
+}
+
+// A target names WHICH rows to resolve but not which way — guessing would
+// resolve rows the operator never answered, so the verb is required.
+#[test]
+fn decide_target_without_action_is_refused() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    for (resource, source, all) in [
+        (None, None, true),
+        (Some("packages.brew.k9s"), None, false),
+        (None, Some("team"), false),
+    ] {
+        let err = super::decide::cmd_decide(
+            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
+            &printer,
+            None,
+            resource,
+            source,
+            all,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("accept or reject"),
+            "expected the action-required refusal, got: {err:#}"
+        );
+    }
 }
 
 #[test]
@@ -10585,13 +11743,14 @@ fn cmd_decide_with_pending_decision() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
 
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("packages.brew.curl"),
         None,
         false,
@@ -10609,7 +11768,7 @@ fn cmd_decide_with_pending_decision() {
         "accepted decision should no longer be pending"
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("curl") || output.contains("Accepted"),
         "output should mention the accepted resource, got: {output}"
@@ -10630,16 +11789,24 @@ fn cmd_decide_accept_all_with_pending() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
     state
-        .upsert_pending_decision("team", "env.EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "team",
+            "env.EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -10654,7 +11821,7 @@ fn cmd_decide_accept_all_with_pending() {
     let pending = state.pending_decisions().unwrap();
     assert!(pending.is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("ACCEPTED") || output.contains("2 item"),
         "accept-all should mention accepted decisions, got: {output}"
@@ -10675,16 +11842,24 @@ fn cmd_decide_reject_by_source_with_pending() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
     state
-        .upsert_pending_decision("other", "env.EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "other",
+            "env.EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("team"),
         false,
@@ -10766,7 +11941,7 @@ fn cmd_compliance_history_structured() {
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -10821,7 +11996,8 @@ fn cmd_apply_module_only_no_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("standalone-mod".to_string()),
+        module: vec!["standalone-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -10835,7 +12011,7 @@ fn cmd_apply_module_only_no_profile() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("standalone-mod") || output.contains("Apply") || output.contains("Nothing"),
         "apply with module-only should mention the module, got: {output}"
@@ -10868,7 +12044,8 @@ fn cmd_plan_module_only_no_profile() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("solo".to_string()),
+        module: vec!["solo".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -10881,7 +12058,7 @@ fn cmd_plan_module_only_no_profile() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("solo") || output.contains("Nothing"),
         "plan with module-only should mention the module or plan, got: {output}"
@@ -10892,23 +12069,10 @@ fn cmd_plan_module_only_no_profile() {
 
 #[test]
 fn empty_resolved_profile_has_module() {
-    let resolved = super::empty_resolved_profile("my-mod", "work");
+    let resolved = super::empty_resolved_profile(&["my-mod".to_string()], "work");
     assert_eq!(resolved.merged.modules, vec!["my-mod".to_string()]);
     assert!(resolved.merged.env.is_empty());
     assert_eq!(resolved.profile_name(), "work");
-}
-
-// --- known_manager_names ---
-
-#[test]
-fn known_manager_names_not_empty() {
-    let names = super::known_manager_names();
-    assert!(!names.is_empty());
-    // Should contain at least "cargo" since it's always available
-    assert!(
-        names.contains(&"cargo".to_string()),
-        "should contain 'cargo' manager"
-    );
 }
 
 // --- secret_backend_from_config with config ---
@@ -11001,7 +12165,7 @@ fn execute_compliance_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
         "compliance dispatch should produce output, got: {output}"
@@ -11036,7 +12200,7 @@ fn execute_decide_accept_all() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         command: Some(Command::Decide {
-            action: super::DecideAction::Accept,
+            action: Some(super::DecideAction::Accept),
             resource: None,
             source: None,
             all: true,
@@ -11053,7 +12217,7 @@ fn execute_decide_accept_all() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending")
             || output.contains("0 decision")
@@ -11074,7 +12238,7 @@ fn execute_sync_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Sync") || output.contains("No sources"),
         "sync dispatch should produce output, got: {output}"
@@ -11093,7 +12257,7 @@ fn execute_pull_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Pull") || output.contains("No sources") || output.contains("no origin"),
         "pull dispatch should produce output, got: {output}"
@@ -11123,7 +12287,8 @@ fn cmd_apply_with_aliases() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -11169,10 +12334,10 @@ fn cmd_status_module_structured_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::status::cmd_status(&cli, &printer, Some("json-mod"), false).unwrap();
+    super::status::cmd_status(&cli, &printer, Some("json-mod"), false, false, false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert_eq!(parsed["name"], "json-mod", "should contain module name");
     assert_eq!(
@@ -11198,7 +12363,7 @@ fn cmd_verify_structured_output() {
     super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -11237,7 +12402,8 @@ fn cmd_plan_structured_output() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -11245,7 +12411,7 @@ fn cmd_plan_structured_output() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -11528,9 +12694,16 @@ fn profile_update_packages_add_and_remove() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // The removal emptied the brew block, which is pruned from the file
+    // rather than written back as `brew: {formulae: []}`.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
-    assert!(!brew.formulae.contains(&"jq".to_string()));
+    let jq_declared = doc
+        .spec
+        .packages
+        .as_ref()
+        .and_then(|p| p.brew.as_ref())
+        .is_some_and(|b| b.formulae.contains(&"jq".to_string()));
+    assert!(!jq_declared, "got {:?}", doc.spec.packages);
 }
 
 // --- Profile create with aliases, secrets, scripts ---
@@ -11639,9 +12812,9 @@ fn profile_update_on_drift_scripts() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // Its only hook removed, the scripts section is pruned from the file.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let scripts = doc.spec.scripts.as_ref().unwrap();
-    assert!(scripts.on_drift.is_empty());
+    assert!(doc.spec.scripts.is_none(), "got {:?}", doc.spec.scripts);
 }
 
 // --- Module update add/remove env ---
@@ -11782,7 +12955,8 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         yes: true,
         skip: vec!["packages.cargo".to_string()],
         only: vec!["packages".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -11803,7 +12977,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")
@@ -11836,7 +13010,8 @@ fn cmd_plan_module_structured_output() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("struct-mod".to_string()),
+        module: vec!["struct-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -11844,7 +13019,7 @@ fn cmd_plan_module_structured_output() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -11897,7 +13072,7 @@ fn cmd_config_show_structured_json() {
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -11990,8 +13165,8 @@ fn cmd_config_get_missing_key_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("not found in config"),
-        "expected 'not found in config' error, got: {msg}"
+        msg == "config error: key 'nonexistent' not found",
+        "expected a missing-key error that says config once, got: {msg}"
     );
 }
 
@@ -12086,7 +13261,7 @@ fn cmd_doctor_without_config_succeeds() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
 }
 
@@ -12100,7 +13275,7 @@ fn cmd_doctor_with_rich_config() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(
         output.contains("Package Managers"),
@@ -12141,6 +13316,53 @@ fn load_config_and_profile_missing_profile_fails() {
     );
 }
 
+#[test]
+fn load_config_and_profile_module_scoped_isolated_rejects_a_nonexistent_explicit_profile() {
+    // `--module x --profile does-not-exist` (no `--with-profile`) isolates the
+    // run from the profile's CONTENT, but the name is still typed by the
+    // operator and still becomes `CFGD_PROFILE` for the module's own scripts —
+    // it must not silently pass through unresolved.
+    let (config_dir, state_dir) = setup_test_env();
+    let cli = Cli {
+        profile: Some("does-not-exist".to_string()),
+        ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+    };
+
+    let result = super::load_config_and_profile_module_scoped(
+        &cli,
+        &cfgd_core::test_helpers::test_printer(),
+        &["some-module".to_string()],
+        false,
+    );
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("profile not found: does-not-exist"),
+        "expected 'profile not found: does-not-exist' error, got: {msg}"
+    );
+}
+
+#[test]
+fn load_config_and_profile_module_scoped_isolated_with_no_explicit_profile_stays_best_effort() {
+    // No `--profile` given: the isolated name comes from the config's own
+    // active profile (or "unknown"), never operator-typed on this
+    // invocation, so there is nothing to validate and this must still
+    // succeed even though the config's active profile is not itself probed
+    // for existence here.
+    let (config_dir, state_dir) = setup_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+
+    let (_, resolved, profile_label, _) = super::load_config_and_profile_module_scoped(
+        &cli,
+        &cfgd_core::test_helpers::test_printer(),
+        &["some-module".to_string()],
+        false,
+    )
+    .unwrap();
+    assert!(profile_label.is_none(), "an isolated run carries no label");
+    assert!(!resolved.profile_name().is_empty());
+}
+
 // --- expand_aliases ---
 
 #[test]
@@ -12167,7 +13389,8 @@ fn cmd_plan_invalid_context_fails() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "invalid".to_string(),
     };
@@ -12183,7 +13406,8 @@ fn cmd_plan_with_skip_filters_actions() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -12243,7 +13467,7 @@ fn cmd_diff_module_patch_shows_the_merge_the_target_is_missing() {
         "diff must preview the merged content, got: {output}"
     );
     assert!(
-        output.contains("File drift detected"),
+        output.contains("Files") && output.contains("Drift detected"),
         "a missing Patch target is drift, got: {output}"
     );
     assert!(
@@ -12272,7 +13496,11 @@ fn cmd_diff_full_profile_patch_reports_no_drift_when_converged() {
     super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
     let output = h.output();
     assert!(
-        output.contains("No file drift"),
+        !output.contains("Files"),
+        "a converged surface leaves no trace at all, got: {output}"
+    );
+    assert!(
+        output.contains("No drift detected"),
         "a converged Patch target must not report drift, got: {output}"
     );
 }
@@ -12367,7 +13595,8 @@ fn cmd_apply_real_records_state() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
@@ -12404,7 +13633,8 @@ fn cmd_apply_with_skip_and_only() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
@@ -12431,7 +13661,8 @@ fn cmd_apply_skip_scripts_flag() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: true,
         context: "apply".to_string(),
@@ -12458,7 +13689,8 @@ fn cmd_apply_invalid_context_fails() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "bogus".to_string(),
@@ -12532,7 +13764,8 @@ fn cmd_apply_reconcile_context_threads_through() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "reconcile".to_string(),
@@ -12591,7 +13824,8 @@ spec:
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("nvim".to_string()),
+        module: vec!["nvim".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -12599,7 +13833,7 @@ spec:
 
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains(MSG_NOTHING_TO_DO),
@@ -12620,11 +13854,11 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: None,
+            filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains(MSG_NOTHING_TO_DO),
             "no filter → up-to-date, got:\n{out}"
@@ -12639,11 +13873,11 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 3,
             phases_with_work: vec!["Files".to_string()],
-            module_miss: None,
+            filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains(MSG_NOTHING_TO_DO),
             "filter-excluded-all must not claim up-to-date, got:\n{out}"
@@ -12653,7 +13887,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected warning, got:\n{out}"
         );
         assert!(
-            out.contains("actions exist in phase: Files"),
+            out.contains("Actions exist in phase: Files"),
             "expected the phases-with-work hint, got:\n{out}"
         );
     }
@@ -12665,38 +13899,4765 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: None,
+            filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains(MSG_NOTHING_TO_DO),
             "filter active but no pending work → up-to-date, got:\n{out}"
         );
     }
 
-    // --module that resolved to nothing → module-specific warning.
+    // filter_miss:true overrides the unfiltered_total==0 shortcut — a
+    // --skip/--only token that matched nothing is not evidence the machine
+    // converged, even when the (unfiltered) plan itself had no other work.
     {
         let (printer, buf) = test_printer_capture();
         let scope = ScopeReport {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: Some("nvm".to_string()),
+            filter_miss: true,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
-        assert!(
-            out.contains("Module 'nvm' matched no actions"),
-            "expected module-miss warning, got:\n{out}"
-        );
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains(MSG_NOTHING_TO_DO),
-            "module miss must not claim up-to-date, got:\n{out}"
+            "filter_miss must override the unfiltered_total==0 shortcut, got:\n{out}"
+        );
+        assert!(
+            out.contains("No actions in scope"),
+            "expected the scope-excluded warning, got:\n{out}"
         );
     }
+}
+
+/// A verdict that has just shown the reader pending work names the command
+/// that settles it. `cfgd plan` ended on `◉ 4 actions planned` and nothing
+/// else, in a CLI where every other verdict surface — `diff`, `verify`,
+/// `status`, `compliance` — closes on `heal_drift_hint`, and where even the
+/// filter-excluded arm of this same function already hinted.
+///
+/// The table is the whole population of states `report_plan_verdict` can close
+/// in, and which of them leaves the reader with something to do.
+#[test]
+fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
+    let scope_with_work = ScopeReport {
+        filter_active: true,
+        unfiltered_total: 4,
+        phases_with_work: vec!["Packages".to_string()],
+        filter_miss: true,
+    };
+    let in_sync = ScopeReport {
+        filter_active: false,
+        unfiltered_total: 0,
+        phases_with_work: vec![],
+        filter_miss: false,
+    };
+    // (name, emit, does this state leave the reader work to do?)
+    type VerdictState<'a> = (
+        &'static str,
+        Box<dyn Fn(&cfgd_core::output::Printer) + 'a>,
+        bool,
+    );
+    let states: Vec<VerdictState<'_>> = vec![
+        (
+            "has work",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 4, Some(&in_sync), 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "has work, unscoped surface",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 4, None, 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "filter excluded the work",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&scope_with_work), 0, &PreviewScope::unscoped())
+            }),
+            true,
+        ),
+        (
+            "up to date",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&in_sync), 0, &PreviewScope::unscoped())
+            }),
+            false,
+        ),
+        (
+            // The decisions SECTION closes on `answer_decisions_hint` from
+            // inside itself, so the verdict under it adds nothing.
+            "withheld by a pending decision",
+            Box::new(|p: &cfgd_core::output::Printer| {
+                report_plan_verdict(p, 0, Some(&in_sync), 1, &PreviewScope::unscoped())
+            }),
+            false,
+        ),
+    ];
+
+    for (name, emit, leaves_work) in states {
+        let (printer, buf) = test_printer_capture();
+        emit(&printer);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out.contains("cfgd "),
+            leaves_work,
+            "{name}: a verdict names a command exactly when it leaves the reader \
+             something to do, got:\n{out}"
+        );
+    }
+
+    // The recorded-state reads of `cfgd status` belong to the same
+    // population, and this walk missed them: the one state where the reader
+    // is actually looking at pending work — a dashboard of unresolved
+    // RECORDED findings, with a check recent enough to stand behind them —
+    // closed on nothing at all, while the clean read closed on the scan hint
+    // and the `--scan` read on the heal.
+    let recorded_drift = |timestamp: &str| {
+        vec![cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: timestamp.to_string(),
+            resource_type: "file".to_string(),
+            resource_id: "~/.gitconfig".to_string(),
+            expected: Some("hash-desired".to_string()),
+            actual: Some("hash-actual".to_string()),
+            resolved_by: None,
+            source: "local".to_string(),
+            want: None,
+            have: None,
+        }]
+    };
+    // (name, the read, the line it must close on)
+    let heal = crate::cli::heal_drift_hint(None);
+    let status_states: Vec<(&str, super::status::StatusOutput, &str)> = vec![
+        (
+            "recorded drift, checked recently",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-14T10:02:00Z"),
+                ..component_health_fixture()
+            },
+            heal.as_str(),
+        ),
+        (
+            "live drift",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-14T10:02:00Z"),
+                drift_checked_live: true,
+                ..component_health_fixture()
+            },
+            heal.as_str(),
+        ),
+        (
+            // The record is older than a daemon would ever let it get, so the
+            // reader is told to look again before acting on it.
+            "recorded drift, evidence gone stale",
+            super::status::StatusOutput {
+                drift: recorded_drift("2026-05-13T10:02:00Z"),
+                last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                ..component_health_fixture()
+            },
+            super::status::SCAN_HINT,
+        ),
+        (
+            "no drift, evidence gone stale",
+            super::status::StatusOutput {
+                last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                ..component_health_fixture()
+            },
+            super::status::SCAN_HINT,
+        ),
+    ];
+    for (name, output, closing) in status_states {
+        for wide in [false, true] {
+            // `-o wide` widens the table, never the reader's obligation: both
+            // widths close on the same command.
+            let (printer, buf) = test_printer_capture();
+            printer.emit(super::status::build_fleet_status_doc(
+                &output,
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+                    sources: &[],
+                    profile: Some("base"),
+                    profile_inherits: &[],
+                    modules: &[],
+                    arrow: printer.arrow(),
+                },
+                &[],
+                "2026-05-14T10:05:00Z",
+                &Default::default(),
+                &super::status::ManagedResourceDetail {
+                    wide,
+                    ..Default::default()
+                },
+            ));
+            printer.flush();
+            drop(printer);
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains(closing),
+                "{name} (wide={wide}): the read closes on `{closing}`, got:\n{out}"
+            );
+        }
+    }
+
+    // The module report is the same read, one owner narrower, and closes on
+    // the same command scoped to the module it is about.
+    let module_drift = |timestamp: &str| super::status::ModuleStatus {
+        name: "nvim".to_string(),
+        packages: 0,
+        files: 1,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        system: Vec::new(),
+        depends: Vec::new(),
+        declared: Default::default(),
+        status: "installed".to_string(),
+        last_applied: None,
+        scope: None,
+        package_state: Vec::new(),
+        deployed_files: Vec::new(),
+        drift_checked_live: false,
+        last_scan_at: Some(timestamp.to_string()),
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+        drift: vec![super::status::ModuleDrift {
+            event: cfgd_core::state::DriftEvent {
+                id: 1,
+                timestamp: timestamp.to_string(),
+                resource_type: "file".to_string(),
+                resource_id: "~/.config/nvim/init.lua".to_string(),
+                expected: None,
+                actual: None,
+                resolved_by: None,
+                source: "local".to_string(),
+                want: None,
+                have: None,
+            },
+            owner: "nvim".to_string(),
+            surface: super::status::SURFACE_FILES,
+            item: "~/.config/nvim/init.lua".to_string(),
+        }],
+    };
+    let module_states = [
+        (
+            "recorded drift, checked recently",
+            "2026-05-14T10:02:00Z",
+            { crate::cli::heal_drift_hint(Some("nvim")) },
+        ),
+        (
+            "recorded drift, evidence gone stale",
+            "2026-05-13T10:02:00Z",
+            super::status::SCAN_HINT.to_string(),
+        ),
+    ];
+    for (name, timestamp, closing) in module_states {
+        // The wide view states its verdicts on the inventory rows rather than
+        // in a Drift section, and closes on the same command for it.
+        for view in [
+            super::status::ModuleStatusView::Compact,
+            super::status::ModuleStatusView::Inventory { show_values: false },
+        ] {
+            let (printer, buf) = test_printer_capture();
+            printer.emit(super::status::build_module_status_doc(
+                &module_drift(timestamp),
+                view,
+                "2026-05-14T10:05:00Z",
+            ));
+            printer.flush();
+            drop(printer);
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains(&closing),
+                "module report, {name} ({view:?}): closes on `{closing}`, got:\n{out}"
+            );
+        }
+    }
+
+    // The hint is scoped as the preview was: a bare `cfgd apply` after a
+    // filtered preview performs work the reader was never shown.
+    let module = vec!["nvim".to_string()];
+    let only = vec!["packages".to_string()];
+    let phase = PhaseArg {
+        phase: ApplyPhase::Packages,
+        selector: Some("brew".to_string()),
+    };
+    let scoped = PreviewScope {
+        module: &module,
+        with_profile: true,
+        phase: Some(&phase),
+        only: &only,
+        skip: &[],
+        skip_scripts: true,
+    };
+    let hint = perform_preview_hint(&scoped);
+    assert_eq!(
+        hint,
+        "Run `cfgd apply --module nvim --with-profile --phase packages.brew \
+         --only packages --skip-scripts` to make these changes"
+    );
+    // And it re-parses: a next step nobody can type is worse than none.
+    let flags = hint
+        .split('`')
+        .nth(1)
+        .unwrap_or_else(|| panic!("the hint backticks its command: {hint}"));
+    Cli::try_parse_from(flags.split_whitespace())
+        .unwrap_or_else(|e| panic!("the composed next step must re-parse: {e}"));
+
+    // The retired `--phase env` spelling renders as the phase it selects, so
+    // following the hint does not re-emit a deprecation.
+    let retired = PhaseArg {
+        phase: ApplyPhase::Env,
+        selector: None,
+    };
+    assert_eq!(
+        perform_preview_hint(&PreviewScope {
+            phase: Some(&retired),
+            ..PreviewScope::unscoped()
+        }),
+        "Run `cfgd apply --phase prerequisites` to make these changes"
+    );
+}
+
+/// A withheld decision is unanswered work the machine knows about, so a run
+/// that planned nothing is not up to date — it has nothing it is ALLOWED to
+/// do. `plan` printed the green up-to-date verdict three lines under its own
+/// `Pending Decisions` block, which reads as the subscription having changed
+/// nothing.
+#[test]
+fn a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface() {
+    let empty_scope = || ScopeReport {
+        filter_active: false,
+        unfiltered_total: 0,
+        phases_with_work: vec![],
+        filter_miss: false,
+    };
+    type VerdictSurface<'a> = (
+        &'static str,
+        Box<dyn Fn(&cfgd_core::output::Printer, usize) + 'a>,
+    );
+    // Both verdict entry points, and both scope shapes of the one that takes it.
+    let surfaces: Vec<VerdictSurface<'_>> = vec![
+        (
+            "report_no_in_scope_actions",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_no_in_scope_actions(p, &empty_scope(), pending)
+            }),
+        ),
+        (
+            "report_plan_verdict/scoped",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_plan_verdict(
+                    p,
+                    0,
+                    Some(&empty_scope()),
+                    pending,
+                    &PreviewScope::unscoped(),
+                )
+            }),
+        ),
+        (
+            "report_plan_verdict/unscoped",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_plan_verdict(p, 0, None, pending, &PreviewScope::unscoped())
+            }),
+        ),
+    ];
+    for (name, emit) in surfaces {
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 0);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains(MSG_NOTHING_TO_DO),
+            "{name} with nothing pending must say up to date, got:\n{out}"
+        );
+
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 1);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains(MSG_NOTHING_TO_DO),
+            "{name} must not claim up to date with a decision pending, got:\n{out}"
+        );
+        assert!(
+            out.contains("Nothing to apply — 1 decision pending"),
+            "{name} must count the withholding, got:\n{out}"
+        );
+
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 2);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("Nothing to apply — 2 decisions pending"),
+            "{name} must agree its count with its noun, got:\n{out}"
+        );
+    }
+}
+
+/// One shape for the line a command closes on: sentence case, so a reader
+/// comparing two transcripts is not asked to decide whether `✓ subscribed`,
+/// `✓ ACCEPTED 1 item` and `✓ Synced` are three different kinds of outcome.
+///
+/// A hint obeys the same rule and for the same reason: a lowercase hint sitting
+/// under a capitalized result line reads as a wrapped fragment of the line above
+/// rather than as its own statement, which is how `previous contents saved to …`
+/// shipped directly beneath `✓ backup:notes restored …`. Hints are swept in both
+/// crates, `cfgd-core`'s daemon and service surfaces printing into the same
+/// report the binary's do.
+///
+/// A row that NAMES a thing rather than reporting an outcome (`doctor`'s tool
+/// inventory, a `.sops.yaml` row) keeps the name's own spelling and says so
+/// with a `// name-row-ok:` marker on the line or the line above — the same
+/// hatch shape `// native-ok:` and `// spawn-blocking-ok:` use.
+#[test]
+fn every_result_line_is_sentence_case() {
+    let cli = cli_production_sources();
+    let both: Vec<(std::path::PathBuf, String)> = cli
+        .iter()
+        .cloned()
+        .chain(core_production_sources())
+        .collect();
+    let mut offenders = Vec::new();
+    // Matched across the whole body, not per line: a marker and the literal it
+    // introduces sit on separate lines in every wrapped call, and a
+    // line-at-a-time scan sees none of them.
+    let mut sweep = |sources: &[(std::path::PathBuf, String)], marker: &str| {
+        for (path, production) in sources {
+            let lines: Vec<&str> = production.lines().collect();
+            for (at, _) in production.match_indices(marker) {
+                let rest = production[at + marker.len()..].trim_start();
+                let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+                let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                    continue;
+                };
+                if !literal.chars().next().is_some_and(char::is_lowercase) {
+                    continue;
+                }
+                let n = production[..at].matches('\n').count();
+                if lines[n].trim_start().starts_with("//")
+                    || label_hatched(&lines, n, "// name-row-ok:")
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+            }
+        }
+    };
+    // Every role a RESULT line can carry, over every source that is not a
+    // run's body. The two pins partition the population: a subject slot inside
+    // `reconciler/` or `backup/` is a body row and belongs to
+    // `every_action_row_subject_opens_on_a_lowercase_verb`; everything else
+    // reports an outcome and belongs here. Judged by neither, a lowercase
+    // `Role::Info` row sat beside sentence-case siblings with nothing to say
+    // it was on the wrong side of a split nobody had written down.
+    let is_run_body = |path: &std::path::Path| {
+        let p = path.to_string_lossy().replace('\\', "/");
+        p.contains("/reconciler/") || p.contains("/backup/")
+    };
+    let core = core_production_sources();
+    let (bodies, outside): (Vec<_>, Vec<_>) = core
+        .iter()
+        .cloned()
+        .partition(|(path, _)| is_run_body(path));
+    // The witness that the split is a PARTITION and not two overlapping
+    // opinions: every core source lands on exactly one side, and each side has
+    // members. A third predicate added to either sweep would drop files out of
+    // both, which is the state that let a lowercase result line ship.
+    assert_eq!(
+        bodies.len() + outside.len(),
+        core.len(),
+        "the two grammars must partition cfgd-core's sources, not sample them"
+    );
+    assert!(
+        !bodies.is_empty() && !outside.is_empty(),
+        "each side of the split must have members, got {} body / {} outside",
+        bodies.len(),
+        outside.len()
+    );
+    let outside_runs: Vec<(std::path::PathBuf, String)> =
+        cli.iter().cloned().chain(outside).collect();
+    for role in [
+        "Role::Ok,",
+        "Role::Warn,",
+        "Role::Fail,",
+        "Role::Info,",
+        "Role::Skipped,",
+        "Role::Pending,",
+    ] {
+        sweep(&outside_runs, role);
+    }
+    sweep(&both, ".finish_ok(");
+    sweep(&both, ".finish_warn(");
+    sweep(&both, ".finish_fail(");
+    sweep(&both, ".hint(");
+    assert!(
+        offenders.is_empty(),
+        "a result line and a hint open in sentence case (a row that names a \
+         thing takes a `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The inverse of `every_result_line_is_sentence_case`, for the rows a run's
+/// BODY is made of: an action row's subject opens on a lowercase verb —
+/// `create ~/.zshrc`, `brew install jq`, `run preApply script`, `snapshot
+/// notes.md.<stamp>` — because the row names work and the glyph beside it says
+/// how the work went. `backup restore` wrote `Restored from …` into the same
+/// slot `backup run` writes `snapshot …` into, twenty lines apart on one
+/// screen: the sentence-case pin governs the closing line and would have
+/// REWARDED that spelling, so the two grammars split at the one slot no pin
+/// walked.
+///
+/// Every string reaching a subject slot inside `reconciler/` and `backup/`
+/// (`status` / `status_simple` / `action_status` / `set_action_status`) is
+/// judged, following a `let` binding and a producer function up to three
+/// calls deep, so `let subject = restore_subject(..)` is read through to the
+/// literal it renders. A subject composed at runtime (`{owner}: …`) is
+/// unjudgeable and skipped; a subject that opens on a proper noun says so
+/// with a `// name-row-ok:` marker on the call or on the producer's doc.
+#[test]
+fn every_action_row_subject_opens_on_a_lowercase_verb() {
+    const OPENERS: &[&str] = &[
+        ".status(",
+        ".status_simple(",
+        ".action_status(",
+        ".set_action_status(",
+    ];
+    let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            let p = path.to_string_lossy().replace('\\', "/");
+            p.contains("/reconciler/") || p.contains("/backup/")
+        })
+        .collect();
+
+    /// The string literals a function body renders, with the callees it
+    /// reaches (up to `depth` calls deep), as `(file, line, literal)`.
+    fn producer_literals(
+        sources: &[(std::path::PathBuf, String)],
+        name: &str,
+        depth: usize,
+        seen: &mut Vec<String>,
+    ) -> Vec<(std::path::PathBuf, usize, String)> {
+        if depth == 0 || seen.iter().any(|s| s == name) {
+            return Vec::new();
+        }
+        seen.push(name.to_string());
+        let mut out = Vec::new();
+        for (path, body) in sources {
+            let Some(at) = body
+                .find(&format!("fn {name}("))
+                .or_else(|| body.find(&format!("fn {name}<")))
+            else {
+                continue;
+            };
+            let Some(open) = body[at..].find('{').map(|i| at + i) else {
+                continue;
+            };
+            let fn_body = brace_span(body, open);
+            let base_line = body[..open].matches('\n').count();
+            for (rel, lit) in string_literals(fn_body) {
+                out.push((
+                    path.clone(),
+                    base_line + fn_body[..rel].matches('\n').count(),
+                    lit,
+                ));
+            }
+            for callee in callee_names(fn_body) {
+                out.extend(producer_literals(sources, &callee, depth - 1, seen));
+            }
+            break;
+        }
+        out
+    }
+
+    /// Resolve the expression in a subject slot to the literals it renders.
+    fn resolve(
+        sources: &[(std::path::PathBuf, String)],
+        path: &std::path::Path,
+        body: &str,
+        at: usize,
+        expr: &str,
+        depth: usize,
+    ) -> Vec<(std::path::PathBuf, usize, String)> {
+        let line = body[..at].matches('\n').count();
+        let mut expr = expr.trim();
+        for wrapper in ["Some(", "&"] {
+            if let Some(inner) = expr.strip_prefix(wrapper) {
+                expr = inner.trim_start();
+            }
+        }
+        if let Some(lit) = literal_head(expr) {
+            return vec![(path.to_path_buf(), line, lit)];
+        }
+        if let Some(inner) = expr.strip_prefix("format!(") {
+            return literal_head(inner.trim_start())
+                .map(|lit| vec![(path.to_path_buf(), line, lit)])
+                .unwrap_or_default();
+        }
+        let ident_len = expr
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(expr.len());
+        let (ident, rest) = expr.split_at(ident_len);
+        let name = ident.rsplit("::").next().unwrap_or(ident);
+        if rest.starts_with('(') {
+            let mut seen = Vec::new();
+            return producer_literals(sources, name, depth, &mut seen);
+        }
+        let plain_use = rest.is_empty()
+            || [".to_string()", ".as_str()", ".clone()"]
+                .iter()
+                .any(|s| rest.starts_with(s));
+        if !plain_use || depth == 0 {
+            return Vec::new();
+        }
+        // The binding, searched back only to the enclosing function's head so
+        // a same-named `let` in an earlier function is not read as this one.
+        let fn_head = body[..at]
+            .rfind("\nfn ")
+            .or_else(|| body[..at].rfind(" fn "))
+            .unwrap_or(0);
+        let pattern = format!("let {name} = ");
+        let Some(bind) = body[fn_head..at].rfind(&pattern).map(|i| fn_head + i) else {
+            return Vec::new();
+        };
+        let rhs_start = bind + pattern.len();
+        let rhs_end = body[rhs_start..]
+            .find(';')
+            .map_or(body.len(), |i| rhs_start + i);
+        resolve(
+            sources,
+            path,
+            body,
+            rhs_start,
+            &body[rhs_start..rhs_end],
+            depth - 1,
+        )
+    }
+
+    let mut judged = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in &sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for opener in OPENERS {
+            for (at, _) in body.match_indices(opener) {
+                let n = body[..at].matches('\n').count();
+                if lines[n].trim_start().starts_with("//") {
+                    continue;
+                }
+                let open = at + opener.len() - 1;
+                let (_, span) = bracketed_span(body, open);
+                let args = top_level_args(&span[1..]);
+                let subject = if *opener == ".set_action_status(" {
+                    span.find("subject:")
+                        .map(|i| {
+                            let rest = &span[i + "subject:".len()..];
+                            top_level_args(rest).into_iter().next().unwrap_or_default()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    args.get(1).cloned().unwrap_or_default()
+                };
+                if subject.is_empty() {
+                    continue;
+                }
+                for (lit_path, lit_line, lit) in resolve(&sources, path, body, at, &subject, 3) {
+                    let Some(first) = lit.chars().next() else {
+                        continue;
+                    };
+                    if !first.is_alphabetic() {
+                        continue;
+                    }
+                    judged.push(lit.clone());
+                    if first.is_lowercase()
+                        || label_hatched(&lines, n, "// name-row-ok:")
+                        || sources.iter().any(|(p, b)| {
+                            p == &lit_path
+                                && label_hatched(
+                                    &b.lines().collect::<Vec<_>>(),
+                                    lit_line,
+                                    "// name-row-ok:",
+                                )
+                        })
+                    {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "{}:{}: {lit:?} (reached from {}:{})",
+                        lit_path.display(),
+                        lit_line + 1,
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        judged.len() >= 15,
+        "the walk no longer reaches the subject slots — it judged {judged:?}"
+    );
+    for witness in ["snapshot", "restore ", "create ", "run "] {
+        assert!(
+            judged.iter().any(|l| l.starts_with(witness)),
+            "the walk no longer reaches the producer that renders {witness:?}: {judged:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "an action row's subject opens on a lowercase verb (a subject that opens \
+         on a proper noun takes a `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A command's INPUT facts are one kv block before its action rows; a fact a
+/// step PRODUCES is that step's row detail or a closing kv block after the
+/// last row. A kv row never sits between two result lines: `module push`
+/// printed `✓ Pushed module`, then `Digest  sha256:…`, then `✓ Signed
+/// artifact`, so one command read as verdict, fact, verdict, and `enroll`
+/// split `✓ Enrolled as user` from `✓ Saved credential` with `Team` / `Device`
+/// rows that were the enrollment's own product.
+///
+/// Walked lexically over every function body in `cli/**`: a status call, then
+/// a kv call, then another status call with no new group (a section, a
+/// heading, a `Doc::new()` or an `emit`) opened between them is an offender.
+/// Branches are invisible to the walk, so a kv row one branch prints INSTEAD
+/// of a status (an empty-state row beside a count block) carries a
+/// `// facts-block-ok: <why>` marker. Narration a CALLEE prints — a cfgd-core
+/// spinner, `sign_and_attest`'s verdict — is out of the walk's sight; the
+/// `module_push`, `module_build`, `image_pack`, `enroll` and `checkin`
+/// goldens pin those shapes.
+#[test]
+fn no_kv_row_sits_between_two_result_lines() {
+    const STATUS: &[&str] = &[
+        ".status(",
+        ".status_simple(",
+        ".status_with(",
+        ".finish_ok(",
+        ".finish_warn(",
+        ".finish_fail(",
+        ".action_status(",
+    ];
+    const KV: &[&str] = &[".kv(", ".kv_block(", ".kv_rows("];
+    const GROUP: &[&str] = &[
+        ".section(",
+        ".section_owner(",
+        ".section_owner_or_collapse(",
+        ".section_or_collapse(",
+        ".section_if_nonempty(",
+        ".heading(",
+        ".heading_owner_prefixed(",
+        ".heading_title(",
+        "Doc::new()",
+        ".emit(",
+    ];
+    #[derive(Clone, Copy, PartialEq)]
+    enum Event {
+        Status,
+        Kv,
+        Group,
+    }
+
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut events: Vec<(usize, Event)> = Vec::new();
+        for (tokens, kind) in [
+            (STATUS, Event::Status),
+            (KV, Event::Kv),
+            (GROUP, Event::Group),
+        ] {
+            for token in tokens {
+                for (at, _) in body.match_indices(token) {
+                    // `.status()` with no argument is a child process or an
+                    // HTTP response, not a rendered row.
+                    if body[at + token.len()..].starts_with(')') {
+                        continue;
+                    }
+                    let n = body[..at].matches('\n').count();
+                    if lines[n].trim_start().starts_with("//") {
+                        continue;
+                    }
+                    events.push((at, kind));
+                }
+            }
+        }
+        events.sort_by_key(|(at, _)| *at);
+
+        // Function heads are group boundaries too: one body's closing verdict
+        // must not be read as the status BEFORE the next body's opening block.
+        let mut heads: Vec<usize> = body
+            .match_indices("fn ")
+            .filter(|(at, _)| {
+                *at == 0
+                    || body[..*at].ends_with('\n')
+                    || body[..*at].ends_with(") ")
+                    || body[..*at].ends_with("pub ")
+                    || body[..*at].ends_with("    ")
+            })
+            .map(|(at, _)| at)
+            .collect();
+        heads.sort_unstable();
+
+        let mut next_head = heads.iter().copied().peekable();
+        let mut seen_status = false;
+        let mut pending_kv: Option<usize> = None;
+        for (at, kind) in events {
+            while next_head.peek().is_some_and(|h| *h < at) {
+                next_head.next();
+                seen_status = false;
+                pending_kv = None;
+            }
+            match kind {
+                Event::Group => {
+                    seen_status = false;
+                    pending_kv = None;
+                }
+                Event::Kv => {
+                    if seen_status && pending_kv.is_none() {
+                        pending_kv = Some(at);
+                    }
+                }
+                Event::Status => {
+                    judged += 1;
+                    if let Some(kv_at) = pending_kv.take() {
+                        let n = body[..kv_at].matches('\n').count();
+                        if !label_hatched(&lines, n, "// facts-block-ok:") {
+                            offenders.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                    seen_status = true;
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the status slots — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a kv row sits between two result lines; make it the producing row's \
+         detail, or move it into the opening or closing block (a row one branch \
+         prints INSTEAD of a status takes `// facts-block-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every snapshot golden in the workspace with one of `exts`, sorted:
+/// `crates/cfgd/tests/output_snapshots/**` plus every `snapshots/` directory
+/// under `cfgd-core/src`. The two golden walks below read the same population
+/// through this, so a new golden tree is picked up by both or by neither.
+fn snapshot_goldens(exts: &[&str]) -> Vec<std::path::PathBuf> {
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut roots = vec![cfgd.join("tests/output_snapshots")];
+    let mut stack = vec![cfgd.join("../cfgd-core/src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "snapshots") {
+                    roots.push(p);
+                } else {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+
+    let mut goldens = Vec::new();
+    let mut stack = roots;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e))
+            {
+                goldens.push(p);
+            }
+        }
+    }
+    goldens.sort();
+    goldens
+}
+
+/// Every golden is a rendered surface, and every one of them keeps the one
+/// spacing: no blank line opens or closes a command's output, no two blank
+/// lines touch, a heading is never followed by a blank line before its own
+/// rows, and two sibling blocks never touch. The producers own the
+/// separators (a section close and a top-level group boundary arm ONE
+/// pending blank; a streamed child line consumes and re-arms it; a heading
+/// binds its rows), so a golden that breaks any of these names a composer
+/// that leaked, never a call site to patch.
+///
+/// Walked over `crates/cfgd/tests/output_snapshots/**` and every
+/// `snapshots/` directory under `cfgd-core/src`. An empty golden is a
+/// surface that rendered nothing and is skipped. "Heading" is read off the
+/// ANSI-free structure: a column-0 line that carries no row glyph and whose
+/// next non-blank line is indented. "Two blocks touch" is an indented line
+/// directly followed by such a heading — a status row after streamed child
+/// output is the announcing line's own finish and binds by design, and a
+/// column-0 line ending in `:` is a raw document's own key, not a heading.
+#[test]
+fn every_golden_separates_sibling_blocks_with_one_blank_line() {
+    const GLYPHS: &[char] = &[
+        '✓', '✗', '⚠', '◉', '→', '◐', '—', '•', '-', '·', '⊙', '│', '├', '└',
+    ];
+    let goldens = snapshot_goldens(&["txt"]);
+
+    let is_row = |l: &str| l.trim_start().starts_with(GLYPHS);
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for path in &goldens {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let text = text.replace("\r\n", "\n");
+        if text.trim().is_empty() {
+            continue;
+        }
+        judged += 1;
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        let name = path.display();
+        let heading_at = |i: usize| -> bool {
+            let l = lines[i];
+            !l.starts_with(' ')
+                && !is_row(l)
+                && !l.ends_with(':')
+                && lines[i + 1..]
+                    .iter()
+                    .find(|n| !n.trim().is_empty())
+                    .is_some_and(|n| n.starts_with(' '))
+        };
+        if lines.first().is_some_and(|l| l.trim().is_empty()) {
+            offenders.push(format!("{name}:1: opens on a blank line"));
+        }
+        if text.ends_with("\n\n") {
+            offenders.push(format!(
+                "{name}:{}: closes on a blank line",
+                lines.len() + 1
+            ));
+        }
+        for i in 0..lines.len() {
+            let blank = lines[i].trim().is_empty();
+            if blank && i > 0 && lines[i - 1].trim().is_empty() {
+                offenders.push(format!("{name}:{}: two blank lines in a row", i + 1));
+            }
+            if blank && i > 0 && heading_at(i - 1) {
+                offenders.push(format!(
+                    "{name}:{}: a blank line after the heading `{}`",
+                    i + 1,
+                    lines[i - 1]
+                ));
+            }
+            if !blank
+                && lines[i].starts_with(' ')
+                && i + 1 < lines.len()
+                && !lines[i + 1].starts_with(' ')
+                && !lines[i + 1].trim().is_empty()
+                && heading_at(i + 1)
+            {
+                offenders.push(format!(
+                    "{name}:{}: `{}` touches the block above it",
+                    i + 2,
+                    lines[i + 1]
+                ));
+            }
+        }
+    }
+    assert!(
+        judged >= 300,
+        "the walk no longer reaches the goldens — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every rendered surface keeps one blank line between sibling blocks and \
+         none at its start, its end, after a heading or doubled; fix the \
+         composer that leaked, never the golden:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A surface that opens on a heading indents its key/value facts under it.
+///
+/// `Emitting::open_aligned_block` binds a top-level kv block to the heading
+/// above it only while `state.last_was_top_heading` still stands, and ANY
+/// intervening emission clears it. `cfgd daemon status` printed its
+/// `✓ Daemon running` verdict between the two, so its whole header block —
+/// `Config`, `PID`, `Uptime`, `Drift Count` — rendered at column 0 while the
+/// same rows on `cfgd status` and every run header sat indented. The fix is
+/// the ORDER every other surface already keeps (heading, facts, verdict), and
+/// this walk is what says so for the next surface that reorders them.
+///
+/// Read off the ANSI-free golden: a column-0 `Label  value` pair in a golden
+/// that opens on a heading. A table's header row is column-0 too and is told
+/// apart by the `─` separator directly beneath it; a surface with no heading
+/// at all (`plugin exec`, `workflow generate`) has nothing to indent under.
+#[test]
+fn no_kv_block_renders_at_column_zero_under_a_heading() {
+    let is_kv = |l: &str| {
+        let Some((key, value)) = l.split_once("  ") else {
+            return false;
+        };
+        !key.is_empty()
+            && key.len() <= 24
+            && key.starts_with(char::is_uppercase)
+            && key.chars().all(|c| c.is_alphanumeric() || c == ' ')
+            && !value.trim().is_empty()
+    };
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for path in snapshot_goldens(&["txt"]) {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        // A heading owns rows, so the golden's first line names a surface only
+        // when something below it is indented.
+        let opens_on_heading = lines.first().is_some_and(|l| {
+            !l.starts_with(' ') && l.chars().next().is_some_and(char::is_alphabetic) && !is_kv(l)
+        }) && lines[1..].iter().any(|l| l.starts_with(' '));
+        if !opens_on_heading {
+            continue;
+        }
+        judged += 1;
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            let is_table_header = lines
+                .get(i + 1)
+                .is_some_and(|n| n.trim_start().starts_with('─'));
+            if !line.starts_with(' ') && is_kv(line) && !is_table_header {
+                offenders.push(format!("{}:{}: {line}", path.display(), i + 1));
+            }
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the heading-bearing goldens — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a heading owns the facts below it, so the block indents under it — \
+         order the surface heading, facts, verdict rather than hand-indenting \
+         or re-opening the block:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Neither half of a managed-env-file fixture is spelled by hand: the PATH
+/// comes from [`cfgd_core::reconciler::primary_env_file`] and the BODY's
+/// generated lines from `MergedEnvItems::declared_line`.
+///
+/// Both halves are the running platform's, and both were hand-written under
+/// `cli/` until three tests that had never executed on windows-latest ran
+/// there: the primary env file is `~/.cfgd.env` on POSIX and
+/// `~/.cfgd-env.ps1` on Windows, and the line a declared entry renders as is
+/// bash `export EDITOR="vim" # module:m` there and PowerShell
+/// `$env:EDITOR = 'vim' # module:m` here. A fixture hardcoding either wrote
+/// its file where nothing reads, or wrote a line the check can never match —
+/// and the tests asserting an ABSENCE passed anyway, blind rather than red,
+/// which is why this is a walk and not three fixes.
+///
+/// Scoped to `cli/`, where a fixture drives the LIVE per-item env check
+/// through a `cmd_*`. `cfgd-core` holds two other populations this walk
+/// deliberately does not reach: a test passing an explicit `EnvPlatform` is
+/// pinning the generator, so a literal there IS the assertion, and a test
+/// naming an env file's path as an INPUT (a hand-built `WriteEnvFile`, an
+/// `rc` line's body) is naming a value production writes verbatim. The ones
+/// that do resolve through `EnvPlatform::current()` take
+/// [`cfgd_core::reconciler::primary_env_file`] like everything here.
+#[test]
+fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
+    // Assembled rather than written whole, so this walk's own needles are not
+    // the first thing it reports.
+    let joins: [String; 2] = [
+        format!("join(\"{}\")", ".cfgd.env"),
+        format!("join(\"{}\")", ".cfgd-env.ps1"),
+    ];
+    // Every owner kind the generator can emit, `manager` included: the PATH
+    // line's comment names the managers whose directories it publishes, and a
+    // fixture spelling that line by hand is the same bug as one spelling a
+    // module's.
+    let owner_comments = [
+        format!("# {}:", "module"),
+        format!("# {}:", "profile"),
+        format!("# {}:", "manager"),
+    ];
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    let mut stack = vec![cli_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if !p.extension().is_some_and(|e| e == "rs") {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            checked += 1;
+            let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
+            // A hand-spelled generated line can carry its two tells on two
+            // physical lines; fold every continuation back first.
+            for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
+                let line = line.as_str();
+                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
+                // A fixture joining a generated file's name onto a directory
+                // is building a path; a bare mention in an assertion needle or
+                // a synthesized row's id is not.
+                if joins.iter().any(|j| line.contains(j.as_str())) {
+                    offenders.push(format!(
+                        "{where_}: joins a hardcoded env file name — take \
+                         `cfgd_core::reconciler::primary_env_file(home)`"
+                    ));
+                }
+                // A generated line carries its owner comment, which is what a
+                // hand-edited (deliberately non-generated) fixture body lacks.
+                if line.contains("managed by cfgd")
+                    && owner_comments.iter().any(|c| line.contains(c.as_str()))
+                {
+                    offenders.push(format!(
+                        "{where_}: spells a generated env line by hand — render \
+                         it through `MergedEnvItems::declared_line`"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(checked > 10, "the cli sources must be in the walked set");
+    assert!(
+        offenders.is_empty(),
+        "a managed-env-file fixture takes its path and its generated lines from \
+         production's own renderers, or it only ever holds on the platform it \
+         was written on:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A golden holds ONE render for every machine that runs it, so no golden may
+/// carry a row the HOST decided. The env phase is where that bites twice:
+/// which rc files `env_targets` plans is read off `$SHELL` and `PATH`
+/// (`EnvHostProbe::detect`), and which session surfaces it plans is read off
+/// the platform — so a golden blessed on a zsh workstation cannot pass on a
+/// bash-only runner, and one blessed on Linux (`environment.d`) cannot pass
+/// on macOS (a LaunchAgent plist).
+///
+/// The rule: a golden carrying an env-target ACTION row must be listed here
+/// beside the test that DECLARES the host it was produced on, and that test
+/// must install an `EnvHostProbeOverride`. A new golden with such a row fails
+/// this walk until it is classified; a listed golden that stops carrying one
+/// fails it too, so the table cannot rot into a list of names.
+///
+/// A `~/.cfgd.env` mentioned in a HINT or a table cell is not an env-target
+/// row — those paths are fixture literals the test wrote itself — which is
+/// why the vocabulary below is the action subjects `reconciler::format`
+/// builds, not the file names.
+#[test]
+fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
+    /// (golden, the test source that produced it, that test's name).
+    const DECLARED: &[(&str, &str, &str)] = &[(
+        "tests/output_snapshots/plan/composed_source.txt",
+        "tests/plan_snapshots.rs",
+        "plan_composed_source_human",
+    )];
+    /// The env-target action subjects, as `action_display_subject` renders
+    /// them. `write` is qualified by the generated basenames so a fixture's
+    /// own file write cannot look like one.
+    const ROW_MARKERS: &[&str] = &["inject source line into", "to the live session", "write "];
+    const GENERATED_FILES: &[&str] = &[
+        "/.cfgd.env",
+        "/.cfgd-env.ps1",
+        "environment.d/cfgd.conf",
+        "conf.d/cfgd-env.fish",
+        "com.cfgd.user-environment.plist",
+    ];
+
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found: Vec<String> = Vec::new();
+    for path in snapshot_goldens(&["txt", "json"]) {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let carries = text.lines().any(|line| {
+            ROW_MARKERS.iter().any(|m| match *m {
+                "write " => {
+                    line.contains("write ") && GENERATED_FILES.iter().any(|f| line.contains(f))
+                }
+                other => line.contains(other),
+            })
+        });
+        if carries {
+            let rel = path.strip_prefix(cfgd).unwrap_or(&path);
+            found.push(cfgd_core::to_posix_string(rel));
+        }
+    }
+    found.sort();
+
+    let mut declared: Vec<String> = DECLARED.iter().map(|(g, _, _)| (*g).to_string()).collect();
+    declared.sort();
+    assert_eq!(
+        found, declared,
+        "a golden carrying an env-target row must be listed in DECLARED beside \
+         the test that pins its host shape (and a listed golden that no longer \
+         carries one must be delisted)"
+    );
+
+    for (golden, source, test_name) in DECLARED {
+        let body = std::fs::read_to_string(cfgd.join(source))
+            .unwrap_or_else(|e| panic!("read {source}: {e}"));
+        assert!(
+            body.contains(&format!("fn {test_name}(")),
+            "{source} no longer defines {test_name}, which {golden} is attributed to"
+        );
+        assert!(
+            body.contains("with_env_host_probe_override_guard"),
+            "{source} produces {golden}, which carries an env-target row, but \
+             declares no host shape — pin one with \
+             `with_env_host_probe_override_guard` or the golden only passes on \
+             the machine it was blessed on"
+        );
+    }
+}
+/// Every daemon-log marker the e2e suites grep for is a string the daemon can
+/// still emit. A shell suite pins a log line by substring and nothing in a Rust
+/// rename touches it, so `Health:`, `Reloading configuration (SIGHUP)`,
+/// `Received SIGTERM`, `action(s) needed` and `running reconciliation check`
+/// all sat in the suites long after the producers had moved or had never
+/// spoken them — and a grep that can never match turns an evidence check into
+/// the absence of a crash reported as a pass. The alternation is the unit: a
+/// grep holds if ANY branch is still spoken, which is what lets an absence
+/// assertion (`panic\|SIGSEGV\|signal: 11`) name a spelling no source carries
+/// beside one that does.
+#[test]
+fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = String::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+                && let Ok(body) = std::fs::read_to_string(&p)
+            {
+                sources.push_str(&body);
+                sources.push('\n');
+            }
+        }
+    }
+    assert!(
+        sources.contains("daemon: received SIGTERM"),
+        "the daemon's own sources must be in the walked set"
+    );
+
+    let mut scripts = vec![root.join("tests/e2e")];
+    let mut checked = 0usize;
+    while let Some(path) = scripts.pop() {
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                scripts.extend(entries.flatten().map(|e| e.path()));
+            }
+            continue;
+        }
+        if path.extension().is_none_or(|e| e != "sh") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (n, line) in body.lines().enumerate() {
+            // A grep against anything else reads a manifest, a kubectl payload
+            // or a proc file — none of them cfgd's own prose.
+            if line.trim_start().starts_with('#')
+                || !(line.contains("DAEMON_LOG") || line.contains(".log\""))
+            {
+                continue;
+            }
+            // Shell quoting, not Rust: a `\\|` alternation must survive to the
+            // split below, so the line is read as raw `"`-delimited fields
+            // rather than through a Rust literal scanner that would eat the
+            // backslash. Odd fields are quoted, and a field is the grep's own
+            // argument when `grep ` is the last thing before its opening quote.
+            let fields: Vec<&str> = line.split('"').collect();
+            for (i, literal) in fields.iter().enumerate() {
+                if i % 2 == 0 || literal.contains('$') {
+                    continue;
+                }
+                if !fields[i - 1].trim_end().ends_with("grep")
+                    && !fields[i - 1]
+                        .rsplit_once("grep ")
+                        .is_some_and(|(_, after)| after.trim().starts_with('-'))
+                {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    literal
+                        .split("\\|")
+                        .any(|branch| !branch.trim().is_empty() && sources.contains(branch.trim())),
+                    "{}:{} greps a daemon log for {literal:?}, and no branch of it \
+                     appears in the daemon's sources — the producer was renamed and \
+                     the assertion can no longer fire",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+    }
+    assert!(
+        checked >= 10,
+        "the daemon-log grep population collapsed to {checked} — the walk stopped \
+         finding the suites it exists to police"
+    );
+}
+/// Every third-party download a Dockerfile or a CI script performs retries a
+/// transient fault AND verifies what it got. One bare `curl` timing out at exit
+/// 28 failed the E2E infrastructure job and cascaded to every suite behind it,
+/// and the same image installed cosign — the binary its module-signing tests
+/// trust — against no digest at all, while the crossplane install verified
+/// amd64 and waved arm64 through. A download that WRITES A FILE is the unit: a
+/// `curl` polling a service for readiness fetches nothing to verify, and the
+/// gateway suites' API calls are the subject under test rather than a supply
+/// chain. A backslash-continued command is one unit, because that is where the
+/// URL and the digest check both live.
+#[test]
+fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies() {
+    fn logical_lines(body: &str) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> = Vec::new();
+        let mut buf = String::new();
+        let mut start = 0;
+        for (i, line) in body.lines().enumerate() {
+            if buf.is_empty() {
+                start = i + 1;
+            } else {
+                buf.push(' ');
+            }
+            buf.push_str(line.trim());
+            if line.trim_end().ends_with('\\') {
+                buf.pop();
+                continue;
+            }
+            out.push((start, std::mem::take(&mut buf)));
+        }
+        if !buf.is_empty() {
+            out.push((start, buf));
+        }
+        out
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![
+        root.join(".github"),
+        root.join("tests/e2e"),
+        root.join("demo/scripts"),
+        root.clone(),
+    ];
+    let mut top = true;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let named_dockerfile = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("Dockerfile"));
+            if p.is_dir() {
+                // The repository root contributes its `Dockerfile*` only; its
+                // subtrees are enumerated by the three roots above.
+                if !top {
+                    stack.push(p);
+                }
+            } else if !top || named_dockerfile {
+                files.push(p);
+            }
+        }
+        top = false;
+    }
+    files.sort();
+
+    let mut checked = 0usize;
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let commands = logical_lines(&body);
+        for (i, (line_no, cmd)) in commands.iter().enumerate() {
+            if cmd.trim_start().starts_with('#')
+                || !(cmd.contains("curl") || cmd.contains("wget"))
+                // A URL held in a variable is still a literal in this file.
+                || !(cmd.contains("https://") || cmd.contains("\"$url\""))
+                || ![" -o ", " -O", "--output", "| tar"]
+                    .iter()
+                    .any(|t| cmd.contains(t))
+            {
+                continue;
+            }
+            checked += 1;
+            let context = commands[i.saturating_sub(8)..(i + 8).min(commands.len())]
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                cmd.contains("--retry"),
+                "{}:{line_no} downloads over the network without `--retry`, so one \
+                 transient fault fails the whole build: {cmd}",
+                path.display()
+            );
+            assert!(
+                context.contains("sha256sum -c") || context.contains("shasum -a 256 -c"),
+                "{}:{line_no} installs a third-party artifact that nothing verifies — \
+                 pin its digest and check it: {cmd}",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        checked >= 8,
+        "the third-party-download population collapsed to {checked} — the walk \
+         stopped finding the fetches it exists to police"
+    );
+}
+
+/// The string literal `expr` opens with, if it opens with one.
+fn literal_head(expr: &str) -> Option<String> {
+    let rest = expr.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Every string literal in `body` as `(byte offset, literal)`, comment lines
+/// excluded. Char literals (`'"'`) are stepped over so they cannot open one.
+fn string_literals(body: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = body[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
+            b'"' => {
+                let start = i;
+                i += 1;
+                let mut lit = String::new();
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    lit.push(bytes[i] as char);
+                    i += 1;
+                }
+                out.push((start, lit));
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// The text inside the brace block opened at `open`, braces inside string
+/// literals (`"{}"`) not counted.
+fn brace_span(body: &str, open: usize) -> &str {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &body[open..=i];
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    &body[open..]
+}
+
+/// The free functions `body` calls, by name: an identifier followed by `(`
+/// that is neither a method (`.name(`) nor a macro (`name!(`).
+fn callee_names(body: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    let mut out = Vec::new();
+    for (i, _) in body.match_indices('(') {
+        let mut start = i;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == i || start > 0 && bytes[start - 1] == b'.' {
+            continue;
+        }
+        let name = &body[start..i];
+        if name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && !out.contains(&name.to_string())
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Split `args` at the commas of its top level, string literals and nested
+/// brackets stepped over.
+fn top_level_args(args: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut chars = args.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                current.push(c);
+                while let Some(d) = chars.next() {
+                    current.push(d);
+                    if d == '\\' {
+                        if let Some(e) = chars.next() {
+                            current.push(e);
+                        }
+                    } else if d == '"' {
+                        break;
+                    }
+                }
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    break;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => out.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out.into_iter().map(|a| a.trim().to_string()).collect()
+}
+
+/// A failure the reader can act on says how. `cfgd source update` printed
+/// `✗ Update failed` with the git error underneath and nothing about what to do
+/// with it — a signature the reader can accept, a ref they can correct and a
+/// transport they can retry all render the same dead end. The next step lives
+/// beside the failure, in the same `hint`, so the answer is on screen with the
+/// question.
+///
+/// Judged per FUNCTION, because the hint belongs to the failure's own report and
+/// not to the individual line: a function that renders several failure arms
+/// answers them with one hint composer. A failure with genuinely nothing to
+/// suggest — a name the reader already typed, a state cfgd is merely reporting —
+/// says so with `// no-next-step: <why>` on the line or the line above.
+#[test]
+fn every_failure_the_cli_renders_says_what_to_do_next() {
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            // `=> Role::Fail,` maps a stored state onto a role; the render
+            // that reads the map is judged where it emits.
+            if !line.contains("Role::Fail,")
+                || line.contains("=> Role::Fail,")
+                || line.trim_start().starts_with("//")
+            {
+                continue;
+            }
+            judged += 1;
+            if label_hatched(&lines, n, "// no-next-step:") {
+                continue;
+            }
+            let Some((start, end)) = enclosing_fn_span(&lines, n) else {
+                continue;
+            };
+            if lines[start..end].iter().any(|l| l.contains(".hint(")) {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        judged >= 20,
+        "the sweep no longer reaches the CLI's failure lines — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a rendered failure carries the reader's next step, or says why it has \
+         none with a `// no-next-step:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The half-open line range of the function containing line `n`, found from the
+/// `fn` header's own indentation: rustfmt closes an item at the indent it opened
+/// at, which reads an extent without counting braces inside the string literals
+/// a render function is full of.
+fn enclosing_fn_span(lines: &[&str], n: usize) -> Option<(usize, usize)> {
+    let start = (0..=n).rev().find(|i| {
+        let code = lines[*i].trim_start();
+        code.starts_with("fn ") || code.starts_with("pub fn ") || code.contains(" fn ")
+    })?;
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let closer = format!("{}}}", " ".repeat(indent));
+    let end = (start + 1..lines.len())
+        .find(|i| lines[*i] == closer)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// The past-tense verbs a successful result line opens with, seeded from the
+/// population that already complied. A new outcome adds its verb here; a line
+/// that reports a STATE rather than an act takes the marker instead.
+const RESULT_LINE_VERBS: &[&str] = &[
+    "Added",
+    "Applied",
+    "Attached",
+    "Auto-selected",
+    "Built",
+    "Checked",
+    "Cloned",
+    "Committed",
+    "Created",
+    "Decrypted",
+    "Deleted",
+    "Edited",
+    "Encrypted",
+    "Enrolled",
+    "Exported",
+    "Generated",
+    "Initialized",
+    "Injected",
+    "Installed",
+    "Locked",
+    "Migrated",
+    "Moved",
+    "Packed",
+    "Passed",
+    "Pulled",
+    "Pushed",
+    "Rejected",
+    "Removed",
+    "Renamed",
+    "Replaced",
+    "Reported",
+    "Restored",
+    "Rolled",
+    "Rotated",
+    "Saved",
+    "Scanned",
+    "Set",
+    "Signed",
+    "Subscribed",
+    "Switched",
+    "Synced",
+    "Unset",
+    "Updated",
+    "Upgraded",
+    "Verified",
+    "Wrote",
+];
+
+/// A result line says what cfgd DID, so it opens with the verb: `Created
+/// ephemeral debug container on pod demo/app`, never `Ephemeral debug container
+/// created on pod demo/app`. Subject-first is how a transcript stops scanning —
+/// the reader has to reach the end of each line to learn whether it reports an
+/// act, and two adjacent lines about the same subject read as one wrapped
+/// sentence.
+///
+/// A line reporting a STATE rather than an act (`Daemon running`, `Configuration
+/// is valid`, `Already up to date`) is not a result line and keeps its shape
+/// with a `// verdict-row-ok: <why>` marker; a row that NAMES a thing keeps its
+/// existing `// name-row-ok:` marker. A subject the command composes at runtime
+/// is unjudgeable from the source and is skipped.
+#[test]
+fn every_result_line_opens_with_a_past_tense_verb() {
+    let sources = cli_production_sources();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, production) in &sources {
+        let lines: Vec<&str> = production.lines().collect();
+        for (at, _) in production.match_indices("Role::Ok,") {
+            let rest = production[at + "Role::Ok,".len()..].trim_start();
+            let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+            let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                continue;
+            };
+            let Some(opener) = literal.split_whitespace().next() else {
+                continue;
+            };
+            if opener.starts_with('{') {
+                continue;
+            }
+            judged += 1;
+            if RESULT_LINE_VERBS.contains(&opener) {
+                continue;
+            }
+            let n = production[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//")
+                || label_hatched(&lines, n, "// name-row-ok:")
+                || label_hatched(&lines, n, "// verdict-row-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the sweep no longer reaches the result lines — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a result line opens with the verb of the act it reports (a state \
+         verdict takes a `// verdict-row-ok:` marker, a row that names a thing \
+         a `// name-row-ok:` one):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The verdict's wording and its role are `nothing_to_do_verdict`'s to choose.
+/// A surface naming `MSG_NOTHING_TO_DO` itself re-decides both, and that is
+/// exactly how `plan` came to print a green up-to-date line under a block of
+/// unanswered decisions.
+#[test]
+fn no_command_words_the_up_to_date_verdict_for_itself() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        for (n, line) in production.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("///") {
+                continue;
+            }
+            if code.contains("MSG_NOTHING_TO_DO") || code.contains("everything is up to date") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the up-to-date verdict is `nothing_to_do_verdict`'s to word, so a \
+         pending decision can deny it on every surface at once:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A file's production text: every `#[cfg(test)]` item blanked, every other
+/// line left where it is.
+///
+/// Blanking rather than deleting keeps line N of the result line N of the file,
+/// so an offender's reported position is the position a reader opens.
+///
+/// Truncating at the first `#[cfg(test)]` — which is what every sweep below used
+/// to do — blanked whole files instead of test items: a `#[cfg(test)] mod
+/// tests;` DECLARATION near the top left `cli/mod.rs` contributing 0% of itself,
+/// `explain/mod.rs` 5% and `reconciler/apply.rs` 3%, so the sweeps ran over a
+/// tenth of the population they claimed and the `cli/mod.rs` witness below
+/// passed on an empty string.
+fn production_body(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut keep = vec![true; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !(trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test")) {
+            i += 1;
+            continue;
+        }
+        // rustfmt puts the item's closing brace at the attribute's own indent,
+        // which reads an item's extent without counting braces inside the string
+        // literals a test body is full of.
+        let closer = format!("{}}}", &lines[i][..lines[i].len() - trimmed.len()]);
+        let mut end = i;
+        while end < lines.len() && lines[end].trim_start().starts_with('#') {
+            end += 1;
+        }
+        let mut opened = false;
+        while end < lines.len() {
+            opened |= lines[end].contains('{');
+            let last = if opened {
+                lines[end] == closer
+            } else {
+                lines[end].trim_end().ends_with(';')
+            };
+            end += 1;
+            if last {
+                break;
+            }
+        }
+        for slot in keep.iter_mut().take(end).skip(i) {
+            *slot = false;
+        }
+        i = end;
+    }
+    lines
+        .iter()
+        .zip(keep)
+        .map(|(line, keep)| if keep { *line } else { "" })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
+/// `tests.rs` itself removed — the population every literal sweep below walks.
+fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            Some((path, production_body(&body)))
+        })
+        .collect()
+}
+
+/// One collection, one noun. `source list` headed its table `Config Sources`
+/// while `status` opened a `Config Sources` section and every owner token,
+/// error and hint in the product called the same thing a `source` — so the
+/// screen taught two words for one concept and the plural one was the name of
+/// a cfgd.yaml key rather than of the rows underneath it. The noun is
+/// `source::list::SOURCES_SECTION`.
+#[test]
+fn no_surface_spells_the_sources_section_a_second_way() {
+    let offenders: Vec<String> = cli_production_sources()
+        .into_iter()
+        .flat_map(|(path, production)| {
+            production
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let code = line.trim_start();
+                    !code.starts_with("//") && code.contains("Config Sources")
+                })
+                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the sources collection is headed with `source::list::SOURCES_SECTION`, \
+         so no two surfaces can name it differently:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Words a title leaves lowercase unless it opens with them — the ordinary
+/// title-case exception list, and why `Conflicts with Current Config` and
+/// `Signing with` are correct as written.
+const TITLE_SMALL_WORDS: &[&str] = &[
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "of", "on", "or", "per", "the",
+    "to", "via", "vs", "with",
+];
+
+/// Whether `label` is title case: every word capitalized, bar a small word
+/// that is not the first. A word opening with a non-letter (`(k8s)`, `.sops`)
+/// is left to its own spelling.
+fn is_title_case(label: &str) -> bool {
+    label.split_whitespace().enumerate().all(|(i, word)| {
+        let Some(first) = word.chars().next() else {
+            return true;
+        };
+        if !first.is_alphabetic() || first.is_uppercase() {
+            return true;
+        }
+        i > 0 && TITLE_SMALL_WORDS.contains(&word.trim_end_matches(':'))
+    })
+}
+
+/// Whether the literal on line `n` is covered by `marker`, on its own line, on
+/// the line above, or on the doc block of the function that builds it — rows
+/// pushed in a loop are nowhere near the reason they keep their own spelling.
+fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+    if lines[n].contains(marker) {
+        return true;
+    }
+    // The whole comment run directly above the line, so a reason that needed
+    // two lines to say still hatches the line it was written for.
+    let mut above = n;
+    while above > 0 && lines[above - 1].trim_start().starts_with("//") {
+        above -= 1;
+        if lines[above].contains(marker) {
+            return true;
+        }
+    }
+    let mut i = n;
+    while i > 0 {
+        let code = lines[i].trim_start();
+        if code.starts_with("fn ") || code.contains(" fn ") {
+            let mut j = i;
+            while j > 0 {
+                let above = lines[j - 1].trim_start();
+                if !above.starts_with("//") {
+                    return false;
+                }
+                if above.contains(marker) {
+                    return true;
+                }
+                j -= 1;
+            }
+            return false;
+        }
+        i -= 1;
+    }
+    false
+}
+
+/// Returns the text inside the balanced bracket opened at `open`, so a scan of
+/// a `kv_block([...])` argument stops at that call rather than running into
+/// the next one.
+fn bracketed_span(body: &str, open: usize) -> (usize, &str) {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut end = open;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    (end, &body[open..end])
+}
+
+/// Every label in the left column of a rendered fact is title case, whichever
+/// slot it occupies: a kv key, a kv row pushed into a block, a `KvPair`, or a
+/// table header. `cfgd daemon status` printed `Reconcile interval` two rows
+/// above a `Last Sync` table column, so one screen taught two conventions for
+/// the same thing and neither was the product's.
+///
+/// A label that NAMES a thing rather than describing a fact — a `spec.packages`
+/// path, a tool's own name — keeps that thing's spelling and says so with a
+/// `// name-row-ok:` marker, the same hatch `every_result_line_is_sentence_case`
+/// takes.
+/// Every label in the left column of a rendered fact, as `(byte offset,
+/// literal)` pairs — the ONE gather two pins walk, so a composer added to one
+/// of them cannot be invisible to the other.
+fn rendered_labels(body: &str) -> Vec<(usize, String)> {
+    let mut labels: Vec<(usize, String)> = Vec::new();
+    // The single-key composers name their key first; a `.kv_block` /
+    // `.kv_rows` / `Table::new` argument holds a list of them.
+    for (at, _) in body.match_indices(".kv(") {
+        let rest = &body[at + ".kv(".len()..];
+        if let Some(lit) = rest
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|r| r.split('"').next())
+        {
+            labels.push((at, lit.to_string()));
+        }
+    }
+    for opener in [
+        "KvPair::new(",
+        "KvPair::annotated(",
+        "KvPair::nested(",
+        "KvPair::role_valued(",
+    ] {
+        for (at, _) in body.match_indices(opener) {
+            let rest = &body[at + opener.len()..];
+            if let Some(lit) = rest
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|r| r.split('"').next())
+            {
+                labels.push((at, lit.to_string()));
+            }
+        }
+    }
+    for opener in [".push((", "kv_block(", "kv_rows("] {
+        for (at, _) in body.match_indices(opener) {
+            let open = at + opener.len() - 1;
+            let (_, span) = bracketed_span(body, open);
+            // Only the first literal of each tuple is a label; the value
+            // beside it is prose and keeps its own case. A tuple opening on a
+            // drift-store resource-type key is a WIRE row headed for
+            // `drift_events`, never a rendered fact, so the store's own
+            // vocabulary is the skip — not a hatch at each call site.
+            for (rel, _) in span.match_indices('(').chain(span.match_indices('[')) {
+                let after = &span[rel + 1..];
+                if let Some(lit) = after
+                    .trim_start()
+                    .strip_prefix('"')
+                    .and_then(|r| r.split('"').next())
+                {
+                    if crate::cli::live_drift::FULL_CHECK_RESOLVABLE_TYPES.contains(&lit) {
+                        continue;
+                    }
+                    labels.push((open + rel, lit.to_string()));
+                }
+            }
+        }
+    }
+    // Every element of a table's header array is a label, and a wide table
+    // writes them one per line — so the gather is over the literals in the
+    // span, never over `, "` pairs, which stop matching at the first newline.
+    for (at, _) in body.match_indices("Table::new(") {
+        let open = at + "Table::new(".len() - 1;
+        let (_, span) = bracketed_span(body, open);
+        let mut rest = span;
+        let mut base = open;
+        while let Some(q) = rest.find('"') {
+            let Some(lit) = rest[q + 1..].split('"').next() else {
+                break;
+            };
+            labels.push((base + q, lit.to_string()));
+            let consumed = q + 1 + lit.len() + 1;
+            base += consumed;
+            rest = &rest[consumed..];
+        }
+    }
+    labels
+}
+
+#[test]
+fn every_rendered_label_is_title_case() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, label) in rendered_labels(&body) {
+            if label.is_empty() {
+                continue;
+            }
+            seen.push(label.clone());
+            if is_title_case(&label) {
+                continue;
+            }
+            let n = body[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//")
+                || label_hatched(&lines, n, "// name-row-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+        }
+    }
+    // One witness per composer shape: a `.kv` key, a `KvPair`, a tuple pushed
+    // into a row vector, and a table header. A regex that quietly stopped
+    // matching one of the four would otherwise pass by finding nothing.
+    for witness in ["Scope", "Files Hash", "Drift Count", "Last Sync"] {
+        assert!(
+            seen.iter().any(|l| l == witness),
+            "the walk no longer reaches the composer that renders {witness:?} \
+             — it found {} labels",
+            seen.len()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a rendered label is title case (a label that names a thing takes a \
+         `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        !is_title_case("Reconcile interval") && is_title_case("Reconcile Interval"),
+        "the case rule itself must separate the two spellings it exists to judge"
+    );
+}
+
+/// A kv value carries its data and nothing else: the muted parenthetical about
+/// it is the renderer's own slot, reached through `KvPair::annotated`. A
+/// hand-built `"{value} ({note})"` paints the note in the value's colour, wraps
+/// with it, and lands in `-o json` as one string a consumer has to re-split.
+///
+/// Judged on kv emissions only. A `format!("{n} ({s} safety)")` feeding a TABLE
+/// cell (`backup::snapshots_cell`, `status::module_files_resource`) is a
+/// different surface with no annotation slot, and a status DETAIL composes
+/// through `StatusBuilder` instead.
+#[test]
+fn no_kv_value_hand_builds_the_annotation_slot() {
+    const KV_CALLS: &[&str] = &[".kv(", ".kv_block(", "KvPair::new("];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !KV_CALLS.iter().any(|c| line.contains(c)) {
+                continue;
+            }
+            let end = (n..lines.len())
+                .find(|&i| {
+                    let t = lines[i].trim_end();
+                    t.ends_with(");") || t.ends_with("),") || t.ends_with(")")
+                })
+                .unwrap_or(n);
+            let stmt = lines[n..=end].join("\n");
+            judged += 1;
+            for (start, end) in string_literal_spans(&stmt) {
+                let literal = &stmt[start..end];
+                // The VALUE is the argument after the comma; a literal opening
+                // the call (or a tuple) is the KEY, where `Server (k8s)` is the
+                // thing's own name rather than a note about a value.
+                let value_position = stmt[..start]
+                    .trim_end_matches('"')
+                    .trim_end()
+                    .ends_with(',');
+                // `{value} ({note})` — the shape the annotation slot owns. A
+                // literal that merely CONTAINS parentheses (a label, a URL) is
+                // not one: the note is what closes the string.
+                if value_position && literal.ends_with(')') && literal.contains(" (") {
+                    offenders.push(format!(
+                        "{}:{}: {literal:?} — the note beside a kv value is                          `KvPair::annotated(key, value, note)`",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the kv emissions — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a kv value is the value; its note is the renderer's slot:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A setter confirms an assignment the way the file it writes spells it.
+///
+/// `✓ Set alias: catn=cat -n` over a generated `alias catn="cat -n"` is one
+/// alias in two spellings, and the unquoted one is ambiguous about where the
+/// value starts: it reads as the alias `cat` with a stray `-n` beside it —
+/// exactly what the user's own `--alias catn='cat -n'` quoting existed to
+/// prevent. `helpers::quoted_assignment` is the one renderer of the
+/// `name="value"` qualifier, quoting through the same `posix_double_quoted`
+/// the env file is written with. The `Removed env` / `Removed alias` halves
+/// take a bare key and are not in this class.
+#[test]
+fn every_assignment_a_setter_confirms_renders_through_the_one_quoter() {
+    const SETTERS: &[&str] = &["\"Set env\"", "\"Set alias\""];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !SETTERS.iter().any(|verb| line.contains(verb)) {
+                continue;
+            }
+            judged += 1;
+            // The qualifier follows the status call it belongs to; five lines
+            // covers the rustfmt-wrapped form of both spellings.
+            let window = lines[n..(n + 5).min(lines.len())].join("\n");
+            if !window.contains("quoted_assignment(") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        judged >= 4,
+        "the walk no longer reaches the setter confirmations — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a setter's `name=value` qualifier is `helpers::quoted_assignment(name, value)`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The quoting is unconditional, so one shape covers every value: a value with
+/// a space and a value without read the same way, and neither leaves the reader
+/// deciding which rule produced the line in front of them.
+#[test]
+fn a_confirmed_assignment_quotes_its_value_whatever_it_holds() {
+    assert_eq!(
+        super::helpers::quoted_assignment("catn", "cat -n"),
+        r#"catn="cat -n""#
+    );
+    assert_eq!(
+        super::helpers::quoted_assignment("EDITOR", "nvim"),
+        r#"EDITOR="nvim""#
+    );
+}
+
+/// The offset of the first `[` after `from` that opens an array whose first
+/// element is a quoted key — skipping the `&[(&str, &str)]` in a const's own
+/// type, whose bracket comes first and holds no data.
+fn array_of_pairs(body: &str, from: usize) -> usize {
+    body[from..]
+        .match_indices('[')
+        .find(|(i, _)| body[from + i + 1..].trim_start().starts_with("(\""))
+        .map(|(i, _)| from + i)
+        .expect("the list is a bracketed array of pairs")
+}
+
+/// A report that finds drift says how to heal it, and a report that finds none
+/// says nothing — the hint is the report's own answer to what it just found.
+/// Every drift surface had ended on the finding alone, leaving the reader to
+/// remember which of `apply`, `apply --module` or `sync` closes the gap.
+#[test]
+fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
+    use crate::cli::diff::{DiffScope, build_diff_doc};
+    use crate::cli::output_types::{DiffOutput, DiffSummary};
+    use crate::cli::verify::{VerifyOutput, build_verify_doc};
+
+    let rendered = |doc: cfgd_core::output::Doc| -> String {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        printer.emit(doc);
+        drop(printer);
+        cap.human()
+    };
+    let drifted = DiffOutput {
+        summary: DiffSummary {
+            has_pkg_drift: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let machine = rendered(build_diff_doc(&drifted, DiffScope::Machine));
+    assert!(
+        machine.contains("Run `cfgd apply` to reconcile"),
+        "a machine-wide drift report offers the machine-wide heal: {machine}"
+    );
+    let module = rendered(build_diff_doc(&drifted, DiffScope::Module("nvim")));
+    assert!(
+        module.contains("Run `cfgd apply --module nvim` to reconcile"),
+        "a module-scoped drift report scopes its heal to that module: {module}"
+    );
+    let clean = rendered(build_diff_doc(&DiffOutput::default(), DiffScope::Machine));
+    assert!(
+        !clean.contains("to reconcile"),
+        "a converged report has nothing to heal: {clean}"
+    );
+
+    let failing = VerifyOutput {
+        results: vec![cfgd_core::reconciler::VerifyResult {
+            resource_type: "sysctl".into(),
+            resource_id: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
+            matches: false,
+            unmanaged: false,
+        }],
+        pass_count: 0,
+        fail_count: 1,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    };
+    let verify = rendered(build_verify_doc(&failing, None));
+    assert!(
+        verify.contains("Run `cfgd apply` to reconcile"),
+        "a failing verify offers the same heal every other drift surface does: {verify}"
+    );
+    let verify_scoped = rendered(build_verify_doc(&failing, Some("nvim")));
+    assert!(
+        verify_scoped.contains("Run `cfgd apply --module nvim` to reconcile"),
+        "a `--module` verify scopes its heal: {verify_scoped}"
+    );
+    let verify_clean = rendered(build_verify_doc(
+        &VerifyOutput {
+            results: vec![cfgd_core::reconciler::VerifyResult {
+                resource_type: "package".into(),
+                resource_id: "curl".into(),
+                expected: "installed".into(),
+                actual: "installed".into(),
+                matches: true,
+                unmanaged: false,
+            }],
+            pass_count: 1,
+            fail_count: 0,
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+        },
+        None,
+    ));
+    assert!(
+        !verify_clean.contains("to reconcile"),
+        "a passing verify has nothing to heal: {verify_clean}"
+    );
+}
+
+/// Every reconciler the binary builds names the scope its `applies` row is
+/// recorded under. `cfgd init --apply-module` and the module create/add apply
+/// built one over an empty profile and left the column `""`, so `cfgd status`
+/// showed no `Scope` row until some later `cfgd apply --module` happened to
+/// write one — the machine had applied a module and could not say under what.
+///
+/// A construction that writes no `applies` row of its own, or that resolved a
+/// real profile to name, says which with `// recorded-scope-ok: <why>`.
+#[test]
+fn every_reconciler_the_binary_builds_names_its_recording_scope() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut built = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("Reconciler::new(") {
+                continue;
+            }
+            built += 1;
+            // The builder chains over the following lines; the unit judged is
+            // the STATEMENT, which ends at the first line closing with `;`.
+            let end = (n..lines.len())
+                .find(|i| lines[*i].trim_end().ends_with(';'))
+                .map_or(lines.len(), |i| i + 1);
+            let window = lines[n..end].join(" ");
+            if window.contains(".recording_scope(")
+                || label_hatched(&lines, n, "// recorded-scope-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        built >= 5,
+        "the walk no longer reaches the reconcilers the binary builds — it \
+         found {built}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a reconciler names the scope its `applies` row records, or says why it \
+         writes none with a `// recorded-scope-ok:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `source` subcommand acting on ONE named source titles itself with the
+/// owner spelling — `Update source:team`, the same token every section and
+/// every other verb in the family uses — and only a run over several sources
+/// keeps a plural noun. The family had shipped `Add source:team`, `Update
+/// Sources` and `Show source:team` side by side, so the same command family
+/// named its subject three ways depending on which verb the reader reached for.
+#[test]
+fn every_single_subject_source_title_uses_the_owner_spelling() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source");
+    let mut files = walk_rust_files(&dir);
+    files.sort();
+    let mut owner_titles = 0usize;
+    let mut plural_titles = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = production_body(&body);
+        for (n, line) in production.lines().enumerate() {
+            owner_titles += line.matches("heading_owner_prefixed(").count();
+            let Some(at) = line.find(".heading(") else {
+                continue;
+            };
+            let arg = &line[at + ".heading(".len()..];
+            // The plural section constant and the plural literal are the two
+            // spellings a multi-subject run is allowed.
+            if arg.starts_with("SOURCES_SECTION") {
+                plural_titles += 1;
+                continue;
+            }
+            let Some(literal) = arg.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                continue;
+            };
+            if literal.ends_with("Sources") {
+                plural_titles += 1;
+                continue;
+            }
+            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        owner_titles >= 4 && plural_titles >= 2,
+        "the walk no longer reaches the `source` family's titles — it found \
+         {owner_titles} owner titles and {plural_titles} plural ones"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `source` title naming one subject uses `heading_owner_prefixed` with \
+         the `source:<name>` owner; only a run over several sources keeps a \
+         plural noun:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The mutating `source` verbs and the file each renders its verdict from,
+/// with whether the verb's clap definition lets ONE invocation address several
+/// sources (`update` with no name runs over all of them).
+fn mutating_source_verbs() -> Vec<(&'static str, &'static str, bool)> {
+    use clap::CommandFactory;
+    let cli = Cli::command();
+    let source = cli
+        .find_subcommand("source")
+        .expect("the `source` verb family");
+    [
+        ("add", "add.rs"),
+        ("update", "update.rs"),
+        ("remove", "remove.rs"),
+        ("replace", "replace.rs"),
+        ("override", "override_cmd.rs"),
+        ("priority", "priority.rs"),
+    ]
+    .into_iter()
+    .map(|(verb, file)| {
+        let cmd = source
+            .find_subcommand(verb)
+            .unwrap_or_else(|| panic!("`source {verb}` is a subcommand"));
+        // A verb whose subject positional is optional can run without naming
+        // one, which is the only way it addresses more than one source.
+        let multi = cmd.get_positionals().all(|arg| !arg.is_required_set());
+        (verb, file, multi)
+    })
+    .collect()
+}
+
+fn source_verb_body(file: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/cli/source")
+        .join(file);
+    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
+    production_body(&body).lines().map(str::to_string).collect()
+}
+
+/// A `source` verdict carries a count exactly when the verb can address more
+/// than one source, and is bare otherwise. The family had shipped `√
+/// Subscribed`, `√ Updated 1 source` and `√ Removed` — a counted verdict beside
+/// two bare ones, chosen verb by verb. The arity is read from each verb's own
+/// clap definition, so a verb that grows a second subject trips here.
+#[test]
+fn every_source_verdict_counts_iff_its_verb_takes_many_subjects() {
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (verb, file, multi) in mutating_source_verbs() {
+        let lines = source_verb_body(file);
+        let mut counted = false;
+        let mut verdicts = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("Role::Ok") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            verdicts += 1;
+            // The literal may sit up to two lines below a wrapped `Role::Ok,`.
+            let window = lines[n..(n + 3).min(lines.len())].join("\n");
+            if window.contains("pluralize(") {
+                counted = true;
+                if !multi {
+                    offenders.push(format!(
+                        "source/{file}:{}: `source {verb}` addresses one source; its verdict is bare",
+                        n + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            verdicts > 0,
+            "`source {verb}` renders no `Role::Ok` verdict"
+        );
+        judged += 1;
+        if multi && !counted {
+            offenders.push(format!(
+                "source/{file}: `source {verb}` can address several sources; its verdict carries the count"
+            ));
+        }
+    }
+    assert_eq!(judged, 6, "the walk no longer reaches the family");
+    assert!(
+        offenders.is_empty(),
+        "a `source` verdict is counted iff the verb takes many subjects:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The mutating `module` verbs: the file and the handler each renders its
+/// verdict from, and — for a verb that genuinely ENDS a workflow — why no
+/// command comes next. A `None` reason is a verb whose success path must
+/// close on `success_next_step`.
+fn mutating_module_verbs() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+)> {
+    vec![
+        ("create", "crud.rs", "cmd_module_create", None),
+        ("update", "crud.rs", "cmd_module_update_local", None),
+        ("edit", "crud.rs", "cmd_module_edit", None),
+        (
+            "delete",
+            "crud.rs",
+            "cmd_module_delete",
+            Some("refuses while any profile lists the module, so nothing is left to apply"),
+        ),
+        ("add", "registry.rs", "cmd_module_add_remote", None),
+        ("upgrade", "registry.rs", "cmd_module_upgrade", None),
+        (
+            "registry add",
+            "registry.rs",
+            "cmd_module_registry_add",
+            None,
+        ),
+        (
+            "registry remove",
+            "registry.rs",
+            "cmd_module_registry_remove",
+            Some(
+                "a registry gone is the end of its workflow; the profiles it strands are warned about inline",
+            ),
+        ),
+        (
+            "registry rename",
+            "registry.rs",
+            "cmd_module_registry_rename",
+            Some("rewrites every profile reference itself, leaving nothing to type"),
+        ),
+        (
+            "export",
+            "export.rs",
+            "cmd_module_export",
+            Some("the next step is a devcontainer.json edit, outside cfgd"),
+        ),
+        ("keys generate", "keys.rs", "cmd_module_keys_generate", None),
+        ("keys rotate", "keys.rs", "cmd_module_keys_rotate", None),
+        ("push", "push_pull.rs", "cmd_module_push", None),
+        ("pull", "push_pull.rs", "cmd_module_pull", None),
+        ("build", "build.rs", "cmd_module_build", None),
+    ]
+}
+
+/// The mutating `profile` verbs: the file under `src/cli/profile` each renders
+/// its verdict from, and — for a verb that genuinely ENDS a workflow — why no
+/// command comes next. One verb per file, so the file is the unit the walk
+/// reads, exactly as it is for the `source` family.
+fn mutating_profile_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        ("create", "create.rs", None),
+        ("update", "update.rs", None),
+        ("edit", "edit.rs", None),
+        ("switch", "switch.rs", None),
+        (
+            "delete",
+            "delete.rs",
+            Some("a profile that is gone declares nothing left to apply"),
+        ),
+        (
+            "migrate",
+            "migrate.rs",
+            Some(
+                "relocates profile files into the canonical layout without changing what any profile declares, so the machine is already converged; its failure arm hints the retry",
+            ),
+        ),
+    ]
+}
+
+/// The mutating `secret` verbs, all four in one file, so each is read from its
+/// own handler body the way the `module` family is.
+fn mutating_secret_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        ("init", "cmd_secret_init", None),
+        ("encrypt", "cmd_secret_encrypt", None),
+        (
+            "decrypt",
+            "cmd_secret_decrypt",
+            Some(
+                "writes the plaintext to stdout for the reader's own pipeline; what happens to it is outside cfgd",
+            ),
+        ),
+        ("edit", "cmd_secret_edit", None),
+    ]
+}
+
+/// The mutating `backup` verbs, all three in one file, each read from its own
+/// handler body the way the `secret` family is. A `Some` reason is why the
+/// verb's success path names no next step.
+fn mutating_backup_verbs() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    vec![
+        (
+            "run",
+            "run_backup_run",
+            Some(
+                "a run over many units settles through the shared rollup, whose own `reconciler::run_next_step` words the only state that leaves the reader anything to do",
+            ),
+        ),
+        (
+            "restore",
+            "run_backup_restore",
+            Some(
+                "closes on the sidecar hint naming `cfgd backup rollback <name>` — the one command that undoes what it just wrote, worded from `SidecarOutcome::detail` so the copy's verb is stated once",
+            ),
+        ),
+        ("rollback", "run_backup_rollback", None),
+    ]
+}
+
+fn cli_file_body(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/cli")
+        .join(relative);
+    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
+    production_body(&body)
+}
+
+/// Every mutating `source` and `module` verb closes its SUCCESS path on a next
+/// step, from the ONE composer (`success_next_step`) both families share.
+/// `source update` hinted only on its failure arm and `source remove` never;
+/// `module push`, `pull` and `build` — the three verbs that hand an artifact to
+/// somebody else — closed on nothing while the demo's next beat hand-typed the
+/// `kubectl apply` that `push --apply` performs. A verb that genuinely ends a
+/// workflow is hatched in the walk's own table, with its reason.
+///
+/// The population is every family that MUTATES, not the two that were noticed
+/// first: `profile update` closed on `√ 3 changes written` and the prompt —
+/// the one composition verb `Mutation::ModuleCreated`'s own hint routes the
+/// reader into — while `profile edit`'s exact twin `module edit` was already
+/// covered, and `secret` and `rollback` carried no hint at all. A new
+/// `profile`, `secret` or `module` subcommand trips here by not being in its
+/// family's table.
+#[test]
+fn every_mutating_verb_closes_on_a_next_step() {
+    let mut offenders = Vec::new();
+    let judge = |offenders: &mut Vec<String>,
+                 where_: String,
+                 verb: String,
+                 terminal: Option<&'static str>,
+                 closes: bool| {
+        match (terminal, closes) {
+        (None, false) => offenders.push(format!(
+            "{where_}: `{verb}` closes without `success_next_step`"
+        )),
+        (Some(why), true) => offenders.push(format!(
+            "{where_}: `{verb}` is hatched as terminal ({why}) yet closes on a next step — drop the hatch"
+        )),
+        _ => {}
+    }
+    };
+    for (verb, file, _) in mutating_source_verbs() {
+        let lines = source_verb_body(file);
+        if !lines.iter().any(|l| l.contains("success_next_step(")) {
+            offenders.push(format!(
+                "source/{file}: `source {verb}` closes without `success_next_step`"
+            ));
+        }
+    }
+    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/module");
+    let mut judged = 0usize;
+    for (verb, file, handler, terminal) in mutating_module_verbs() {
+        let body = std::fs::read_to_string(module_dir.join(file))
+            .expect("the verb's source file is checked out");
+        let body = production_body(&body);
+        let lines: Vec<&str> = body.lines().collect();
+        let handler_body = fn_body(&lines, handler)
+            .unwrap_or_else(|| panic!("module/{file} declares `{handler}`"));
+        judged += 1;
+        let closes = handler_body.contains("success_next_step(");
+        match (terminal, closes) {
+            (None, false) => offenders.push(format!(
+                "module/{file}: `module {verb}` closes without `success_next_step`"
+            )),
+            (Some(why), true) => offenders.push(format!(
+                "module/{file}: `module {verb}` is hatched as terminal ({why}) yet closes on a next step — drop the hatch"
+            )),
+            _ => {}
+        }
+    }
+    assert_eq!(judged, 15, "the walk no longer reaches the `module` family");
+
+    let mut profile_judged = 0usize;
+    for (verb, file, terminal) in mutating_profile_verbs() {
+        let body = cli_file_body(&format!("profile/{file}"));
+        profile_judged += 1;
+        judge(
+            &mut offenders,
+            format!("profile/{file}"),
+            format!("profile {verb}"),
+            terminal,
+            body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        profile_judged, 6,
+        "the walk no longer reaches the `profile` family"
+    );
+
+    let secret_body = cli_file_body("secret.rs");
+    let secret_lines: Vec<&str> = secret_body.lines().collect();
+    let mut secret_judged = 0usize;
+    for (verb, handler, terminal) in mutating_secret_verbs() {
+        let handler_body = fn_body(&secret_lines, handler)
+            .unwrap_or_else(|| panic!("secret.rs declares `{handler}`"));
+        secret_judged += 1;
+        judge(
+            &mut offenders,
+            "secret.rs".to_string(),
+            format!("secret {verb}"),
+            terminal,
+            handler_body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        secret_judged, 4,
+        "the walk no longer reaches the `secret` family"
+    );
+
+    let backup_body = cli_file_body("backup.rs");
+    let backup_lines: Vec<&str> = backup_body.lines().collect();
+    let mut backup_judged = 0usize;
+    for (verb, handler, terminal) in mutating_backup_verbs() {
+        let handler_body = fn_body(&backup_lines, handler)
+            .unwrap_or_else(|| panic!("backup.rs declares `{handler}`"));
+        backup_judged += 1;
+        judge(
+            &mut offenders,
+            "backup.rs".to_string(),
+            format!("backup {verb}"),
+            terminal,
+            handler_body.contains("success_next_step("),
+        );
+    }
+    assert_eq!(
+        backup_judged, 3,
+        "the walk no longer reaches the `backup` family"
+    );
+
+    // `rollback` is a family of one, and its verdict is composed by
+    // `build_rollback_doc` rather than by the handler, so the file is the unit.
+    judge(
+        &mut offenders,
+        "rollback.rs".to_string(),
+        "rollback".to_string(),
+        None,
+        cli_file_body("rollback.rs").contains("success_next_step("),
+    );
+
+    assert!(
+        offenders.is_empty(),
+        "a mutating verb's success path says what to do next:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A verb that puts an artifact in a registry, as this walk judges it.
+struct ArtifactVerb {
+    /// The command as a person types it.
+    verb: &'static str,
+    /// Its source file under `src/cli`, and the handler in it.
+    file: &'static str,
+    handler: &'static str,
+    /// The payload key naming the platform the run PUSHED for, and the
+    /// `Option` flag that merely REQUESTS one. The two are never the same
+    /// value: the flag is what the caller typed, the key is what the run
+    /// resolved and stamped into the manifest.
+    key: &'static str,
+    flag: &'static str,
+    /// The header kv key whose value the settled row's detail already carries,
+    /// when there is one. `None` where the repetition is structural rather
+    /// than two spellings of one fact in one block.
+    echoed_header_key: Option<&'static str>,
+}
+
+fn platform_resolving_artifact_verbs() -> Vec<ArtifactVerb> {
+    vec![
+        ArtifactVerb {
+            verb: "module push",
+            file: "module/push_pull.rs",
+            handler: "cmd_module_push",
+            key: "platform",
+            flag: "platform",
+            echoed_header_key: Some("Platform"),
+        },
+        ArtifactVerb {
+            verb: "module build",
+            file: "module/build.rs",
+            handler: "cmd_module_build",
+            key: "targets",
+            flag: "target",
+            // `Targets` repeats through the owner group `target:linux/amd64`
+            // and the per-target `✓ Built linux/amd64 to …` row — one
+            // occurrence per rendering LEVEL, not two spellings of one fact in
+            // one block.
+            echoed_header_key: None,
+        },
+        ArtifactVerb {
+            verb: "image pack",
+            file: "image/pack.rs",
+            handler: "cmd_image_pack",
+            key: "platform",
+            flag: "platform",
+            // `Base` stays a row: nothing else in the block reports it.
+            echoed_header_key: Some("Platform"),
+        },
+    ]
+}
+
+/// A payload key naming a fact the run RESOLVED is never filled from the flag
+/// that asked for it. `module push` emitted `"platform": platform` — the
+/// `Option<&str>` flag — so a push with no `--platform` answered
+/// `"platform": null` about an artifact whose own manifest annotation, and
+/// whose Module `PLATFORMS` column read back off it by the operator, said
+/// `linux/amd64`. A key named for the artifact's platform answering `null`
+/// about a platform that exists is a wrong value, not a silence: the producer
+/// returns what it resolved (`PushOutcome` / `PackOutcome`), and the handler
+/// serializes that.
+///
+/// The RENDER half is the same fact from the other side. Once the detail
+/// carries the resolved platform, the conditional `Platform` header row became
+/// a second spelling of it in the same five-line block, and one the two halves
+/// can never disagree about — `resolve_platform` is `flag.unwrap_or_else(…)`,
+/// so whenever the row rendered its value WAS the parenthetical. No artifact
+/// verb's header block carries a key whose value the settled row's detail
+/// already prints; `image pack`'s `Base` keeps its row precisely because
+/// nothing else reports it.
+#[test]
+fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut judged = 0usize;
+    for ArtifactVerb {
+        verb,
+        file,
+        handler,
+        key,
+        flag,
+        echoed_header_key,
+    } in platform_resolving_artifact_verbs()
+    {
+        let source =
+            std::fs::read_to_string(cli_dir.join(file)).expect("the verb's source is checked out");
+        let source = production_body(&source);
+        let lines: Vec<&str> = source.lines().collect();
+        let body =
+            fn_body(&lines, handler).unwrap_or_else(|| panic!("{file} declares `{handler}`"));
+        judged += 1;
+        let needle = format!("\"{key}\": {flag}");
+        let straight_from_the_flag = body.match_indices(&needle).any(|(at, _)| {
+            body[at + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+        });
+        if straight_from_the_flag {
+            offenders.push(format!(
+                "cli/{file}: `{verb}` serializes `{key}` from the `{flag}` flag — emit what the push resolved"
+            ));
+        }
+        if let Some(echoed) = echoed_header_key
+            && body.contains(&format!("(\"{echoed}\".to_string()"))
+        {
+            offenders.push(format!(
+                "cli/{file}: `{verb}` pushes a `{echoed}` header row whose value the settled \
+                 row's detail already prints — drop the row, the detail states it unconditionally"
+            ));
+        }
+    }
+    assert_eq!(
+        judged, 3,
+        "every verb that resolves a platform for an artifact is walked here"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a payload key names what the run resolved, not what the flag asked for, and a header \
+         row never restates the detail:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The files a verb REQUIRES to already exist in the directory it is handed —
+/// the ones it refuses to run without. A hint closing that verb may not name
+/// one: the reader is looking at it on screen, and a `kubectl apply` of the
+/// module manifest is a different resource wearing the same name.
+fn required_input_files(verb: &str) -> &'static [&'static str] {
+    match verb {
+        // `cmd_module_push` / `cmd_module_build` refuse a directory holding no
+        // `module.yaml`, which is itself `kind: Module`.
+        "cfgd module push" | "cfgd module build" => &["module.yaml"],
+        _ => &[],
+    }
+}
+
+/// The foreign tools a composed hint may name, each with the argument that
+/// invocation refuses to run without. `kubectl apply` with neither `-f` nor
+/// `-k` exits 1 with `error: must specify one of -f and -k` — it never
+/// contacts a cluster — so a hint printing it bare hands the reader the one
+/// typeable thing in the line and it fails. `None` means the tool is absent
+/// from this table, which the walk fails on: a new foreign command trips by
+/// not being listed rather than by being wrong.
+fn foreign_command_is_complete(command: &str) -> Option<bool> {
+    let mut tokens = command.split_whitespace();
+    let tool = tokens.next()?;
+    let sub = tokens.next().unwrap_or_default();
+    let rest: Vec<&str> = tokens.collect();
+    // A token is a positional unless it is a flag itself, or the value of the
+    // flag before it.
+    let has_positional = rest.iter().enumerate().any(|(i, t)| {
+        !t.starts_with('-')
+            && !rest[..i]
+                .last()
+                .is_some_and(|prev| prev.starts_with('-') && !prev.contains('='))
+    });
+    match (tool, sub) {
+        ("kubectl", "apply") => Some(rest.iter().any(|t| *t == "-f" || *t == "-k")),
+        ("kubectl", "get") => Some(has_positional),
+        ("cosign", "verify") => Some(has_positional),
+        _ => None,
+    }
+}
+
+/// Every shape [`success_next_step`] can be handed, paired with the verbs
+/// that produce it: the enumerated population, so a new variant lands under
+/// both walks that read it rather than under whichever one thought of it.
+fn walked_mutations() -> &'static [(Mutation<'static>, &'static [&'static str])] {
+    &[
+        (Mutation::SourceSubscribed, &["cfgd source add"]),
+        (
+            Mutation::SourceUpdated {
+                trust_changed: true,
+            },
+            &["cfgd source update"],
+        ),
+        (
+            Mutation::SourceUpdated {
+                trust_changed: false,
+            },
+            &["cfgd source update"],
+        ),
+        (Mutation::SourceRemoved, &["cfgd source remove"]),
+        (Mutation::SourceReplaced, &["cfgd source replace"]),
+        (Mutation::SourceOverridden, &["cfgd source override"]),
+        (Mutation::SourceReprioritized, &["cfgd source priority"]),
+        (
+            Mutation::ModuleCreated { name: "nvim" },
+            &["cfgd module create"],
+        ),
+        (
+            Mutation::ModuleUpdated,
+            &["cfgd module update", "cfgd module edit"],
+        ),
+        (
+            Mutation::ModuleLocked,
+            &["cfgd module add", "cfgd module upgrade"],
+        ),
+        (
+            Mutation::ModuleBuilt { output: "./out" },
+            &["cfgd module build"],
+        ),
+        (
+            Mutation::ModulePushed { applied: None },
+            &["cfgd module push", "cfgd module build"],
+        ),
+        (
+            Mutation::ModulePushed {
+                applied: Some("tools"),
+            },
+            &["cfgd module push", "cfgd module build"],
+        ),
+        (Mutation::ModulePulled { name: None }, &["cfgd module pull"]),
+        (
+            Mutation::ModulePulled {
+                name: Some("tools"),
+            },
+            &["cfgd module pull"],
+        ),
+        (Mutation::RegistryAdded, &["cfgd module registry add"]),
+        (
+            Mutation::KeysGenerated { dir: "./keys" },
+            &["cfgd module keys generate"],
+        ),
+        (
+            Mutation::KeysRotated {
+                dir: "./keys",
+                resigned: true,
+            },
+            &["cfgd module keys rotate"],
+        ),
+        (
+            Mutation::KeysRotated {
+                dir: "./keys",
+                resigned: false,
+            },
+            &["cfgd module keys rotate"],
+        ),
+        (
+            Mutation::ProfileCreated { name: "dev" },
+            &["cfgd profile create"],
+        ),
+        (
+            Mutation::ProfileUpdated,
+            &["cfgd profile update", "cfgd profile edit"],
+        ),
+        (Mutation::ProfileSwitched, &["cfgd profile switch"]),
+        (Mutation::SecretsInitialized, &["cfgd secret init"]),
+        (Mutation::SecretEncrypted, &["cfgd secret encrypt"]),
+        (Mutation::SecretEdited, &["cfgd secret edit"]),
+        (Mutation::RolledBack, &["cfgd rollback"]),
+        (
+            Mutation::BackupRolledBack { unit: "notes" },
+            &["cfgd backup rollback"],
+        ),
+    ]
+}
+
+/// Every hint `success_next_step` composes names the command that comes next,
+/// in backticks — the same shape `every_closing_hint_names_a_command` holds
+/// literal hints to, which cannot see a text built here. Walks every variant,
+/// so a new one lands under the rule.
+///
+/// A hint that spells the verb that JUST RAN is a re-run, and a re-run is
+/// either a `<placeholder>` template or a lie: `module push`'s hint once
+/// recomposed the push from the directory and the artifact alone, dropping
+/// `--sign --key`, `--platform` and `--attest`, so following it re-pushed a
+/// fresh digest the cosign signature did not cover. Each variant names the
+/// verbs that produce it; a backticked command opening on one of them must
+/// carry a placeholder rather than the arguments the reader already typed.
+///
+/// Nor may a hint name a FILE the verb that just ran consumes, in any spelling
+/// its placeholder substitutes to. `module push`'s hint read `kubectl apply -f
+/// <module>.yaml`, and `module.yaml` is this verb's own required input —
+/// `kind: Module`, carrying the pushed module's `metadata.name`, and on screen
+/// two lines above the hint. Applying it succeeds and replaces the Module with
+/// one holding no `ociArtifact` and no signature, silently undoing the push and
+/// the signing the rows above just reported.
+///
+/// And every backticked span is COMPLETE as printed, once its placeholders are
+/// substituted: dropping the file left `kubectl apply`, which exits 1 on
+/// `must specify one of -f and -k` without contacting a cluster, three lines
+/// above the operator hand-typing the `-f` the hint had dropped. A span
+/// opening on `cfgd` round-trips through [`Cli::try_parse_from`]; one opening
+/// on a foreign tool is judged by [`foreign_command_is_complete`], whose table
+/// a new foreign command trips by being absent from. A span that is a bare
+/// flag (`--apply`) is named, not claimed typeable on its own.
+#[test]
+fn every_composed_next_step_names_a_command() {
+    let mutations = walked_mutations();
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .unwrap();
+    let declared = source
+        .split("pub(in crate::cli) enum Mutation<'a> {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("Mutation is declared in cli/mod.rs")
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.starts_with("///")
+                && !t.is_empty()
+                && t.chars().next().is_some_and(char::is_uppercase)
+        })
+        .count();
+    assert_eq!(
+        declared, 23,
+        "a new Mutation variant is walked here with every shape it can take"
+    );
+    for (mutation, own_verbs) in mutations {
+        let hint = success_next_step(*mutation);
+        // A hint names its commands two ways: backticked mid-sentence, or on
+        // the `$` block lines the prose introduces. Both are the reader's to
+        // type, so both are judged.
+        let commands: Vec<&str> = hint
+            .text
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .chain(hint.commands.iter().map(String::as_str))
+            .collect();
+        assert!(
+            !commands.is_empty(),
+            "{mutation:?} closes on a hint naming no command: {hint:?}"
+        );
+        for command in commands {
+            // A placeholder is read by substituting its own name, which is how
+            // `<module>.yaml` becomes the file the verb requires. Judge the
+            // substituted spelling, not the template.
+            let substituted = command.replace(['<', '>'], "");
+            for input in own_verbs.iter().flat_map(|v| required_input_files(v)) {
+                assert!(
+                    !substituted
+                        .split_whitespace()
+                        .any(|token| token.ends_with(input)),
+                    "{mutation:?} names `{input}` — the file the verb that just ran REQUIRES — \
+                     so following the hint overwrites what the run produced: {hint:?}"
+                );
+            }
+            if own_verbs.iter().any(|verb| command.starts_with(verb)) {
+                assert!(
+                    command.contains('<'),
+                    "{mutation:?} re-spells the verb that just ran with concrete arguments — \
+                     a re-run hint is a <placeholder> template or names a different command: {hint:?}"
+                );
+            }
+            let argv: Vec<&str> = substituted.split_whitespace().collect();
+            match argv.first() {
+                Some(&"cfgd") => {
+                    if let Err(e) = Cli::try_parse_from(argv.iter().copied()) {
+                        panic!(
+                            "{mutation:?} composes `{command}`, which this CLI does not parse — \
+                             a hint hands the reader a runnable invocation: {e}"
+                        );
+                    }
+                }
+                Some(token) if token.starts_with('-') => {}
+                Some(_) => {
+                    assert_eq!(
+                        foreign_command_is_complete(&substituted),
+                        Some(true),
+                        "{mutation:?} composes `{command}`, a foreign invocation either missing \
+                         the argument its tool refuses to run without, or absent from \
+                         `foreign_command_is_complete`'s table: {hint:?}"
+                    );
+                }
+                None => panic!("{mutation:?} composes an empty backticked span: {hint:?}"),
+            }
+        }
+    }
+}
+
+/// A sidecar's sentence is `SidecarOutcome::detail`'s on every surface that
+/// displaces a user's file. `backup restore` composed its own (`Previous
+/// contents saved to …`) and dropped the outcome's `reused` bit with it: a
+/// second restore over bytes an earlier copy already held claimed a write it
+/// never made. Walks every production function in both crates that holds a
+/// sidecar and refuses a string literal in it that supplies the copy's verb;
+/// the writer's own module is the one place the verbs are spelled.
+#[test]
+fn every_sidecar_report_is_worded_by_sidecar_outcome_detail() {
+    const HANDLES: &[&str] = &[
+        "SidecarOutcome",
+        "safety_copy",
+        "sidecars",
+        "backup_file(",
+        "cfgd_backup_path(",
+        "CFGD_BACKUP_SUFFIX",
+    ];
+    const VERBS: &[&str] = &[
+        "backed up",
+        "saved to",
+        "copied to",
+        "copied aside",
+        "kept at",
+        "moved to",
+        "stored at",
+        "preserved at",
+    ];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        if path.ends_with("reconciler/sidecar.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        let mut seen = std::collections::HashSet::new();
+        for (n, line) in lines.iter().enumerate() {
+            if !HANDLES.iter().any(|h| line.contains(h)) {
+                continue;
+            }
+            let Some(name) = enclosing_fn_name(&lines, n) else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            // `enclosing_fn_name` reads backwards, so a handle on a struct
+            // field lands on whatever function precedes it; only a body that
+            // holds the handle itself is judged.
+            let Some(fn_text) = fn_body(&lines, &name) else {
+                continue;
+            };
+            if !HANDLES.iter().any(|h| fn_text.contains(h)) {
+                continue;
+            }
+            judged += 1;
+            for l in fn_text.lines() {
+                if l.trim_start().starts_with("//") {
+                    continue;
+                }
+                let spells_a_verb = l
+                    .split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(|literal| VERBS.iter().any(|v| literal.contains(v)));
+                if spells_a_verb {
+                    offenders.push(format!(
+                        "{}: `{name}` words a sidecar copy itself — render `SidecarOutcome::detail()`: {}",
+                        path.display(),
+                        l.trim()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        judged >= 4,
+        "the walk must reach the sidecar's holders, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "one sentence for every sidecar copy:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A count an action PRODUCES is its row's detail, never a parenthetical
+/// trailer on its subject. `deploy a, b (6 files)` stated its count in the
+/// subject while the env-write row twenty lines up stated the same kind of
+/// fact in the detail (`write ~/.cfgd.env — 3 vars, 3 aliases`); the rule was
+/// already in `output-module.md`, but its pin walked `cli/**` bodies only, so
+/// a subject built in `reconciler/format.rs` escaped it. Walks that file's
+/// string literals for a trailing `(…)` group whose body is an interpolated
+/// count followed by a noun; a parenthetical that NAMES (`(alias: {})`, a
+/// version in `({})`) carries no count and passes, or takes a
+/// `// name-row-ok:` marker where the shape is ambiguous.
+#[test]
+fn every_produced_count_is_an_action_rows_detail() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/reconciler/format.rs");
+    let body = production_body(&std::fs::read_to_string(&path).expect("format.rs is checked out"));
+    let lines: Vec<&str> = body.lines().collect();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for literal in line.split('"').skip(1).step_by(2) {
+            if !literal.contains('(') {
+                continue;
+            }
+            judged += 1;
+            if counts_in_a_trailer(literal) && !label_hatched(&lines, n, "// name-row-ok:") {
+                offenders.push(format!(
+                    "{}:{}: a produced count is the row's detail (`action_produced_detail`), not a subject trailer: {literal}",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        judged >= 3,
+        "the walk must reach the subject literals carrying parentheticals, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a count a step produces lives in its row's detail:\n{}",
+        offenders.join("\n")
+    );
+
+    // The catalogue half: every kind whose executed work can be NARROWER than
+    // the subject it named has an arm in `action_produced_detail`, and each
+    // states its shortfall the same way. A new such kind is added here beside
+    // the others, or its row goes on claiming work it did not do.
+    use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind, action_produced_detail};
+    let deploy = Action::Module(ModuleAction {
+        module_name: "nvim".to_string(),
+        kind: ModuleActionKind::DeployFiles {
+            files: vec![cfgd_core::modules::ResolvedFile {
+                source: "init.lua".into(),
+                target: "~/.config/nvim/init.lua".into(),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            declared_total: 6,
+        },
+        origin: None,
+    });
+    let install = Action::Package(cfgd_core::providers::PackageAction::Install {
+        manager: "apt".to_string(),
+        packages: vec!["ripgrep".to_string(), "fd-find".to_string()],
+        origin: "local".to_string(),
+    });
+    assert_eq!(
+        action_produced_detail(&deploy, None, 0, &[]).as_deref(),
+        Some("5 already deployed"),
+        "a deploy states its shortfall from the action alone"
+    );
+    assert_eq!(
+        action_produced_detail(&install, Some(1), 0, &[]).as_deref(),
+        Some("1 already installed"),
+        "an install states its shortfall from the count the executor re-read"
+    );
+    assert_eq!(
+        action_produced_detail(&install, None, 0, &[]),
+        None,
+        "a preview has no executed count, so it qualifies nothing"
+    );
+}
+
+/// Whether `literal` ends on a parenthetical whose body is `{…} <noun>` or
+/// `{…} of {…} <noun>` — an interpolated count and the thing counted.
+fn counts_in_a_trailer(literal: &str) -> bool {
+    let Some(open) = literal.rfind('(') else {
+        return false;
+    };
+    let Some(body) = literal[open + 1..].strip_suffix(')') else {
+        return false;
+    };
+    fn after_count(s: &str) -> Option<&str> {
+        let rest = s.strip_prefix('{')?;
+        let close = rest.find('}')?;
+        Some(&rest[close + 1..])
+    }
+    let Some(rest) = after_count(body) else {
+        return false;
+    };
+    let rest = rest
+        .strip_prefix(" of ")
+        .and_then(after_count)
+        .unwrap_or(rest);
+    let noun = rest.trim_start();
+    rest.starts_with(' ') && !noun.is_empty() && noun.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Every surface rendering the `Sources` section builds its rows through the
+/// ONE table builder. `cfgd source list` and `cfgd daemon status` had shipped
+/// two tables under one section name with disjoint columns, so the same
+/// question got two answers depending on which command a reader reached for.
+/// The section name is the shared constant too — a hand-written `"Sources"`
+/// literal is how the second table got there.
+#[test]
+fn both_sources_surfaces_render_through_the_one_table_builder() {
+    const OPENERS: &[&str] = &[".section(", ".section_if_nonempty(", ".heading("];
+    let mut tabled = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let opens_section = OPENERS.iter().any(|o| line.contains(o));
+            if opens_section
+                && line.contains("\"Sources\"")
+                && !line.contains("pub const SOURCES_SECTION")
+            {
+                offenders.push(format!(
+                    "{}:{}: the section name is `source::list::SOURCES_SECTION`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+            if !opens_section {
+                continue;
+            }
+            // The section's own statement, so a table built elsewhere in the
+            // file — every one of these surfaces renders several — is not read
+            // as this section's. The name can sit a line below the opener, a
+            // long call being wrapped one argument per line.
+            let end = (n..lines.len())
+                .find(|&i| lines[i].trim_end().ends_with(");"))
+                .unwrap_or(lines.len() - 1);
+            let stmt = lines[n..=end].join("\n");
+            if !stmt.contains("SOURCES_SECTION") || !stmt.contains(".table(") {
+                continue;
+            }
+            tabled.push(format!("{}:{}", path.display(), n + 1));
+            if !stmt.contains("sources_table(") {
+                offenders.push(format!(
+                    "{}:{}: a Sources table builds through \
+                     `source::list::sources_table`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        tabled.len() >= 2,
+        "the walk no longer reaches the Sources tables — it found {tabled:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "one Sources section, one column set:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every table the CLI renders drops a column no row can fill. The rule landed
+/// on `sources_table` alone, and `backup list` — the sibling listing, whose
+/// `Last Run` the sources file name-checks — shipped three columns of `-` one
+/// commit later. So the drop is `Table::without_unfillable_columns`, and every
+/// `Table::new` in the CLI settles through it before the table is emitted: a
+/// column that can be filled costs nothing, and a column that cannot is
+/// dropped the same way on every surface.
+#[test]
+fn every_listing_the_cli_renders_drops_a_column_no_row_can_fill() {
+    let mut tabled = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, _) in body.match_indices("Table::new(") {
+            let n = body[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//") {
+                continue;
+            }
+            tabled += 1;
+            // The enclosing function: from its `fn` line to the line that
+            // closes its brace block.
+            let head = (0..=n)
+                .rev()
+                .find(|&i| {
+                    let code = lines[i].trim_start();
+                    code.starts_with("fn ") || code.contains(" fn ")
+                })
+                .unwrap_or(0);
+            let mut depth = 0i32;
+            let mut opened = false;
+            let mut end = lines.len() - 1;
+            for (i, line) in lines.iter().enumerate().skip(head) {
+                for c in line.chars() {
+                    match c {
+                        '{' => {
+                            depth += 1;
+                            opened = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if opened && depth <= 0 {
+                    end = i;
+                    break;
+                }
+            }
+            if !lines[head..=end]
+                .iter()
+                .any(|l| l.contains(".without_unfillable_columns()"))
+            {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        tabled >= 10,
+        "the walk no longer reaches the CLI's tables — it found {tabled}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a table settles through `Table::without_unfillable_columns` before it \
+         is emitted, so a column of `-` is dropped on every surface:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every subscription knob `source update` can write has a Title Case label,
+/// and `source update` renders that label rather than the wire key. `source
+/// show` had said `Require Signed Commits` while `source update` said
+/// `requireSignedCommits` for the same knob on the same source — two names for
+/// one thing, one of them a JSON field a reader never typed.
+///
+/// Read from the SOURCE of both lists, so a knob added to `SubscriptionEdits`
+/// without a label fails here rather than shipping its wire key to a terminal.
+#[test]
+fn every_subscription_knob_renders_a_title_case_label() {
+    let keys_of = |path: &str, marker: &str| -> Vec<String> {
+        let body =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .expect("the source file is checked out");
+        let at = body.find(marker).expect("the list is where the pin says");
+        let open = array_of_pairs(&body, at);
+        let (_, span) = bracketed_span(&body, open);
+        let mut keys = Vec::new();
+        let mut rest = span;
+        while let Some(q) = rest.find("(\"") {
+            let Some(key) = rest[q + 2..].split('"').next() else {
+                break;
+            };
+            keys.push(key.to_string());
+            rest = &rest[q + 2 + key.len()..];
+        }
+        keys
+    };
+    let written = keys_of("src/cli/source/update.rs", "fn entries(&self)");
+    let labelled = keys_of("src/cli/source/mod.rs", "SUBSCRIPTION_KNOB_LABELS");
+    assert!(
+        written.contains(&"requireSignedCommits".to_string())
+            && written.contains(&"allowScripts".to_string()),
+        "the walk no longer reaches the knobs `source update` writes — it found \
+         {written:?}"
+    );
+    let unlabelled: Vec<&String> = written.iter().filter(|k| !labelled.contains(k)).collect();
+    assert!(
+        unlabelled.is_empty(),
+        "a subscription knob `source update` writes is rendered by its label, \
+         never by its wire key — these have none: {unlabelled:?}"
+    );
+    let body = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source/mod.rs"),
+    )
+    .expect("the source file is checked out");
+    let at = body
+        .find("SUBSCRIPTION_KNOB_LABELS")
+        .expect("the table is where the pin says");
+    let open = array_of_pairs(&body, at);
+    let (_, span) = bracketed_span(&body, open);
+    let shouty: Vec<&str> = span
+        .split('"')
+        .skip(2)
+        .step_by(4)
+        .filter(|label| !is_title_case(label))
+        .collect();
+    assert!(
+        shouty.is_empty(),
+        "a subscription knob's label is Title Case like every other rendered \
+         label: {shouty:?}"
+    );
+}
+
+/// The label of a rendered fact whose value is a moment in time.
+///
+/// Judged on the LABEL, not on the value's type, because the label is what the
+/// walk below can see and what a reader is promised: `Last Run`, `Next Run`,
+/// `Created`, `Age`, `Timestamp` and every `…At` name a when.
+fn names_a_moment(label: &str) -> bool {
+    matches!(label, "Age" | "Created" | "Time" | "Timestamp")
+        || label.starts_with("Last ")
+        || label.starts_with("Next ")
+        || label.ends_with("At")
+}
+
+/// The helpers a time cell is allowed to be built through — the two directions
+/// of `cfgd-core`'s one age renderer, plus the domain names layered over them.
+const RELATIVE_TIME_HELPERS: &[&str] = &[
+    "humanize_age_cell",
+    "humanize_age_magnitude_cell",
+    "humanize_until_cell",
+    "humanize_age_since",
+    "humanize_until",
+    "last_sync_display",
+    "scan_note",
+];
+
+/// The top-level function containing byte offset `at`, as text.
+///
+/// The unit a time cell is judged in: a cell can be built into a `Vec<String>`
+/// rows away from the `Table::new` naming its column, and an index-matched
+/// walk would simply fail to find it — reporting nothing rather than reporting
+/// a raw instant.
+fn enclosing_fn_body(lines: &[&str], line: usize) -> String {
+    let is_fn_start = |l: &str| {
+        l.starts_with("fn ")
+            || l.starts_with("pub fn ")
+            || (l.starts_with("pub(") && l.contains(" fn "))
+    };
+    let start = (0..=line)
+        .rev()
+        .find(|&i| is_fn_start(lines[i]))
+        .unwrap_or(0);
+    let end = ((start + 1)..lines.len())
+        .find(|&i| lines[i] == "}")
+        .map_or(lines.len(), |i| i + 1);
+    lines[start..end].join("\n")
+}
+
+/// A rendered cell whose column names a moment reads as a RELATIVE time, not as
+/// the stored instant.
+///
+/// `cfgd backup list` printed `2026-08-13T06:13:06Z` under `Last Run` and again
+/// under `Next Run`, and `cfgd backup list --snapshots` printed one under
+/// `Created` beside a `Snapshot` column whose value already IS that stamp — so
+/// the one column a reader scans to learn how stale something is answered a
+/// question (`when exactly`) that the `-o json` payload beside it exists for.
+/// Every human surface now goes through [`cfgd_core::humanize_age_cell`] or its
+/// forward twin, and every payload keeps the ISO 8601 instant.
+///
+/// Judged per FUNCTION rather than per cell on purpose: see
+/// [`enclosing_fn_body`]. A column that genuinely must show the instant — a
+/// forensic dump, a value that is not a clock reading — says so with an
+/// `// instant-ok: <why>` marker, the same hatch shape
+/// `every_rendered_label_is_title_case` takes.
+#[test]
+fn every_time_column_renders_a_relative_time() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, label) in rendered_labels(&body) {
+            if !names_a_moment(&label) {
+                continue;
+            }
+            seen.push(label.clone());
+            let n = body[..at].matches('\n').count();
+            let scope = enclosing_fn_body(&lines, n);
+            if RELATIVE_TIME_HELPERS.iter().any(|h| scope.contains(h))
+                || label_hatched(&lines, n, "// instant-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+        }
+    }
+    // One witness per surface family the rule governs — a table column, a kv
+    // row, and the forward direction — so a gather that quietly stopped
+    // matching cannot pass by finding nothing.
+    for witness in ["Last Run", "Next Run", "Created", "Last Applied", "Age"] {
+        assert!(
+            seen.iter().any(|l| l == witness),
+            "the walk no longer reaches the composer that renders {witness:?} \
+             — it found {} time labels",
+            seen.len()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a column naming a moment renders a relative time, never the stored \
+         instant (a column that must show the instant takes an \
+         `// instant-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        names_a_moment("Last Run") && names_a_moment("CreatedAt") && !names_a_moment("Format"),
+        "the label rule itself must separate the names it exists to judge"
+    );
+}
+
+/// The function containing line `n`, methods included: from the nearest `fn`
+/// line at or above it to the closing brace at that line's own indent.
+///
+/// [`enclosing_fn_body`]'s counterpart for a rule whose population lives inside
+/// `impl` blocks, where a column-zero `fn` scan finds nothing and silently
+/// widens every scope to the whole file.
+fn enclosing_fn_block(lines: &[&str], n: usize) -> String {
+    let is_fn_start = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("fn ")
+            || t.starts_with("pub fn ")
+            || t.starts_with("async fn ")
+            || t.starts_with("pub async fn ")
+            || (t.starts_with("pub(") && t.contains(" fn "))
+    };
+    let start = (0..=n).rev().find(|&i| is_fn_start(lines[i])).unwrap_or(0);
+    let closer = format!(
+        "{}}}",
+        &lines[start][..lines[start].len() - lines[start].trim_start().len()]
+    );
+    let end = ((start + 1)..lines.len())
+        .find(|&i| lines[i] == closer)
+        .map_or(lines.len(), |i| i + 1);
+    lines[start..end].join("\n")
+}
+
+/// A run that closes with the shared rollup opens with the shared header.
+///
+/// `cfgd backup restore` took `render_run_rollup`'s footer — the `✓ Restore
+/// complete — 1 action succeeded` verdict, which calls itself a run of one
+/// action — while printing none of the `Config` / `Profile` / `Sources` rows
+/// `ApplyRun::header` exists for. The higher-stakes of the command's two
+/// mutating verbs was the one that never said which config it acted under,
+/// twelve seconds after `backup run` had said it on the same screen.
+///
+/// The walk keys on the ENCLOSING FUNCTION: a body calling `render_run_rollup`
+/// or `render_apply_result` must also render a header (`.header(printer)`) or
+/// carry a `// run-header-ok: <why>` marker. Both markers in the tree today
+/// mean "my caller renders it"; a verb with genuinely no config to name would
+/// take the same hatch, and none exists.
+#[test]
+fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
+    const ROLLUPS: &[&str] = &["render_run_rollup(", "render_apply_result("];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            // The definition of a rollup renderer names itself; only a CALL is
+            // a run reporting its own outcome.
+            if code.starts_with("//") || code.contains("fn ") {
+                continue;
+            }
+            if !ROLLUPS.iter().any(|call| line.contains(call)) {
+                continue;
+            }
+            let scope = enclosing_fn_block(&lines, n);
+            // The witness check below compares against `/`-spelled module
+            // paths, so the entry is folded: a native render makes the walk
+            // report itself broken on Windows and nowhere else.
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            if scope.contains(".header(printer)") || scope.contains("// run-header-ok:") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // One witness per crate, so a gather that stopped reaching either source
+    // tree cannot pass by finding nothing.
+    for witness in ["cli/backup.rs", "reconciler/run.rs"] {
+        assert!(
+            checked.iter().any(|c| c.contains(witness)),
+            "the walk no longer reaches {witness} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a function that renders a run's rollup renders the run's header too,          so a verdict counting actions is never the only thing on screen that          describes the run (a caller-rendered header takes a          `// run-header-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every stored enum whose wire token a human surface could reach has a DISPLAY
+/// counterpart beside it.
+///
+/// `cfgd backup list --snapshots` once printed `run` in a `Kind` column — the
+/// database token — one column away from a `Status` cell reading `Success`, so
+/// two stored enums of one command answered with two policies.
+/// [`cfgd_core::state::ApplyStatus`] had had the split since it shipped; the
+/// kind enum simply never grew the other half.
+///
+/// The population is every enum in `cfgd-core/src/state/types.rs` defining an
+/// `as_str` at any visibility — the stored-state vocabulary; `ApplyStatus`
+/// keeps its own `pub(in crate::state)`, and a token narrow enough that no
+/// surface can reach it today is one `pub` away from being read. A display
+/// counterpart is either a `display_str` in the same `impl`, or a free
+/// `<snake_case_name>_display` function in the module (the shape a stored token
+/// with no typed value at the call site takes). A word-alone `human_str` does
+/// NOT count: a status vocabulary hands its word out only paired with the role
+/// that tints it, which is what
+/// `every_title_cased_status_word_renders_role_styled` refuses at the source.
+#[test]
+fn every_stored_enum_has_a_display_counterpart() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/state/types.rs")
+        .canonicalize()
+        .expect("the workspace sibling crate is checked out beside this one");
+    let body = production_body(&std::fs::read_to_string(&path).expect("read state/types.rs"));
+
+    let mut checked = Vec::new();
+    let mut offenders = Vec::new();
+    for (at, _) in body.match_indices("\nimpl ") {
+        let name = body[at + "\nimpl ".len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('{')
+            .to_string();
+        // The impl block runs to the next column-zero `}`.
+        let rest = &body[at + 1..];
+        let block = rest.find("\n}").map_or(rest, |end| &rest[..end]);
+        if !block.contains("fn as_str") {
+            continue;
+        }
+        checked.push(name.clone());
+        let free_form = format!("pub fn {}_display", to_snake_case(&name));
+        if block.contains("pub fn display_str") || body.contains(&free_form) {
+            continue;
+        }
+        offenders.push(format!("{name}: no display_str and no {free_form}"));
+    }
+    for witness in ["ApplyStatus", "BackupRunStatus"] {
+        assert!(
+            checked.iter().any(|n| n == witness),
+            "the walk no longer reaches {witness} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a stored enum's `as_str` is the WIRE token; the word a person reads is \
+         its display counterpart:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `BackupRunStatus` -> `backup_run_status`, for the free-function display form.
+fn to_snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The words clap really answers to: every subcommand name and alias at the top
+/// level, and the same over the whole tree.
+///
+/// Read off `Cli::command()` rather than listed here, so a new verb joins the
+/// vocabulary the moment it joins the CLI.
+fn clap_command_words() -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    use clap::CommandFactory;
+    fn walk(cmd: &clap::Command, all: &mut std::collections::HashSet<String>) {
+        for sub in cmd.get_subcommands() {
+            all.insert(sub.get_name().to_string());
+            all.extend(sub.get_all_aliases().map(str::to_string));
+            walk(sub, all);
+        }
+    }
+    let root = Cli::command();
+    let mut top = std::collections::HashSet::new();
+    for sub in root.get_subcommands() {
+        top.insert(sub.get_name().to_string());
+        top.extend(sub.get_all_aliases().map(str::to_string));
+    }
+    let mut all = top.clone();
+    walk(&root, &mut all);
+    (top, all)
+}
+
+/// The `(start, end)` byte range of each double-quoted string literal on `line`,
+/// stopping at a line comment.
+///
+/// Comment prose is not a rendered surface, so the sweep below judges literals
+/// only: a rustdoc sentence saying "the cfgd source line" is not a reader being
+/// told to run `cfgd source`.
+fn string_literal_spans(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            break;
+        }
+        if bytes[i] == b'"' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            spans.push((i + 1, j.min(bytes.len())));
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// A command a message tells the reader to run is quoted in backticks, the one
+/// quoting that survives every surface: a hint, an error detail, a clap help
+/// line and the docs all render the same token, and the terminal theme paints
+/// it. Single quotes made `run 'cfgd source update'` read as prose in one hint
+/// and as a literal in the next, and a reader copying the quotes gets a shell
+/// error; a BARE command is the same defect with no quoting at all, which is how
+/// `cfgd explain <kind>.<field> expands a field marked [+]` shipped one hint
+/// below a hint that backticked both of its commands.
+///
+/// Two halves. The first rejects a single-quoted command anywhere in either
+/// production tree, comments included. The second reads every `cfgd <verb>` a
+/// string LITERAL names — where `<verb>` is a real top-level subcommand and the
+/// token after it is another command word, a flag, a placeholder or nothing, so
+/// prose like "the cfgd config file" is not mistaken for an invocation — and
+/// requires it to sit inside a backtick span.
+///
+/// Two slots are exempt by shape, needing no marker: a literal that IS the
+/// command (a `command_list` key, a next-step list entry) and everything after
+/// an `Examples:` marker in a clap `long_about`. Both are already a code slot,
+/// and a backtick there renders as a literal backtick.
+///
+/// The third half reads the commands cfgd is not: `kubectl`, `helm`, `brew`,
+/// `git`, `cosign`, `systemctl` and the rest of `INSTRUCTION_HEADS`. cfgd owns
+/// no verb list for those, so the anchor is the INSTRUCTION instead — a head
+/// the literal reaches through `Run `, `with `, `using ` or `via ` is a command
+/// the reader is being told to type, whoever ships it. That is also why
+/// narration is out of class and needs no marker: `Unloading: launchctl bootout
+/// …` in `build_daemon_uninstall_doc` reports the argv cfgd is running itself,
+/// so there is nothing for the reader to copy and a backtick span would style a
+/// sentence about cfgd's own work as if it were an invitation to run it.
+/// The payload keys that assert cfgd CHECKED something — a signature, an
+/// attestation, a digest. Every other boolean a payload carries reports a
+/// branch the code is standing in (`cancelled`, `alreadyConfigured`), which a
+/// literal states correctly; these three report an act, and a literal states an
+/// act that may never have happened.
+const VERIFICATION_PAYLOAD_KEYS: &[&str] = &["verified", "signed", "attested"];
+
+/// A payload key naming a verification carries the RESULT of one, never a
+/// literal. `kubectl cfgd debug` shipped `"verified": true` on every run while
+/// `cmd_debug_async` read no signature at all: it creates an ephemeral
+/// container, and a consumer gating a deploy on that field was gating on a
+/// constant. The fix is to answer the key or to drop it — a debug command that
+/// verifies nothing has nothing to say about verification.
+///
+/// A branch that IS the verification outcome says so with
+/// `// constant-payload-ok: <why>`, read like every other hatch in this file
+/// (the line, the line above, or the enclosing `fn`'s comment block).
+#[test]
+fn no_structured_payload_asserts_a_verification_it_never_ran() {
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            for key in VERIFICATION_PAYLOAD_KEYS {
+                // Both payload spellings: a `json!` object member and the
+                // `(key, value)` pair form `upgraded_doc` takes.
+                let literal = trimmed.starts_with(&format!("\"{key}\":"))
+                    || trimmed.starts_with(&format!("(\"{key}\","));
+                if !literal {
+                    continue;
+                }
+                checked += 1;
+                if (trimmed.contains("true") || trimmed.contains("false"))
+                    && !label_hatched(&lines, n, "// constant-payload-ok:")
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, trimmed));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "the sweep no longer reaches the payload keys that name a verification \
+         — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a payload key naming a verification carries the result of one, never a \
+         literal:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The commands cfgd tells a reader to run that are not `cfgd` itself. The
+/// trailing space is part of the head: it is what makes `kubectl` the program
+/// rather than the first syllable of a longer word.
+const INSTRUCTION_HEADS: &[&str] = &[
+    "cfgd ",
+    "kubectl ",
+    "helm ",
+    "docker ",
+    "podman ",
+    "brew ",
+    "git ",
+    "cosign ",
+    "sops ",
+    "systemctl ",
+    "launchctl ",
+];
+
+/// What turns the mention of a program into an instruction to run it. A head
+/// the sentence reaches through one of these is addressed to the reader; one
+/// reached any other way is cfgd narrating its own work.
+const INSTRUCTION_CUES: &[&str] = &["Run ", "run ", "with ", "using ", "via "];
+
+#[test]
+fn every_command_a_message_names_is_quoted_in_backticks() {
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    // A walk that found nothing would pass whatever the sources say.
+    assert!(
+        walked
+            .iter()
+            .any(|(p, body)| p.ends_with("cli/mod.rs") && body.contains("long_about")),
+        "the clap definitions must be walked, got {} files",
+        walked.len()
+    );
+    assert!(
+        walked
+            .iter()
+            .any(|(p, body)| p.ends_with("util/strings.rs") && !body.trim().is_empty()),
+        "both crates' production trees must be walked, got {} files",
+        walked.len()
+    );
+    let (top, all) = clap_command_words();
+    let word = |s: &str| -> String {
+        s.chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect()
+    };
+    let mut named = 0usize;
+    let mut instructed = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in &walked {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in production.lines().enumerate() {
+            if line.contains("'cfgd ") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+            let spans = string_literal_spans(line);
+            let examples = line.find("Examples:");
+            for (at, _) in line.match_indices("cfgd ") {
+                let Some(&(start, end)) = spans.iter().find(|(s, e)| *s <= at && at < *e) else {
+                    continue;
+                };
+                let verb_at = at + "cfgd ".len();
+                let verb = word(&line[verb_at..end.max(verb_at)]);
+                if !top.contains(&verb) {
+                    continue;
+                }
+                let rest = &line[verb_at + verb.len()..end.max(verb_at + verb.len())];
+                // `cfgd module: {name}` and "the cfgd source `line`" are prose
+                // that happens to spell a verb; so is any following word clap
+                // does not answer to.
+                if rest.starts_with(':') || rest.starts_with(" `") {
+                    continue;
+                }
+                let after = rest.trim_start_matches(' ');
+                if after.starts_with(|c: char| c.is_ascii_lowercase())
+                    && !all.contains(&word(after))
+                {
+                    continue;
+                }
+                if examples.is_some_and(|ex| at > ex) {
+                    continue;
+                }
+                // A literal that IS the invocation — a `$` block line, or a
+                // clap example — carries no backticks: nothing encloses it, so
+                // there is no sentence for it to be bare inside of. `[a|b]` is
+                // a placeholder like `<x>`, standing for the one token two
+                // spellings of the same command differ in.
+                if at == start
+                    && rest.split_whitespace().all(|t| {
+                        all.contains(t)
+                            || t.starts_with(['-', '<', '{', '['])
+                            || t == "..."
+                            || t == "|"
+                    })
+                {
+                    continue;
+                }
+                named += 1;
+                if line[..at].matches('`').count() % 2 == 0
+                    && !label_hatched(&lines, n, "// name-row-ok:")
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+            for head in INSTRUCTION_HEADS {
+                for (at, _) in line.match_indices(head) {
+                    let Some(&(start, end)) = spans.iter().find(|(s, e)| *s <= at && at < *e)
+                    else {
+                        continue;
+                    };
+                    if line[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || "-/_.".contains(c))
+                    {
+                        continue;
+                    }
+                    // A head is an invocation only when a subcommand or a flag
+                    // follows it; `the git repository` names the tool, not a run.
+                    let rest = &line[at + head.len()..end.max(at + head.len())];
+                    if !rest.starts_with(|c: char| c.is_ascii_lowercase() || c == '-') {
+                        continue;
+                    }
+                    // cfgd's own verbs are known, so prose that merely mentions
+                    // the binary ("with cfgd modules mounted") is answerable.
+                    if *head == "cfgd " && !rest.starts_with('-') && !all.contains(&word(rest)) {
+                        continue;
+                    }
+                    // The cue reaches the head THROUGH the quoting a compliant
+                    // message already carries, and through `sudo`.
+                    let mut lead = &line[start..at];
+                    loop {
+                        let trimmed = lead.trim_end_matches('`').trim_end_matches("sudo ");
+                        if trimmed.len() == lead.len() {
+                            break;
+                        }
+                        lead = trimmed;
+                    }
+                    // "failed to run cosign attest" reports a run that already
+                    // happened; only a sentence addressed to the reader instructs.
+                    if lead.ends_with("to run ")
+                        || !INSTRUCTION_CUES.iter().any(|cue| lead.ends_with(cue))
+                    {
+                        continue;
+                    }
+                    named += 1;
+                    instructed += 1;
+                    if line[..at].matches('`').count() % 2 == 0
+                        && !label_hatched(&lines, n, "// name-row-ok:")
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        named >= 100,
+        "the sweep no longer reaches the messages that name a command — it \
+         found {named}"
+    );
+    assert!(
+        instructed >= 40,
+        "the sweep no longer reaches the messages instructing a reader to run a \
+         command that is not cfgd — it found {instructed}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a command a message names is quoted in backticks, never bare and never \
+         in single quotes a reader would copy into their shell:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every note a provider emits under an action row takes its role from ONE
+/// axis — must the reader act? — and the walk reads that axis off the message.
+///
+/// `ActionNote`'s contract: a caveat or a degraded fallback is `Role::Warn`, a
+/// report of work done on the side is `Role::Info`, an instruction is
+/// `next_step`, and nothing is `Role::Ok` — a second `✓` under a row the
+/// reconciler already settled claims a second success. The Caveats block
+/// once rendered `⚠` over "Bash completion has been installed to:" beside `◉`
+/// over "npm has no writable global prefix; installing into …": the report
+/// wore the triangle and the fallback the dot, and the block read as though
+/// the install had gone wrong at exactly the row that had gone right.
+///
+/// Judged on the literal only: a message built from a variable is judged by
+/// its own producer's unit test. A brew caveat body is classified at runtime
+/// (`brew_caveat_asks_the_reader_to_act`) and pinned there.
+#[test]
+fn every_provider_note_takes_its_role_from_whether_the_reader_must_act() {
+    // What makes a message a degraded outcome the reader has to act on.
+    const DEGRADED: &[&str] = &[
+        "fail",
+        "could not",
+        "cannot",
+        "unable",
+        "no writable",
+        "retry",
+        "trying the next",
+        "ignored",
+        "missing",
+        "deferred",
+        "not installed",
+        "not supported",
+        "restoring previous",
+        "expired",
+    ];
+    // What makes a message a report of work done on the side.
+    const REPORT_OPENERS: &[&str] = &[
+        "Updated ",
+        "Created ",
+        "Creating ",
+        "Started ",
+        "Stopped ",
+        "Set ",
+        "Setting ",
+        "Installed ",
+        "Installing ",
+        "Writing ",
+        "Wrote ",
+        "Loading ",
+        "Restarting ",
+        "Managing ",
+        "Generated ",
+        "created ",
+        "removing ",
+        "sysctl ",
+        "systemctl ",
+        "modprobe ",
+        "gsettings ",
+        "xfconf",
+        "git config",
+        "containerd: setting",
+    ];
+    // What makes a message an instruction to the reader.
+    const INSTRUCTION_OPENERS: &[&str] = &[
+        "Add ",
+        "Run ",
+        "Source ",
+        "Open a",
+        "Log out",
+        "Restart your",
+        "Re-login",
+        "You ",
+    ];
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for call in provider_note_calls() {
+        let ProviderNoteCall {
+            where_,
+            role,
+            message: literal,
+            ..
+        } = &call;
+        // The role a CONSTRUCTOR names is its own name; only a `report` call
+        // chooses one for a message.
+        if call.entry != ".report(" {
+            continue;
+        }
+        if role == "Ok" {
+            offenders.push(format!(
+                "{where_}: Role::Ok — a note under a settled row never claims a second ✓; a side report is Role::Info"
+            ));
+            continue;
+        }
+        // A bare interpolation carries its words elsewhere.
+        if literal.trim_start().starts_with('{') {
+            continue;
+        }
+        judged += 1;
+        let lower = literal.to_lowercase();
+        let degraded = DEGRADED.iter().any(|m| lower.contains(m));
+        let report = REPORT_OPENERS.iter().any(|o| literal.starts_with(o));
+        let instruction = INSTRUCTION_OPENERS.iter().any(|o| literal.starts_with(o));
+        if instruction {
+            offenders.push(format!(
+                "{where_}: {literal:?} instructs the reader — route it through `next_step`, not `report`"
+            ));
+        } else if role == "Info" && degraded {
+            offenders.push(format!(
+                "{where_}: {literal:?} is a degraded outcome reported as Role::Info"
+            ));
+        } else if role == "Warn" && report && !degraded {
+            offenders.push(format!(
+                "{where_}: {literal:?} reports work done, but warns about it"
+            ));
+        }
+    }
+    assert!(
+        judged >= 30,
+        "the walk must reach the provider population, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every provider note's role answers one question — must the reader act?:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// One `.report(...)` call site a provider writes, as the walk reads it.
+struct ProviderNoteCall {
+    where_: String,
+    /// Which entry point wrote the note — `.report(` takes its role as an
+    /// argument, the `ActionNote` constructors name it.
+    entry: &'static str,
+    role: String,
+    /// The tag literal the call site writes, or `None` for an untagged context
+    /// or a tag bound to a variable — which its own producer pins.
+    tag: Option<String>,
+    /// The first string literal of the message argument.
+    message: String,
+}
+
+/// Every note a provider emits, read off the production sources ONCE: the two
+/// rules judging them (the role a body earns, and whether a body repeats its
+/// own tag) read the same call sites, so neither can drift into its own idea of
+/// what the population is.
+fn provider_note_calls() -> Vec<ProviderNoteCall> {
+    /// The first string literal in `args`, and what follows it.
+    fn leading_literal(args: &str) -> Option<(&str, &str)> {
+        let rest = args.trim_start();
+        let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+        let body = rest.strip_prefix('"')?;
+        let end = body.find('"')?;
+        Some((&body[..end], &body[end + 1..]))
+    }
+
+    let providers_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
+        .iter()
+        .flat_map(|dir| {
+            let mut files = walk_rust_files(&providers_root.join(dir));
+            files.sort();
+            files
+        })
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| {
+            p.file_name()
+                .is_none_or(|n| n != "tests_snapshot_bridge.rs")
+        })
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            Some((path, production_body(&body)))
+        })
+        .collect();
+
+    let mut calls = Vec::new();
+    for (path, body) in &sources {
+        // A package manager's report carries its tag between the role and
+        // the message; a configurator's does not.
+        let tagged = path.components().any(|c| c.as_os_str() == "packages");
+        for (entry, named_role) in [
+            (".report(", None),
+            ("ActionNote::warn(", Some("Warn")),
+            ("ActionNote::info(", Some("Info")),
+        ] {
+            let mut rest = body.as_str();
+            while let Some(at) = rest.find(entry) {
+                let call = &rest[at + entry.len()..];
+                let line = body.len() - rest.len() + at;
+                let line_no = body[..line].lines().count();
+                let head: String = call.chars().take(400).collect();
+                let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
+                rest = &rest[at + entry.len()..];
+                // A constructor names its role; `report` takes it as the first
+                // argument.
+                let Some(role) = named_role.or_else(|| {
+                    head.strip_prefix("Role::")
+                        .and_then(|r| r.split(',').next())
+                }) else {
+                    continue;
+                };
+                let where_ = format!("{}:{}", cfgd_core::to_posix_string(path), line_no);
+                let mut args = if named_role.is_some() {
+                    head.as_str()
+                } else {
+                    head[head.find(',').map_or(0, |i| i + 1)..].trim_start()
+                };
+                let mut tag = None;
+                if tagged || named_role.is_some() {
+                    // Past the tag, literal or bound.
+                    args = match leading_literal(args) {
+                        Some((literal, after)) => {
+                            tag = Some(literal.to_string());
+                            after
+                        }
+                        None => &args[args.find(',').map_or(args.len(), |i| i + 1)..],
+                    };
+                    args = args
+                        .trim_start()
+                        .strip_prefix(',')
+                        .unwrap_or(args)
+                        .trim_start();
+                }
+                let Some((literal, _)) = leading_literal(args) else {
+                    continue;
+                };
+                calls.push(ProviderNoteCall {
+                    where_,
+                    entry,
+                    role: role.to_string(),
+                    tag,
+                    message: literal.to_string(),
+                });
+            }
+        }
+    }
+    calls
+}
+
+/// A tagged note's body never opens on its own tag.
+///
+/// `ActionNote::body` composes `[{tag}] {message}` AROUND the tag, so a message
+/// opening on it prints the same fact twice in one row: the settled Caveats
+/// block read `⚠ [npm] npm has no writable global prefix` beside two siblings
+/// naming their speaker once. cfgd already de-doubles every CAPTURED body
+/// (`npm_warn_parts` strips npm's own `npm warn <code>`, `strip_caveat_self_tag`
+/// the pip/pipx `WARNING:`) and already owns the rule in the abstract for the
+/// sibling composition (`system_key_doubling_error`); the AUTHORED half is what
+/// this walk holds.
+///
+/// The verdict comes from `note_tag_doubling_error` itself, so the walk and the
+/// `debug_assert` inside `NoteSink::report_tagged` cannot disagree about what
+/// counts as a doubling.
+#[test]
+fn no_provider_note_repeats_its_own_tag() {
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut tagged_sites: Vec<String> = Vec::new();
+    for call in provider_note_calls() {
+        let Some(tag) = &call.tag else { continue };
+        if call.message.trim_start().starts_with('{') {
+            continue;
+        }
+        judged += 1;
+        tagged_sites.push(call.where_.clone());
+        if let Some(error) = cfgd_core::providers::note_tag_doubling_error(tag, &call.message) {
+            offenders.push(format!("{}: {error}", call.where_));
+        }
+    }
+    assert!(
+        judged >= 3,
+        "the walk no longer reaches the tagged provider notes — it judged {judged}"
+    );
+    // The historical violator, by name: a parser change that stops seeing the
+    // site this rule was written for makes the walk vacuous without failing.
+    assert!(
+        tagged_sites.iter().any(|w| w.contains("packages/npm.rs")),
+        "the walk no longer reaches npm's prefix fallback, the note the rule was \
+         written for: {tagged_sites:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a note's tag says who spoke; the body must not say it again:\n{}",
+        offenders.join("\n")
+    );
+    // Anti-vacuity: the rule really does catch the shape this walk exists for.
+    assert!(
+        cfgd_core::providers::note_tag_doubling_error("npm", "npm has no writable global prefix")
+            .is_some(),
+        "the doubling rule stopped recognising its own instance"
+    );
+    // And really does leave a mid-sentence mention alone.
+    assert!(
+        cfgd_core::providers::note_tag_doubling_error("brew", "curl could not install brew")
+            .is_none(),
+        "a tag named mid-sentence is information, not a stutter"
+    );
+}
+
+/// The same walk over `cfgd-core`'s production sources: the messages a library
+/// surface composes reach the same terminal as the binary crate's.
+fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
+    let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src")
+        .canonicalize()
+        .expect("the workspace sibling crate is checked out beside this one");
+    let mut files = walk_rust_files(&core_src);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            Some((path, production_body(&body)))
+        })
+        .collect()
+}
+
+/// A running label is written as a bare present participle, with no trailing
+/// ellipsis — the animated frame beside it is already saying "in progress".
+///
+/// This used to be enforced by STRIPPING a trailing `…`/`...` inside
+/// `compose_in_flight_subject`, which could not tell a caller's decoration from
+/// a marker the renderer itself produced: `condense_script_label` appends `…`
+/// to say the script has more lines, and the strip ate it, so a hook ran under
+/// `postApply: if command -v pipx >/dev/null 2>&1; then` — a shell fragment
+/// ending on a dangling `then` — and the settled row a second later put the
+/// marker back. The rule is about what a call site WRITES, so it is enforced
+/// where the literal is written.
+#[test]
+fn no_in_flight_label_carries_a_trailing_ellipsis() {
+    let entry_points = [
+        ".spinner(",
+        ".progress_bar(",
+        ".set_message(",
+        ".output_window(",
+        ".output_window_at(",
+        ".narrate(",
+        ".narrate_silent(",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, production) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for (n, line) in production.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !entry_points.iter().any(|e| code.contains(e)) {
+                continue;
+            }
+            scanned += 1;
+            // The label is the first string literal on the call line; a label
+            // built elsewhere is pinned by whatever produced it.
+            let Some(open) = code.find('"') else { continue };
+            let Some(close) = code[open + 1..].find('"') else {
+                continue;
+            };
+            let literal = &code[open + 1..open + 1 + close];
+            if literal.ends_with('…') || literal.ends_with("...") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        scanned >= 40,
+        "the walk found only {scanned} in-flight labels, so a green run proves \
+         nothing — re-check the entry-point list before lowering this floor"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a running label is a bare participle: the spinner frame beside it \
+         already says the work is in progress, and nothing downstream edits the \
+         subject any more:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `tracing` event never restates a `Printer` line, and on the apply path the
+/// cost of one that does is not merely a duplicate: at the default `warn`
+/// filter the event lands at column 0 in the middle of the phase tree, wearing
+/// a wall-clock stamp, a level word and `key="value"` grammar, and it wraps
+/// mid-word because nothing indents it. One did — its `error =` payload was
+/// byte-for-byte the row two lines below it — and it sat in the scrollback for
+/// the last two minutes of a recorded run.
+///
+/// `audit.sh` gates `tracing::info!` only, so this is the same `// tracing-ok:`
+/// hatch applied to the two levels that DO reach a user: every `warn!` /
+/// `error!` under the reconciler and the package managers states its reason for
+/// existing beside the printed report, or is demoted to `debug!`.
+#[test]
+fn no_apply_path_warn_restates_a_printer_line() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut package_files = walk_rust_files(&packages_dir);
+    package_files.sort();
+    let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            let p = path.to_string_lossy().replace('\\', "/");
+            p.contains("/reconciler/")
+        })
+        .chain(
+            package_files
+                .into_iter()
+                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+                .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+                .filter_map(|path| {
+                    let body = std::fs::read_to_string(&path).ok()?;
+                    Some((path, production_body(&body)))
+                }),
+        )
+        .collect();
+    assert!(
+        sources.len() >= 20,
+        "the walk found almost nothing, so it is passing vacuously: {}",
+        sources.len()
+    );
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    for (path, production) in sources {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if !(code.starts_with("tracing::warn!") || code.starts_with("tracing::error!")) {
+                continue;
+            }
+            scanned += 1;
+            let marked = n > 0 && lines[n - 1].trim_start().starts_with("// tracing-ok:");
+            if !marked {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        scanned >= 25,
+        "the population shrank to {scanned} events, so a green run no longer \
+         proves anything — re-check the walk before lowering this floor"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `warn!`/`error!` on the apply path reaches the user at the default \
+         filter, unindented and outside the report — demote it to `debug!` or \
+         say why it is not a restatement with `// tracing-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A yes/no fact renders through `cfgd_core::yes_no`, which is what keeps `-`
+/// meaning exactly one thing: NOT KNOWN. The inline ternary this forbids is how
+/// `Active` came to spell a false as `-`, making an answered question look the
+/// same as an unanswerable one on the very tables `Signed` had to join.
+#[test]
+fn no_column_hand_rolls_its_own_yes_no_rendering() {
+    let bools = bool_field_names();
+    let slots = [
+        ".kv(",
+        "KvPair::new(",
+        "KvPair::annotated(",
+        "KvPair::nested(",
+        "KvPair::role_valued(",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // rustfmt wraps a long call, so the value argument is judged with
+            // the two lines after the slot: a per-line scan sees the key on one
+            // line and the bool on the next, and matches neither.
+            let complete = code.matches('(').count() == code.matches(')').count();
+            let window = if complete {
+                code.to_string()
+            } else {
+                lines[n..lines.len().min(n + 3)].join(" ")
+            };
+            if window.contains("yes_no") {
+                continue;
+            }
+            let ternary = code.contains(r#""yes""#) && code.contains("else");
+            let poured = slots.iter().any(|slot| code.contains(slot))
+                && bools
+                    .iter()
+                    .any(|b| window.contains(&format!(".{b}.to_string()")));
+            if ternary || poured {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a yes/no cell renders through `cfgd_core::yes_no`, so `-` never means \
+         `no`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every field name declared `bool` in either crate, minus every name also
+/// declared as something else — so a cell rendering `.<name>.to_string()` can
+/// be judged from the call site alone, without resolving the type there. A name
+/// that is a bool in one struct and a `String` in another answers nothing, and
+/// is dropped rather than guessed at.
+fn bool_field_names() -> std::collections::BTreeSet<String> {
+    let mut bools = std::collections::BTreeSet::new();
+    let mut others = std::collections::BTreeSet::new();
+    for (_, production) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for line in production.lines() {
+            let code = line.trim_start().trim_end_matches(',');
+            let Some((name, ty)) = code.split_once(": ") else {
+                continue;
+            };
+            let name = name
+                .trim_start_matches("pub ")
+                .trim_start_matches("pub(crate) ");
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                || name.is_empty()
+            {
+                continue;
+            }
+            // A struct LITERAL has the same `name: value` shape as a
+            // declaration; only a type-shaped right side is read as one, or
+            // every field name in the workspace is claimed by both sets.
+            if !ty.is_empty()
+                && ty.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, '_' | ':' | '<' | '>' | ',' | ' ' | '&')
+                })
+            {
+                if ty == "bool" {
+                    bools.insert(name.to_string());
+                } else {
+                    others.insert(name.to_string());
+                }
+            }
+        }
+    }
+    bools.retain(|b| !others.contains(b));
+    bools
+}
+
+/// A `Last Sync` column carries an AGE, not the stored instant: the ISO 8601
+/// stamp is what the `-o json` payload keeps, and a human scanning a listing is
+/// asking how stale the row is. Every file that names the column reaches the
+/// one renderer that answers that question.
+#[test]
+fn every_last_sync_column_renders_through_the_shared_age_helper() {
+    let offenders: Vec<String> = cli_production_sources()
+        .into_iter()
+        .filter(|(_, production)| {
+            production.contains(r#""Last Sync""#) && !production.contains("last_sync_display")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a `Last Sync` column renders through `source::list::last_sync_display`, \
+         so no surface prints a raw timestamp where every other one prints an \
+         age:\n{}",
+        offenders.join("\n")
+    );
 }
 
 #[test]
@@ -12752,7 +18713,8 @@ spec:
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -12760,7 +18722,7 @@ spec:
 
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains(MSG_NOTHING_TO_DO),
@@ -12814,7 +18776,7 @@ fn cmd_source_remove_existing_removes_from_config() {
     assert_eq!(cfg.spec.sources.len(), 1);
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false);
+        super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false, false);
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -12847,7 +18809,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false, false)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false, false, false)
         .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -12880,7 +18842,7 @@ fn cmd_source_remove_nonexistent_fails() {
     let printer = test_printer();
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true, false);
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true, false, false);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -12902,7 +18864,7 @@ fn cmd_source_remove_deletes_cached_clone() {
     std::fs::write(cached_dir.join("marker"), b"cached").unwrap();
     assert!(cached_dir.exists());
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false, false)
         .expect("source remove should succeed");
 
     assert!(
@@ -12984,7 +18946,7 @@ fn cmd_source_override_set_succeeds() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("Override set") && output.contains("packages.brew.ripgrep"),
+        output.contains("Set override") && output.contains("packages.brew.ripgrep"),
         "should confirm override set for packages.brew.ripgrep, got: {output}"
     );
 }
@@ -13212,7 +19174,7 @@ fn cmd_source_show_exists() {
     );
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("team-config") || output.contains("source:"),
         "source show should display source info, got: {output}"
@@ -13232,7 +19194,7 @@ fn cmd_source_show_structured_json() {
     super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "team-config");
@@ -13347,7 +19309,7 @@ fn cmd_workflow_generate_with_git_repo() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Generated") || output.contains("workflow"),
         "workflow generate should mention generated workflow, got: {output}"
@@ -13479,7 +19441,7 @@ fn cmd_module_search_no_registries() {
     );
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No module registries") || output.contains("Search"),
         "search with no registries should say no registries, got: {output}"
@@ -13608,7 +19570,14 @@ fn cmd_module_add_from_registry_not_configured_fails() {
 #[test]
 fn cmd_status_module_not_found_output() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent").unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "nonexistent",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    )
+    .unwrap();
     h.assert_output_contains("nonexistent");
     h.assert_output_contains("not found");
 }
@@ -13616,7 +19585,14 @@ fn cmd_status_module_not_found_output() {
 #[test]
 fn cmd_status_module_not_found_json() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "ghost-mod").unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "ghost-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "ghost-mod");
     assert_eq!(parsed["status"], "not found");
@@ -13629,7 +19605,14 @@ fn cmd_status_module_found_output() {
     let h = CliTestHarness::builder()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "my-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    )
+    .unwrap();
     h.assert_output_contains("my-mod");
     // Status shows package count, not individual package names
     h.assert_output_contains("1");
@@ -13641,7 +19624,14 @@ fn cmd_status_module_found_json() {
             .json()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "my-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "my-mod");
     assert_eq!(parsed["packages"], 1);
@@ -13679,6 +19669,8 @@ fn cmd_source_add_duplicate_fails() {
         auto_apply: false,
         pin_version: None,
         yes: true,
+        require_signed_commits: false,
+        allow_scripts: false,
     };
     let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
     assert_error_contains(&result, "already exists");
@@ -13688,19 +19680,93 @@ fn cmd_source_add_duplicate_fails() {
 // New coverage: cmd_pull / cmd_sync output
 // -----------------------------------------------------------------------
 
+/// The local-layer twin of `source_failure_next_step`: every refusal kind the
+/// producer can raise gets a fix, and each names the verb the reader re-runs —
+/// in backticks, the shape `every_closing_hint_names_a_command` holds for the
+/// hints it can read the text of directly.
+///
+/// Driven off `PullFailureKind::ALL` rather than a hand-written sample, and
+/// the walk below asserts that array covers the enum, so a stage `git_pull`
+/// grows cannot fall through unnoticed.
 #[test]
-fn cmd_pull_non_git_dir_shows_warning() {
+fn every_local_pull_refusal_names_the_fix_for_its_own_kind() {
+    use cfgd_core::daemon::{PullFailure, PullFailureKind};
+
+    let mut seen = std::collections::BTreeSet::new();
+    for kind in PullFailureKind::ALL {
+        let failure = PullFailure {
+            kind: *kind,
+            message: "whatever libgit2 said; class=Repository; code=-3".to_string(),
+        };
+        let hint = super::local_pull_next_step(&failure, "cfgd sync");
+        // Backticked mid-sentence, or on the `$` block line the prose
+        // introduces — both hand the reader the same verb to re-run.
+        assert!(
+            hint.text.contains("`cfgd sync`") || hint.commands.iter().any(|c| c == "cfgd sync"),
+            "the hint names the verb to re-run: {hint:?}"
+        );
+        assert!(
+            !hint.text.contains("class=") && !hint.commands.iter().any(|c| c.contains("class=")),
+            "the hint carries no libgit2 internals: {hint:?}"
+        );
+        seen.insert(format!("{hint:?}"));
+    }
+    // The four kinds with advice of their own, plus the shared arm.
+    assert_eq!(
+        seen.len(),
+        5,
+        "a refusal with a fix of its own does not share the general sentence"
+    );
+}
+
+/// `PullFailureKind::ALL` is what the pin above walks, so a variant missing
+/// from it is a kind nothing checks. The enum's own source is the population.
+#[test]
+fn every_pull_failure_kind_is_listed_in_all() {
+    use cfgd_core::daemon::PullFailureKind;
+
+    let git =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/daemon/git.rs");
+    let body = std::fs::read_to_string(&git).expect("daemon/git.rs is readable");
+    let start = body
+        .find("pub enum PullFailureKind {")
+        .expect("PullFailureKind is declared in daemon/git.rs");
+    let decl = &body[start..];
+    let decl = &decl[..decl.find("\n}").expect("the enum closes")];
+    let declared: Vec<&str> = decl
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| l.ends_with(','))
+        .map(|l| l.trim_end_matches(','))
+        .collect();
+    assert!(
+        declared.len() >= 13,
+        "the walk no longer reaches the variants it exists to hold: {declared:?}"
+    );
+    assert_eq!(
+        declared.len(),
+        PullFailureKind::ALL.len(),
+        "every declared kind is listed in PullFailureKind::ALL: {declared:?}"
+    );
+    for name in &declared {
+        assert!(
+            PullFailureKind::ALL
+                .iter()
+                .any(|k| format!("{k:?}") == *name),
+            "{name} is declared but missing from PullFailureKind::ALL"
+        );
+    }
+}
+
+#[test]
+fn cmd_pull_over_a_non_repo_reports_nothing_to_pull() {
     let h = CliTestHarness::builder().build();
-    // config dir is not a git repo, so git_pull_sync will fail gracefully
     super::pull::cmd_pull(&h.cli(), h.printer()).unwrap();
     let output = h.output();
     assert!(
-        output.contains("Pull"),
-        "pull output should contain Pull heading, got: {output}"
-    );
-    assert!(
-        output.contains("Pull failed") || output.contains("up to date"),
-        "pull in non-git dir should warn or show up-to-date, got: {output}"
+        output.contains("Pull") && output.contains(super::MSG_NOT_A_REPOSITORY),
+        "a config dir under no version control has nothing to pull, got: {output}"
     );
 }
 
@@ -13761,7 +19827,7 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
 #[test]
 fn cmd_source_update_no_sources_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::source::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default()).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -13770,7 +19836,12 @@ fn cmd_source_update_no_sources_succeeds() {
 fn cmd_source_update_named_not_found_fails() {
     // Need a config with sources so it doesn't take the "no sources" early return
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::source::cmd_source_update(&h.cli(), h.printer(), Some("nonexistent"));
+    let result = super::source::cmd_source_update(
+        &h.cli(),
+        h.printer(),
+        Some("nonexistent"),
+        Default::default(),
+    );
     assert_error_contains(&result, "not found");
 }
 
@@ -13853,7 +19924,7 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -13877,7 +19948,14 @@ fn json_schema_status_module() {
         .json()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "test-mod").unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "test-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -13921,7 +19999,8 @@ fn json_schema_plan() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -14021,7 +20100,7 @@ fn secret_init_prints_header_and_key_path() {
                 "expected key path in output, got: {output}"
             );
             assert!(
-                output.contains("Secrets setup complete") || output.contains("already initialized"),
+                output.contains("Set up secrets") || output.contains("already initialized"),
                 "expected completion message, got: {output}"
             );
         }
@@ -14162,6 +20241,7 @@ fn sample_daemon_status(
     update_available: Option<String>,
 ) -> cfgd_core::daemon::DaemonStatusResponse {
     cfgd_core::daemon::DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid,
         uptime_secs,
@@ -14171,23 +20251,34 @@ fn sample_daemon_status(
         sources,
         update_available,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        profile_inherits: vec![],
     }
 }
 
 fn sample_source(
     name: &str,
     status: &str,
-    drift: u32,
     last_sync: Option<&str>,
 ) -> cfgd_core::daemon::SourceStatus {
     cfgd_core::daemon::SourceStatus {
         name: name.to_string(),
         status: status.to_string(),
-        drift_count: drift,
+        // The daemon cannot attribute drift to one source; see
+        // `SourceStatus::drift_count`.
+        drift_count: None,
         last_sync: last_sync.map(|s| s.to_string()),
-        last_reconcile: None,
+        last_commit: None,
     }
 }
+
+/// The instant every daemon-status render below ages its stamps against, so a
+/// captured age is a fact about the fixture rather than about the day the
+/// suite ran.
+const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
 
 #[test]
 fn render_daemon_status_human_running_with_sources_and_update() {
@@ -14197,24 +20288,31 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         3600,
         7,
         vec![
-            sample_source("local", "active", 0, None),
-            sample_source("team", "syncing", 7, Some("2026-05-12T09:00:00Z")),
+            sample_source("local", "active", None),
+            sample_source("team", "error", Some("2026-05-12T09:00:00Z")),
         ],
         Some("9.9.9".to_string()),
     );
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &[],
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     let output = cap.human();
-    assert!(output.contains("Daemon is running"), "got: {output}");
+    assert!(output.contains("Daemon running"), "got: {output}");
     assert!(output.contains("4242"), "PID missing: {output}");
-    assert!(output.contains("3600s"), "uptime missing: {output}");
+    assert!(output.contains("1h"), "uptime missing: {output}");
     assert!(
-        output.contains("Last reconcile"),
+        output.contains("Last Reconcile"),
         "last_reconcile row missing: {output}"
     );
-    assert!(
-        output.contains("Last sync"),
-        "last_sync row missing: {output}"
+    assert_eq!(
+        output.matches("Last Sync").count(),
+        1,
+        "the Sources table's column is the only sync label: {output}"
     );
     assert!(
         output.contains("Update available: 9.9.9"),
@@ -14231,6 +20329,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
 fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = cfgd_core::daemon::DaemonStatusResponse {
+        modules: vec![],
         running: true,
         pid: 1,
         uptime_secs: 1,
@@ -14240,19 +20339,29 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        profile_inherits: vec![],
     };
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &[],
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     let output = cap.human();
-    assert!(output.contains("Daemon is running"));
-    // When last_reconcile / last_sync are None the rows are not printed
+    assert!(output.contains("Daemon running"));
     assert!(
-        !output.contains("Last reconcile"),
-        "Last reconcile row should be skipped: {output}"
+        !output.contains("Last Reconcile"),
+        "Last Reconcile row should be skipped: {output}"
     );
     assert!(
-        !output.contains("Last sync"),
-        "Last sync row should be skipped: {output}"
+        !output.contains("Last Sync"),
+        "with no sources there is no table to carry a sync label: {output}"
     );
     assert!(
         !output.contains("Update available"),
@@ -14263,8 +20372,14 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
 #[test]
 fn render_daemon_status_json_emits_some_status_shape() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", None)], None);
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &[],
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 99);
@@ -14276,7 +20391,13 @@ fn render_daemon_status_json_emits_some_status_shape() {
 #[test]
 fn render_daemon_status_json_emits_placeholder_when_none() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    printer.emit(super::daemon::build_daemon_status_doc(None));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        None,
+        &[],
+        &[],
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 0);
@@ -14323,7 +20444,7 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     assert!(result.is_ok(), "expected success, got: {:?}", result.err());
 
     assert!(
-        output.contains("Daemon service removed"),
+        output.contains("Removed daemon service"),
         "expected completion message, got: {output}"
     );
 }
@@ -14555,11 +20676,11 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
     };
     let registry = hooks.build_registry(&cfg);
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "build_registry should return a registry with at least one package manager"
     );
     assert!(
-        !registry.system_configurators.is_empty(),
+        !registry.system_configurators().is_empty(),
         "build_registry should return a registry with at least one system configurator"
     );
 }
@@ -14633,19 +20754,33 @@ fn workstation_daemon_hooks_plan_files_empty_profile() {
 // -----------------------------------------------------------------------
 
 #[test]
-#[cfg(unix)]
 #[serial_test::serial]
 fn is_unmanaged_file_module_cache_symlink_under_test_home() {
-    // is_unmanaged_file second early-return: a symlink pointing into
-    // ~/.cache/cfgd/modules/ is module-managed (NOT unmanaged) even though it
-    // does not start with config_dir. Honors the test-home thread-local via
-    // expand_tilde, so we can build the cache-dir path under a tempdir.
+    // is_unmanaged_file second early-return: a symlink pointing into the module
+    // cache is module-managed (NOT unmanaged) even though it does not start
+    // with config_dir.
+    //
+    // The cache root is set to a directory NO spelling of `~/.cache/cfgd`
+    // reaches, which is what makes this a check of the resolution rather than
+    // of one host's layout: a `~/.cache/cfgd/modules` hardcode answers `false`
+    // here, and so does one on a machine whose per-user cache is
+    // `~/Library/Caches` or `%LOCALAPPDATA%` rather than `~/.cache`.
     let dir = tempfile::tempdir().unwrap();
     let _guard = cfgd_core::with_test_home_guard(dir.path());
+    let cache_root = dir.path().join("elsewhere-cache");
+    let _cache = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_CACHE_DIR",
+        &cfgd_core::to_posix_string(&cache_root),
+    );
     let state = StateStore::open_in_memory().unwrap();
 
-    // Build a real source under the redirected ~/.cache/cfgd/modules/<mod>/
-    let module_root = dir.path().join(".cache/cfgd/modules/example-mod");
+    let module_cache = cfgd_core::modules::default_module_cache_dir().unwrap();
+    let module_root = module_cache.join("example-mod");
+    assert!(
+        !module_root.starts_with(dir.path().join(".cache")),
+        "the fixture's cache root must not be the one a hardcode would guess: {}",
+        module_root.posix()
+    );
     std::fs::create_dir_all(&module_root).unwrap();
     let module_payload = module_root.join("rc-fragment");
     std::fs::write(&module_payload, "# from module\n").unwrap();
@@ -14657,11 +20792,11 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
     let unrelated_dir = dir.path().join("home");
     std::fs::create_dir_all(&unrelated_dir).unwrap();
     let target = unrelated_dir.join(".module-link");
-    std::os::unix::fs::symlink(&module_payload, &target).unwrap();
+    cfgd_core::create_symlink(&module_payload, &target).unwrap();
 
     assert!(
-        !is_unmanaged_file(&target, &config_dir, &state),
-        "symlink into ~/.cache/cfgd/modules must be treated as cfgd-managed",
+        !is_unmanaged_file(&target, &config_dir, &module_cache, &state),
+        "a symlink into the module cache must be treated as cfgd-managed",
     );
 }
 
@@ -14980,6 +21115,7 @@ fn filter_plan_skip_removes_matching_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     // brew install should remain but without fd
@@ -15044,6 +21180,7 @@ fn filter_plan_only_keeps_matching_phase() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     // Packages phase should keep its action
@@ -15087,6 +21224,7 @@ fn filter_plan_skip_uninstall_packages_env() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -15121,6 +21259,7 @@ fn filter_plan_empty_filters_is_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
     );
 
     assert_eq!(
@@ -15225,6 +21364,8 @@ fn action_path_env_write() {
     let action = reconciler::Action::Env(reconciler::EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.config/cfgd/env.sh"),
         content: String::new(),
+        vars: 0,
+        aliases: 0,
     });
     let path = super::action_path(&PhaseName::Prerequisites, &action);
     assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
@@ -15278,24 +21419,19 @@ spec:
         .module("dev-tools", rich_module)
         .build();
 
-    // Create the module file referenced by the module
-    let module_files_dir = h
-        .config_path()
-        .join("modules")
-        .join("dev-tools")
-        .join("files");
-    std::fs::write(
-        module_files_dir.join("gitconfig"),
-        "[user]\n  name = Test\n",
-    )
-    .unwrap();
+    // Create the module file referenced by the module, at the module's own
+    // directory — the root `LoadedModule.dir` a bare `source:` resolves
+    // against, not the empty `files/` subdirectory the harness scaffolds.
+    let module_dir = h.config_path().join("modules").join("dev-tools");
+    std::fs::write(module_dir.join("gitconfig"), "[user]\n  name = Test\n").unwrap();
 
     let cli = h.cli_with_command(Command::Plan(PlanArgs {
         from: None,
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }));
@@ -15307,7 +21443,8 @@ spec:
             phase: None,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
         },
@@ -15336,18 +21473,28 @@ spec:
 // -----------------------------------------------------------------------
 // cmd_plan with --module filter (module-only mode)
 // Exercises: module-only path, empty_resolved_profile, module resolution
+//
+// The fixtures below name `cfgd-absent-*` packages on purpose: a module's
+// declared packages are diffed against what their manager reports installed,
+// so a fixture naming a real package (`jq`, `fd`) asserts about whatever the
+// runner happens to carry rather than about the code. An absent name is
+// planned on every host.
 // -----------------------------------------------------------------------
 
 #[test]
 fn cmd_plan_module_only_mode() {
+    // Package resolution asks `command_available` for each candidate manager;
+    // a concurrent test emptying PATH to drive a command-not-found branch
+    // would make every manager unresolvable mid-plan.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: standalone
 spec:
   packages:
-    - name: jq
-    - name: yq
+    - name: cfgd-absent-alpha
+    - name: cfgd-absent-beta
 "#;
     let h = CliTestHarness::builder()
         .module("standalone", module_yaml)
@@ -15358,7 +21505,8 @@ spec:
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("standalone".to_string()),
+        module: vec!["standalone".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -15373,6 +21521,262 @@ spec:
     assert!(
         output.contains("Plan"),
         "should show Plan header, got: {output}"
+    );
+}
+
+/// `--module` pulls in transitive dependencies, and repeating the flag
+/// unions the requested modules — both still under full isolation (the
+/// active `default` profile's own `bat`/`vim` env never appears).
+#[test]
+fn cmd_plan_module_only_includes_transitive_deps_and_unions_repeated_flags() {
+    // Package resolution asks `command_available` for each candidate manager;
+    // a concurrent test emptying PATH to drive a command-not-found branch
+    // would make every manager unresolvable mid-plan.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let base_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: base
+spec:
+  packages:
+    - name: cfgd-absent-alpha
+"#;
+    let a_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: a
+spec:
+  depends:
+    - base
+  packages:
+    - name: cfgd-absent-gamma
+"#;
+    let b_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: b
+spec:
+  packages:
+    - name: cfgd-absent-delta
+"#;
+    let h = CliTestHarness::builder()
+        .module("base", base_yaml)
+        .module("a", a_yaml)
+        .module("b", b_yaml)
+        .json()
+        .build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec!["a".to_string(), "b".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    let json = h.json_output();
+
+    let tokens: std::collections::BTreeSet<String> = json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .map(|g| g["token"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        tokens.contains("module:a") && tokens.contains("module:b"),
+        "both repeated --module names must plan, got tokens: {tokens:?}"
+    );
+    assert!(
+        tokens.contains("module:base"),
+        "a's transitive dependency 'base' must be pulled in and planned, got tokens: {tokens:?}"
+    );
+    assert!(
+        !tokens.iter().any(|t| t == "profile:default"),
+        "the active profile must not contribute under isolation, got tokens: {tokens:?}"
+    );
+    let raw = serde_json::to_string(&json).unwrap();
+    assert!(
+        !raw.contains("\"editor\"") && !raw.contains("vim"),
+        "the default profile's own env (editor=vim) must not leak into an isolated plan: {raw}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// --with-profile alone (no --module) is rejected.
+// -----------------------------------------------------------------------
+
+#[test]
+fn cmd_plan_with_profile_alone_errors() {
+    let h = CliTestHarness::builder().build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: true,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    let result = super::plan::cmd_plan(&h.cli(), h.printer(), &args);
+    assert_error_contains(&result, "--with-profile requires --module");
+}
+
+#[test]
+fn cmd_apply_with_profile_alone_errors() {
+    let h = CliTestHarness::builder().build();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: true,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: true,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&h.cli(), h.printer(), &args);
+    assert_error_contains(&result, "--with-profile requires --module");
+}
+
+// -----------------------------------------------------------------------
+// Interplay matrix: --module × --only/--skip module:<name> — proves module
+// isolation and the zero-match accounting share one mechanism, never a second
+// hand-rolled one.
+// -----------------------------------------------------------------------
+
+/// `--module X --only module:X` is a no-op on top of the isolate: every
+/// action DIRECTLY owned by `module:X` is already selected by isolation, so
+/// naming it again with `--only` is redundant — it drops no module-owned
+/// work, and the token itself registers a hit (never the zero-match warning).
+///
+/// NOT byte-identical to the bare isolate: an isolated plan can also carry
+/// shared-infrastructure actions (e.g. a `cfgd:managers` apt index refresh)
+/// that a module's packages depend on but that no single module OWNS, and a
+/// strict owner filter correctly excludes those — `--only`/`--skip` are
+/// documented as owner/path filters over an already-composed plan, not a
+/// "bring the dependency closure back in" operation. That asymmetry (an
+/// excluded `RefreshIndex` gets no stranding warning, unlike an excluded
+/// `Provision`) is a real mirror-sweep finding, reported separately rather
+/// than silently special-cased here.
+#[test]
+fn interplay_module_x_only_module_x_is_redundant_and_drops_no_module_owned_action() {
+    let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: standalone
+spec:
+  packages:
+    - name: cfgd-absent-alpha
+"#;
+    let plain = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .json()
+        .build();
+    let args_plain = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec!["standalone".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&plain.cli(), plain.printer(), &args_plain).unwrap();
+    let plain_json = plain.json_output();
+    let plain_module_actions = plain_json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .filter(|g| g["token"] == "module:standalone")
+        .flat_map(|g| g["actions"].as_array().unwrap().clone())
+        .count();
+    assert!(
+        plain_module_actions > 0,
+        "the isolated plan must carry the module's own action(s): {plain_json}"
+    );
+
+    let filtered = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .json()
+        .build();
+    let args_filtered = PlanArgs {
+        only: vec!["module:standalone".to_string()],
+        ..args_plain
+    };
+    super::plan::cmd_plan(&filtered.cli(), filtered.printer(), &args_filtered).unwrap();
+    let filtered_json = filtered.json_output();
+    let filtered_module_actions = filtered_json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .filter(|g| g["token"] == "module:standalone")
+        .flat_map(|g| g["actions"].as_array().unwrap().clone())
+        .count();
+
+    assert_eq!(
+        plain_module_actions, filtered_module_actions,
+        "an --only naming the isolate's own owner must not drop any module-owned action: \
+         plain={plain_json}, filtered={filtered_json}"
+    );
+    // The token accounting mechanism (deliverable 3) must record this as a
+    // hit, not a miss — no zero-match alert on stderr.
+    let out = filtered.output();
+    assert!(
+        !out.contains("matched no actions in this plan"),
+        "`--only module:standalone` matches the module's own actions and must not be reported \
+         as a zero-match token, got:\n{out}"
+    );
+}
+
+/// `--module X --skip module:X` empties the isolated plan (the skip token DID
+/// match — every action was module:X-owned), so this is NOT the zero-match
+/// case. It must still not read as "up to date": the accounting-driven
+/// `report_no_in_scope_actions` warns that a filter excluded pending work,
+/// because `--skip` set `filter_active` before the plan was emptied.
+#[test]
+fn interplay_module_x_skip_module_x_speaks_via_accounting_not_up_to_date() {
+    let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: standalone
+spec:
+  packages:
+    - name: cfgd-absent-alpha
+"#;
+    let h = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec!["module:standalone".to_string()],
+        only: vec![],
+        module: vec!["standalone".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    let out = h.output();
+
+    assert!(
+        !out.contains(MSG_NOTHING_TO_DO),
+        "a --skip that consumed the whole isolated plan is not the system converging, got:\n{out}"
+    );
+    assert!(
+        out.contains("No actions in scope"),
+        "expected the filter-excluded-work warning, got:\n{out}"
     );
 }
 
@@ -15419,7 +21823,8 @@ spec:
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -15476,7 +21881,13 @@ spec:
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base-mod\nspec:\n  packages: []\n",
     );
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "status-mod");
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "status-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    );
     assert!(
         result.is_ok(),
         "cmd_status_module should succeed: {:?}",
@@ -15501,8 +21912,8 @@ spec:
         "should show dependencies, got: {output}"
     );
     assert!(
-        output.contains("not applied"),
-        "should show 'not applied' status, got: {output}"
+        output.contains("NotApplied"),
+        "should show 'NotApplied' status, got: {output}"
     );
 }
 
@@ -15526,7 +21937,13 @@ spec:
         .module("json-status-mod", module_yaml)
         .build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "json-status-mod");
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "json-status-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    );
     assert!(
         result.is_ok(),
         "JSON module status should succeed: {:?}",
@@ -15548,7 +21965,13 @@ spec:
 fn cmd_status_module_json_output_not_found() {
     let h = CliTestHarness::builder().json().build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent-mod");
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "nonexistent-mod",
+        false,
+        false,
+        super::status::ModuleStatusView::Compact,
+    );
     assert!(result.is_ok(), "missing module JSON status should succeed");
 
     let json = h.json_output();
@@ -15689,11 +22112,11 @@ fn build_registry_with_config_populates_secret_backend() {
         "should have a secret backend configured"
     );
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "should have package managers"
     );
     assert!(
-        !registry.system_configurators.is_empty(),
+        !registry.system_configurators().is_empty(),
         "should have system configurators"
     );
 }
@@ -15702,7 +22125,7 @@ fn build_registry_with_config_populates_secret_backend() {
 fn build_registry_with_no_config_uses_defaults() {
     let registry = super::build_registry_with_config_and_packages(None, None);
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "should have default package managers even without config"
     );
     assert!(
@@ -15712,12 +22135,25 @@ fn build_registry_with_no_config_uses_defaults() {
 }
 
 // -----------------------------------------------------------------------
-// cmd_diff empty profile — exercises file, package, and system diff display
+// cmd_diff empty profile — every surface converged, so none of them render
 // -----------------------------------------------------------------------
 
 #[test]
-fn cmd_diff_full_profile_shows_all_sections() {
-    let h = CliTestHarness::builder().build();
+fn cmd_diff_full_profile_converged_names_no_surface() {
+    // A profile declaring nothing is the only fixture whose convergence is a
+    // fact about cfgd rather than about the host: [`DEFAULT_PROFILE_YAML`]
+    // declares `cargo: [bat]`, whose drift depends on the host's install
+    // list, and an env var, whose drift depends on the managed env file and
+    // the rc files in `$HOME`. The test home is installed anyway, so the read
+    // can never reach the operator's own dotfiles.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+    let h = CliTestHarness::builder()
+        .profile(
+            "default",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  inherits: []\n  modules: []\n",
+        )
+        .build();
     let result = super::diff::cmd_diff(&h.cli(), h.printer(), None, false);
     assert!(
         result.is_ok(),
@@ -15730,17 +22166,15 @@ fn cmd_diff_full_profile_shows_all_sections() {
         output.contains("Diff"),
         "should show Diff header, got: {output}"
     );
+    for surface in ["Files", "Packages", "Shell", "System"] {
+        assert!(
+            !output.contains(surface),
+            "a converged {surface} surface must leave no trace, got: {output}"
+        );
+    }
     assert!(
-        output.contains("Files"),
-        "should show Files section, got: {output}"
-    );
-    assert!(
-        output.contains("Packages"),
-        "should show Packages section, got: {output}"
-    );
-    assert!(
-        output.contains("System"),
-        "should show System section, got: {output}"
+        output.contains("No drift detected"),
+        "a converged run states its verdict on the closing line, got: {output}"
     );
 }
 
@@ -15764,7 +22198,7 @@ fn cmd_diff_module_not_found_shows_info() {
 }
 
 #[test]
-fn cmd_diff_module_with_files_shows_file_and_package_sections() {
+fn cmd_diff_module_with_files_shows_the_drifted_file() {
     let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     // Target lands in an isolated temp dir (never a shared path); it is left
     // absent so the renderer exercises the missing-target branch.
@@ -15794,16 +22228,12 @@ fn cmd_diff_module_with_files_shows_file_and_package_sections() {
 
     let output = h.output();
     assert!(
-        output.contains("Module") && output.contains("diff-mod"),
-        "should show module name, got: {output}"
+        output.contains("Diff: diff-mod"),
+        "the heading carries the module the run was scoped to, got: {output}"
     );
     assert!(
         output.contains("Files"),
         "should show Files line, got: {output}"
-    );
-    assert!(
-        output.contains("Packages"),
-        "should show Packages section, got: {output}"
     );
     // Target is absent: the shared renderer shows the would-be-created content
     // ("(new file)" + the source bytes), identical to profile-file rendering.
@@ -15820,7 +22250,7 @@ fn cmd_diff_module_with_files_shows_file_and_package_sections() {
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false);
+    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false);
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",
@@ -15833,16 +22263,18 @@ fn cmd_status_with_sources_shows_source_section() {
         "should show Status header, got: {output}"
     );
     assert!(
-        output.contains("Config Sources"),
+        output.contains(crate::cli::source::list::SOURCES_SECTION),
         "should show Config Sources section, got: {output}"
     );
     assert!(
         output.contains("team-config"),
         "should show source name, got: {output}"
     );
+    // The shared table words a never-fetched source the way `source list` and
+    // `daemon status` do, through `last_sync_display`.
     assert!(
-        output.contains("not yet fetched"),
-        "unfetched source should show 'not yet fetched', got: {output}"
+        output.contains("Last Sync") && output.contains("never"),
+        "an unfetched source reads `never` in the Last Sync column, got: {output}"
     );
 }
 
@@ -15913,6 +22345,7 @@ fn action_path_manager_provision() {
     let action = reconciler::Action::Manager(reconciler::ManagerAction::Provision {
         manager: "brew".into(),
         via: "homebrew installer".into(),
+        declared: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -15945,7 +22378,7 @@ fn action_path_script_run() {
 
 #[test]
 fn action_path_script_run_full_entry() {
-    let entry = config::ScriptEntry::Full {
+    let entry = config::ScriptEntry::Full(config::ScriptCommand {
         workdir: None,
         run: "echo hello".into(),
         timeout: None,
@@ -15956,7 +22389,7 @@ fn action_path_script_run_full_entry() {
         unless: None,
         creates: None,
         interactive: false,
-    };
+    });
     let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
         entry,
         phase: reconciler::ScriptPhase::PostApply,
@@ -16019,6 +22452,7 @@ fn action_path_secret_resolve() {
         provider: "1password".into(),
         reference: "op://vault/item/field".into(),
         target: PathBuf::from("/home/user/.token"),
+        template: None,
         origin: "profile".into(),
     });
     let path = super::action_path(&PhaseName::Secrets, &action);
@@ -16031,6 +22465,7 @@ fn action_path_secret_resolve_env() {
         provider: "vault".into(),
         reference: "secret/data/app".into(),
         envs: vec!["API_KEY".into(), "DB_PASS".into()],
+        template: None,
         origin: "profile".into(),
     });
     let path = super::action_path(&PhaseName::Secrets, &action);
@@ -16312,14 +22747,15 @@ fn cmd_source_list_table_shows_status_and_priority() {
     // Populate state with source info so the table columns have values
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("abc123"),
-            Some("1.2.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("abc123"),
+            source_version: Some("1.2.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
@@ -16341,14 +22777,15 @@ fn cmd_source_list_structured_json_includes_state_info() {
     let h = CliTestHarness::builder().rich_config().json().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("abc123def"),
-            Some("2.0.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("abc123def"),
+            source_version: Some("2.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
@@ -16416,14 +22853,15 @@ fn cmd_source_show_with_state_shows_status_section() {
     let h = CliTestHarness::builder().rich_config().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("deadbeef1234"),
-            Some("3.1.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("deadbeef1234"),
+            source_version: Some("3.1.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
@@ -16438,7 +22876,7 @@ fn cmd_source_show_with_state_shows_status_section() {
         "should display Status within State section, got: {output}"
     );
     assert!(
-        output.contains("Last Fetched"),
+        output.contains("Last Sync"),
         "should display Last Fetched, got: {output}"
     );
     // Last Commit should be truncated to 12 chars
@@ -16516,8 +22954,15 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false, false);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        true,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -16551,8 +22996,15 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        false,
+        true,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -16567,19 +23019,27 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         "remove_all should not reassign resources to local"
     );
 
-    h.assert_output_contains("removed");
+    h.assert_output_contains("Removed");
 }
 
 #[test]
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false)
-        .unwrap();
+    super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        false,
+        true,
+        false,
+        false,
+    )
+    .unwrap();
 
     // The heading names the source; the line below it names the outcome.
     h.assert_output_contains("Remove source:team-config");
-    h.assert_output_contains("removed");
+    h.assert_output_contains("Removed");
 }
 
 // -----------------------------------------------------------------------
@@ -17122,7 +23582,7 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
 
     let output = h.output();
     assert!(
-        output.contains("Config Sources"),
+        output.contains(crate::cli::source::list::SOURCES_SECTION),
         "should render Config Sources subheader: {output}"
     );
     assert!(
@@ -17203,7 +23663,11 @@ fn emit_doc(
     let doc = super::doctor::build_doctor_doc(output, extras);
     printer.emit(doc);
     drop(printer);
-    cap.human()
+    // Every caller asserts on TEXT content (`.contains(...)`), never on
+    // escapes — a role-styled subject and a muted qualifier now land in the
+    // same rendered line separated by SGR codes, which a raw substring match
+    // cannot see across.
+    cfgd_core::output::strip_ansi(&cap.human())
 }
 
 #[test]
@@ -17245,7 +23709,7 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("git: not found"),
+        text.contains("git: not found — install git to use cfgd"),
         "should mention git missing, got: {text}"
     );
     assert!(
@@ -17262,7 +23726,9 @@ fn build_doctor_doc_sops_missing_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("sops: not found"),
+        text.contains(
+            "sops: not found — required for secrets (https://github.com/getsops/sops#install)"
+        ),
         "should warn about missing sops, got: {text}"
     );
 }
@@ -17275,7 +23741,9 @@ fn build_doctor_doc_age_key_missing_with_path_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("age key: not found at") && text.contains("cfgd init"),
+        text.contains(
+            "age key: /home/user/.config/cfgd/keys/age.key — not found; run `cfgd init` to generate"
+        ),
         "should warn about missing age key and suggest cfgd init, got: {text}"
     );
 }
@@ -17301,7 +23769,7 @@ fn build_doctor_doc_sops_config_missing_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains(".sops.yaml: not found"),
+        text.contains(".sops.yaml: not found — will be generated on `cfgd init`"),
         "should warn about missing .sops.yaml, got: {text}"
     );
 }
@@ -17316,7 +23784,7 @@ fn build_doctor_doc_provider_unavailable_emits_info() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("1password") && text.contains("not installed"),
+        text.contains("Provider 1password: not installed (optional)"),
         "should show unavailable provider as info, got: {text}"
     );
 }
@@ -17334,12 +23802,8 @@ fn build_doctor_doc_manager_declared_unavailable_can_bootstrap_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("brew") && text.contains("not found"),
-        "should show brew not found, got: {text}"
-    );
-    assert!(
-        text.contains("auto-bootstrap") && text.contains("curl"),
-        "should mention auto-bootstrap method, got: {text}"
+        text.contains("brew: not found — can auto-bootstrap via curl"),
+        "should show brew not found with its bootstrap method, got: {text}"
     );
 }
 
@@ -17356,7 +23820,7 @@ fn build_doctor_doc_manager_declared_unavailable_no_bootstrap_emits_fail() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("apt") && text.contains("not found") && text.contains("declared in config"),
+        text.contains("apt: not found — declared in config but not available"),
         "should show apt declared but not available fail, got: {text}"
     );
     assert!(
@@ -17524,7 +23988,7 @@ fn build_doctor_doc_module_package_installed_with_version_emits_ok() {
         "should show installed package with version and manager, got: {text}"
     );
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "all_passed should be true when package is installed, got: {text}"
     );
 }
@@ -17626,7 +24090,7 @@ fn build_doctor_doc_all_passed_true_when_everything_ok() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "should show all-passed when output is clean, got: {text}"
     );
 }
@@ -17656,7 +24120,7 @@ fn build_doctor_doc_missing_config_does_not_fail_verdict() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "missing config must not fail the doctor verdict, got: {text}"
     );
 }
@@ -17691,7 +24155,7 @@ fn build_doctor_doc_provider_available_emits_ok() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("bitwarden") && text.contains("available"),
+        text.contains("Provider bitwarden: available"),
         "should show available provider as ok, got: {text}"
     );
 }
@@ -17709,7 +24173,7 @@ fn build_doctor_doc_manager_can_bootstrap_no_method_emits_generic_hint() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("nix") && text.contains("auto-bootstrap"),
+        text.contains("nix: not found — can auto-bootstrap"),
         "should show generic auto-bootstrap hint when method is None, got: {text}"
     );
 }
@@ -17827,7 +24291,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -17835,7 +24299,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions"),
         "should report no pending decisions, got: {output}"
@@ -17850,17 +24314,31 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/git", "required", "install", "Install git")
+        .upsert_pending_decision(
+            "alpha",
+            "pkg/git",
+            "required",
+            "install",
+            "Install git",
+            None,
+        )
         .unwrap();
     state
-        .upsert_pending_decision("beta", "env/EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "beta",
+            "env/EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     // No resource/source/all — should display pending decisions
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -17868,7 +24346,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Pending Decisions"),
         "should show Pending Decisions header, got: {output}"
@@ -17914,13 +24392,14 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
             "recommended",
             "install",
             "Install jq",
+            None,
         )
         .unwrap();
 
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some("packages.brew.jq"),
         None,
         false,
@@ -17928,9 +24407,9 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "should confirm rejection, got: {output}"
     );
     assert!(
@@ -17938,8 +24417,8 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         "should mention resource name, got: {output}"
     );
     assert!(
-        output.contains("not be applied"),
-        "rejected resource should mention 'not be applied', got: {output}"
+        output.contains("withheld from the next `cfgd apply`"),
+        "a rejected resource names the apply it is withheld from, got: {output}"
     );
 
     let pending = state.pending_decisions().unwrap();
@@ -17954,13 +24433,20 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
+        .upsert_pending_decision(
+            "team",
+            "file/bashrc",
+            "required",
+            "create",
+            "Create bashrc",
+            None,
+        )
         .unwrap();
 
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("file/bashrc"),
         None,
         false,
@@ -17968,9 +24454,9 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "should confirm acceptance, got: {output}"
     );
     assert!(
@@ -17978,8 +24464,8 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         "should mention resource name, got: {output}"
     );
     assert!(
-        output.contains("be applied"),
-        "accepted resource should mention 'be applied', got: {output}"
+        output.contains("included in the next `cfgd apply`"),
+        "an accepted resource names the apply that includes it, got: {output}"
     );
 }
 
@@ -17992,7 +24478,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("no.such.resource"),
         None,
         false,
@@ -18000,7 +24486,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decision found"),
         "should warn about nonexistent resource, got: {output}"
@@ -18026,6 +24512,7 @@ fn cmd_decide_accept_all_reports_count() {
                 "recommended",
                 "install",
                 &format!("Install pkg {i}"),
+                None,
             )
             .unwrap();
     }
@@ -18033,7 +24520,7 @@ fn cmd_decide_accept_all_reports_count() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -18041,9 +24528,9 @@ fn cmd_decide_accept_all_reports_count() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "should confirm acceptance, got: {output}"
     );
     assert!(
@@ -18051,8 +24538,8 @@ fn cmd_decide_accept_all_reports_count() {
         "should report count of 3 items, got: {output}"
     );
     assert!(
-        output.contains("next reconcile"),
-        "should mention next reconcile, got: {output}"
+        output.contains("Run `cfgd plan` to preview changes, then `cfgd apply`"),
+        "should close on the command that applies the answer, got: {output}"
     );
 
     let pending = state.pending_decisions().unwrap();
@@ -18067,19 +24554,19 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A", None)
         .unwrap();
     state
-        .upsert_pending_decision("alpha", "pkg/b", "recommended", "install", "B")
+        .upsert_pending_decision("alpha", "pkg/b", "recommended", "install", "B", None)
         .unwrap();
     state
-        .upsert_pending_decision("beta", "env/X", "required", "set", "X")
+        .upsert_pending_decision("beta", "env/X", "required", "set", "X", None)
         .unwrap();
 
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("alpha"),
         false,
@@ -18087,9 +24574,9 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "should confirm rejection, got: {output}"
     );
     assert!(
@@ -18116,13 +24603,13 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A", None)
         .unwrap();
 
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("nonexistent-source"),
         false,
@@ -18130,7 +24617,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions for source"),
         "should report no decisions for this source, got: {output}"
@@ -18149,13 +24636,20 @@ fn cmd_decide_accept_single_item_singular_message() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
+        .upsert_pending_decision(
+            "src",
+            "pkg/only",
+            "recommended",
+            "install",
+            "Only pkg",
+            None,
+        )
         .unwrap();
 
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -18163,7 +24657,7 @@ fn cmd_decide_accept_single_item_singular_message() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // When exactly 1 item, the message should use singular "item" not "items"
     assert!(
         output.contains("1 item"),
@@ -18259,7 +24753,9 @@ spec:
     // View mode should display source name and priority value
     h.assert_output_contains("team-src");
     h.assert_output_contains("750");
-    h.assert_output_contains("Local config priority is 1000");
+    h.assert_output_contains(
+        "Change it with `cfgd source priority team-src <priority>` (local config is 1000)",
+    );
 }
 
 #[test]
@@ -18282,7 +24778,7 @@ spec:
     let h = CliTestHarness::builder().config(config_with_source).build();
     super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", Some(100)).unwrap();
     // Should display the old->new priority change
-    h.assert_output_contains("priority updated: 750 -> 100");
+    h.assert_output_contains("priority updated: 750 → 100");
     // Verify the file was actually updated
     let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
     let source = cfg
@@ -18369,7 +24865,7 @@ fn cmd_compliance_export_writes_file_and_displays_path() {
     let output = h.output();
     // export writes a file and prints the path in a success message
     assert!(
-        output.contains("Compliance snapshot written to"),
+        output.contains("Wrote compliance snapshot to"),
         "should confirm file was written, got: {output}"
     );
     // The output should also include the export heading
@@ -18395,22 +24891,21 @@ fn cmd_compliance_export_json_returns_snapshot_object() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
-    // A tempdir is not a git repo, so git_pull_sync will fail with a
-    // warning. The test verifies both the header and the pull-failure warning path.
+fn cmd_sync_over_a_non_repo_reports_no_pull_at_all() {
+    // A config directory under no version control has nothing to pull, and
+    // `git_pull_sync` answers a bare `Err` there — which opened a `Local Repo`
+    // section whose `⚠ Pull failed` sat two lines above the closing verdict.
     let h = CliTestHarness::builder().build();
     super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     let output = h.output();
-    // Spinner section appears with the pulling message; final state is "Pull
-    // failed" on a non-git dir.
     assert!(
-        output.contains("Local repo"),
-        "missing 'Local repo' section: {output}"
+        !output.contains("Local Repo"),
+        "a directory under no version control must open no pull section: {output}"
     );
     assert!(
-        output.contains("Pull failed"),
-        "missing pull failure status: {output}"
+        output.contains("✓ Synced"),
+        "nothing refused, so the run closes on its success verdict: {output}"
     );
 }
 
@@ -18432,14 +24927,460 @@ spec:
         priority: 100
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::sync::cmd_sync(&h.cli(), h.printer()).unwrap();
+    // A refused source leaves `cmd_sync` exiting nonzero, which would take
+    // this process with it; the rendered section is what is under test.
+    super::sync::run_sync(&h.cli(), h.printer()).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
     // The source sync will fail because the URL is non-existent — spinner
     // finishes with finish_fail("Failed to sync ...").
     h.assert_output_contains("source:team-config");
-    h.assert_output_contains("sync failed");
+    h.assert_output_contains("Sync failed");
+}
+
+/// A source refused for an unsigned HEAD recovers on the next sync once a
+/// signed commit lands upstream.
+///
+/// `cfgd sync` composes the configuration as it FOUND it before it fetches, to
+/// fill its header, and that resolution reads the source cache offline and
+/// verifies the cached head. Propagated, the refusal aborted the run before its
+/// `Sources` section opened — so the one command that could replace the
+/// offending commit was the command that commit locked out, and the
+/// subscription stayed refused however many signed commits were pushed.
+///
+/// Drives the five real steps: subscribe, tighten the demand, sync (refused),
+/// push a signed commit, sync (accepted). SSH signing, so the fixture needs
+/// only `ssh-keygen` and a git config of its own.
+#[test]
+#[serial_test::serial]
+fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let out = cfgd_core::git_cmd_local()
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    // A signing key and a git config that both signs with it and trusts it, so
+    // every git child of this test — the upstream commit and the `%G?` read
+    // inside the cached clone alike — speaks the same signing policy.
+    let key = scratch.path().join("id");
+    let keygen = std::process::Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-f"])
+        .arg(&key)
+        .output();
+    match keygen {
+        Ok(out) if out.status.success() => {}
+        // Nothing below can be judged without a key to sign with. On the Linux
+        // host this suite is gated on that is a broken rig and has to be loud; a
+        // host shipping no ssh-keygen at all proves nothing either way, so it
+        // stands down rather than reporting a signature failure it never tested.
+        _ => {
+            assert_ne!(
+                std::env::consts::OS,
+                "linux",
+                "ssh-keygen is required to mint the signature this test judges"
+            );
+            return;
+        }
+    }
+    let pubkey = std::fs::read_to_string(scratch.path().join("id.pub")).unwrap();
+    let allowed = scratch.path().join("allowed_signers");
+    std::fs::write(&allowed, format!("t@cfgd.test {pubkey}")).unwrap();
+    let gitconfig = scratch.path().join("gitconfig");
+    // Posix, not native: a backslash is an ESCAPE inside a gitconfig value, so
+    // a Windows path written natively makes git refuse the whole file with
+    // `bad config line`. git reads `/` on every host.
+    std::fs::write(
+        &gitconfig,
+        format!(
+            "[user]\n\tname = t\n\temail = t@cfgd.test\n\tsigningkey = {}\n\
+             [gpg]\n\tformat = ssh\n[gpg \"ssh\"]\n\tallowedSignersFile = {}\n",
+            cfgd_core::to_posix_string(key.with_extension("pub")),
+            cfgd_core::to_posix_string(&allowed)
+        ),
+    )
+    .unwrap();
+
+    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _cfg_global =
+        EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
+    let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
+    // The upstream a team subscribes to, at an unsigned first commit.
+    let upstream = scratch.path().join("team-config");
+    std::fs::create_dir_all(upstream.join("profiles")).unwrap();
+    std::fs::write(
+        upstream.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: jarvispro\n  \
+         version: 1.0.0\nspec:\n  provides:\n    profiles:\n      - team\n",
+    )
+    .unwrap();
+    std::fs::write(
+        upstream.join("profiles").join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    git(&upstream, &["init", "-q", "-b", "master"]);
+    git(&upstream, &["add", "-A"]);
+    git(&upstream, &["commit", "-qm", "initial", "--no-gpg-sign"]);
+
+    let url = cfgd_core::to_file_url(&upstream);
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: jarvispro\n      origin:\n        \
+         type: Git\n        url: {url}\n        branch: master\n      subscription:\n        \
+         profile: team\n        priority: 500\n        requireSignedCommits: true\n"
+    );
+    let h = CliTestHarness::builder().config(&config).build();
+
+    // The state a tightened subscription leaves behind: a checkout accepted
+    // before the demand existed, sitting on a commit that no longer passes.
+    let cache = h.cache_dir.path().join("sources");
+    std::fs::create_dir_all(&cache).unwrap();
+    git(
+        scratch.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            "master",
+            &url,
+            &cache.join("jarvispro").display().to_string(),
+        ],
+    );
+    let checkout = cache.join("jarvispro");
+    let stale = cfgd_core::sources::SourceManager::head_commit(&checkout).unwrap();
+
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    assert!(
+        super::sync::sync_refused(&payload),
+        "a source still refused after the fetch exits nonzero"
+    );
+    assert!(
+        payload.config_resolution_error.is_none(),
+        "the stale pre-fetch reading is not itself the refusal: {:?}",
+        payload.config_resolution_error
+    );
+    let refused = h.output();
+    assert!(
+        refused.contains("source:jarvispro"),
+        "the refusal must not abort the run before the section that re-fetches: {refused}"
+    );
+    assert!(
+        refused.contains("not signed"),
+        "and the unsigned head is still refused: {refused}"
+    );
+    assert_eq!(
+        cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
+        Some(stale.as_str()),
+        "a refused sync leaves the cache where it found it"
+    );
+
+    // Upstream signs its HEAD.
+    git(
+        &upstream,
+        &["commit", "-qm", "sign HEAD", "--allow-empty", "-S"],
+    );
+    let signed = cfgd_core::sources::SourceManager::head_commit(&upstream).unwrap();
+    assert_ne!(signed, stale, "the fixture must offer a new commit");
+
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let accepted = h.output();
+    assert_eq!(
+        cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
+        Some(signed.as_str()),
+        "the signed commit is fetched and accepted: {accepted}"
+    );
+    assert!(
+        accepted.contains("✓ Synced"),
+        "and the run closes on its success verdict: {accepted}"
+    );
+    // The header composes offline from the checkout the refusal left standing,
+    // so the recovery run opens on the same starting-point line the refused run
+    // did. Lose the rollback and the cache is gone: the header composes from
+    // nothing, prints no line, and the fetch below clones fresh with no old
+    // commit to report a move from.
+    assert!(
+        accepted.contains("Starting point could not be resolved from the cached checkout"),
+        "the recovery run's header reads the checkout the refusal kept: {accepted}"
+    );
+    assert!(
+        accepted.contains(&format!(
+            "commit: {} {} {}",
+            cfgd_core::short_commit(&stale),
+            h.printer().arrow(),
+            cfgd_core::short_commit(&signed)
+        )),
+        "and its fetch reports the move it made: {accepted}"
+    );
+    assert!(
+        !super::sync::sync_refused(&payload),
+        "the recovery run exits 0: {accepted}"
+    );
+}
+
+/// The header's stale reading is a starting point, not a verdict.
+///
+/// `cfgd sync` composes offline from the source cache to fill its header rows,
+/// and that read verifies the cached head — so a subscription that tightened
+/// its demand after the last fetch refuses on the very commit the fetch below
+/// replaces. Reported as a refusal it would fail the run that repairs it, and
+/// worded as a warning it sits three lines above a green `✓ Synced`.
+#[test]
+fn a_stale_signature_header_reading_is_a_starting_point_not_a_refusal() {
+    let e: anyhow::Error = cfgd_core::errors::CfgdError::Source(
+        cfgd_core::errors::SourceError::SignatureVerificationFailed {
+            name: "jarvispro".to_string(),
+            message: "HEAD commit is not signed".to_string(),
+        },
+    )
+    .into();
+    assert!(
+        super::sync::resolution_failure_the_fetch_rejudges(&e),
+        "a refused cached signature is what the fetch below re-judges"
+    );
+
+    let other: anyhow::Error =
+        cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+            name: "nonexistent-module".to_string(),
+        })
+        .into();
+    assert!(
+        !super::sync::resolution_failure_the_fetch_rejudges(&other),
+        "nothing the fetch does makes an unknown module resolve"
+    );
+
+    // Cache-sourced is not enough: nothing in the `Sources` loop re-resolves
+    // `subscription.profile` after the fetch, so a permanent typo classified
+    // repairable would exit 0 behind a line `-o json` swallows.
+    let profile: anyhow::Error =
+        cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::ProfileNotFound {
+            name: "jarvispro".to_string(),
+            profile: "teem".to_string(),
+        })
+        .into();
+    assert!(
+        !super::sync::resolution_failure_the_fetch_rejudges(&profile),
+        "a subscription profile nothing re-resolves stays a refusal"
+    );
+}
+
+/// A configuration failure no fetch can repair keeps its nonzero exit, and says
+/// so in both output modes.
+///
+/// The header resolution used to propagate with `?`, so an unresolvable
+/// configuration failed the command outright. Reported instead as a human line,
+/// it went silent under `-o json` (which forces Quiet, swallowing every role but
+/// `Fail`) and left a CI run reading `sources` alone told the whole run
+/// succeeded.
+#[test]
+#[serial_test::serial]
+fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let remote = cfgd_core::test_helpers::BareGitRepo::builder()
+        .commit(
+            "team source",
+            &[(
+                "cfgd-source.yaml",
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: team\nspec:\n  provides:\n    profiles: []\n",
+            )],
+        )
+        .build();
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n",
+        remote.url(),
+        remote.head_branch(),
+    );
+    let config = config.as_str();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                   spec:\n  modules:\n    - nonexistent-module\n";
+
+    let h = CliTestHarness::builder()
+        .config(config)
+        .profile("default", profile)
+        .build();
+    let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+    let human = h.output();
+    assert!(
+        payload.config_resolution_error.is_some(),
+        "the failure the human line reports lands in the payload: {human}"
+    );
+    assert!(
+        super::sync::sync_refused(&payload),
+        "and it is what the nonzero exit reports: {human}"
+    );
+    assert!(
+        human.contains("Could not resolve the configuration as it stands"),
+        "the human line names it as a verdict, not a starting point: {human}"
+    );
+    assert!(
+        !human.contains("✓ Synced"),
+        "a run that cannot resolve its configuration withholds the success verdict: {human}"
+    );
+    // The `Sources` word alone is no evidence: the fetch section below is
+    // headed with it and names `team` inside, so a substring pin passes over a
+    // header that dropped the row. Judged as the kv ROW it is — the key
+    // followed by its value, the shape `rendered_header_rows` reads — above
+    // the section that merely repeats the noun.
+    let header_row = human
+        .lines()
+        .position(|l| l.split_whitespace().collect::<Vec<_>>() == ["Sources", "team"]);
+    let section = human
+        .lines()
+        .position(|l| l.trim() == super::source::list::SOURCES_SECTION);
+    assert!(
+        header_row.is_some_and(|row| section.is_none_or(|sec| row < sec)),
+        "and the header still names the subscriptions the config declares — the \
+         fetch below is about those very sources, so the row is most load-bearing \
+         exactly where the resolution failed: {human}"
+    );
+
+    let hj = CliTestHarness::builder()
+        .config(config)
+        .profile("default", profile)
+        .json()
+        .build();
+    let payload = super::sync::run_sync(&hj.cli(), hj.printer()).unwrap();
+    assert!(
+        super::sync::sync_refused(&payload),
+        "same exit under -o json"
+    );
+    let json = hj.json_output();
+    assert!(
+        json["configResolutionError"]
+            .as_str()
+            .is_some_and(|s| s.contains("nonexistent-module")),
+        "and a structured consumer can see it: {json}"
+    );
+}
+
+/// A cached checkout the fetch below replaces is a starting point, whatever
+/// made it unreadable.
+///
+/// The header composes offline from the source cache, so it reports on bytes
+/// the `Sources` section is about to discard and re-clone — and a cache that is
+/// no checkout at all (an interrupted clone, a manifest a newer binary can no
+/// longer parse) raises `InvalidManifest` rather than the signature refusal that
+/// was noticed first. Judged only on that one kind, the run that HEALED the
+/// cache reported `⚠ Sync incomplete` and exited 1 in both output modes.
+#[test]
+#[serial_test::serial]
+fn a_cached_manifest_the_fetch_replaces_is_a_starting_point_not_a_refusal() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let gitconfig = scratch.path().join("gitconfig");
+    std::fs::write(&gitconfig, "[user]\n\tname = t\n\temail = t@cfgd.test\n").unwrap();
+    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _cfg_global =
+        EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
+    let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
+    let git = |dir: &Path, args: &[&str]| {
+        let out = cfgd_core::git_cmd_local()
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    let upstream = scratch.path().join("team-config");
+    std::fs::create_dir_all(upstream.join("profiles")).unwrap();
+    std::fs::write(
+        upstream.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: jarvispro\n  \
+         version: 1.0.0\nspec:\n  provides:\n    profiles:\n      - team\n",
+    )
+    .unwrap();
+    std::fs::write(
+        upstream.join("profiles").join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    git(&upstream, &["init", "-q", "-b", "master"]);
+    git(&upstream, &["add", "-A"]);
+    git(&upstream, &["commit", "-qm", "initial", "--no-gpg-sign"]);
+
+    let url = cfgd_core::to_file_url(&upstream);
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         profile: default\n  sources:\n    - name: jarvispro\n      origin:\n        \
+         type: Git\n        url: {url}\n        branch: master\n      subscription:\n        \
+         profile: team\n        priority: 500\n"
+    );
+
+    for as_json in [false, true] {
+        let builder = CliTestHarness::builder().config(&config);
+        let h = if as_json {
+            builder.json().build()
+        } else {
+            builder.build()
+        };
+
+        // The cache the header reads: a directory that is no repository and
+        // whose manifest will not parse. The fetch leg's own self-heal discards
+        // and re-clones exactly this shape.
+        let checkout = h.cache_dir.path().join("sources").join("jarvispro");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            checkout.join("cfgd-source.yaml"),
+            "not: a: valid: manifest\n",
+        )
+        .unwrap();
+
+        let payload = super::sync::run_sync(&h.cli(), h.printer()).unwrap();
+        let out = h.output();
+        assert!(
+            payload.config_resolution_error.is_none(),
+            "a reading of bytes this run replaced is not a refusal: {out}"
+        );
+        assert!(
+            !super::sync::sync_refused(&payload),
+            "so the run that healed the cache exits 0: {out}"
+        );
+        assert!(
+            matches!(
+                payload.sources.first().map(|s| &s.status),
+                Some(SourceOutcome::Synced)
+            ),
+            "and the fetch below settled the source: {out}"
+        );
+
+        if as_json {
+            let json = h.json_output();
+            assert!(
+                json.get("configResolutionError").is_none(),
+                "nothing refused, so the payload carries no resolution error: {json}"
+            );
+            assert_eq!(json["sources"][0]["status"], "synced", "{json}");
+        } else {
+            assert!(
+                out.contains("Starting point could not be resolved from the cached checkout"),
+                "the header reports the stale reading as a starting point: {out}"
+            );
+            assert!(
+                out.contains("\u{2713} Synced"),
+                "and the run closes on its success verdict: {out}"
+            );
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -18479,7 +25420,13 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_no_sources).build();
     let cli = h.cli_with_command(Command::Source {
-        command: SourceCommand::Update { name: None },
+        command: SourceCommand::Update {
+            name: None,
+            require_signed_commits: false,
+            no_require_signed_commits: false,
+            allow_scripts: false,
+            no_allow_scripts: false,
+        },
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Update Sources");
@@ -18553,7 +25500,7 @@ fn execute_dispatch_compliance_export() {
         command: Some(ComplianceCommand::Export),
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
-    h.assert_output_contains("Compliance snapshot written to");
+    h.assert_output_contains("Wrote compliance snapshot to");
 }
 
 // ============================================================================
@@ -18653,6 +25600,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
         env: vec![EnvVar {
             name: "FOO".to_string(),
             value: "bar".to_string(),
+            platforms: vec![],
         }],
         system,
         ..Default::default()
@@ -18692,6 +25640,7 @@ fn count_policy_items_sums_packages_files_env_and_system() {
         env: vec![cfgd_core::config::EnvVar {
             name: "X".to_string(),
             value: "1".to_string(),
+            platforms: vec![],
         }],
         system,
         ..Default::default()
@@ -18708,6 +25657,7 @@ fn count_policy_items_packages_none_does_not_panic() {
         env: vec![cfgd_core::config::EnvVar {
             name: "X".to_string(),
             value: "1".to_string(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -18855,6 +25805,8 @@ mod cmd_source_add_local {
             auto_apply: false,
             pin_version: None,
             yes: true,
+            require_signed_commits: false,
+            allow_scripts: false,
         }
     }
 
@@ -19147,7 +26099,7 @@ mod cmd_source_add_local {
     #[serial]
     fn cmd_source_add_with_empty_provided_profiles_bails_at_source_load() {
         // Manifest declares no profiles and no modules. SourceManager::load_source
-        // rejects the source before we ever reach the profile-selection arms
+        // rejects the source before ever reaching the profile-selection arms
         // of cmd_source_add — encoding the contract that a subscribable
         // source must expose at least one profile or at least one module.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
@@ -19268,7 +26220,7 @@ mod cmd_source_add_local {
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
             // the group's `updated` success line.
-            super::source::cmd_source_update(&h.cli(), h.printer(), None)
+            super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default())
                 .expect("cmd_source_update should succeed against the staged source");
 
             h.assert_output_contains("source:upd-src");
@@ -19314,7 +26266,7 @@ mod cmd_source_add_local {
             )
             .unwrap();
 
-            // Snapshot the buffer length so we only inspect output from
+            // Snapshot the buffer length to only inspect output from
             // cmd_source_update — cmd_source_add ran twice above and its
             // success messages would otherwise satisfy the assertions.
             let baseline_len = h.output().len();
@@ -19323,8 +26275,13 @@ mod cmd_source_add_local {
             // source. The post-update slice must contain src-b AND must NOT
             // mention src-a; without the second assertion the test would
             // pass even if the name filter was wired to update everything.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("src-b"))
-                .expect("named update should succeed");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("src-b"),
+                Default::default(),
+            )
+            .expect("named update should succeed");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
@@ -19426,8 +26383,13 @@ mod cmd_source_add_local {
             // Err → continue. The cache nevertheless got the v2 manifest
             // written by SourceManager::load_source BEFORE the permission
             // check ran, so cmd_source_show can render its policy section.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("shown-src"))
-                .expect("cmd_source_update");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("shown-src"),
+                Default::default(),
+            )
+            .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
             super::source::cmd_source_show(&h.cli(), h.printer(), "shown-src")
@@ -19436,7 +26398,7 @@ mod cmd_source_add_local {
             let show_out = &full[baseline_len..];
 
             assert!(
-                show_out.contains("source:shown-src"),
+                show_out.contains("Show source:shown-src"),
                 "expected header, got: {show_out}"
             );
             assert!(
@@ -19448,8 +26410,12 @@ mod cmd_source_add_local {
                 "expected manifest description, got: {show_out}"
             );
             assert!(
-                show_out.contains("Policy Summary"),
-                "expected Policy Summary subheader, got: {show_out}"
+                show_out.contains("Profiles") && show_out.contains("profile:default"),
+                "expected the provided profile under its owner token, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Policy"),
+                "expected Policy subheader, got: {show_out}"
             );
             assert!(
                 show_out.contains("Required") && show_out.contains("Recommended"),
@@ -19502,13 +26468,18 @@ mod cmd_source_add_local {
             push_replacement_manifest(&scratch, &bare, v2);
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("perm-src"))
-                .expect("cmd_source_update should not bubble up the cancelled prompt");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("perm-src"),
+                Default::default(),
+            )
+            .expect("cmd_source_update should not bubble up the cancelled prompt");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("permission changes"),
+                update_out.contains("Permission Changes"),
                 "expected permission-change warning, got: {update_out}"
             );
             assert!(
@@ -19516,7 +26487,7 @@ mod cmd_source_add_local {
                 "expected required-items expansion message, got: {update_out}"
             );
             assert!(
-                update_out.contains("skipped (prompt cancelled)"),
+                update_out.contains("Skipped (prompt cancelled)"),
                 "expected prompt-cancelled skip line, got: {update_out}"
             );
             // The upsert_config_source success line MUST NOT appear — the
@@ -19534,8 +26505,9 @@ mod cmd_source_add_local {
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             // Stage a real source so cmd_source_add succeeds — then bulldoze
             // the bare upstream so the *next* fetch fails. cmd_source_update
-            // should surface the failure via the "Failed to update source"
-            // error line + flip the state-store status to 'error'.
+            // should surface the failure as an `update failed` row under the
+            // source's own owner heading + flip the state-store status to
+            // 'error'.
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "doomed-src", None);
             let h = CliTestHarness::builder().build();
@@ -19560,15 +26532,20 @@ mod cmd_source_add_local {
 
             // Call the non-exiting core directly: `cmd_source_update` would
             // `process::exit(1)` on this failure and abort the test binary.
-            let error_count =
-                super::source::run_source_update(&h.cli(), h.printer(), Some("doomed-src"))
-                    .expect("run_source_update should not bubble up a fetch failure");
+            let error_count = super::source::run_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("doomed-src"),
+                Default::default(),
+            )
+            .expect("run_source_update should not bubble up a fetch failure");
             assert_eq!(
                 error_count, 1,
                 "the single doomed source should count as 1 failure"
             );
 
-            h.assert_output_contains("Failed to update source 'doomed-src'");
+            h.assert_output_contains("source:doomed-src");
+            h.assert_output_contains("✗ Update failed");
 
             // The status update arm should have flipped the row to 'error'.
             let store =
@@ -19686,7 +26663,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     )
     .unwrap();
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
     assert!(
@@ -19703,7 +26680,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     .unwrap();
     printer.flush();
     assert!(
-        buf.lock().unwrap().is_empty(),
+        cfgd_core::test_helpers::captured_text(&buf).is_empty(),
         "the current spelling earns no notice"
     );
 }
@@ -19914,10 +26891,16 @@ impl cfgd_core::providers::PackageManager for NamedManagerStub {
     fn name(&self) -> &str {
         self.0
     }
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
     fn is_available(&self) -> bool {
         true
     }
-    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+    fn bootstrap_plan_given(
+        &self,
+        _delivered: &dyn Fn(&str) -> bool,
+    ) -> Option<cfgd_core::providers::BootstrapPlan> {
         Some(cfgd_core::providers::BootstrapPlan::new("stub").requiring(self.1.to_vec()))
     }
     fn bootstrap(
@@ -19964,9 +26947,7 @@ impl cfgd_core::providers::PackageManager for NamedManagerStub {
 #[test]
 fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabulary() {
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(NamedManagerStub("brew", &[])));
+    registry.add_package_manager(Box::new(NamedManagerStub("brew", &[])));
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -19993,9 +26974,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     // `--phase` validator listed manager families only, so one grammar was
     // legal on one flag and rejected on the other.
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(NamedManagerStub("brew", &["curl"])));
+    registry.add_package_manager(Box::new(NamedManagerStub("brew", &["curl"])));
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -20671,12 +27650,12 @@ fn build_doctor_doc_legacy_profile_warns_with_migrate_hint() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "profile 'work' uses the legacy flat layout — run 'cfgd profile migrate work'"
+            "profile 'work': uses the legacy flat layout — run `cfgd profile migrate work`"
         ),
         "should warn with the migrate remediation, got: {text}"
     );
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "legacy layout is supported — a WARN must not fail doctor, got: {text}"
     );
 }
@@ -20812,6 +27791,7 @@ impl DecisionFixture {
                 "recommended",
                 "install",
                 "recommended withheld.txt (from acme)",
+                None,
             )
             .unwrap();
         state
@@ -20952,7 +27932,8 @@ fn plan_args() -> PlanArgs {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }
@@ -20968,7 +27949,8 @@ fn apply_args(dry_run: bool) -> ApplyArgs {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -20985,7 +27967,7 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("Pending Decisions (not included in this plan)"),
+        output.contains("Pending Decisions (1 item, not included in this plan)"),
         "the pending block is the visibility surface and still renders, got:\n{output}"
     );
     assert!(
@@ -20999,7 +27981,7 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
         .map(|(_, tail)| tail.to_string())
         .expect("the plan tree renders a Files phase");
     assert!(
-        tree.contains(&f.kept.posix().to_string()),
+        tree.contains(&cfgd_core::fold_home_in_text(&f.kept.posix().to_string())),
         "the decided file is still planned:\n{output}"
     );
     assert!(
@@ -21024,11 +28006,11 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("Declined Decisions (not included in this plan)"),
+        output.contains("Declined Decisions (1 item, not included in this plan)"),
         "a declined decision must account for the resource it removed:\n{output}"
     );
     assert!(
-        !output.contains("Pending Decisions (not included in this plan)"),
+        !output.contains("Pending Decisions (1 item, not included in this plan)"),
         "an answered decision is not awaiting an answer:\n{output}"
     );
     assert!(
@@ -21038,6 +28020,40 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
     assert!(
         output.contains("1 action planned"),
         "the count describes the pruned plan:\n{output}"
+    );
+}
+
+/// The run header's withheld rows read the same content derivation `cfgd
+/// decide` and `cfgd status` render from — three surfaces naming one item must
+/// not describe it three ways.
+#[test]
+#[serial_test::serial]
+fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("— 1 line"),
+        "the withheld row says what the file would deliver, not only who sent it:\n{output}"
+    );
+    assert!(
+        output.contains("source:acme")
+            && output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
+        "the owner section names the source and one hint says how to answer:\n{output}"
+    );
+    assert!(
+        !output.contains("by acme"),
+        "whose the item is belongs to the owner heading, not to every row:\n{output}"
+    );
+    assert_eq!(
+        output
+            .matches(cfgd_core::reconciler::MSG_ANSWER_DECISIONS)
+            .count(),
+        1,
+        "the instruction is ONE hint under the block, never a per-row suffix:\n{output}"
     );
 }
 
@@ -21211,7 +28227,7 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         f.kept.exists(),
@@ -21223,7 +28239,7 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
          not part of it:\n{output}"
     );
     assert!(
-        output.contains("Pending Decisions (not included in this plan)"),
+        output.contains("Pending Decisions (1 item, not included in this plan)"),
         "the operator confirming must see what the plan is missing:\n{output}"
     );
 }
@@ -21237,7 +28253,7 @@ fn apply_executes_a_resource_once_its_decision_is_accepted() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
@@ -21266,7 +28282,7 @@ fn apply_never_executes_a_resource_whose_decision_was_rejected() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
@@ -21303,6 +28319,7 @@ fn a_decision_never_withholds_what_the_operator_declares_themselves() {
             "recommended",
             "install",
             "recommended kept.txt (from acme)",
+            None,
         )
         .unwrap();
     state.resolve_decision(&local_resource, "rejected").unwrap();
@@ -21330,6 +28347,7 @@ fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
             "recommended",
             "install",
             "recommended withheld.txt (from gone)",
+            None,
         )
         .unwrap();
     state.resolve_decision(&f.resource(), "rejected").unwrap();
@@ -21411,7 +28429,8 @@ fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
 
     let args = ApplyArgs {
         on_conflict: crate::cli::OnConflict::Ask,
-        module: Some("nonexistent".into()),
+        module: vec!["nonexistent".into()],
+        with_profile: false,
         ..apply_args(false)
     };
     let _ = super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &args);
@@ -21444,6 +28463,7 @@ fn a_foreign_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -21547,7 +28567,7 @@ fn an_apply_declined_at_the_prompt_records_nothing() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !f.kept.exists() && !f.withheld.exists(),
@@ -21614,6 +28634,7 @@ fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -21666,6 +28687,7 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -21697,10 +28719,11 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
@@ -21726,13 +28749,14 @@ fn decide_lists_only_the_decisions_their_source_can_still_answer() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -21774,16 +28798,16 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "decide answers the unrecorded item instead of denying it exists:\n{output}"
     );
 
@@ -21816,14 +28840,14 @@ fn decide_lists_the_unrecorded_item_without_recording_it() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("withheld.txt"),
@@ -21847,9 +28871,9 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&f.h.cli(), &printer, None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("withheld.txt"),
@@ -21883,7 +28907,7 @@ fn decide_answers_one_item_without_consuming_the_other_items_notification() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
@@ -21966,7 +28990,7 @@ fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() 
         "the item is still withheld and named:\n{output}"
     );
     assert!(
-        !output.contains("run `cfgd decide accept/reject`"),
+        !output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
         "no instruction naming a command that will refuse:\n{output}"
     );
     assert!(
@@ -21990,6 +29014,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
             "recommended",
             "install",
             "recommended withheld.txt (from acme)",
+            None,
         )
         .unwrap();
 
@@ -22001,7 +29026,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("run `cfgd decide accept/reject`"),
+        output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
         "a recorded row is answerable everywhere:\n{output}"
     );
 }
@@ -22219,7 +29244,7 @@ fn a_declined_apply_records_no_auto_accepted_row() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Aborted"),
         "the run must actually reach and decline the confirm gate — a run \
@@ -22284,7 +29309,7 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains(PINNED_CONFLICT_ANNOTATION),
@@ -22310,7 +29335,7 @@ fn the_version_conflict_annotation_reaches_the_decide_listing() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22349,7 +29374,7 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
     let warnings = json["warnings"]
         .as_array()
@@ -22377,7 +29402,7 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains("pip3.11") && output.contains("'.'"),
@@ -22406,7 +29431,7 @@ fn decide_listing_names_the_undecidable_source_batch() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22442,7 +29467,7 @@ fn decide_listing_renders_the_undecidable_batch_warning() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22480,10 +29505,10 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&f.h.cli(), &printer, None, false)
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false)
         .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("Status"),
@@ -22509,7 +29534,7 @@ fn a_degraded_status_json_payload_says_so_structurally() {
     });
     write_broken_manifest(&f.h);
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
         .expect("a read-only dashboard renders through a classification failure");
     let json = f.h.json_output();
     assert_eq!(
@@ -22538,7 +29563,7 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         extra_spec: NOTIFYING_POLICY,
         ..Default::default()
     });
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
         .expect("a clean classification renders");
     let json = f.h.json_output();
     assert_eq!(
@@ -22575,7 +29600,7 @@ fn a_degraded_decide_json_listing_says_so_structurally() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22619,7 +29644,7 @@ fn a_clean_decide_json_listing_marks_classification_undegraded() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22665,10 +29690,10 @@ fn a_sourceless_status_skips_source_classification_entirely() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&h.cli(), &printer, None, false)
+    super::status::cmd_status(&h.cli(), &printer, None, false, false, false)
         .expect("no sources, no classification, no failure");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains("not classified"),
@@ -22701,14 +29726,14 @@ fn a_sourceless_decide_answers_the_store_without_classifying() {
     super::decide::cmd_decide(
         &h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("no.such.resource"),
         None,
         false,
     )
     .expect("no sources, no classification, no refusal");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("No pending decision found"),
@@ -22734,7 +29759,7 @@ fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
     let err = super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
@@ -22772,14 +29797,14 @@ fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
     )
     .expect("a degraded listing renders, it does not refuse");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains(&f.resource()),
@@ -22809,17 +29834,17 @@ fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "an existing row resolves regardless of the classification:\n{output}"
     );
 }
@@ -22835,7 +29860,7 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
 
     let pending = json["pendingDecisions"]
@@ -22872,7 +29897,7 @@ fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22910,4 +29935,6170 @@ fn dry_run_apply_previews_the_pruned_plan() {
         "a dry run previews the same pruned plan a real apply would run:\n{output}"
     );
     assert!(!f.withheld.exists(), "a dry run writes nothing either way");
+}
+
+/// A `--module` run is isolated from the active profile, so what it records is
+/// the scope it actually ran under. The placeholder an underivable profile used
+/// to stamp said cfgd had lost track of something, when the truth is that the
+/// run was never scoped to a profile at all.
+#[test]
+fn a_module_scoped_apply_records_its_modules_not_a_profile_placeholder() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+
+    let mod_dir = config_dir.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec!["nvim".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+
+    let state = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+    let history = state.history(1).unwrap();
+    assert_eq!(
+        history[0].profile, "module:nvim",
+        "an isolated run records the modules it ran, never a placeholder"
+    );
+}
+
+/// `cmd_apply` hands the conflict sweep's reservations to the reconciler that
+/// runs the plan. Nothing else carries them: unhooked, the sweep still decides
+/// `Backup` and the write still lands, and the user's file is gone with no
+/// copy anywhere and no error to say so.
+#[test]
+fn an_adopted_file_is_copied_aside_by_a_real_apply() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+
+    let mod_dir = config_dir.path().join("modules").join("conf-mod");
+    let files_dir = mod_dir.join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("app.conf"), "from the module\n").unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("app.conf");
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: conf-mod\nspec:\n  files:\n    - source: files/app.conf\n      target: {}\n      strategy: Copy\n",
+            target.display()
+        ),
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Backup,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec!["conf-mod".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(target_dir.path().join("app.conf.cfgd-backup")).unwrap(),
+        "years of hand edits\n",
+        "the run copies the adopted file aside before replacing it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "from the module\n",
+        "and the module's own content lands at the target"
+    );
+}
+
+/// A `MergedEnvItems` is one command's whole env/alias merge: it clones the
+/// profile's env, its aliases and both origin maps and folds every resolved
+/// module in. Built once per command it costs that once; built inside the loop
+/// that renders a drift report it costs that per FINDING, which is the shape
+/// this fence exists to keep out — and nothing but reading the code stopped a
+/// later edit from moving a construction one brace deeper.
+///
+/// The predicate is structural: while walking a file's PRODUCTION half (the
+/// body before its `#[cfg(test)]` module — a test builds its own view per
+/// assertion and that is fine), every open `{` pushes the line that opened it,
+/// and a construction is an offender when any block still open above it was
+/// opened by a loop or a closure. The per-file COUNT is pinned beside it, so a
+/// second construction added to a command — the other way one report pays the
+/// merge twice — fails here too rather than passing for sitting at fn depth.
+///
+/// Hatch: `// per-row-merge-ok: <why>` on the construction line or the line
+/// above it, for a site that genuinely must re-merge (a declaration that
+/// changed under it mid-loop).
+#[test]
+fn every_merged_env_view_is_built_once_per_command() {
+    const HATCH: &str = "per-row-merge-ok:";
+    // Each production construction, by file and count: `cmd_status` and
+    // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s full-machine env
+    // path plus `cmd_diff_module`'s scoped Shell section — two commands in
+    // one file, one build each.
+    const EXPECTED: [(&str, usize); 3] = [("status.rs", 2), ("verify.rs", 1), ("diff.rs", 2)];
+    const LOOPY: [&str; 8] = [
+        "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
+    ];
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        // A `tests.rs` is a test module whole (declared `mod tests;` from its
+        // parent), so it carries no `#[cfg(test)]` line to cut at — including
+        // this fence's own file, whose literals would report themselves.
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let mut open: Vec<&str> = Vec::new();
+        let mut prev = "";
+        for line in production.lines() {
+            if line.contains("MergedEnvItems::new(")
+                && !line.contains(HATCH)
+                && !prev.contains(HATCH)
+            {
+                *counts.entry(name.clone()).or_default() += 1;
+                if let Some(opener) = open
+                    .iter()
+                    .find(|o| LOOPY.iter().any(|m| o.contains(m)) && !o.contains("fn "))
+                {
+                    offenders.push(format!(
+                        "{}: built inside `{}`",
+                        path.display(),
+                        opener.trim()
+                    ));
+                }
+            }
+            for ch in line.chars() {
+                match ch {
+                    '{' => open.push(line),
+                    '}' => {
+                        open.pop();
+                    }
+                    _ => {}
+                }
+            }
+            prev = line;
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a MergedEnvItems is built once per command, never per row \
+         (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production MergedEnvItems construction is pinned here; a new one \
+         means a command that merges twice until it is reviewed"
+    );
+}
+
+/// Every live-minted drift identity comes from its type's ONE composer: a
+/// `module` id from `live_drift::module_file_resource_id`, a `package` id
+/// from `diff::package_drift_resource_id` (or the journal's own
+/// `provision:`/`refuse:` spelling for a manager node), a `system` id from
+/// `reconciler::system_resource_key`. The live producers (`diff`, the shared
+/// scanners in `live_drift`, `status <module> --scan`) mint `(type, id)` rows
+/// the recorders later resolve by EXACT string match, so a hand-spelled id is
+/// a permanent row nothing can ever heal. The walk finds every production
+/// literal of the three composed types under `src/cli` and requires that
+/// type's composer inside the surrounding window; a site whose id is
+/// genuinely not composed carries `// composed-id-ok: <why>` on its own or
+/// the preceding line.
+#[test]
+fn every_live_minted_drift_id_comes_from_its_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    // Each production mint, by file and count: `diff --module`'s scoped
+    // module-file finding and checked-key pushes plus its package findings
+    // (the machine-wide `diff` mints nothing of its own — it consumes the
+    // shared engine's findings); `live_drift`'s module and system scanners
+    // and the manager-node rows (its package rows come from core's one
+    // producer); `status <module> --scan`'s checked key and finding.
+    const EXPECTED: [(&str, usize); 3] = [("diff.rs", 4), ("live_drift.rs", 3), ("status.rs", 2)];
+    const COMPOSERS: [(&str, &[&str]); 3] = [
+        ("module", &["module_file_resource_id("]),
+        (
+            "package",
+            &[
+                "package_entry_drift_id(",
+                "package_drift_resource_id(",
+                "provision_resource_id(",
+                ".resource_id()",
+            ],
+        ),
+        ("system", &["system_resource_key("]),
+    ];
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let Some((_, composers)) = COMPOSERS.iter().find(|(ty, _)| {
+                line.contains(&format!("\"{ty}\".to_string()"))
+                    || line.contains(&format!("resource_type: \"{ty}\""))
+            }) else {
+                continue;
+            };
+            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                continue;
+            }
+            *counts.entry(name.clone()).or_default() += 1;
+            // The id may be composed just above (a `let rid =` shared by a
+            // checked-key push and the finding built from it) or well below
+            // (`manager_action_drift` takes the id as a closure parameter and
+            // composes it at the bottom of the function): the proximity
+            // window catches both. A `let rid = ...` bound far enough above
+            // that a multi-line call rustfmt wraps pushes it out of the
+            // window is caught instead by matching the anchor's own
+            // `resource_id: <ident>` binding by NAME against a `let <ident> =`
+            // composer call anywhere in the function above it.
+            let lo = i.saturating_sub(10);
+            let hi = (i + 16).min(lines.len());
+            let composed_nearby = lines[lo..hi]
+                .iter()
+                .any(|l| composers.iter().any(|c| l.contains(c)));
+            let composed_by_binding = lines[i..hi]
+                .iter()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("resource_id: ")
+                        .and_then(|v| v.strip_suffix(','))
+                })
+                .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                .is_some_and(|id| {
+                    lines[..i].iter().rev().take(60).any(|l| {
+                        l.contains(&format!("let {id} ="))
+                            && composers.iter().any(|c| l.contains(c))
+                    })
+                });
+            if !composed_nearby && !composed_by_binding {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a live drift id is composed by its type's one composer, never spelled \
+         by hand (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production live-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
+/// The core-crate twin of the walk above: `cfgd-core` mints the same
+/// `<mgr>:<pkg>` package drift grammar — `action_drift_rows`' own per-package
+/// rows, the manager node's provision/refuse rows, the apply's batch-member
+/// heal and `verify`'s missing-package and below-the-floor rows — but lives
+/// outside `src/cli`, so the cli walk is structurally blind to it. Same
+/// anchor, same window, same hatch: every production line typing a
+/// `"package"` drift row composes its id through
+/// `reconciler::package_entry_drift_id` / `package_drift_resource_id` or a
+/// manager-node composer, or carries `// composed-id-ok: <why>`. Identical
+/// hand-typed format strings agreeing only by convention are how a producer
+/// and a reader of the tracking grammar drifted apart.
+///
+/// The comma-joined `<mgr>:<a>,<b>` batch spelling is what the two hatched
+/// `action_resource_info` arms compose, and it is an ACTION identity, never a
+/// drift row: `package_drift_resource_id` debug-asserts a single package, so
+/// a producer reaching for the batch shape trips at run time as well as here.
+#[test]
+fn every_core_minted_package_drift_id_comes_from_its_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    const COMPOSERS: [&str; 5] = [
+        "package_entry_drift_id(",
+        "package_drift_resource_id(",
+        ".resource_id()",
+        "provision_resource_id(",
+        "refuse_resource_id(",
+    ];
+    // Each production anchor, by file and count, hatched lines excluded:
+    // `apply.rs`'s two provision batch-member heals, `types.rs`'s manager-node
+    // and per-package rows, `verify.rs`'s missing and below-the-floor rows.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 2), ("verify.rs", 2)];
+
+    let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&core_src);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("\"package\".to_string()")
+                && !line.contains("resource_type: \"package\"")
+            {
+                continue;
+            }
+            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+                continue;
+            }
+            *counts.entry(name.clone()).or_default() += 1;
+            // The id may be composed on the anchor line itself or just
+            // around it (the batch push composes on the following line).
+            let lo = i.saturating_sub(10);
+            let hi = (i + 16).min(lines.len());
+            if !lines[lo..hi]
+                .iter()
+                .any(|l| COMPOSERS.iter().any(|c| l.contains(c)))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a core-minted package drift id is composed by the one composer, never spelled \
+         by hand (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every core production package-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
+/// One reader of a `module` row's id, in the file that mints it.
+///
+/// The owner half of a `module` row ends at its FIRST separator, and a second
+/// classifier asking a different question ("does a `/` appear anywhere") reads
+/// any grammar whose tail carries one as a per-file row — which is how a live
+/// scan came to resolve a row it never checked. Both crates ask
+/// `reconciler::format`'s own readers instead; a production line splitting a
+/// `resource_id` at `/` anywhere else is the shape that regressed.
+///
+/// The walk carries the NON-split tell beside it, because failing to split is
+/// the same defect: handing a whole `resource_id` to `Owner::module` made
+/// `nvim:script` an owner NAME, and the fleet table grew a phantom
+/// `module:nvim:script` row beside the real module's.
+#[test]
+fn no_production_site_outside_format_rs_splits_a_module_id() {
+    const HATCH: &str = "module-id-ok:";
+    const TELLS: [&str; 3] = ["contains('/')", "split_once('/')", "find(['/'"];
+    // The NON-split tell. Failing to split is the same defect read from the
+    // other side: `Owner::module(&event.resource_id)` makes the whole id an
+    // owner NAME, and the owner-token split downstream then cuts it back at
+    // its first colon into a second, phantom owner row.
+    const OWNER_TELL: &str = "Owner::module(";
+    // The readers that answer the question correctly; either one in the tell's
+    // own window means the id was read, not swallowed.
+    const OWNER_READERS: [&str; 2] = ["module_row_owner(", "split_module_file_resource_id("];
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files, and one holding no drift code sees no
+    // `resource_id` at all. Both counts are far under today's, so a deletion
+    // does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    const FLOOR_ANCHORS: [usize; 2] = [10, 20];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    // The one reader that is allowed to split, named by its FULL path: another
+    // crate's `format.rs` is a different file with a different job.
+    let exempt = roots[1].join("reconciler/format.rs");
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let (mut seen, mut anchors) = (0usize, 0usize);
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" || path == exempt {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if line.contains("resource_id") {
+                    anchors += 1;
+                }
+                if line.contains(OWNER_TELL) {
+                    // The id may reach the constructor on the call line or on
+                    // the rows under it, so the argument is looked for ahead.
+                    let ahead = &lines[i..(i + 4).min(lines.len())];
+                    let behind = &lines[i.saturating_sub(3)..=i];
+                    if ahead.iter().any(|(_, l)| l.contains("resource_id"))
+                        && !ahead
+                            .iter()
+                            .any(|(_, l)| OWNER_READERS.iter().any(|r| l.contains(r)))
+                        && !behind.iter().any(|(_, l)| l.contains(HATCH))
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
+                }
+                if !TELLS.iter().any(|t| line.contains(t)) {
+                    continue;
+                }
+                // A chain reads down the page (`e`, `.resource_id`,
+                // `.split_once('/')`), so the subject is looked for in the rows
+                // above the split as well as on it — and so is the hatch.
+                let window = &lines[i.saturating_sub(3)..=i];
+                if window.iter().any(|(_, l)| l.contains(HATCH))
+                    || !window.iter().any(|(_, l)| l.contains("resource_id"))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r] && anchors >= FLOOR_ANCHORS[r],
+            "the walk read {seen} files and {anchors} `resource_id` lines under \
+             {} — under the floor, so it is looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `module` row's id is read by `reconciler::format`'s own readers \
+         (`module_row_owner` / `module_row_names_a_file` / \
+         `split_module_file_resource_id`), never split at a call site (or \
+         carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// No CLI slot chooses a drift row's cause by hand.
+///
+/// The verbose form states both operands and the terse one names the kind of
+/// divergence; a slot picking between them at the call site is a slot that
+/// can be given a row with no operands at all, and the absence fold then
+/// words two unstated sides as a resource the machine does not hold.
+/// `output::drift_cause` is the one chooser, and it holds the empty pair back
+/// from the verbose branch.
+///
+/// Two anchors, because the defect has two shapes. The first is a hand-written
+/// `is_shell_drift_kind` branch. The second tests the kind not at all: it
+/// folds a recorded row's `Option` operands with `unwrap_or_default()` and
+/// hands the pair straight to the verbose form, which is how three standing
+/// slots came to render `want: missing, have: drift detected` over a row whose
+/// producer stated neither side.
+#[test]
+fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
+    // The verbose form has three spellings — the free function and the two
+    // row builders' slots — and a hand chooser reaching any of them is the
+    // same defect.
+    const VERBOSE: [&str; 2] = ["drift_detail(", ".drift("];
+    // The second anchor: a slot that never tests the kind at all, but feeds
+    // the verbose form operands folded out of `Option`s. `unwrap_or_default()`
+    // is what turns "the producer stated nothing" into an empty string, which
+    // the absence fold then words as a resource the machine does not hold —
+    // exactly the branch `drift_cause` exists to hold back.
+    const OPTIONAL_OPERANDS: &str = "unwrap_or_default()";
+    const FLOOR_FILES: usize = 30;
+    const FLOOR_ANCHORS: usize = 1;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&root);
+    files.sort();
+    let (mut seen, mut anchors) = (0usize, 0usize);
+    for path in files {
+        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        seen += 1;
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+        for (i, (n, line)) in lines.iter().enumerate() {
+            if line.contains("drift_operands(") {
+                anchors += 1;
+                let hi = (i + 10).min(lines.len());
+                let window = &lines[i..hi];
+                if window.iter().any(|(_, l)| l.contains(OPTIONAL_OPERANDS))
+                    && window
+                        .iter()
+                        .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+            if !line.contains("is_shell_drift_kind(") {
+                continue;
+            }
+            anchors += 1;
+            let hi = (i + 6).min(lines.len());
+            if lines[i..hi]
+                .iter()
+                .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= FLOOR_FILES && anchors >= FLOOR_ANCHORS,
+        "the walk read {seen} files and {anchors} kind tests under {} — under \
+         the floor, so it is looking at the wrong root",
+        root.display()
+    );
+    assert!(
+        offenders.is_empty(),
+        "a drift row's cause is chosen by `output::drift_cause`, never by a \
+         hand-written shell-kind branch nor by feeding the verbose form \
+         operands an `Option` was unwrapped into:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// No production site in EITHER crate compares a manager name to a bare
+/// `"script"`.
+///
+/// `script` is not a registered manager: it is the sentinel a `prefer:
+/// [script]` entry resolves to, and every pass that iterates managers, lists
+/// installed packages or mints a drift row has to agree on which entries it
+/// names. Two named constants for it in one crate is how a fourth spelling
+/// gets written, so there is one `SCRIPT_SENTINEL` and every comparison reads
+/// it — `cfgd_core::SCRIPT_SENTINEL` from the binary crate, `crate::SCRIPT_SENTINEL`
+/// from core's own production sites. A serde or schema spelling of the word —
+/// a `prefer` value as the user types it, a resource TYPE that happens to be
+/// spelled the same — is a different string and carries
+/// `// script-literal-ok: <why>`.
+#[test]
+fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
+    const HATCH: &str = "script-literal-ok:";
+    // The subjects a manager NAME is held in; a line pairing one of them with
+    // the bare literal is comparing against the sentinel by hand.
+    const SUBJECTS: [&str; 3] = ["manager", "prefer", "candidate"];
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts (171/229), so a deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                // A Rust comment, and a `#` comment inside an embedded YAML
+                // template, are both prose about the sentinel rather than a
+                // comparison against it.
+                if code.starts_with("//") || code.starts_with('#') {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    continue;
+                }
+                if line.contains("\"script\"") && SUBJECTS.iter().any(|s| line.contains(s)) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a manager name is compared against the one `SCRIPT_SENTINEL`, never a \
+         bare literal (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `module` drift row names the FILE it stands for, on both crates.
+///
+/// The bare `("module", <name>)` spelling was an aggregate: it stood for
+/// whatever the tick happened to find under a module, and no per-file check
+/// could ever re-find it, so the apply that converged the module healed
+/// everything except the row the tick had written. `action_drift_rows` is now
+/// the one producer, and every `module` row it and the live scanners mint
+/// carries a `<module>/<target>` id from one of the three composers beside
+/// `module_file_resource_id`. The walk anchors on a production line TYPING a
+/// `module` row and requires a composer in the surrounding window;
+/// `action_resource_info`'s Module arm is hatched, because an ACTION's
+/// identity really is its module and it is not a drift row.
+///
+/// What it can see is a HAND-WRITTEN mint: an arm that types its row through
+/// `parse_resource_from_description` names neither anchor, so the grammar of
+/// every arm of `action_drift_rows` is judged by
+/// `every_row_the_tick_records_is_healed_by_the_apply_that_converges_it`,
+/// which walks the producer itself.
+#[test]
+fn every_module_drift_id_names_the_file_it_stands_for() {
+    const HATCH: &str = "composed-id-ok:";
+    const COMPOSERS: [&str; 3] = [
+        "module_file_spec_resource_id(",
+        "module_file_resource_id(",
+        "live_drift::module_file_resource_id(",
+    ];
+    // Each production anchor, by file and count, hatched lines excluded:
+    // `action_drift_rows`' DeployFiles arm, the apply's declared-file heal,
+    // `diff --module`'s checked key and finding, and `live_drift`'s scoped
+    // module-file finding.
+    const EXPECTED: [(&str, usize); 4] = [
+        ("apply.rs", 1),
+        ("diff.rs", 2),
+        ("live_drift.rs", 1),
+        ("types.rs", 1),
+    ];
+    // Every spelling that TYPES a row `module`: the owned conversions a
+    // producer reaches for interchangeably, and the struct field. A walk
+    // anchored on one of them is a walk a rewrite of the same mint slips past.
+    const TYPE_TELLS: [&str; 4] = [
+        "\"module\".to_string()",
+        "\"module\".into()",
+        "String::from(\"module\")",
+        "resource_type: \"module\"",
+    ];
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's, so a
+    // deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [70, 90];
+
+    let roots = [
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src"),
+    ];
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            // Folded, so a mint rustfmt broke across a `\`-continued literal
+            // still presents its tell and its composer on one logical line.
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if !TYPE_TELLS.iter().any(|t| line.contains(t)) {
+                    continue;
+                }
+                if line.contains(HATCH) || (i > 0 && lines[i - 1].1.contains(HATCH)) {
+                    continue;
+                }
+                *counts.entry(name.clone()).or_default() += 1;
+                // The id may be composed just above (a `let rid =` shared by a
+                // checked-key push and the finding built from it) or well
+                // below. A `let rid = ...` bound far enough above that a
+                // multi-line call rustfmt wraps pushes it out of the window
+                // is caught instead by matching the anchor's own
+                // `resource_id: <ident>` binding by NAME against a
+                // `let <ident> =` composer call anywhere in the function above it.
+                let lo = i.saturating_sub(10);
+                let hi = (i + 16).min(lines.len());
+                let composed_nearby = lines[lo..hi]
+                    .iter()
+                    .any(|(_, l)| COMPOSERS.iter().any(|c| l.contains(c)));
+                let composed_by_binding = lines[i..hi]
+                    .iter()
+                    .find_map(|(_, l)| {
+                        l.trim()
+                            .strip_prefix("resource_id: ")
+                            .and_then(|v| v.strip_suffix(','))
+                    })
+                    .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                    .is_some_and(|id| {
+                        lines[..i].iter().rev().take(60).any(|(_, l)| {
+                            l.contains(&format!("let {id} ="))
+                                && COMPOSERS.iter().any(|c| l.contains(c))
+                        })
+                    });
+                if !composed_nearby && !composed_by_binding {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a module drift id names the file it stands for, composed by one of \
+         the three composers (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production module-drift mint is pinned here; a new one means a \
+         producer whose ids nothing resolves until it is reviewed"
+    );
+}
+
+/// A `ResolvedPackage` is minted by `modules::resolve_package` and nowhere
+/// else in production: it is the one site that decides WHICH manager a bare
+/// entry lands on (the one that already holds it, else the platform default),
+/// and a second literal construction is a second "pick a manager" that the
+/// holder rule does not reach. Both crates' production halves are walked; a
+/// `#[cfg(test)]` module below the cut and any `tests.rs` build fixtures and
+/// are what a test SHOULD do.
+#[test]
+fn every_resolved_package_producer_routes_through_the_one_resolver() {
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = walk_rust_files(&cfgd.join("src"));
+    files.extend(walk_rust_files(&cfgd.join("../cfgd-core/src")));
+    files.sort();
+    let mut producers = Vec::new();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        for (i, line) in production.lines().enumerate() {
+            if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
+                producers.push(format!(
+                    "{}:{}: {}",
+                    cfgd_core::to_posix_string(&path),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        producers.iter().all(|p| p.contains("modules/resolve.rs")),
+        "a ResolvedPackage is built only by the one resolver:\n{}",
+        producers.join("\n")
+    );
+    assert!(
+        !producers.is_empty(),
+        "the walk found no producer at all, so it proved nothing"
+    );
+}
+
+/// The version a manager reports for a package whose version it cannot state
+/// is a SENTINEL two readers judge on — the planner's pinned-source gate
+/// (`known_version`) and the live `minVersion` check
+/// (`reconciler::package_version_floor`) — so every manager that produces it
+/// spells it one way, through `providers::UNKNOWN_PACKAGE_VERSION`. A
+/// hand-typed literal in one listing parser is a manager whose unversioned
+/// packages one reader treats as "did not say" and the other as a version
+/// string that failed to parse, which is a check error nothing caused.
+#[test]
+fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel() {
+    let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages);
+    files.sort();
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        for (i, line) in production.lines().enumerate() {
+            let code = line.trim();
+            if code.starts_with("//") || !code.contains("\"unknown\"") {
+                continue;
+            }
+            offenders.push(format!(
+                "{}:{}: {code}",
+                cfgd_core::to_posix_string(&path),
+                i + 1
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the unknown-version sentinel is spelled by `providers::UNKNOWN_PACKAGE_VERSION`, \
+         never by a literal:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// A package-manager install verb is a fact the FAMILY owns. `cfgd module
+/// export` wrote its own `apt-get install -y --no-install-recommends` while the
+/// apply path ran apt's declared `install_cmd` (`apt-get install -y`), so one
+/// `module.yaml` resolved two different package sets depending on which of
+/// cfgd's own commands you asked — the export's whole job being to reproduce
+/// what the apply produces.
+///
+/// The walk lives here rather than beside the managers because this is where
+/// the source-walking pins and their file walker already are; the population it
+/// covers is the binary crate's whole `src/`.
+#[test]
+fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() {
+    // The install verbs of every `SimpleManager` family, as a literal would
+    // spell one. `pacman -S` and `apk add` carry no `install` word at all,
+    // which is why this is a table rather than a search for "install".
+    const INSTALL_VERBS: &[&str] = &[
+        "apt-get install",
+        "apt install",
+        "dnf install",
+        "yum install",
+        "zypper install",
+        "pacman -S",
+        "apk add",
+        "pkg install",
+    ];
+    // The ONE file allowed to spell them: the constructor table they are the
+    // declaration of. Everything else composes, or hatches with a reason.
+    const MARKER: &str = "install-verb-ok:";
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let declaration = src.join("packages").join("simple").join("mod.rs");
+
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut offenders = Vec::new();
+    for path in files {
+        if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // An install verb aimed at a HUMAN — advice for a tool cfgd cannot
+            // install for them — is not an install cfgd emits, and says so.
+            let hatched = line.contains(MARKER)
+                || n.checked_sub(1)
+                    .and_then(|prev| lines.get(prev))
+                    .is_some_and(|prev| {
+                        prev.trim_start().starts_with("//") && prev.contains(MARKER)
+                    });
+            if hatched {
+                continue;
+            }
+            for verb in INSTALL_VERBS {
+                if line.contains(verb) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an install verb belongs to its manager family, not to a call site — \
+         compose through `packages::manager_install_script`:\n{}",
+        offenders.join("\n")
+    );
+
+    // Anti-vacuity, and the contract the export reads: the composed script IS
+    // the family's declared commands, sudo stripped for a container build.
+    let script = crate::packages::manager_install_script("apt", &["curl".to_string()])
+        .expect("apt is a data-driven family");
+    assert_eq!(script.update.as_deref(), Some("apt-get update"));
+    assert_eq!(script.install, "apt-get install -y curl");
+    assert!(
+        crate::packages::manager_install_script("brew", &[]).is_none(),
+        "only the data-driven system families answer here"
+    );
+
+    // The script is written for ANOTHER host, so no line of it may open on
+    // `sudo` — on any family, and whatever this host's own privilege is. The
+    // apply path's strip is conditional on `is_root()`, which made a non-root
+    // author emit `RUN sudo apt-get install -y` into a Dockerfile.
+    for family in ["apt", "dnf", "yum", "apk", "pacman", "zypper", "pkg"] {
+        let script = crate::packages::manager_install_script(family, &["curl".to_string()])
+            .unwrap_or_else(|| panic!("{family} is a data-driven family"));
+        for line in script.update.iter().chain(std::iter::once(&script.install)) {
+            assert!(
+                !line.starts_with("sudo"),
+                "`module export` composes a script for a root container build: {family} emitted `{line}`"
+            );
+        }
+    }
+}
+
+/// A command renders its output under ONE section, named for the command, and
+/// never a second section named for the verb its own title already spent.
+///
+/// `cfgd module push` printed `Push Module` over a `Push` section over a
+/// `✓ Pushed module` row — the word three times, five lines apart, naming a
+/// title, a group and a result. The same pair shipped in `module pull`,
+/// `module build` and `image pack`. The whole population now opens
+/// `printer.section("<Verb> <Noun>")` and puts every row inside it, so this
+/// walks every production file under `src/cli` and fails when a `section(…)`
+/// shares any word with a `heading(…)` in the same file.
+#[test]
+fn no_result_section_respells_a_word_its_command_title_already_spent() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+
+    // `printer.heading("X")` / `printer.section("X")`, off a non-comment line.
+    let literals = |body: &str, call: &str| -> Vec<String> {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter_map(|l| l.split_once(call))
+            .filter_map(|(_, rest)| rest.split_once('"'))
+            .map(|(name, _)| name.to_string())
+            .collect()
+    };
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let headings = literals(&production, "printer.heading(\"");
+        let sections = literals(&production, "printer.section(\"");
+        for heading in &headings {
+            for section in &sections {
+                if section_respells_title(heading, section) {
+                    offenders.push(format!(
+                        "{}: section {section:?} respells a word of heading {heading:?}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a command's rows go under its own titled section, never a second one \
+         named for the verb the title already spent:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Does `section` spend a word `title` already spent? Case- and
+/// punctuation-insensitive, because `Push Module` over `Push:` reads as the
+/// same word twice on screen whatever the literals look like in source.
+fn section_respells_title(title: &str, section: &str) -> bool {
+    let words = |name: &str| -> Vec<String> {
+        name.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let title_words = words(title);
+    words(section).iter().any(|sw| title_words.contains(sw))
+}
+
+/// The fence above is a source scan, so its own detector is what has to be
+/// proven: this pins that it flags the pair that shipped (`Push Module` over
+/// `Push`) and clears the pairs the rest of the population renders.
+#[test]
+fn the_respelled_section_detector_flags_the_pair_that_shipped() {
+    assert!(section_respells_title("Push Module", "Push"));
+    assert!(section_respells_title("Pull Module", "Pull"));
+    assert!(section_respells_title("Pack Image", "Pack"));
+    assert!(section_respells_title("Build Module", "Push Module"));
+
+    assert!(!section_respells_title("Sync", "Local Repo"));
+    assert!(!section_respells_title("Sync", "Sources"));
+    assert!(!section_respells_title("Upgrade", "Update Available"));
+    assert!(!section_respells_title("Checkin", "Server Config"));
+    assert!(!section_respells_title("Add Module Registry", "Fetch"));
+}
+
+/// Every attestation type this crate names must be one the reader can produce.
+///
+/// The Module status column reports an artifact's attestations by folding each
+/// manifest annotation through `cfgd_core::oci::attestation_type_name`, so a
+/// `--type` literal spelled here that the fold cannot produce is a name no
+/// real artifact would ever read back as — the verify command and the status
+/// column would be talking about the same attestation in two vocabularies.
+#[test]
+fn every_attestation_type_this_crate_names_is_one_the_reader_can_produce() {
+    let mut checked = 0;
+    for (path, body) in cli_production_sources() {
+        for chunk in body.split("verify_attestation(").skip(1) {
+            let Some((args, _)) = chunk.split_once(')') else {
+                continue;
+            };
+            // `verify_attestation(reference, "<type>", &opts)` — only a literal
+            // second argument names a type this crate chose.
+            let Some(quoted) = args.split(',').nth(1).map(str::trim) else {
+                continue;
+            };
+            let Some(name) = quoted
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+            else {
+                continue;
+            };
+            assert!(
+                cfgd_core::oci::COSIGN_PREDICATE_TYPES
+                    .iter()
+                    .any(|(_, known)| *known == name),
+                "{}: cosign --type {name} is not a name any predicate URI folds to, so the \
+                 Module status column can never report an artifact carrying it",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "no literal attestation type found: the walk stopped seeing its population"
+    );
+}
+
+/// The name of the `fn` whose body holds line `n`, read backwards through the
+/// file. A closure is not a function, so a line inside `let block = |…|` is
+/// attributed to the function that declared the closure.
+fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
+    lines[..=n].iter().rev().find_map(|line| {
+        let trimmed = line.trim_start();
+        // `fn`, `pub fn`, `pub(crate) fn`, `async fn`: the declaration is
+        // whatever precedes the first `fn ` token on a line that opens with
+        // a visibility or the keyword itself.
+        let at = trimmed.find("fn ")?;
+        let qualifiers = &trimmed[..at];
+        if !(qualifiers.is_empty()
+            || qualifiers.starts_with("pub")
+            || qualifiers.starts_with("async")
+            || qualifiers.starts_with("const"))
+        {
+            return None;
+        }
+        let after = &trimmed[at + "fn ".len()..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+/// The body of the first `fn <name>` in `lines`, from its signature to the
+/// brace that closes it, or `None` when the file declares no such function.
+fn fn_body(lines: &[&str], name: &str) -> Option<String> {
+    let start = lines.iter().position(|l| {
+        let t = l.trim_start();
+        t.contains(&format!("fn {name}(")) && !t.starts_with("//")
+    })?;
+    let mut depth = 0usize;
+    let mut opened = false;
+    let mut end = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        end = i;
+        if opened && depth == 0 {
+            break;
+        }
+    }
+    Some(lines[start..=end].join("\n"))
+}
+
+/// The Pending / Declined Decisions section closes on ITS instruction, from
+/// inside: `cfgd plan` rendered the answer hint at the section's own depth and
+/// straight under its last row, while `cfgd decide` and `cfgd status` closed
+/// the section and hung the same sentence off the document — one indent
+/// shallower and a blank line lower, eight lines apart on one screen. The
+/// hint is emitted by exactly two composers, one per rendering path (the run
+/// skeleton's live `SectionGuard`, the Doc surfaces' `SectionBuilder`), and
+/// both address it to the section they are standing in.
+#[test]
+fn every_decisions_hint_closes_its_section_from_inside() {
+    const SYMBOLS: &[&str] = &[
+        "answer_decisions_hint(",
+        "MSG_ANSWER_DECISIONS",
+        "MSG_INCLUDE_DECLINED_DECISIONS",
+    ];
+    const COMPOSERS: &[(&str, &str)] = &[
+        ("reconciler/run.rs", "render_withheld"),
+        (
+            "cli/source/helpers.rs",
+            "build_pending_decisions_table_section",
+        ),
+    ];
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    let mut offenders = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (path, body) in &walked {
+        // The definitions and the module that re-exports them.
+        if path.ends_with("reconciler/pending.rs") || path.ends_with("reconciler/mod.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//")
+                || trimmed.starts_with("use ")
+                || !SYMBOLS.iter().any(|s| line.contains(s))
+            {
+                continue;
+            }
+            let Some(func) = enclosing_fn_name(&lines, n) else {
+                offenders.push(format!(
+                    "{}:{}: a decisions hint outside any function",
+                    path.display(),
+                    n + 1
+                ));
+                continue;
+            };
+            match COMPOSERS.iter().find(|(_, f)| *f == func) {
+                Some((file, _)) if path.ends_with(file) => {
+                    seen.insert(func);
+                }
+                _ => offenders.push(format!(
+                    "{}:{}: `{func}` emits the decisions hint; only the section composers \
+                     {:?} may, and a surface listing decisions renders through one of them",
+                    path.display(),
+                    n + 1,
+                    COMPOSERS.iter().map(|(_, f)| *f).collect::<Vec<_>>()
+                )),
+            }
+        }
+    }
+    for (file, func) in COMPOSERS {
+        let (path, body) = walked
+            .iter()
+            .find(|(p, _)| p.ends_with(file))
+            .unwrap_or_else(|| panic!("{file} is walked"));
+        let lines: Vec<&str> = body.lines().collect();
+        let composer = fn_body(&lines, func)
+            .unwrap_or_else(|| panic!("{}: `{func}` is still declared", path.display()));
+        let section_scoped = composer.contains("section.hint(") || composer.contains("s.hint(");
+        let doc_scoped = composer.contains("doc.hint(") || composer.contains("Doc::new().hint(");
+        if !section_scoped || doc_scoped {
+            offenders.push(format!(
+                "{}: `{func}` must address the hint to the section it is standing in \
+                 (`section.hint(` / `s.hint(`), never to the document",
+                path.display()
+            ));
+        }
+        assert!(
+            seen.contains(*func),
+            "{}: `{func}` no longer emits a decisions hint — the walk lost a composer",
+            path.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a decisions section closes on its instruction from inside, on every surface:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The call's argument text: from the `(` that follows `at` on line `n` to
+/// the parenthesis that closes it, across as many lines as it spans.
+fn call_argument(lines: &[&str], n: usize, at: usize) -> String {
+    let mut out = String::new();
+    let mut depth = 0i32;
+    let mut started = false;
+    for (i, line) in lines.iter().enumerate().skip(n) {
+        let text = if i == n { &line[at..] } else { line };
+        for c in text.chars() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    if depth == 1 {
+                        started = true;
+                        continue;
+                    }
+                }
+                ')' => {
+                    depth -= 1;
+                    if started && depth == 0 {
+                        return out;
+                    }
+                }
+                _ => {}
+            }
+            if started {
+                out.push(c);
+            }
+        }
+        if started {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The first `"…"` literal in `text`, unescaped only as far as this walk
+/// reads it (a backtick never needs escaping).
+fn first_string_literal(text: &str) -> Option<String> {
+    let start = text.find('"')?;
+    let rest = &text[start + 1..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// Every `const NAME: &str = "…"` a walked file declares, so a hint that names
+/// its text through a constant is read as the text.
+fn str_consts(
+    sources: &[(std::path::PathBuf, String)],
+) -> std::collections::BTreeMap<String, String> {
+    let mut consts = std::collections::BTreeMap::new();
+    for (_, body) in sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some(at) = line.find("const ") else {
+                continue;
+            };
+            let Some((name, _)) = line[at + "const ".len()..].split_once(": &str") else {
+                continue;
+            };
+            let window = lines[n..lines.len().min(n + 4)].join("\n");
+            if let Some(text) = first_string_literal(&window) {
+                consts.insert(name.trim().to_string(), text);
+            }
+        }
+    }
+    consts
+}
+
+/// The hint composers this walk stands down for, each of which carries an
+/// `every_*` pin of its own over the sentences it builds.
+///
+/// An allowlist rather than "any call": read as a shape, the exemption also
+/// covered `printer.hint(String::from("…"))` and every future
+/// `printer.hint(some_helper(…))`, so a hint could leave the walk with nothing
+/// asserting anything about its text. A new composer fails the walk until it
+/// is registered here and pinned.
+const PINNED_HINT_COMPOSERS: &[&str] = &[
+    "answer_decisions_hint",
+    "heal_drift_hint",
+    "local_pull_next_step",
+    "perform_preview_hint",
+    "run_next_step",
+    "source_failure_next_step",
+    "success_next_step",
+];
+
+/// Whether a hint's argument is a call to one of those composers — its last
+/// path segment immediately followed by `(`, which `format!` and friends are
+/// not.
+fn is_composed_call(arg: &str) -> bool {
+    let arg = arg.trim_start();
+    let head: String = arg
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    if head.is_empty() || !arg[head.len()..].starts_with('(') {
+        return false;
+    }
+    let name = head.rsplit("::").next().unwrap_or_default();
+    PINNED_HINT_COMPOSERS.contains(&name)
+}
+
+/// A closing hint names the command that comes next. `cfgd decide accept`
+/// closed on `Changes will take effect on next reconcile` — the one next step
+/// in the product that named no command, pointing at a background reconcile a
+/// daemon-less machine never runs, while the demo's very next beat typed the
+/// command the tool had declined to name. Every other hint in the take named
+/// its command in backticks; the walk holds the whole `crates/cfgd/src/cli/`
+/// population to that shape.
+///
+/// A hint whose text is built elsewhere (`answer_decisions_hint`,
+/// `success_next_step`, an error's remediation lines) is out of class
+/// here and pinned by its own producer; a constant is followed to its text.
+/// A genuinely command-less instruction carries a `// hint-ok: <why>` marker.
+///
+/// `hint_commands` satisfies the rule by construction: its payload IS the
+/// commands, dropped onto their own `$` lines, so the backticks that mark a
+/// command inside a sentence have nothing left to mark.
+/// `every_hint_command_block_line_comes_from_the_one_composer` holds those.
+#[test]
+fn every_closing_hint_names_a_command() {
+    let sources = cli_production_sources();
+    let consts = str_consts(&sources);
+    let mut checked = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in &sources {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//")
+                || line.contains("fn hint(")
+                || line.contains("fn next_step(")
+            {
+                continue;
+            }
+            // Judged by the block walk instead, and NOT counted here: a floor
+            // that counts what it never asserted on can be met by hints this
+            // walk no longer reaches.
+            if line.contains(".hint_commands(") {
+                continue;
+            }
+            let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
+                continue;
+            };
+            let arg = call_argument(&lines, n, at);
+            // A hint COMPOSED by another function is that function's class,
+            // pinned by its own producer; the operand it takes here (a command
+            // name, a subject) is not the hint's text.
+            if is_composed_call(&arg) {
+                continue;
+            }
+            let text = first_string_literal(&arg).or_else(|| {
+                let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
+                consts.get(ident).cloned()
+            });
+            let Some(text) = text else {
+                continue;
+            };
+            checked += 1;
+            if text.matches('`').count() < 2 && !label_hatched(&lines, n, "// hint-ok:") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, text));
+            }
+        }
+    }
+    assert!(
+        checked >= 24,
+        "the walk no longer reaches the hints it exists to hold — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a closing hint names the command the reader runs next, in backticks:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A hint's `$ ` block line is COMPLETE as printed, and the renderer alone
+/// builds it.
+///
+/// The block exists because a colon-introduced command inside a sentence is a
+/// command the reader has to excavate: `Register it as a Module pointing at
+/// the cluster's registry address: \`kubectl apply -f <module-resource>.yaml\`,
+/// or \`--apply\` next time` ran one copyable command, one flag and two
+/// clauses together on one line. Dropping the command onto its own prompt
+/// line only helps if what follows the prompt is exactly what the reader
+/// copies — so a command literal carries no prompt of its own, no indent, no
+/// backticks left over from the sentence it came out of, and no trailing
+/// punctuation. `HintCommands` holds the parts; `Renderer::render_hint` spells
+/// the indent and the `$ `, once, for every surface.
+///
+/// The other half is which hints belong in the block at all, and the answer is
+/// grammatical: a colon INTRODUCES what follows it, so a backticked command
+/// after one is a payload the sentence already promised, while a command named
+/// mid-sentence is part of the sentence and keeps its backticks. Eight shipped
+/// hints (`Add a registry: \`cfgd module registry add <git-url>\`` and its
+/// siblings) read the first way and rendered the second, which is why the walk
+/// flags a `: \`` in a hint's own text.
+#[test]
+fn every_hint_command_block_line_comes_from_the_one_composer() {
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in &walked {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            // A hint text literal never carries the block's own furniture:
+            // the newline that would fake a second line, or the prompt.
+            if let Some(at) = line.find(".hint(") {
+                let arg = call_argument(&lines, n, at);
+                for l in arg.lines() {
+                    for &(s, e) in string_literal_spans(l).iter() {
+                        let lit = &l[s..e];
+                        if lit.contains("\\n") || lit.contains("$ ") {
+                            offenders.push(format!(
+                                "{}:{}: a hint hand-builds a command line: {lit}",
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                        // A colon INTRODUCES what follows it, so a backticked
+                        // command after one is the hint's payload, not a name
+                        // dropped mid-sentence.
+                        if lit.contains(": `") {
+                            offenders.push(format!(
+                                "{}:{}: a colon-introduced command is the hint's payload — \
+                                 `hint_commands(<prose ending on the colon>, &[<command>])`: \
+                                 {lit}",
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                    }
+                }
+            }
+            let Some(at) = line
+                .find("hint_commands(")
+                .or_else(|| line.find("HintCommands::new("))
+            else {
+                continue;
+            };
+            let arg = call_argument(&lines, n, at);
+            // The prose is the first literal; every later one is a command.
+            let mut literals = arg
+                .lines()
+                .flat_map(|l| {
+                    string_literal_spans(l)
+                        .into_iter()
+                        .map(move |(s, e)| l[s..e].to_string())
+                })
+                .skip(1);
+            for lit in &mut literals {
+                checked += 1;
+                let bare = lit.trim_start_matches("\\\"");
+                if bare != lit.trim()
+                    || lit.starts_with('$')
+                    || lit.contains('`')
+                    || lit.ends_with('.')
+                    || lit.is_empty()
+                {
+                    offenders.push(format!(
+                        "{}:{}: a `$` block line is complete as printed — no prompt, \
+                         indent, backtick or trailing stop: {lit}",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 8,
+        "the walk no longer reaches the command-block lines it exists to hold \
+         — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the renderer owns a hint's block layout; a call site supplies bare \
+         commands:\n{}",
+        offenders.join("\n")
+    );
+
+    // Reading literals cannot see a composer that hands its commands over as
+    // a value (`HintCommands::new(MSG_ANSWER_DECISIONS, commands)`), so every
+    // composed hint is judged as one: the colon and the block promise each
+    // other, in both directions.
+    for (subject, hint) in composed_hints() {
+        assert_eq!(
+            hint.text.trim_end().ends_with(':'),
+            !hint.commands.is_empty(),
+            "{subject}: a colon promises a `$` block under it and a block \
+             promises the colon that introduced it: {hint:?}"
+        );
+    }
+}
+
+/// Every hint the four composers can produce, each with the case that produced
+/// it, so a walk judges the whole population rather than the arms it thought
+/// of. Enumerated from the composers' own populations — `Mutation`'s walked
+/// shapes, `PullFailureKind::ALL`, the kinds `enroll_error_hint` answers, and
+/// a decision count either side of the bulk form's threshold.
+fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
+    use cfgd_core::daemon::{PullFailure, PullFailureKind};
+
+    let mut out: Vec<(String, cfgd_core::output::HintCommands)> = walked_mutations()
+        .iter()
+        .map(|(mutation, _)| (format!("{mutation:?}"), success_next_step(*mutation)))
+        .collect();
+    for kind in PullFailureKind::ALL {
+        let failure = PullFailure {
+            kind: *kind,
+            message: "whatever libgit2 said".to_string(),
+        };
+        out.push((
+            format!("{kind:?}"),
+            super::local_pull_next_step(&failure, "cfgd sync"),
+        ));
+    }
+    for kind in enroll_error_hint_kinds() {
+        if let Some(hint) = crate::cli::init::enroll::enroll_error_hint(&kind) {
+            out.push((format!("enroll {kind}"), hint));
+        }
+    }
+    for pending in [1usize, 2] {
+        out.push((
+            format!("{pending} pending decisions"),
+            cfgd_core::reconciler::answer_decisions_hint(pending),
+        ));
+    }
+    assert!(
+        out.len() >= 33,
+        "the composed-hint population shrank to {} — a composer stopped being \
+         walked",
+        out.len()
+    );
+    out
+}
+
+/// The `kind` strings `enroll_error_hint` answers, read off its own match arms:
+/// a kind added there is walked without being listed twice.
+fn enroll_error_hint_kinds() -> Vec<String> {
+    let body = cli_file_body("init/enroll.rs");
+    let lines: Vec<&str> = body.lines().collect();
+    let arms =
+        fn_body(&lines, "enroll_error_hint").expect("enroll.rs declares `enroll_error_hint`");
+    let kinds: Vec<String> = arms
+        .lines()
+        .filter(|l| l.contains("=>"))
+        .flat_map(|l| {
+            string_literal_spans(l)
+                .into_iter()
+                .map(move |(s, e)| l[s..e].to_string())
+        })
+        .collect();
+    assert!(
+        kinds.len() >= 3,
+        "the enrollment failures with a hint of their own are not being read: {kinds:?}"
+    );
+    kinds
+}
+
+/// A `Sources` row is not always a declared `spec.sources[]` entry: the daemon
+/// reports the implicit `local` layer, which declares no origin, priority or
+/// signing demand, and a source the config has since dropped. `daemon status`
+/// printed `Priority 0` / `Requires Signed no` for `local` because two slots
+/// on `SourceListEntry` could not say absent. Every slot but the two a row
+/// always has (`name`, `status`) is an `Option`, and the daemon's merge never
+/// substitutes a default for a catalog fact it does not hold.
+#[test]
+fn every_catalog_sourced_sources_column_can_be_absent() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let types = std::fs::read_to_string(cli_dir.join("output_types.rs")).unwrap();
+    let start = types
+        .find("pub struct SourceListEntry {")
+        .expect("SourceListEntry is declared in output_types.rs");
+    let body = &types[start..];
+    let body = &body[..body.find("\n}").expect("the struct closes")];
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let Some(field) = trimmed.strip_prefix("pub ") else {
+            continue;
+        };
+        let Some((name, ty)) = field.split_once(':') else {
+            continue;
+        };
+        seen += 1;
+        if matches!(name, "name" | "status") {
+            continue;
+        }
+        if !ty.trim().starts_with("Option<") {
+            offenders.push(format!("{name}: {}", ty.trim().trim_end_matches(',')));
+        }
+    }
+    assert!(seen >= 8, "the walk read the struct's fields, found {seen}");
+    assert!(
+        offenders.is_empty(),
+        "a `Sources` column a row may not have is an Option, never a default:\n{}",
+        offenders.join("\n")
+    );
+
+    let daemon = production_body(&std::fs::read_to_string(cli_dir.join("daemon.rs")).unwrap());
+    let lines: Vec<&str> = daemon.lines().collect();
+    let merge = fn_body(&lines, "daemon_source_row").expect("daemon_source_row is declared");
+    for substitute in ["unwrap_or", "map_or", "is_some_and", "ABSENT"] {
+        assert!(
+            !merge.contains(substitute),
+            "`daemon_source_row` substitutes a default (`{substitute}`) for a fact the \
+             catalog does not hold; leave the slot absent so the table can drop or dash it"
+        );
+    }
+}
+
+/// Every `BootstrapFailed` message names something besides the manager it is
+/// about.
+///
+/// The variant is the one `PackageError` whose sentence is built by its
+/// CALLERS rather than by the command that failed, which is why it is the one
+/// that can be built with no operand at all. `cargo still not available after
+/// bootstrap` asserted a post-condition and named nothing the run did: not the
+/// installer that ran, not the package it landed, not even which cascade was
+/// meant. A reader given that sentence looks for a cfgd bug, because the
+/// sentence describes cfgd failing rather than the machine answering.
+///
+/// The walk fails a `format!` whose every placeholder is the manager's own
+/// name. A message that is a plain literal reporting a CONDITION (`no
+/// installation method available`) is out of class: it states a cause, and has
+/// no operand to drop.
+#[test]
+fn every_bootstrap_failure_names_what_it_installed() {
+    /// The struct-literal body after `BootstrapFailed {`, brace-matched with
+    /// string literals and line comments skipped — a `format!("{name} …")`
+    /// carries braces of its own, and a naive depth count closes on them.
+    fn literal_body(src: &str, open: usize) -> Option<&str> {
+        let bytes = src.as_bytes();
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b'"' {
+                        i += if bytes[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&src[open + 1..i]);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The leading identifier of a field's expression — `(*name).to_string()`
+    /// and `manager_name.into()` both name their binding, and a literal
+    /// (`"brew".into()`) names none.
+    fn root_ident(expr: &str) -> Option<String> {
+        let ident: String = expr
+            .trim()
+            .trim_start_matches(['(', '*', '&'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!ident.is_empty() && !ident.starts_with(|c: char| c.is_ascii_digit())).then_some(ident)
+    }
+
+    /// Whether this site's `message` is a `format!` every placeholder of which
+    /// is the manager's own name — an absence asserted with no operand.
+    fn names_only_the_manager(fields: &str) -> bool {
+        let Some(message) = fields.split_once("message:").map(|(_, m)| m) else {
+            return false;
+        };
+        // A message that is not a `format!` reports a condition and has no
+        // operand slot to leave empty.
+        if !message.trim_start().starts_with("format!") {
+            return false;
+        }
+        let manager = fields
+            .split_once("manager:")
+            .and_then(|(_, m)| m.split_once(','))
+            .and_then(|(expr, _)| root_ident(expr));
+        // A positional `{}` carries a value this scan cannot name, and it is
+        // never the manager: the manager is spelled inline wherever it appears.
+        let mut placeholders = Vec::new();
+        let mut rest = message;
+        while let Some(at) = rest.find('{') {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find('}') else { break };
+            placeholders.push(rest[..end].trim().to_string());
+            rest = &rest[end..];
+        }
+        !placeholders.is_empty()
+            && placeholders
+                .iter()
+                .all(|p| root_ident(p).is_some_and(|ident| Some(&ident) == manager.as_ref()))
+    }
+
+    // The shape this walk exists to catch, as it stood before the fix — so a
+    // green run is the detector answering rather than the scan finding nothing.
+    assert!(
+        names_only_the_manager(
+            r#"manager: (*name).to_string(), message: format!("{name} still not available after bootstrap"),"#
+        ),
+        "the detector must catch the message this walk was written for"
+    );
+    assert!(
+        !names_only_the_manager(
+            r#"manager: (*name).to_string(), message: format!("{name} not on PATH after {} installed {}", route.installer, route.package),"#
+        ),
+        "a message naming the installer and the package is what the walk asks for"
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+                && let Ok(body) = std::fs::read_to_string(&p)
+            {
+                files.push((p, production_body(&body)));
+            }
+        }
+    }
+
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in &files {
+        let mut from = 0usize;
+        while let Some(hit) = body[from..].find("BootstrapFailed {") {
+            let open = from + hit + "BootstrapFailed ".len();
+            from = open + 1;
+            let Some(fields) = literal_body(body, open) else {
+                continue;
+            };
+            seen += 1;
+            if names_only_the_manager(fields) {
+                offenders.push(format!("{}: {}", path.display(), fields.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 15,
+        "the walk found the construction sites, found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a bootstrap failure asserts an absence and names nothing that was tried:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A row's VERDICT leads its detail; the counts it reports are a parenthetical
+/// under it, never a clause comma-joined after them.
+///
+/// `status`'s Modules headline read `24 packages, 6 files, 7 scripts, Synced`,
+/// which is one grammar for two different kinds of fact: three counted
+/// inventory clauses and then a health word in the same comma list, so the
+/// verdict parses as a fourth inventory item. It also puts the one word the
+/// reader is scanning a column of modules FOR — `Failed`, `Drifted` — last on
+/// the line and least prominent, behind three numbers that are the same on a
+/// healthy module and a broken one. Every other surface rendering a
+/// `*_status_display` word already gives it a slot of its own: a
+/// `KvPair::role_valued("Status", …)` row (`status <module>`, `module show`,
+/// `source show`) or a table cell (`module list`, `backup list`), where the
+/// key or the header is what says the word is a verdict. A detail slot has no
+/// header, so the ORDER is what has to say it.
+///
+/// The source half walks both crates for the shape rather than the one call
+/// site: a detail literal ending on a verdict binding after a comma is the
+/// thing being made unwritable, whichever surface writes it next.
+#[test]
+fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    // Every stored token `module_status_display` answers over, so a new word
+    // is walked the moment it is added.
+    let stored = ["installed", "error", "", "something-else"];
+    let output = super::status::StatusOutput {
+        last_apply: None,
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: stored
+            .iter()
+            .enumerate()
+            .map(|(i, s)| super::status::ModuleStatusEntry {
+                name: format!("m{i}"),
+                packages: 2,
+                files: 3,
+                scripts: 4,
+                status: (*s).to_string(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            })
+            .collect(),
+        managed_resources: Vec::new(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(super::status::build_fleet_status_doc(
+        &output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("default"),
+            profile_inherits: &[],
+            modules: &[],
+            arrow: printer.arrow(),
+        },
+        &[],
+        "2026-05-12T14:30:25Z",
+        &Default::default(),
+        &Default::default(),
+    ));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    for (i, s) in stored.iter().enumerate() {
+        let (word, _) =
+            cfgd_core::state::module_status_display(s, cfgd_core::state::DriftVerdict::Clean);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains(&format!("module:m{i}")))
+            .unwrap_or_else(|| panic!("module:m{i} has no row in:\n{rendered}"));
+        let detail = row
+            .split_once(" \u{2014} ")
+            .unwrap_or_else(|| panic!("row carries no detail: {row}"))
+            .1;
+        assert!(
+            detail.starts_with(word),
+            "the verdict leads the detail, `{row}` puts it behind its counts"
+        );
+        assert!(
+            detail.ends_with("(2 packages, 3 files, 4 scripts)"),
+            "the counts are the verdict's parenthetical: {row}"
+        );
+    }
+
+    // The shape, across both crates: a detail literal whose last placeholder
+    // follows a comma and names a verdict.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let verdict_named = |ident: &str| {
+        let ident = ident.trim_start_matches('&');
+        ["state", "status", "verdict", "word"]
+            .iter()
+            .any(|n| ident.contains(n))
+    };
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut from = 0usize;
+            while let Some(at) = body[from..].find(".detail(format!(\"") {
+                let open = from + at + ".detail(format!(\"".len();
+                from = open;
+                let Some(end) = body[open..].find('"') else {
+                    continue;
+                };
+                let literal = &body[open..open + end];
+                seen += 1;
+                let Some(tail) = literal.rsplit_once(", {") else {
+                    continue;
+                };
+                // The placeholder itself, minus any format spec.
+                let Some(placeholder) = tail.1.strip_suffix('}') else {
+                    continue;
+                };
+                let ident = placeholder.split(&[':', '?'][..]).next().unwrap_or("");
+                if !ident.is_empty() && verdict_named(ident) {
+                    offenders.push(format!("{}: {literal}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(seen >= 10, "the walk found detail literals, found {seen}");
+    assert!(
+        offenders.is_empty(),
+        "a verdict leads its detail, never trails a count list:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A fleet dashboard whose recorded state has one owner of every kind the
+/// Component Health section can name: a profile-declared file, cfgd's env
+/// file and live-session surface, and two modules.
+fn component_health_fixture() -> super::status::StatusOutput {
+    super::status::StatusOutput {
+        last_apply: None,
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: vec![
+            // A failed module beside the synced ones, so the render carries
+            // two ROLES and the colored assertion can prove the verdict slot
+            // follows the row's role rather than always painting success.
+            super::status::ModuleStatusEntry {
+                name: "broken".into(),
+                packages: 0,
+                files: 0,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_ERROR.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
+            super::status::ModuleStatusEntry {
+                name: "git".into(),
+                packages: 0,
+                files: 1,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
+            super::status::ModuleStatusEntry {
+                name: "nvim".into(),
+                packages: 0,
+                files: 6,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            },
+        ],
+        managed_resources: [
+            ("file", "~/.gitconfig"),
+            ("env", "/home/user/.cfgd.env"),
+            ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+        ]
+        .into_iter()
+        .map(
+            |(resource_type, resource_id)| cfgd_core::state::ManagedResource {
+                resource_type: resource_type.into(),
+                resource_id: resource_id.into(),
+                source: "local".into(),
+                last_hash: Some("hash1".into()),
+                last_applied: Some(1_715_680_800),
+            },
+        )
+        .collect(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: Some("2026-05-14T10:02:00Z".into()),
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    }
+}
+
+fn component_health_doc(
+    output: &super::status::StatusOutput,
+    profile: Option<&str>,
+    arrow: &str,
+) -> cfgd_core::output::Doc {
+    super::status::build_fleet_status_doc(
+        output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile,
+            profile_inherits: &[],
+            modules: &[],
+            arrow,
+        },
+        &[],
+        "2026-05-14T10:05:00Z",
+        &Default::default(),
+        &Default::default(),
+    )
+}
+
+/// The Component Health rows of one render: everything between the heading
+/// and the Managed Resources table, so an order or presence claim reads only
+/// the section it names — the table below carries the same owner tokens.
+fn component_health_section(rendered: &str) -> &str {
+    let after = rendered
+        .split_once("Component Health")
+        .unwrap_or_else(|| panic!("no Component Health section, got:\n{rendered}"))
+        .1;
+    after.split("Managed Resources").next().unwrap_or(after)
+}
+
+/// The Component Health section covers EVERY owner holding managed state on
+/// this host — the profile's own recorded rows and cfgd's env surfaces beside
+/// the module rows — in [`cfgd_core::reconciler::Owner::order`]'s order, with
+/// each row leading on its verdict word and the heading carrying how old the
+/// recorded drift verdicts are.
+///
+/// The Modules section this replaced listed modules only, so a profile file
+/// or cfgd's env file had rows in the Managed Resources table below but no
+/// health row above them, and nothing said how stale "no drift" was. The
+/// verdict word is a renderer-owned slot painted with the row's ROLE and the
+/// counts are the muted parenthetical — a caller-painted verdict would be
+/// eaten by the renderer's `cursor_safe` fold, which is why the colored
+/// assertion here reads the raw buffer.
+#[test]
+#[serial_test::serial]
+fn component_health_lists_every_owner_with_a_themed_verdict() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let output = component_health_fixture();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    let section = component_health_section(&rendered);
+    let heading_line = section.lines().next().unwrap_or_default();
+    assert!(
+        heading_line.contains("(checked 3m ago)"),
+        "the heading carries the recorded scan's age, got:\n{heading_line}"
+    );
+    let rows = [
+        ("profile:base", "— Synced (1 file)"),
+        ("cfgd:env", "— Synced (1 env file)"),
+        ("cfgd:session", "— Synced (1 session env)"),
+        ("module:broken", "— Failed"),
+        ("module:git", "— Synced (1 file)"),
+        ("module:nvim", "— Synced (6 files)"),
+    ];
+    let mut last = 0usize;
+    for (i, (owner, trailing)) in rows.into_iter().enumerate() {
+        let at = section
+            .find(owner)
+            .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"));
+        assert!(
+            i == 0 || at > last,
+            "`{owner}` lands out of Owner::order in:\n{section}"
+        );
+        last = at;
+        let line = section[at..].lines().next().unwrap_or_default();
+        assert!(
+            line.contains(trailing),
+            "`{owner}`'s row must lead on its verdict with counts as the parenthetical, want `{trailing}` in:\n{line}"
+        );
+    }
+    // An all-zero component reads its bare verdict — no `(0 …)` inventory.
+    let broken_line = section
+        .lines()
+        .find(|l| l.contains("module:broken"))
+        .unwrap_or_default();
+    assert!(
+        !broken_line.contains('('),
+        "a component holding nothing renders no parenthetical:\n{broken_line}"
+    );
+
+    // With no recorded scan stamp both surfaces say so instead of an age.
+    let mut never_checked = component_health_fixture();
+    never_checked.last_scan_at = None;
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(
+        &never_checked,
+        Some("base"),
+        printer.arrow(),
+    ));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        rendered.contains("Component Health (drift never checked)"),
+        "an unscanned host's heading says drift was never checked, got:\n{rendered}"
+    );
+
+    // No derivable profile (a `--module` isolated run): the profile-declared
+    // rows have no owner a health row could name, so they drop from the
+    // section while the table below still lists them under `-`. Everything
+    // cfgd or a module owns survives.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output, None, printer.arrow()));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+    let section = component_health_section(&rendered);
+    assert!(
+        !section.contains("profile:"),
+        "a health row cannot name a profile the run did not resolve:\n{section}"
+    );
+    for survivor in ["cfgd:env", "cfgd:session", "module:git", "module:nvim"] {
+        assert!(
+            section.contains(survivor),
+            "`{survivor}` must survive an underivable profile:\n{section}"
+        );
+    }
+
+    // The verdict word carries the row's ROLE style — one role per row, not
+    // success everywhere — and the counts the muted one: proof the slot is
+    // the renderer's, not a caller's coat that `cursor_safe` would strip.
+    let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
+    let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
+    printer.flush();
+    // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        raw.contains(&theme.success.apply_to("Synced").to_string()),
+        "an Ok verdict must carry the success style in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.error.apply_to("Failed").to_string()),
+        "a Fail verdict must carry the error style, not success in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.muted.apply_to(" (1 file)").to_string()),
+        "the counts must render as the muted parenthetical in:\n{raw:?}"
+    );
+    assert!(
+        raw.contains(&theme.muted.apply_to(" (checked 3m ago)").to_string()),
+        "the heading's freshness note must render muted in:\n{raw:?}"
+    );
+    // The SUBJECT is an owner token, so it carries the same three slots every
+    // other surface naming that owner paints — kind Secondary, `:` Warn, name
+    // Ok — and NOT the row's single role coat, which is what painted a whole
+    // Ok row green before the owner slot existed.
+    for (kind, name) in [("module", "nvim"), ("cfgd", "env"), ("profile", "base")] {
+        let token = format!(
+            "{}{}{}",
+            theme.secondary.apply_to(kind),
+            theme.warning.apply_to(":"),
+            theme.success.apply_to(name)
+        );
+        assert!(
+            raw.contains(&token),
+            "`{kind}:{name}` must render as the tri-colour owner token in:\n{raw:?}"
+        );
+    }
+    assert!(
+        !raw.contains(&theme.error.apply_to("module:broken").to_string()),
+        "a health row's subject never takes the row's role coat in:\n{raw:?}"
+    );
+}
+
+/// The fleet dashboard has no standalone Drift section: each unresolved
+/// recorded finding renders indented under its owner's Component Health row,
+/// through the same ownership vocabulary every producer's group heading uses
+/// (`reconciler::owner_of`'s split: a module id names its module, a package
+/// is the module whose resolution declares it under the id's own manager,
+/// then the profile when the profile's own recorded package rows hold it —
+/// and a package NOBODY declares renders loose rather than pinned on a wrong
+/// owner). A drifted owner's verdict flips to `Drifted` — the RECORDED
+/// verdict, read off the same rows nested beneath it, so the word and the
+/// findings cannot disagree — and its parenthetical states the SHORTFALL
+/// (`1 of 6 files`), never the raw inventory; a whole-module verdict has no
+/// countable noun, so its row is the bare verdict with no child. A non-local
+/// row keeps its `source:<name>` attribution on the nested line.
+#[test]
+#[serial_test::serial]
+fn component_health_nests_the_recorded_drift_under_its_owner() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let mut output = component_health_fixture();
+    // git's resolution declares typescript under npm, so the recorded
+    // package row can reach the module row that should carry it.
+    output.modules[1]
+        .declared
+        .package_managers
+        .entry("typescript".into())
+        .or_default()
+        .insert("npm".into());
+    let event = |resource_type: &str, resource_id: &str, expected: &str, actual: &str| {
+        cfgd_core::state::DriftEvent {
+            id: 0,
+            timestamp: "2026-05-14T10:02:00Z".into(),
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            expected: Some(expected.into()),
+            actual: Some(actual.into()),
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.into(),
+            want: None,
+            have: None,
+        }
+    };
+    // tmux carries only the daemon's whole-module verdict — the row that has
+    // no countable noun and no child of its own.
+    output.modules.push(super::status::ModuleStatusEntry {
+        name: "tmux".into(),
+        packages: 2,
+        files: 0,
+        scripts: 0,
+        status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+        platform_skip_reason: None,
+        declared: Default::default(),
+    });
+    // The profile's own recorded package row, so `fd` has a declaration the
+    // ownership walk can find — `ripgrep` deliberately has none. The id is
+    // minted through the producer's own composer, so this fixture holds the
+    // grammar `upsert_package_resource` really writes.
+    output
+        .managed_resources
+        .push(cfgd_core::state::ManagedResource {
+            resource_type: "package".into(),
+            resource_id: cfgd_core::state::package_resource_id("brew", "fd"),
+            source: "local".into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        });
+    output.drift = vec![
+        event(
+            "module",
+            &super::live_drift::module_file_resource_id("nvim", "/home/user/.config/nvim/init.lua"),
+            "content matches source",
+            "content differs from source",
+        ),
+        event("package", "npm:typescript", "installed", "not installed"),
+        event("package", "brew:fd", "installed", "not installed"),
+        {
+            let mut e = event("package", "brew:ripgrep", "installed", "not installed");
+            e.source = "team-config".into();
+            e
+        },
+        // The daemon's whole-module action spelling: a bare module id,
+        // `expected` empty, recorded exactly as `reconcile_tick` writes it.
+        cfgd_core::state::DriftEvent {
+            id: 0,
+            timestamp: "2026-05-14T10:02:00Z".into(),
+            resource_type: "module".into(),
+            resource_id: "tmux".into(),
+            expected: None,
+            actual: Some("drift detected".into()),
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.into(),
+            want: None,
+            have: None,
+        },
+    ];
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    assert!(
+        !rendered.lines().any(|l| l.trim() == "Drift"),
+        "the standalone fleet Drift section dissolved:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("No drift recorded"),
+        "the empty verdict moved into the heading annotation:\n{rendered}"
+    );
+
+    let section = component_health_section(&rendered);
+    let lines: Vec<&str> = section.lines().collect();
+    let row_at = |owner: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(owner) && l.contains('—'))
+            .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"))
+    };
+
+    // The drifted module: verdict flips, the parenthetical is the shortfall,
+    // and the finding is the very next line, one indent step deeper.
+    let nvim = row_at("module:nvim");
+    assert!(
+        lines[nvim].contains("Drifted (1 of 6 files)"),
+        "a drifted owner reads the shortfall, not the inventory:\n{}",
+        lines[nvim]
+    );
+    let finding = lines
+        .get(nvim + 1)
+        .unwrap_or_else(|| panic!("no line under the nvim row:\n{section}"));
+    assert!(
+        finding.contains(".config/nvim/init.lua") && finding.contains("content differs"),
+        "the finding nests under its owner with its terse cause:\n{finding}"
+    );
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    assert!(
+        indent(finding) > indent(lines[nvim]),
+        "the finding indents one step below its owner row:\nrow: {}\nfinding: {finding}",
+        lines[nvim]
+    );
+
+    // A package row reaches the module whose resolution declares it under
+    // the id's own manager — never the profile row beside it.
+    let git = row_at("module:git");
+    assert!(
+        lines[git].contains("Drifted"),
+        "the declared package's owner carries the verdict:\n{}",
+        lines[git]
+    );
+    assert!(
+        lines
+            .get(git + 1)
+            .is_some_and(|l| l.contains("typescript") && l.contains("not installed")),
+        "the package finding nests under the declaring module:\n{section}"
+    );
+
+    // A package the profile's own recorded row declares is the profile's.
+    let profile = row_at("profile:base");
+    assert!(
+        lines[profile].contains("Drifted"),
+        "a profile-declared package's drift is the profile's:\n{}",
+        lines[profile]
+    );
+    assert!(
+        lines
+            .get(profile + 1)
+            .is_some_and(|l| l.contains("fd") && l.contains("not installed")),
+        "the declared package finding nests under the profile:\n{section}"
+    );
+
+    // The daemon's whole-module verdict flips its owner with a BARE verdict —
+    // no raw-inventory parenthetical pretending everything it holds drifted —
+    // and no child row that only repeats the owner token above it.
+    let tmux = row_at("module:tmux");
+    assert!(
+        lines[tmux].contains("Drifted") && !lines[tmux].contains('('),
+        "a whole-module verdict has no countable noun, so the row is the bare \
+         verdict:\n{}",
+        lines[tmux]
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("module:tmux")).count(),
+        1,
+        "no child row repeats its parent's own token:\n{section}"
+    );
+
+    // A package NOBODY declares — no module's resolution, no recorded profile
+    // row — cannot be pinned on the profile: it renders as a loose finding of
+    // its own, the profile's verdict untouched by it, and a non-local row
+    // keeps its source attribution.
+    assert!(
+        lines[profile].contains("(1 of 1 package)"),
+        "the profile's shortfall prices only what the profile declares:\n{}",
+        lines[profile]
+    );
+    let ripgrep = lines
+        .iter()
+        .find(|l| l.contains("ripgrep"))
+        .unwrap_or_else(|| panic!("no ripgrep finding in:\n{section}"));
+    assert!(
+        ripgrep.contains("source:team-config"),
+        "a non-local finding keeps its source token:\n{ripgrep}"
+    );
+    assert!(
+        ripgrep.contains("not installed"),
+        "the loose row still states its cause:\n{ripgrep}"
+    );
+
+    // The Warn verdict carries the warning style — the deferred half of the
+    // themed-verdict pin, live now that a recorded row can flip a verdict.
+    let theme = cfgd_core::output::Theme::from_preset("dracula").with_colors(true);
+    let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+    printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
+    printer.flush();
+    // raw-capture-ok: the subject IS the verdict's SGR bytes, which captured_text strips.
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        raw.contains(&theme.warning.apply_to("Drifted").to_string()),
+        "a Warn verdict must carry the warning style in:\n{raw:?}"
+    );
+}
+
+/// The fleet heading annotation is where the machine's check-freshness fact
+/// lives — the one place, now that the standalone Drift section is gone. It
+/// states one of three things through one composer: this run checked live
+/// (`checked live now`), a recorded check stands (`checked <age> ago`), or
+/// nothing ever has (`drift never checked`).
+#[test]
+fn the_fleet_heading_annotation_states_the_checks_freshness() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let annotation = |mutate: fn(&mut super::status::StatusOutput)| {
+        let mut output = component_health_fixture();
+        mutate(&mut output);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(component_health_doc(&output, Some("base"), printer.arrow()));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        rendered
+            .lines()
+            .find(|l| l.contains("Component Health"))
+            .unwrap_or_else(|| panic!("no Component Health heading in:\n{rendered}"))
+            .to_string()
+    };
+
+    assert!(
+        annotation(|_| {}).contains("(checked 3m ago)"),
+        "a recorded stamp dates the heading: {}",
+        annotation(|_| {})
+    );
+    assert!(
+        annotation(|o| o.last_scan_at = None).contains("(drift never checked)"),
+        "an unchecked host says so: {}",
+        annotation(|o| o.last_scan_at = None)
+    );
+    assert!(
+        annotation(|o| o.drift_checked_live = true).contains("(checked live now)"),
+        "a `--scan` run's verdicts are this run's own: {}",
+        annotation(|o| o.drift_checked_live = true)
+    );
+}
+
+/// One stored literal for a missing package: every producer that persists a
+/// package row's `actual` spells it [`cfgd_core::Absence::NotInstalled`]
+/// (`not installed`). `verify` stored `missing` where the live scan stored
+/// `not installed` for the SAME fact, so one host answered two spellings —
+/// and a compliance diff of two snapshots taken through two commands read as
+/// drift. The walk finds every `resource_type: "package"` construction in
+/// the producer files and requires BOTH stored arms to reference the shared
+/// vocabulary, never a bare string literal: `actual` spells its absence
+/// through `Absence::NotInstalled`, `expected` its presence through
+/// [`cfgd_core::PACKAGE_WANT_INSTALLED`] / [`cfgd_core::PACKAGE_WANT_ABSENT`].
+/// The second arm joined the walk once `output::drift_terse_cause` began
+/// classifying a package row by that word.
+#[test]
+fn one_stored_literal_for_a_missing_package() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // The whole production tree, not a hand-list of known producers: the
+    // sibling walk's shape (`every_empty_drift_verdict_states_whether_a_check_ran`),
+    // so a NEW file constructing package rows trips the rule the day it
+    // lands. Dedicated test files are skipped — this test's own source
+    // quotes the needle, and a fixture may seed a legacy literal on purpose.
+    let mut files = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            files.push(path);
+        }
+    }
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        let file = cfgd_core::to_posix_string(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        // A file's own inline test module builds fixture rows whose literals
+        // are the point; only the production region is walked.
+        let text = cfgd_core::test_helpers::production_slice(&text);
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(r#"resource_type: "package""#) {
+                continue;
+            }
+            // The construction's `actual:` arm within the next few lines; a
+            // window that carries none is a `checked`-scope key, not a row.
+            let window = lines[i..(i + 12).min(lines.len())].join("\n");
+            let Some(actual_at) = window.find("actual:") else {
+                continue;
+            };
+            seen += 1;
+            // Bounded at the row's last field, so a following construction's
+            // literals cannot be read as this arm's.
+            let arm = &window[actual_at..];
+            let arm = arm.find("unmanaged:").map_or(arm, |end| &arm[..end]);
+            // An arm naming a BINDING states no literal at all (the declared
+            // floor half's `actual` is the version the manager reported), and
+            // there is no second spelling to drift from.
+            if !arm.contains('"') {
+                continue;
+            }
+            // `phrase.state` is `manager_drift_phrase`'s field, itself spelled
+            // from `Absence::NotInstalled` in the same walked file — the one
+            // accepted indirection.
+            if !arm.contains("NotInstalled")
+                && !arm.contains(r#""installed""#)
+                && !arm.contains("phrase.state")
+            {
+                offenders.push(format!("{file}:{}: actual {}", i + 1, lines[i].trim()));
+            }
+            // The `expected` arm, same rule, different vocabulary: a presence
+            // row's word is `PACKAGE_WANT_INSTALLED`/`_ABSENT` (or the cli
+            // crate's `PRESENCE_WANT_*` aliases of them), a version row's is
+            // the declared floor, always a binding. A bare literal here is
+            // what `drift_terse_cause` would misread — it now calls any
+            // non-presence `expected` on a package row a version mismatch, so
+            // a drifted spelling files "version mismatch" against a package
+            // the machine simply does not have.
+            let Some(expected_at) = window.find("expected:") else {
+                continue;
+            };
+            let want = &window[expected_at..];
+            let want = want.find("actual:").map_or(want, |end| &want[..end]);
+            if want.contains('"')
+                && !want.contains("WANT_INSTALLED")
+                && !want.contains("WANT_ABSENT")
+            {
+                offenders.push(format!("{file}:{}: expected {}", i + 1, lines[i].trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 3,
+        "the walk found package-row constructions, found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a package row's stored arms come from the shared vocabulary — `actual` \
+         from `Absence::NotInstalled`, `expected` from `PACKAGE_WANT_INSTALLED` / \
+         `PACKAGE_WANT_ABSENT` — never a second literal:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every drift-empty verdict states whether a check ran, and the
+/// `No drift detected` / `No drift recorded` pair has exactly two production
+/// homes: `status`'s per-module Drift section (`drift_section`, whose live/
+/// recorded split IS the claim) and `diff`'s live verdict (a check it just
+/// ran). The fleet surface's empty verdict is the Component Health heading
+/// annotation — `the_fleet_heading_annotation_states_the_checks_freshness`
+/// pins its three states.
+///
+/// `verify`'s `All N resources match desired state` and the compliance
+/// surfaces are DIFFERENT verbs and keep their own wording: both speak only
+/// after a comparison they themselves just ran (verify against the resolved
+/// desired state, compliance against a named snapshot), so neither can utter
+/// its verdict without a check standing behind it — the ambiguity this pair
+/// exists to resolve cannot arise there.
+#[test]
+fn every_empty_drift_verdict_states_whether_a_check_ran() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut carriers = Vec::new();
+    let mut stack = vec![
+        root.join("crates/cfgd-core/src"),
+        root.join("crates/cfgd/src"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("No drift detected") || text.contains("No drift recorded") {
+                carriers.push(path);
+            }
+        }
+    }
+    let allowed = |p: &std::path::Path| {
+        let s = cfgd_core::to_posix_string(p);
+        // The two production homes, plus test files asserting about them.
+        s.ends_with("cli/status.rs") || s.ends_with("cli/diff.rs") || s.ends_with("tests.rs")
+    };
+    let offenders: Vec<String> = carriers
+        .iter()
+        .filter(|p| !allowed(p))
+        .map(cfgd_core::to_posix_string)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the empty-drift pair renders from its two homes only:\n{}",
+        offenders.join("\n")
+    );
+    // Both homes still exist — the walk is not vacuous.
+    for home in ["cli/status.rs", "cli/diff.rs"] {
+        assert!(
+            carriers
+                .iter()
+                .any(|p| cfgd_core::to_posix_string(p).ends_with(home)),
+            "`{home}` no longer carries its verdict — move this walk's allowlist deliberately"
+        );
+    }
+
+    // The freshness half of the claim is a POPULATION, not a phrase:
+    // `drift_checked_note` is the one composer of "how stale is this
+    // verdict", and its production call sites are exactly the two status
+    // surfaces that render recorded verdicts — the fleet heading annotation
+    // and the per-module Drift section's scan note. A surface that renders a
+    // recorded verdict without routing its freshness through the composer
+    // re-opens the undated-"no drift" gap this pair exists to close.
+    let status_src = std::fs::read_to_string(root.join("crates/cfgd/src/cli/status.rs")).unwrap();
+    let call_sites = status_src
+        .matches("drift_checked_note(")
+        .count()
+        .saturating_sub(usize::from(status_src.contains("fn drift_checked_note(")));
+    assert_eq!(
+        call_sites, 2,
+        "`drift_checked_note`'s production call sites are the fleet heading \
+         annotation and the module Drift section's scan note; a surface \
+         added or dropped here moves the freshness population — update this \
+         count with the surface list above"
+    );
+}
+
+/// The fleet dashboard's Last Apply block leads on its verdict: `Result`,
+/// then `Summary`, then what the run was scoped to, then how long ago it ran.
+/// A reader scanning the dashboard needs to know whether the apply succeeded
+/// before they need to know how stale it is.
+#[test]
+fn last_apply_leads_on_its_verdict() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let output = super::status::StatusOutput {
+        last_apply: Some(cfgd_core::state::ApplyRecord {
+            id: 1,
+            timestamp: "2026-05-12T14:00:00Z".to_string(),
+            profile: "base".to_string(),
+            plan_hash: "deadbeef".to_string(),
+            status: cfgd_core::state::ApplyStatus::Success,
+            summary: Some("8 succeeded".to_string()),
+        }),
+        drift: Vec::new(),
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: Vec::new(),
+        managed_resources: Vec::new(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    printer.emit(super::status::build_fleet_status_doc(
+        &output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("base"),
+            profile_inherits: &[],
+            modules: &[],
+            arrow: printer.arrow(),
+        },
+        &[],
+        "2026-05-12T14:30:25Z",
+        &Default::default(),
+        &Default::default(),
+    ));
+    drop(printer);
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+
+    let section = rendered
+        .split_once("Last Apply")
+        .unwrap_or_else(|| panic!("no Last Apply section, got:\n{rendered}"))
+        .1;
+    let keys = ["Result", "Summary", "Profile", "Age"];
+    let positions: Vec<usize> = keys
+        .iter()
+        .map(|k| {
+            section
+                .find(k)
+                .unwrap_or_else(|| panic!("Last Apply section missing `{k}` row:\n{section}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|w| w[0] < w[1]),
+        "Last Apply must lead on its verdict, in order {keys:?}, got positions {positions:?} in:\n{section}"
+    );
+}
+
+/// Every surface naming the config, the sources and the profile a run acted
+/// under builds those rows through the one builder.
+///
+/// `cfgd daemon status` — the dashboard for the one loop that runs unattended,
+/// and so the one whose reader is least likely to know which config it was
+/// started against — printed `PID`, `Uptime`, intervals and a drift count and
+/// named neither. Meanwhile `cfgd status`, `cfgd sync`, `cfgd diff` and every
+/// run header each hand-built the same two rows four different ways, one of
+/// them rendering the path with the host separator. `Sources` was worse still:
+/// the run header pushed it itself, so it was the ONE surface saying who the
+/// profile had been composed from.
+///
+/// The population is every production `.rs` in both crates. A line building a
+/// `Config`, `Sources` or `Profile` key/value row belongs to
+/// [`cfgd_core::output::config_header_rows`]; the builder's own body is the
+/// one exception, and a row naming a DIFFERENT fact — the profile a source
+/// subscribes to, the sources CACHE directory — carries a
+/// `// header-row-ok: <why>` marker. The `Modules` row of the same block is
+/// walked by its own sibling pin, which owns the `// modules-row-ok:` hatch.
+#[test]
+fn every_config_and_profile_header_row_comes_from_the_one_builder() {
+    const NEEDLES: &[&str] = &[
+        "kv(\"Config\"",
+        "kv(\"Sources\"",
+        "kv(\"Profile\"",
+        "KvPair::new(\"Config\"",
+        "KvPair::new(\"Sources\"",
+        "KvPair::new(\"Profile\"",
+        "(\"Config\".to_string()",
+        "(\"Sources\".to_string()",
+        "(\"Profile\".to_string()",
+        "(\"Config\", ",
+        "(\"Sources\", ",
+        "(\"Profile\", ",
+    ];
+    // A heading, a section or an owner label legitimately takes the same name
+    // and is not a row — judged on the CALL the needle itself sits in, never on
+    // the line: a row and a section sharing one line would otherwise wave the
+    // row through.
+    const NOT_A_ROW: &[&str] = &[
+        ".section",
+        ".section_if_nonempty",
+        ".section_or_collapse",
+        ".heading",
+        ".heading_title",
+        "section_owner",
+        "subsection_owner",
+        "heading_owner_prefixed",
+    ];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        // The builder IS the exception, and it is exempted by NAME: skipping
+        // its whole file would let a second hand-built header row anywhere
+        // else in `output/component.rs` through.
+        let mut current_fn = "";
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if let Some(rest) = code
+                .strip_prefix("pub fn ")
+                .or_else(|| code.strip_prefix("fn "))
+            {
+                current_fn = rest.split(['(', '<']).next().unwrap_or("");
+            }
+            if code.starts_with("//") || current_fn == "config_header_rows" {
+                continue;
+            }
+            // A needle is a row unless the call it sits in is one of the
+            // shapes that legitimately names the same word.
+            let is_row = NEEDLES.iter().any(|needle| {
+                line.match_indices(needle).any(|(at, _)| {
+                    let before = &line[..at];
+                    !NOT_A_ROW
+                        .iter()
+                        .any(|call| before.ends_with(call) || before.ends_with(&format!("{call}(")))
+                })
+            });
+            if !is_row {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            // The marker may head a multi-line comment block, so the search
+            // walks the contiguous comment lines above the row.
+            let marked = code.contains("// header-row-ok:")
+                || (0..n)
+                    .rev()
+                    .take_while(|&p| lines[p].trim_start().starts_with("//"))
+                    .any(|p| lines[p].trim_start().starts_with("// header-row-ok:"));
+            if marked {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // The one marked site in the tree, so a gather that stopped reaching the
+    // CLI sources cannot pass by finding nothing at all.
+    assert!(
+        checked.iter().any(|c| c.contains("cli/source/show.rs")),
+        "the walk no longer reaches the one hatched site — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `Config` / `Sources` / `Profile` header row comes from \
+         `cfgd_core::output::config_header_rows`, so no two surfaces can name \
+         the same facts with different keys, in a different order, or with a \
+         host-native path (a row about a different fact takes a \
+         `// header-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// An owner already held as an [`cfgd_core::reconciler::Owner`] renders through
+/// its own `label()`, never through a hand-composed `OwnerLabel`.
+///
+/// `Owner::token()` is `label().plain()`, so the coloured heading, the plain
+/// table cell and the serialized token are one composition. Five call sites
+/// spelled `OwnerLabel::new(owner.kind.as_str(), owner.name.as_str())` instead,
+/// which is the same string today and a second one the moment either half of
+/// the token changes.
+///
+/// A caller holding no `Owner` — a kind parsed back out of a rendered token, a
+/// `backup` group whose kind is a literal — passes the two words itself and is
+/// not what this walks: the needle is the `.kind` field access.
+///
+/// The exception is `Owner::label`'s own body, found by its signature rather
+/// than by its file, so a second composition added elsewhere in
+/// `reconciler/types.rs` is still caught.
+#[test]
+fn every_owner_label_of_a_held_owner_comes_from_owner_label() {
+    /// The composition sites in one file: rustfmt splits a long call over its
+    /// arguments, so the `.kind` may sit up to two lines below the
+    /// constructor. `Some(line)` is an offender, `None` the exempt body.
+    fn compositions(body: &str) -> Vec<(usize, String, bool)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !line.contains("OwnerLabel::new(") {
+                continue;
+            }
+            let call = lines[n..(n + 3).min(lines.len())].concat();
+            if !call.contains(".kind") {
+                continue;
+            }
+            let exempt = (n.saturating_sub(3)..=n).any(|p| lines[p].contains("fn label(&self)"));
+            hits.push((n + 1, code.to_string(), exempt));
+        }
+        hits
+    }
+
+    // The composition split three ways, which a two-line join would miss.
+    let split = "        crate::output::OwnerLabel::new(\n            self.kind.as_str(),\n            self.name.as_str(),\n        )\n";
+    assert_eq!(
+        compositions(split).len(),
+        1,
+        "the join no longer reaches a three-line split"
+    );
+
+    // A receiver-chain break: `self` sits alone on the line after the call,
+    // and `.kind` lands two lines below it — a join that only reaches n+1
+    // would miss this shape even though it caught `split` above.
+    let chain_break = "        crate::output::OwnerLabel::new(\n            self\n                .kind.as_str(),\n            self.name.as_str(),\n        )\n";
+    assert_eq!(
+        compositions(chain_break).len(),
+        1,
+        "the join no longer reaches a receiver-chain break two lines below the call"
+    );
+
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for (n, code, exempt) in compositions(&body) {
+            checked.push(format!("{}:{n}", cfgd_core::to_posix_string(&path)));
+            if !exempt {
+                offenders.push(format!("{}:{n}: {code}", path.display()));
+            }
+        }
+    }
+    assert!(
+        checked.iter().any(|c| c.contains("reconciler/types.rs")),
+        "the walk no longer reaches `Owner::label` itself — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an owner in hand renders through `Owner::label()` (or `token()` for the \
+         plain form), so a heading, a table cell and a serialized token cannot \
+         come out as three spellings of one owner:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every slot rendering a RECORDED scope token declares it as one, so the
+/// tokens paint the way every surface holding an `Owner` paints them.
+///
+/// A recorded scope is `Owner::token()`, or several of them joined by
+/// `Owner::TOKEN_SEPARATOR` for an isolated run. The string reaches a report
+/// through the state store rather than through an `Owner`, so the sibling walk
+/// above — which finds a held owner by its `.kind` field access — cannot see
+/// it, and `status`'s Scope row, `status`'s Owner column and `log`'s Scope
+/// column all rendered the tokens as flat text beside sections and headings
+/// that paint the same token three ways.
+///
+/// Two arms, one per slot shape. A kv row built off `recorded_scope_row` takes
+/// `KvPair::scope_valued`; a table declaring an owner-token column header names
+/// it through `Table::owner_column`. A header spelled `Owner`/`Scope` over
+/// something that is not a token carries `// owner-column-ok: <why>`.
+#[test]
+fn every_recorded_scope_slot_declares_its_owner_tokens() {
+    /// A `Table::new([...])` header list, with the lines that follow it up to
+    /// the first row push — where `.owner_column` would sit.
+    fn owner_tables(body: &str) -> Vec<(usize, String, Vec<String>, bool)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("Table::new(") {
+                continue;
+            }
+            // rustfmt splits a long header list and the builder chain over
+            // several lines; the declaration ends at the first `;`.
+            let end = (n..lines.len())
+                .find(|i| lines[*i].contains(';'))
+                .unwrap_or(n);
+            let decl = lines[n..=end].concat();
+            let headers: Vec<String> = decl
+                .split_once("Table::new(")
+                .map(|(_, rest)| rest)
+                .unwrap_or_default()
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect();
+            let owned: Vec<String> = headers
+                .into_iter()
+                .filter(|h| h == "Owner" || h == "Scope")
+                .collect();
+            if owned.is_empty() {
+                continue;
+            }
+            let hatched = lines[n..=end]
+                .iter()
+                .any(|l| l.contains("owner-column-ok:"));
+            let declared: Vec<String> = owned
+                .iter()
+                .filter(|h| !decl.contains(&format!(".owner_column(\"{h}\")")))
+                .cloned()
+                .collect();
+            hits.push((n + 1, lines[n].trim_start().to_string(), declared, hatched));
+        }
+        hits
+    }
+
+    // A split declaration: the header list, the wrap knob and the terminating
+    // `;` land on four lines, which a single-line scan would miss.
+    let split = "        let mut t = Table::new([\"Type\", \"Owner\"])\n            .wrapping()\n            .owner_column(\"Owner\");\n";
+    let hits = owner_tables(split);
+    assert_eq!(
+        hits.len(),
+        1,
+        "the scan no longer reaches a split header list"
+    );
+    assert!(
+        hits[0].2.is_empty(),
+        "a declared owner column reads as declared"
+    );
+    let undeclared = owner_tables("        let mut t = Table::new([\"ID\", \"Scope\"]);\n");
+    assert_eq!(
+        undeclared.first().map(|h| h.2.len()),
+        Some(1),
+        "an undeclared owner column is an offender"
+    );
+
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let name = cfgd_core::to_posix_string(&path);
+        for (n, code, declared, hatched) in owner_tables(&body) {
+            checked.push(format!("{name}:{n}"));
+            if !hatched && !declared.is_empty() {
+                offenders.push(format!(
+                    "{name}:{n}: {code} — column(s) {declared:?} carry owner tokens \
+                     and need `.owner_column(...)`"
+                ));
+            }
+        }
+        // The kv arm: the recorded string reaches a row straight off
+        // `recorded_scope_row`, so the composer is checked at the call.
+        for (n, line) in body.lines().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("recorded_scope_row(") {
+                continue;
+            }
+            checked.push(format!("{name}:{}", n + 1));
+            let call: String = body.lines().skip(n).take(4).collect::<Vec<_>>().concat();
+            if call.contains("KvPair::") && !call.contains("KvPair::scope_valued") {
+                offenders.push(format!(
+                    "{name}:{}: a recorded scope reaches a kv row through \
+                     `KvPair::scope_valued`, never the plain slot",
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        checked.iter().any(|c| c.contains("cli/log.rs"))
+            && checked.iter().any(|c| c.contains("cli/status.rs")),
+        "the walk no longer reaches the recorded-scope slots — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a recorded scope token renders through the same three slots every \
+         held owner does, so one report cannot paint `module:nvim` two ways:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every Title-Cased status word the CLI renders carries its role colour.
+///
+/// The workspace states each status vocabulary as a word-and-ROLE pair
+/// (`ApplyStatus::human_display`, `state::module_status_display`,
+/// `state::source_status_display`, `state::backup_run_status_display`,
+/// `compliance::ComplianceStatus::human_display`), so a slot has the colour in
+/// hand the moment it has the word. `cfgd compliance snapshot` still rendered
+/// `Status  Violation` through the plain kv slot, off an `overall_status`
+/// that returned a bare `&'static str` — one surface calling a violation the
+/// same colour as everything else on the screen.
+///
+/// Three failure shapes. Two are walked at the READING sites: a render slot
+/// carrying one of the words as a LITERAL (it belongs to a pair producer, so
+/// the literal is a second spelling), and a call site DISCARDING the role half
+/// of a pair. A discard is legitimate only where nothing renders — a `-o json`
+/// payload's own field — and says so with `// status-word-ok: <why>`.
+///
+/// The third is the shape the original defect was actually written in: the
+/// enum interpolated straight into a roleless slot, no literal and no pair
+/// spelling anywhere on the line, so neither reading-site arm can see it. That
+/// one is refused at its SOURCE instead — a status vocabulary carries no
+/// `Display` and no public word-alone accessor, so `{status}` / `.to_string()`
+/// does not compile against one.
+#[test]
+fn every_title_cased_status_word_renders_role_styled() {
+    /// Every word the pair producers return, enumerated from their own match
+    /// arms (`ApplyStatus::human_str`, `module_status_display`,
+    /// `source_status_display`, `backup_run_status_display`,
+    /// `ComplianceStatus::human_display`). A new arm adds its word here.
+    const WORDS: &[&str] = &[
+        // ApplyStatus
+        "Success",
+        "Partial",
+        "Failed",
+        "InProgress",
+        "Aborted",
+        // module_status_display
+        "Synced",
+        "Drifted",
+        "NotApplied",
+        // source_status_display (`Unknown` is shared with the module one)
+        "Active",
+        "Pending",
+        "Unknown",
+        // ComplianceStatus
+        "Compliant",
+        "Warning",
+        "Violation",
+    ];
+    /// Slots that carry no role of their own.
+    const ROLELESS: &[&str] = &["KvPair::new(", ".kv(", ".row(", "CommandPair::"];
+    /// The pair producers, by the spelling a call site reaches them through.
+    const PAIRS: &[&str] = &[
+        "human_display()",
+        "module_status_display(",
+        "source_status_display(",
+        "backup_run_status_display(",
+        "state_display()",
+    ];
+    fn offenders_in(body: &str) -> Vec<(usize, String)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.contains("// status-word-ok:") {
+                continue;
+            }
+            if (n.saturating_sub(1)..n).any(|p| lines[p].contains("// status-word-ok:")) {
+                continue;
+            }
+            // The VALUE position only: the same words are legitimate KEYS
+            // (`Compliant  4` counts a category, it does not report a state).
+            let literal_in_a_roleless_slot = ROLELESS.iter().any(|slot| line.contains(slot))
+                && WORDS.iter().any(|w| line.contains(&format!(", \"{w}\"")));
+            // `let (word, _) = …human_display();` — the colour thrown away at
+            // the one place that had it.
+            let discarded_role = PAIRS.iter().any(|p| line.contains(p))
+                && (line.contains(", _)") || line.contains(", _) ="))
+                && line.contains("let (");
+            if literal_in_a_roleless_slot || discarded_role {
+                hits.push((n + 1, code.to_string()));
+            }
+        }
+        hits
+    }
+
+    /// A word-alone spelling minted in a PRODUCER file: a `Display` impl on a
+    /// status vocabulary, or a public accessor handing the word back without
+    /// its role. Either one re-opens `{status}` / `.to_string()` at any call
+    /// site — the shape the defect above was actually written in, which no
+    /// walk over the reading sites can see, because such a line carries
+    /// neither a literal nor a pair spelling. Refusing the spelling at its
+    /// source is what makes the defect unrepresentable rather than greppable.
+    fn word_alone_spellings(body: &str) -> Vec<(usize, String)> {
+        body.lines()
+            .enumerate()
+            .filter_map(|(n, line)| {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    return None;
+                }
+                // `ApplySummary`'s own `Display` is a payload rendering, not a
+                // status vocabulary, so the type name is what decides.
+                let bare_display = code.contains("Display for") && code.contains("Status");
+                (bare_display || code.contains("pub fn human_str"))
+                    .then(|| (n + 1, code.to_string()))
+            })
+            .collect()
+    }
+
+    assert_eq!(
+        offenders_in("        rows.push(KvPair::new(\"Status\", \"Violation\"));\n").len(),
+        1,
+        "the walk no longer sees a status word in a roleless slot"
+    );
+    assert!(
+        offenders_in("            s.kv(\"Compliant\", summary.compliant.to_string())\n").is_empty(),
+        "a status word used as a KEY counts a category, it reports no state"
+    );
+    assert_eq!(
+        offenders_in("        let (word, _) = record.status.human_display();\n").len(),
+        1,
+        "the walk no longer sees a discarded role"
+    );
+    assert!(
+        offenders_in("        // status-word-ok: payload only\n        let (word, _) = payload.state_display();\n").is_empty(),
+        "the marker no longer exempts a payload-only read"
+    );
+    assert_eq!(
+        word_alone_spellings("impl std::fmt::Display for ComplianceStatus {\n").len(),
+        1,
+        "the producer guard no longer sees a `Display` on a status vocabulary"
+    );
+    assert!(
+        word_alone_spellings("impl std::fmt::Display for ApplySummary {\n").is_empty(),
+        "the producer guard now refuses a payload rendering that is no status word"
+    );
+    assert_eq!(
+        word_alone_spellings("    pub fn human_str(&self) -> &'static str {\n").len(),
+        1,
+        "the producer guard no longer sees a public word-alone accessor"
+    );
+    assert!(
+        word_alone_spellings("    fn human_str(&self) -> &'static str {\n").is_empty(),
+        "the producer guard now refuses the private spelling `human_display` reads"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    let mut word_alone: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        // The word-alone guard runs over EVERY file, not just the two that
+        // hold a vocabulary today: a third one minted elsewhere would offer
+        // the same roleless spelling, and a rename of these two must not
+        // quietly take the guard with it.
+        for (n, code) in word_alone_spellings(&body) {
+            word_alone.push(format!("{}:{n}: {code}", path.display()));
+        }
+        // The producers themselves are where the words and their roles are
+        // spelled; every other site reads them from here.
+        if path.ends_with("state/types.rs") || path.ends_with("compliance/mod.rs") {
+            continue;
+        }
+        for (n, code) in offenders_in(&body) {
+            offenders.push(format!("{}:{n}: {code}", path.display()));
+        }
+    }
+    assert!(
+        word_alone.is_empty(),
+        "a status vocabulary offers its word only paired with the role that \
+         tints it: no `Display`, no public word-alone accessor, so `{{status}}` \
+         and `.to_string()` cannot spell a status into a roleless slot at \
+         all:\n{}",
+        word_alone.join("\n")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a Title-Cased status word renders with the role its producer paired \
+         it with — through `KvPair::role_valued`, `Table::row_styled`, a status \
+         row's own role or `StatusFields::verdict` — never as a literal in a \
+         roleless slot and never with the role discarded (`// status-word-ok: \
+         <why>` for a read that renders nothing):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A status row whose SUBJECT is an owner token takes the renderer's owner
+/// subject slot, never the plain-string one.
+///
+/// A style-less subject falls to the row's ROLE style, so `module:nvim` on an
+/// `Ok` Component Health row painted entirely green while every other surface
+/// naming that owner rendered kind / `:` / name in three colours. The slot
+/// (`Doc::status_owner_with` / `SectionBuilder::status_owner_with`) hands the
+/// renderer the `OwnerLabel` itself and the row's plain `kind:name` stays what
+/// `-o json` reads.
+///
+/// A token INSIDE a sentence (`Rejected 'x' from source:acme`) is not a member:
+/// the row's subject is the sentence, and a sentence has no slot to paint. The
+/// walk reads that shape off the `format!` the call site already carries.
+#[test]
+fn every_status_row_naming_an_owner_takes_the_owner_subject_slot() {
+    /// `Some(line)` per status call whose subject is a bare owner token.
+    fn owner_subjects(body: &str) -> Vec<(usize, String)> {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut hits = Vec::new();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if !["status_with(", ".status(", "status_simple("]
+                .iter()
+                .any(|needle| line.contains(needle))
+            {
+                continue;
+            }
+            let call = lines[n..(n + 3).min(lines.len())].concat();
+            // A formatted subject is a sentence that merely mentions an owner.
+            if call.contains("format!") {
+                continue;
+            }
+            if !(call.contains(".token()") || call.contains(".plain()")) {
+                continue;
+            }
+            if (n.saturating_sub(1)..=n).any(|p| lines[p].contains("owner-subject-ok:")) {
+                continue;
+            }
+            hits.push((n + 1, code.to_string()));
+        }
+        hits
+    }
+
+    let bare = "            let s = s.status_with(role, owner.token(), |f| {\n                f.verdict(verdict)\n            });\n";
+    assert_eq!(
+        owner_subjects(bare).len(),
+        1,
+        "the walk no longer sees a bare owner token in a status subject"
+    );
+    let sentence = "            .status(\n                Role::Ok,\n                format!(\"Rejected from {}\", OwnerLabel::new(\"source\", n).plain()),\n            )\n";
+    assert!(
+        owner_subjects(sentence).is_empty(),
+        "a token inside a sentence is not a subject slot"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for (n, code) in owner_subjects(&body) {
+            offenders.push(format!("{}:{n}: {code}", path.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a status row naming an owner takes `status_owner_with`, so the token \
+         renders in its own three slots instead of the row's single role coat \
+         (`// owner-subject-ok: <why>` for a subject that is not a token):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every header naming what a resolved profile puts on this machine builds
+/// that row through the one builder.
+///
+/// `cfgd status`, `cfgd diff`, `cfgd sync` and `cfgd daemon status` opened on
+/// `Config` / `Profile` and stopped there, while the apply header two commands
+/// later named `Modules  nvim` — one machine, two headers, only one of which
+/// said what was on it. `diff --module` did print the row, hand-built outside
+/// any builder.
+///
+/// The population is every production `.rs` in both crates. A `Modules` key/
+/// value row belongs to [`cfgd_core::output::config_header_rows`] — or to the
+/// [`cfgd_core::output::modules_header_row_for`] builder it wraps; a row
+/// stating a COUNT of modules, a cache directory, or a set this host is not
+/// resolving from its own profile carries a `// modules-row-ok: <why>` marker.
+#[test]
+fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
+    const NEEDLES: &[&str] = &[
+        "kv(\"Modules\"",
+        "KvPair::new(\"Modules\"",
+        "KvPair::annotated(\"Modules\"",
+        "KvPair::role_valued(\"Modules\"",
+        "(\"Modules\", ",
+        "(\"Modules\".to_string(), ",
+    ];
+    // A heading, a section or an owner label legitimately takes the same name
+    // and is not a row. Judged on the CALL, never on the word: the substring
+    // `section` matched an identifier, so `KvPair::new("Modules",
+    // section_names)` walked straight past.
+    const NOT_A_ROW: &[&str] = &[
+        ".section(",
+        ".section_if_nonempty(",
+        ".section_or_collapse(",
+        ".heading(",
+        ".heading_title(",
+        "section_owner",
+        "subsection_owner",
+        "heading_owner_prefixed",
+    ];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        // The builder IS the exception: its own row is the one every other
+        // site is required to come here for.
+        if path.ends_with("output/component.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if NOT_A_ROW.iter().any(|call| code.contains(call)) {
+                continue;
+            }
+            if !NEEDLES.iter().any(|needle| line.contains(needle)) {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            let marked = code.contains("// modules-row-ok:")
+                || (0..n)
+                    .rev()
+                    .take_while(|&p| lines[p].trim_start().starts_with("//"))
+                    .any(|p| lines[p].trim_start().starts_with("// modules-row-ok:"));
+            if marked {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+        }
+    }
+    // The marked sites in the tree, so a gather that stopped reaching the CLI
+    // sources cannot pass by finding nothing at all.
+    assert!(
+        checked.iter().any(|c| c.contains("cli/workflow.rs"))
+            && checked.iter().any(|c| c.contains("cli/plugin/mod.rs")),
+        "the walk no longer reaches the hatched sites — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `Modules` header row comes from \
+         `cfgd_core::output::modules_header_row_for`, so no two surfaces can name \
+         a resolved profile's modules with different keys or a different \
+         elision (a row naming a count or a cache fact takes a \
+         `// modules-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Aliases lead env vars on every surface that names the pair — enforced over
+/// the POPULATION, not over a list.
+///
+/// The sibling pin renders five surfaces named by hand; it can only fail a
+/// surface somebody remembered to add, and it cannot fail one that renders an
+/// env block and no alias block at all — which is what `profile show`,
+/// `source show` and `source add` did, on a profile whose aliases the apply
+/// path deploys. This walks the source instead, so the next surface trips over
+/// the rule the day it is written.
+///
+/// Judged on the render CALL (or a bare block name in a builder's own vec), and
+/// scoped to the enclosing function: a surface names both halves in one place
+/// or names neither. A block naming aliases alone is no offence — `generate
+/// --scan-only`'s `Aliases`/`Exports` pair is a different pair.
+#[test]
+fn every_surface_naming_an_env_block_names_its_aliases_first() {
+    const RENDER_CALLS: &[&str] = &[
+        ".section(",
+        ".section_if_nonempty(",
+        ".section_or_collapse(",
+        ".subsection(",
+        ".subsection_if_nonempty(",
+        ".kv(",
+        "KvPair::new(",
+        "KvPair::nested(",
+        "KvPair::annotated(",
+    ];
+    // A builder returning named blocks names one per line, in a vec of tuples.
+    let names_a_block = |code: &str, word: &str| {
+        let quoted = format!("\"{word}\"");
+        code.contains(&quoted)
+            && (RENDER_CALLS.iter().any(|call| code.contains(call)) || code == format!("{quoted},"))
+    };
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if !["Env", "Environment"]
+                .iter()
+                .any(|word| names_a_block(code, word))
+            {
+                continue;
+            }
+            checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
+            let fn_start = (0..n)
+                .rev()
+                .find(|&p| lines[p].trim_start().starts_with("fn ") || lines[p].contains(" fn "))
+                .unwrap_or(0);
+            if lines[fn_start..n]
+                .iter()
+                .any(|l| names_a_block(l.trim_start(), "Aliases"))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {code}", path.display(), n + 1));
+        }
+    }
+    // The surfaces the rule was written over, so a gather that stopped reaching
+    // the CLI sources cannot pass by finding nothing at all.
+    for surface in [
+        "cli/profile/show.rs",
+        "cli/status.rs",
+        "cli/module/list_show.rs",
+        "cli/module/registry.rs",
+    ] {
+        assert!(
+            checked.iter().any(|c| c.contains(surface)),
+            "the walk no longer reaches {surface} — it checked {checked:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a surface that renders an env block renders its aliases block first, \
+         the order every surface naming the pair holds — the halves carry no \
+         header of their own to say which is which:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Whether the marker heads `lines[n]` or the contiguous comment block above
+/// it — the ONE reading of a hatch, so every walk in this file accepts a marker
+/// in the same two places and a typo in one cannot pass in the other.
+fn hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+    lines[n].trim_start().contains(marker)
+        || (0..n)
+            .rev()
+            .take_while(|&p| lines[p].trim_start().starts_with("//"))
+            .any(|p| lines[p].trim_start().starts_with(marker))
+}
+
+/// Whether a `RunContext`'s `sources` or `modules` slot hands the header
+/// nothing.
+///
+/// Judged on the VALUE rather than on one literal spelling: `&[]`, `&[][..]`
+/// and an empty `Vec` all render no row, and a field-init shorthand names a
+/// binding — which is empty exactly when the same function initialised it
+/// empty, the one place the walk can see it.
+fn names_nothing(lines: &[&str], n: usize, key: &str, slot: &str) -> bool {
+    const EMPTY: &[&str] = &[
+        "&[]",
+        "&[][..]",
+        "&Vec::new()",
+        "Vec::new()",
+        "vec![]",
+        "&vec![]",
+        "&[] as &[HeaderModule]",
+        "Default::default()",
+        "&Default::default()",
+    ];
+    let Some(value) = slot
+        .strip_prefix(&format!("{key}:"))
+        .map(|v| v.trim().trim_end_matches(','))
+    else {
+        // Shorthand: the binding is the slot's own name.
+        return binding_is_empty(lines, n, key, EMPTY);
+    };
+    EMPTY.contains(&value) || binding_is_empty(lines, n, value.trim_start_matches('&'), EMPTY)
+}
+
+/// Whether `name` was bound to one of `empty` in the forty lines above `n` —
+/// as much of the enclosing function as a walk over lines can honestly claim
+/// to have read.
+fn binding_is_empty(lines: &[&str], n: usize, name: &str, empty: &[&str]) -> bool {
+    let head = format!("let {name}");
+    let window = &lines[n.saturating_sub(40)..n];
+    window
+        .iter()
+        .map(|l| l.trim_start())
+        .filter(|l| l.starts_with(&head))
+        .any(|l| {
+            l.split_once('=')
+                .is_some_and(|(_, init)| empty.contains(&init.trim().trim_end_matches(';').trim()))
+        })
+        || conditional_binding_can_be_empty(window, &head, empty)
+        || tuple_binding_can_be_empty(window, name)
+}
+
+/// Whether `name` is bound by an `if`/`else` one of whose arms is empty —
+/// `let modules: &[HeaderModule] = if … { … } else { &[] };`.
+///
+/// The single-binding twin of [`tuple_binding_can_be_empty`], and needed for
+/// exactly the same reason: read as the initializer alone, the whole binding
+/// is `if …`, which is in no spelling of empty, so a slot one arm hands
+/// nothing is invisible while the walk's sentinel still claims to have read
+/// the run.
+fn conditional_binding_can_be_empty(window: &[&str], head: &str, empty: &[&str]) -> bool {
+    window
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with(head))
+        .any(|(i, l)| {
+            l.split_once('=')
+                .is_some_and(|(_, init)| init.trim().starts_with("if "))
+                && window[i..]
+                    .iter()
+                    .take_while(|l| !l.trim_start().starts_with("};"))
+                    .any(|l| empty.contains(&l.trim().trim_end_matches(',')))
+        })
+}
+
+/// Whether `name` comes out of a TUPLE destructure with an arm that binds it
+/// empty — `let (sources, modules) = if … { … } else { (&[], &[]) };`, the
+/// shape both header slots of the daemon's scheduled backup fire are bound in.
+/// Read one arm at a time it is exactly as visible as a direct `let`; read as
+/// a single binding name it is invisible, which is how a run naming a profile
+/// beside two empty slots passed a walk whose sentinel said it had been read.
+fn tuple_binding_can_be_empty(window: &[&str], name: &str) -> bool {
+    window.iter().enumerate().any(|(i, line)| {
+        line.trim_start().starts_with("let (")
+            && window[i..]
+                .iter()
+                .take(4)
+                .copied()
+                .collect::<String>()
+                .split_once(')')
+                .is_some_and(|(pattern, _)| {
+                    pattern
+                        .split(['(', ',', ' '])
+                        .any(|word| word.trim() == name)
+                })
+            && window[i..].iter().take(12).any(|l| l.contains("&[]"))
+    })
+}
+
+/// The hatch is read the same two ways wherever a walk offers one, and neither
+/// of them is "anywhere in the file".
+#[test]
+fn a_hatch_is_read_on_its_own_line_and_on_the_comment_block_above_it() {
+    let lines = [
+        "// no-modules-row-ok: a run with no profile",
+        "let ctx = RunContext {",
+        "    modules: &[], // no-modules-row-ok: same, inline",
+        "",
+        "let bare = RunContext {",
+    ];
+    assert!(hatched(&lines, 1, "// no-modules-row-ok:"), "comment above");
+    assert!(hatched(&lines, 2, "// no-modules-row-ok:"), "own line");
+    assert!(
+        !hatched(&lines, 4, "// no-modules-row-ok:"),
+        "a blank line ends the block, so a marker further up does not reach"
+    );
+}
+
+/// An empty header slot is caught in every spelling that renders no row, not
+/// only in the one the backup verbs happened to use.
+#[test]
+fn an_empty_header_slot_is_caught_however_it_is_spelled() {
+    let empty = [
+        "let x = RunContext {|    modules: &[],",
+        "let x = RunContext {|    modules: &[][..],",
+        "let none: Vec<HeaderModule> = Vec::new();|let x = RunContext {|    modules: &none,",
+        "let modules = vec![];|let x = RunContext {|    modules,",
+        "let (sources, modules): (&[A], &[B]) = if ok {|(&a, &b)|} else {|(&[], &[])|};|let x = RunContext {|    modules,",
+        "let modules: &[HeaderModule] = if ok {|&resolved.modules|} else {|&[]|};|let x = RunContext {|    modules,",
+    ];
+    for case in empty {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert!(
+            names_nothing(&lines, n, "modules", lines[n].trim_start()),
+            "not caught: {case}"
+        );
+    }
+    let filled = [
+        "let x = RunContext {|    modules: &header_modules,",
+        "let modules = HeaderModule::of_resolved(&resolved);|let x = RunContext {|    modules,",
+        "let (sources, modules) = (&declared, &resolved);|let x = RunContext {|    modules,",
+        "let modules: &[HeaderModule] = if ok {|&a.modules|} else {|&b.modules|};|let x = RunContext {|    modules,",
+    ];
+    for case in filled {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert!(
+            !names_nothing(&lines, n, "modules", lines[n].trim_start()),
+            "wrongly caught: {case}"
+        );
+    }
+    // The same reading over the sibling slot, which the walk judges by the
+    // same function and a different key.
+    let sources = [
+        ("let x = RunContext {|    sources: &[],", true),
+        ("let x = RunContext {|    sources: &declared,", false),
+    ];
+    for (case, empty) in sources {
+        let lines: Vec<&str> = case.split('|').collect();
+        let n = lines.len() - 1;
+        assert_eq!(
+            names_nothing(&lines, n, "sources", lines[n].trim_start()),
+            empty,
+            "misread: {case}"
+        );
+    }
+}
+
+/// A run under a resolved profile names what composed it and what it resolved
+/// to — both slots, never one.
+///
+/// `Sources` and `Modules` travel together: a `RunContext` naming a profile
+/// while handing the header an empty slice states half the configuration it
+/// ran under, which is what every backup verb did for `modules` and what the
+/// daemon's scheduled fire still did for both. A run with genuinely nothing to
+/// name in a slot carries `// no-sources-row-ok: <why>` or
+/// `// no-modules-row-ok: <why>`.
+///
+/// A run under NO profile is judged on `sources` alone: the subscriptions a
+/// config declares do not depend on a profile having resolved, so an isolate
+/// holding a config names them exactly as the whole-config run beside it does,
+/// while the module set it is scoped to is its own business.
+///
+/// Judged over every SHAPE that fills those slots, not only the one the rule
+/// was first written over: two of the three isolates this rule was extended
+/// for reach the header another way — `cfgd diff --module` builds a
+/// [`cfgd_core::output::ConfigHeader`] directly and `cfgd init` passes through
+/// `ApplyPlanOpts` (whose own `RunContext` spells `sources: opts.sources` and
+/// so reads as filled) — so a new isolate handing either an empty slice would
+/// have shipped unjudged. A literal that holds NO config at all is exempt,
+/// spelled as it already is: `config_path: None`.
+#[test]
+fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
+    // Every literal shape that fills the header's slots. `ApplyPlanOpts`
+    // carries no `modules` of its own — the plan it builds names them — so it
+    // is judged on `sources` alone.
+    const SHAPES: [&str; 3] = ["RunContext {", "ConfigHeader {", "ApplyPlanOpts {"];
+    let mut checked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some(shape) = SHAPES.iter().find(|shape| line.contains(*shape)) else {
+                continue;
+            };
+            // The literal's own slots, which every one of these shapes spells
+            // within a few lines of its opening brace — in the `key: value`
+            // form or in field-init shorthand, which names a binding and so is
+            // never the empty slice this rule is about.
+            // Wide enough that a comment block above a slot cannot push the
+            // slot out of the window and drop the literal from the walk.
+            let slot = |key: &str| {
+                lines[n..]
+                    .iter()
+                    .take(40)
+                    .map(|l| l.trim_start())
+                    .find(|l| l.starts_with(&format!("{key}:")) || *l == format!("{key},"))
+            };
+            let (Some(profile), Some(sources)) = (slot("profile"), slot("sources")) else {
+                continue;
+            };
+            // A literal holding no config has no subscriptions to name: a
+            // profile just scaffolded is described by the command that wrote
+            // it, not by a configuration it is not yet part of.
+            if slot("config_path") == Some("config_path: None,") {
+                continue;
+            }
+            checked.push(format!(
+                "{shape} {}:{}",
+                cfgd_core::to_posix_string(&path),
+                n + 1
+            ));
+            // `Sources` is a fact about the CONFIG, not about the profile: a
+            // `--module` isolate resolves no profile and still holds the
+            // config whose `spec.sources[]` say where its configuration came
+            // from. Only `Modules` is exempted when nothing resolved.
+            let mut judged: Vec<(&str, &str, &str)> =
+                vec![("sources", sources, "// no-sources-row-ok:")];
+            if profile != "profile: None,"
+                && let Some(modules) = slot("modules")
+            {
+                judged.push(("modules", modules, "// no-modules-row-ok:"));
+            }
+            for (key, value, marker) in judged {
+                if !names_nothing(&lines, n, key, value) || hatched(&lines, n, marker) {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {profile} {key}", path.display(), n + 1));
+            }
+        }
+    }
+    // One member of each shape, spelled here rather than read off `SHAPES`,
+    // so a gather that stopped reaching either crate — or a shape dropped
+    // from the list — cannot pass by finding nothing at all.
+    assert!(
+        ["RunContext {", "ConfigHeader {", "ApplyPlanOpts {"]
+            .iter()
+            .all(|shape| checked.iter().any(|c| c.starts_with(shape)))
+            && checked
+                .iter()
+                .filter(|c| c.contains("cli/backup.rs"))
+                .count()
+                == 3
+            && checked.iter().any(|c| c.contains("daemon/backup.rs"))
+            && checked.iter().any(|c| c.contains("cli/diff.rs"))
+            && checked.iter().any(|c| c.contains("cli/init/cmd_init.rs")),
+        "the walk no longer reaches every header-filling shape — it checked {checked:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a run reporting under a resolved profile names that profile's modules, \
+         through `cfgd_core::reconciler::ComposedSource::from_declared` and \
+         `cfgd_core::output::HeaderModule::of_resolved` over the config and the \
+         resolution the verb already holds (a slot with genuinely nothing to \
+         name takes its `// no-<slot>-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `tracing!` line is a JOURNAL, not a display slot: it is read by scripts
+/// and from other hosts, and as another user `~` there is ambiguous in a way
+/// it is not in a report addressed to whoever ran the command — the same
+/// reason `-o json` keeps the absolute path. So `fold_home_in_text` never
+/// reaches a `tracing::` argument, and a journal line naming a path under
+/// home carries `// native-ok: journal line, not a display slot` beside the
+/// folded rows it will be read next to. The daemon's startup banner spelled
+/// its socket absolutely eight lines above a folded `Config` row with no rule
+/// deciding which was right.
+#[test]
+fn no_journal_line_folds_the_home_directory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = walk_rust_files(&root.join("src"));
+    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
+    files.sort();
+    let mut journal_lines = 0usize;
+    let mut hatched = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_none_or(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let body = production_body(&raw);
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains("tracing::") {
+                continue;
+            }
+            journal_lines += 1;
+            // The whole macro invocation, however rustfmt broke it.
+            let end = (n..lines.len())
+                .find(|&i| lines[i].trim_end().ends_with(';'))
+                .unwrap_or(n);
+            let stmt = lines[n..=end].join("\n");
+            if stmt.contains("native-ok:") {
+                hatched += 1;
+            }
+            if stmt.contains("fold_home_in_text(") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            }
+        }
+    }
+    assert!(
+        journal_lines >= 50 && hatched >= 1,
+        "the walk no longer reaches the journal lines — it found {journal_lines}, {hatched} hatched"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `tracing!` line is a journal and keeps the absolute path, the way `-o json` does; \
+         `fold_home_in_text` is for a DISPLAY slot:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The arrow glyph is `Theme::arrow()` / `Printer::arrow()`, overridable via
+/// `icon_arrow` in `spec.output.theme`. A production slot that hardcodes the
+/// literal instead renders `→` under an ASCII preset that asked for `->`. Two
+/// files are exempt: `output/theme.rs`, which OWNS the default and the `pub`
+/// wire constant a serialized field renders, and `generate/schema.rs`, whose embedded
+/// YAML reference documents `iconArrow`'s own default the same way it
+/// documents `iconOk`/`iconWarn`/`iconFail` — a schema field's default is
+/// never itself a rendered relationship.
+#[test]
+fn no_production_slot_hardcodes_the_arrow_glyph() {
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts, so a deletion does not trip them and a re-rooting does — a
+    // floor of 1 would let a regression in `walk_rust_files` or the skip
+    // filter blind 99% of the tree and still pass.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [root.join("src"), root.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, walk_root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(walk_root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            if path.file_name().is_none_or(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("output/theme.rs")
+                || path.ends_with("generate/schema.rs")
+            {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let body = cfgd_core::test_helpers::production_slice(&raw);
+            for (n, line) in body.lines().enumerate() {
+                let code = line.trim_start();
+                // A trailing `// old → new` on a code line is still a
+                // comment: only the part before the FIRST `//` is code.
+                let code_only = code.split("//").next().unwrap_or(code);
+                if !code_only.contains('→') {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            walk_root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "the arrow glyph is `Theme::arrow()` / `Printer::arrow()`, never a literal `→`, so a \
+         preset's `icon_arrow` override reaches every rendered relationship:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A leading `v` is stripped in ONE place (`declared_floor_version`) and an
+/// owner token is split in ONE place (`output::split_owner_token`); a second
+/// hand-rolled copy of either is how a floor stopped clearing the version that
+/// names it, or a second owner-parse silently disagreed about where the
+/// `kind`/`name` boundary falls. `util/hashing.rs` (which OWNS the v-strip)
+/// and `output/owner_label.rs` (which OWNS the split) are exempt by path; any
+/// other hand-rolled copy carries `// v-strip-ok: <why>` or
+/// `// owner-split-ok: <why>`.
+#[test]
+fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
+    const V_STRIP_HATCH: &str = "v-strip-ok:";
+    const OWNER_SPLIT_HATCH: &str = "owner-split-ok:";
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts, so a deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    // A manager/owner-token identifier a `split_once(':')` reads, on the
+    // SPLIT line itself or on the enclosing `fn` line — `split_owner_token`
+    // and `owner_token` both name the concept on the signature, not the
+    // `word.split_once(':')` body line, so the tell has to see both.
+    const OWNER_SUBJECTS: [&str; 2] = ["token", "owner"];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("util/hashing.rs")
+                || path.ends_with("output/owner_label.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            let mut enclosing_fn = String::new();
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                if let Some(rest) = code.strip_prefix("fn ").or_else(|| {
+                    code.strip_prefix("pub fn ").or_else(|| {
+                        code.strip_prefix("pub(crate) fn ")
+                            .or_else(|| code.strip_prefix("pub(super) fn "))
+                    })
+                }) {
+                    enclosing_fn = rest.split(['(', '<']).next().unwrap_or("").to_string();
+                }
+                if code.starts_with("//") {
+                    continue;
+                }
+                let is_v_strip = code.contains("strip_prefix(['v'")
+                    || code.contains("strip_prefix(\"v\"")
+                    || code.contains("trim_start_matches('v'");
+                let is_owner_split = code.contains("split_once(':')")
+                    && OWNER_SUBJECTS
+                        .iter()
+                        .any(|s| code.contains(s) || enclosing_fn.contains(s));
+                if !is_v_strip && !is_owner_split {
+                    continue;
+                }
+                let hatch = if is_v_strip {
+                    V_STRIP_HATCH
+                } else {
+                    OWNER_SPLIT_HATCH
+                };
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(hatch))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a leading v/V is stripped through `declared_floor_version`, and an owner token \
+         is split through `output::split_owner_token`, never a second hand-rolled copy \
+         (or carries `// v-strip-ok: <why>` / `// owner-split-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Two owners split the whole population of `"modules"` joins. A module
+/// CACHE root — materialized git sources — is `module_cache_root`
+/// (`util/paths.rs`) plus, for the daemon's fallback, `daemon::tick_module_cache`.
+/// A DECLARED `modules/` directory under a config root — a config dir, a
+/// source checkout or a generated repo alike — is `declared_modules_dir`
+/// (`modules/loader.rs`), which owns the one literal join the walk exempts by
+/// path. A fourth expression joining `"modules"` onto a resolved cache dir, or
+/// a second spelling of `".module-cache"`, is how a `--cache-dir` run read its
+/// own deployed symlinks as strangers' files; a hand-joined declared-directory
+/// expression outside `declared_modules_dir` is the same drift one level up.
+/// `// module-dir-ok:` stays for a genuine future exception neither owner covers.
+#[test]
+fn no_production_site_joins_the_module_cache_segment_by_hand() {
+    const HATCH: &str = "module-dir-ok:";
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("util/paths.rs")
+                || path.ends_with("daemon/mod.rs")
+                || path.ends_with("modules/loader.rs")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            let in_git_rs = path.ends_with("modules/git.rs");
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.split("//").next().unwrap_or(line);
+                let is_offender = code.contains("join(\"modules\")")
+                    || code.contains(".module-cache")
+                    || (!in_git_rs && code.contains("join(crate::MODULE_CACHE_SEGMENT)"));
+                if !is_offender {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a module cache root is composed once through `module_cache_root` / \
+         `daemon::tick_module_cache`, never a second hand-joined `\"modules\"` segment or \
+         `.module-cache` fallback (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Strip `"…"` string-literal bodies to spaces, so an identifier scan never
+/// mistakes a quoted key (`"restoreErrors"`) for a variable reference; a `\`
+/// inside a literal consumes the char it escapes rather than closing early.
+fn blank_string_literals(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_str = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(' ');
+            if c == '\\' {
+                if chars.next().is_some() {
+                    out.push(' ');
+                }
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Every identifier-shaped token in `text`, quoted literals blanked first.
+fn identifier_tokens(text: &str) -> Vec<String> {
+    let blanked = blank_string_literals(text);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in blanked.chars().chain(std::iter::once(' ')) {
+        if c.is_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            if cur
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+            {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        }
+    }
+    out
+}
+
+/// A `-o json` field is the same bytes under every theme, so nothing a
+/// serialized payload carries is built from `Printer::arrow()` / `Theme::arrow()`
+/// / `SystemContext::arrow()`. `ICON_ARROW` is the wire glyph; a themed reader
+/// never reaches a serialized field. The exact half closes the seam at the
+/// signature, before any body can spend the glyph: no function in `cli/` that
+/// RETURNS a serialized payload — by its `build_*_output` name or by returning
+/// a `…Output` / `…Payload` / `serde_json::Value`, a `Result` wrapper peeled
+/// first — declares a parameter named `arrow` at all.
+#[test]
+fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
+    const HATCH: &str = "themed-arrow-ok:";
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    // `json!(` is a tell in its own right: `restoreErrors: restore_failures`
+    // (keys.rs) proved a bare `json!({..})` carries a themed value through a
+    // BOUND identifier with no `with_data`/`to_` in sight. The paren-scoped
+    // check below still reads inside `with_data(...)`'s own argument list —
+    // including a `with_data(serde_json::json!(...))` payload built inline —
+    // so the two tells overlap rather than compete.
+    const DATA_TELLS: [&str; 3] = ["with_data(", "serde_json::to_", "json!("];
+    const RUST_KEYWORDS: &[&str] = &[
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "try", "type", "unsafe", "use", "where", "while", "union",
+    ];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut files = walk_rust_files(root);
+        files.sort();
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            let lines: Vec<&str> = production.lines().collect();
+            // Tokens the tell's own spelling contributes (`with_data`,
+            // `serde_json`, `to_`, `json`) are never themselves the bound
+            // identifier being resolved.
+            let tell_tokens: std::collections::HashSet<&str> = DATA_TELLS
+                .iter()
+                .flat_map(|t| t.split(|c: char| !(c.is_alphanumeric() || c == '_')))
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            // A themed reader's value reaching a serialized field is a LOCAL
+            // coupling: `.arrow()` sitting inside the SAME call's own
+            // argument list as the tell, balanced across its parens — not
+            // merely a fact about the enclosing statement or function. A
+            // `Doc` builder chain routinely carries both a human `.status()`
+            // argument built from `.arrow()` and an unrelated
+            // `.with_data(...)` payload in the very same statement (even the
+            // same chain), and that pairing is not the bug; only `.arrow()`
+            // text that falls WITHIN the tell's own parens is — DIRECTLY, or
+            // through a `let <ident>` / `<ident>.push(...)` binding the args
+            // span merely NAMES. `restore_failures.push(format!(.. arrow ..))`
+            // (keys.rs) is the shape the binding half exists for: the
+            // `let mut restore_failures = Vec::new()` binding itself carries
+            // no glyph, and a later push does.
+            for tell in DATA_TELLS {
+                for (byte_pos, _) in production.match_indices(tell) {
+                    let after_tell = byte_pos + tell.len();
+                    let open_offset = if tell.ends_with('(') {
+                        0
+                    } else {
+                        let Some(p) = production[after_tell..].find('(') else {
+                            continue;
+                        };
+                        p + 1
+                    };
+                    let args_start = after_tell + open_offset;
+                    let mut depth = 1i32;
+                    let mut end = production.len();
+                    for (off, ch) in production[args_start..].char_indices() {
+                        match ch {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = args_start + off;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let args_text = &production[args_start..end];
+                    let tell_line_no = production[..byte_pos].matches('\n').count();
+
+                    let mut offender_line_no = None;
+                    if args_text.contains(".arrow()") {
+                        offender_line_no = Some(tell_line_no);
+                    } else {
+                        'idents: for ident in identifier_tokens(args_text) {
+                            if RUST_KEYWORDS.contains(&ident.as_str())
+                                || tell_tokens.contains(ident.as_str())
+                            {
+                                continue;
+                            }
+                            let lo = tell_line_no.saturating_sub(60);
+                            for j in (lo..tell_line_no).rev() {
+                                let trimmed = lines[j].trim_start();
+                                let opens_binding = trimmed
+                                    .strip_prefix("let ")
+                                    .map(|r| r.strip_prefix("mut ").unwrap_or(r).trim_start())
+                                    .is_some_and(|r| {
+                                        r.strip_prefix(&ident).is_some_and(|after| {
+                                            !after
+                                                .chars()
+                                                .next()
+                                                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                                        })
+                                    });
+                                let opens_push = trimmed.starts_with(&format!("{ident}.push("));
+                                if !opens_binding && !opens_push {
+                                    continue;
+                                }
+                                // The statement `j` opens may run several
+                                // lines; join forward to its `;` (bounded) and
+                                // judge the WHOLE statement, matching the real
+                                // multi-line `format!(..)` push shape.
+                                let stmt_end = (j + 20).min(lines.len());
+                                let mut stmt = String::new();
+                                for l in &lines[j..stmt_end] {
+                                    stmt.push_str(l);
+                                    stmt.push('\n');
+                                    if l.contains(';') {
+                                        break;
+                                    }
+                                }
+                                if stmt.contains(".arrow()") {
+                                    offender_line_no = Some(j);
+                                    break 'idents;
+                                }
+                            }
+                        }
+                    }
+
+                    let Some(line_no) = offender_line_no else {
+                        continue;
+                    };
+                    let hatched = lines.get(line_no).is_some_and(|l| l.contains(HATCH))
+                        || (line_no > 0
+                            && lines.get(line_no - 1).is_some_and(|l| l.contains(HATCH)));
+                    if hatched {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        line_no + 1,
+                        lines.get(line_no).map(|s| s.trim()).unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a themed `.arrow()` never sits near a serialized-field build ({}), directly or \
+         through a bound identifier the tell's argument span only names \
+         (or carries `// {HATCH} <why>`):\n{}",
+        DATA_TELLS.join(" / "),
+        offenders.join("\n")
+    );
+
+    // The exact half: no function that RETURNS a serialized payload takes an
+    // `arrow` parameter. A themed reader answers what the terminal should
+    // show; a payload field is a wire value, so a builder handed the glyph
+    // serializes whatever preset happened to be in force. Judged on what the
+    // signature returns (`…Output`, `…Payload`, `serde_json::Value`, each
+    // possibly inside a `Result`) as well as on the `build_*_output` NAME,
+    // because a builder named otherwise is the same bug with a different
+    // spelling.
+    let cli_dir = manifest.join("src/cli");
+    let mut cli_files = walk_rust_files(&cli_dir);
+    cli_files.sort();
+    let mut builder_seen = 0usize;
+    let mut builder_offenders = Vec::new();
+    for path in cli_files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if !trimmed.contains("fn ") {
+                continue;
+            }
+            let named_builder = trimmed.contains("fn build_") && trimmed.contains("_output");
+            let mut sig = String::new();
+            for l in &lines[i..(i + 20).min(lines.len())] {
+                sig.push_str(l);
+                sig.push('\n');
+                if l.contains(") ->") || l.trim_end().ends_with(") {") {
+                    break;
+                }
+            }
+            // What the signature RETURNS, less its own body brace.
+            let returns = sig
+                .split_once(") ->")
+                .map(|(_, r)| r.split('{').next().unwrap_or(r).trim().to_string())
+                .unwrap_or_default();
+            // A payload is routinely returned inside a `Result`, so the
+            // wrapper is peeled before the type is judged — `-> anyhow::Result
+            // <SyncOutput>` ends with `>` and read as no payload at all.
+            let mut inner = returns.as_str();
+            while let Some(open) = inner.find('<') {
+                if !inner[..open].ends_with("Result") || !inner.ends_with('>') {
+                    break;
+                }
+                inner = inner[open + 1..inner.len() - 1].trim();
+            }
+            let returns_payload = inner.ends_with("Output")
+                || inner.ends_with("Payload")
+                || inner.contains("serde_json::Value");
+            if !named_builder && !returns_payload {
+                continue;
+            }
+            builder_seen += 1;
+            if sig.contains("arrow:") {
+                builder_offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        builder_seen > 0,
+        "the walk found no payload-returning function — check the name and \
+         return-type tells"
+    );
+    assert!(
+        builder_offenders.is_empty(),
+        "a function in `cli/` returning a serialized payload never carries a themed \
+         `arrow` parameter — `ICON_ARROW` is the wire glyph:\n{}",
+        builder_offenders.join("\n")
+    );
+}
+
+/// A slot keyed on the DIMENSION states the magnitude; a slot keyed on the
+/// EVENT states the relation. `Age  3m ago` spent its value restating the
+/// pastness its key already asserts, beside `Last Applied  3m ago`, which is
+/// right — the key names the moment and the value says how far back it is.
+/// So every function rendering an `Age` key or header reads
+/// `cfgd_core::humanize_age_magnitude_cell`, never `humanize_age_cell`, and
+/// the magnitude twin is read NOWHERE else: a `Created` column rendering `2h`
+/// would be the same doubling inverted. The CRD `Age` printcolumns are
+/// `type: date`, which `kubectl` itself renders as a bare magnitude.
+#[test]
+fn no_age_slot_restates_the_dimension_its_key_names() {
+    let mut age_slots = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        // Every function of the file, as (first line, last line).
+        let mut functions = Vec::new();
+        let mut n = 0;
+        while n < lines.len() {
+            let code = lines[n].trim_start();
+            if !(code.starts_with("fn ") || code.contains(" fn ")) || code.starts_with("//") {
+                n += 1;
+                continue;
+            }
+            let indent = lines[n].len() - code.len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len() - 1);
+            functions.push((n, end));
+            n = end + 1;
+        }
+        for (start, end) in functions {
+            let body = lines[start..=end].join("\n");
+            let keyed_on_age = body.contains("\"Age\"");
+            let relation = body.contains("humanize_age_cell(");
+            let magnitude = body.contains("humanize_age_magnitude_cell(");
+            if keyed_on_age {
+                age_slots += 1;
+                if relation || !magnitude {
+                    offenders.push(format!(
+                        "{}:{}: an `Age` slot renders the magnitude (`humanize_age_magnitude_cell`), \
+                         never `humanize_age_cell`'s `ago`",
+                        path.display(),
+                        start + 1
+                    ));
+                }
+            } else if magnitude {
+                offenders.push(format!(
+                    "{}:{}: a slot keyed on an EVENT renders the relation (`humanize_age_cell`), \
+                     never a bare magnitude",
+                    path.display(),
+                    start + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        age_slots >= 4,
+        "the walk no longer reaches the `Age` slots (`status`, `log`, `compliance list`, \
+         `compliance snapshot`) — it found {age_slots}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an `Age` key already says the dimension, so its value is the magnitude:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A CONFIRM prompt is a display slot addressed to whoever ran the command,
+/// so a path it names folds to `~/` like the rows around it: `backup
+/// rollback`'s prompt folded while its sibling `backup restore` spelled the
+/// same directory absolutely, one question above a `restore ~/… from …` row.
+/// The walk takes every `prompt_confirm` in both crates' production sources
+/// and judges the lines that BUILD its question — the call's own argument
+/// expression, and the `let question = …` / `let into = …` statements the
+/// two-step shapes bind first — failing a path-shaped interpolation
+/// (`.posix()`, `.display()`, `resolved_display()` / `requested_display()`)
+/// that does not pass through `fold_home_in_text` on the same line. A helper
+/// binding under any other name is not seen; name the pieces of a prompt
+/// `question` and `into` so the walk can judge them. A path that must stay
+/// native carries `// native-prompt-ok: <why>` on the offending line.
+#[test]
+fn every_path_naming_confirm_prompt_folds_the_home_directory() {
+    let path_idiom = |l: &str| {
+        l.contains(".posix()")
+            || l.contains(".display()")
+            || l.contains("resolved_display()")
+            || l.contains("requested_display()")
+    };
+    // A statement's span, taken from its opening line until parens balance.
+    let statement_span = |lines: &[&str], start: usize| {
+        let mut depth = 0i32;
+        for (i, l) in lines[start..].iter().enumerate() {
+            depth += l.matches(['(', '[', '{']).count() as i32;
+            depth -= l.matches([')', ']', '}']).count() as i32;
+            if depth <= 0 && l.trim_end().ends_with([';', '?', ')']) {
+                return start + i;
+            }
+        }
+        start
+    };
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("prompt_confirm(") || line.contains("fn prompt_confirm") {
+                continue;
+            }
+            let mut judged: Vec<(usize, usize)> = vec![(n, statement_span(&lines, n))];
+            for binding in ["let question = ", "let question: ", "let into = "] {
+                if let Some(b) = lines[n.saturating_sub(40)..n]
+                    .iter()
+                    .rposition(|l| l.trim_start().starts_with(binding))
+                {
+                    let b = n.saturating_sub(40) + b;
+                    judged.push((b, statement_span(&lines, b)));
+                }
+            }
+            for (lo, hi) in judged {
+                for (i, l) in lines[lo..=hi.min(lines.len() - 1)].iter().enumerate() {
+                    let journal = ["warn!", "info!", "debug!", "error!", "tracing::"];
+                    if path_idiom(l)
+                        && !l.contains("fold_home_in_text")
+                        && !l.contains("// native-prompt-ok:")
+                        && !journal.iter().any(|m| l.contains(m))
+                        && !lines[lo..lo + i]
+                            .iter()
+                            .rev()
+                            .take(4)
+                            .any(|p| journal.iter().any(|m| p.contains(m)))
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), lo + i + 1, l.trim()));
+                    }
+                }
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "a confirm prompt naming a path folds the home directory through \
+         `fold_home_in_text` (a deliberately native path takes \
+         `// native-prompt-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every DISPLAY slot of a report that names a path under home folds it to
+/// `~/`, the way the action rows do — the header kv rows (the `Config` row
+/// every run header, `status`, `diff`, `sync`, `daemon status` and `profile
+/// show` open on; the `Source` row `backup run <name>` / `backup restore`
+/// hang above a `restore ~/… from …` subject; every directory `cfgd paths`
+/// lists) AND every table cell or row under them that renders a recorded
+/// path: `status`'s Managed Resources and Drift rows, `status <module>`'s
+/// Deployed Files and Drift rows, `source show` / `source list`'s local
+/// source and its Managed Resources, `backup list`'s `Source` column and
+/// `module show`'s `Directory`; `compliance export`'s Violations and Warnings
+/// rows and `compliance diff`'s Added / Removed / Changed rows, whose subject
+/// is a check key naming the file it checked. `cfgd status` folded its
+/// `Config` row and spelled `/home/tj/.cfgd.env` six lines below it.
+/// `-o json` keeps the absolute path on every one of them.
+#[test]
+#[serial_test::serial]
+fn no_report_slot_spells_the_home_directory_absolutely() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let home_posix = home.path().posix().to_string();
+    let config_path = home.path().join(".config/cfgd/cfgd.yaml");
+    let source = home.path().join("notes");
+    let source_posix = source.posix().to_string();
+
+    let rows = cfgd_core::output::config_header_rows(&cfgd_core::output::ConfigHeader {
+        config_path: Some(&config_path),
+        sources: &[],
+        profile: Some("base"),
+        profile_inherits: &[],
+        modules: &[],
+        arrow: "->",
+    });
+    let ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Restore,
+        config_path: Some(&config_path),
+        profile: Some("base"),
+        sources: &[],
+        modules: &[],
+        profile_inherits: &[],
+        trigger: None,
+        subject: Some("notes"),
+        unit_source: Some(&source_posix),
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cfgd_core::reconciler::ApplyRun::unplanned(ctx, 1).header(&printer);
+    let header = cfgd_core::test_helpers::captured_text(&buf);
+
+    let mut cli = test_cli_with_state(home.path(), Some(home.path().join("state")));
+    cli.config = config_path.clone();
+    let paths = super::paths::collect_paths_output(&cli, &super::paths::DirSources::all_default())
+        .expect("paths collect");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(super::paths::build_paths_doc(&paths));
+    let paths_doc = cfgd_core::test_helpers::captured_text(&buf);
+
+    let mut surfaces = vec![
+        (
+            "config_header_rows",
+            rows.iter()
+                .map(|r| format!("{} {}", r.key, r.value))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ("ApplyRun::header", header),
+        ("cfgd paths", paths_doc),
+    ];
+
+    // Every listing that renders a recorded path, each carrying one under
+    // home, rendered once for the human text and once for its payload.
+    let now = "2026-05-14T12:05:00Z";
+    let under_home = |rel: &str| format!("{home_posix}/{rel}");
+    let drift_event = |id: i64, resource_id: String| cfgd_core::state::DriftEvent {
+        id,
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        resource_type: "file".into(),
+        resource_id,
+        expected: Some("hash-desired".into()),
+        actual: Some("hash-actual".into()),
+        resolved_by: None,
+        source: "local".into(),
+        want: None,
+        have: None,
+    };
+    let fleet = super::status::StatusOutput {
+        last_apply: None,
+        drift: vec![drift_event(10, under_home(".zshrc"))],
+        sources: Vec::new(),
+        pending_decisions: Vec::new(),
+        modules: vec![super::status::ModuleStatusEntry {
+            name: "nvim".into(),
+            packages: 0,
+            files: 6,
+            scripts: 0,
+            status: "installed".into(),
+            platform_skip_reason: None,
+            declared: super::status::ModuleDeclared {
+                file_root: Some(under_home(".config/nvim")),
+                ..Default::default()
+            },
+        }],
+        managed_resources: vec![
+            cfgd_core::state::ManagedResource {
+                resource_type: "env".into(),
+                resource_id: under_home(".cfgd.env"),
+                source: "local".into(),
+                last_hash: None,
+                last_applied: None,
+            },
+            cfgd_core::state::ManagedResource {
+                resource_type: "module".into(),
+                resource_id: "nvim:files:6".into(),
+                source: "local".into(),
+                last_hash: None,
+                last_applied: None,
+            },
+        ],
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
+        last_scan_at: None,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    };
+    let module = super::status::ModuleStatus {
+        name: "nvim".into(),
+        packages: 0,
+        files: 1,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        declared: Default::default(),
+        system: Vec::new(),
+        depends: Vec::new(),
+        status: "installed".into(),
+        last_applied: None,
+        scope: None,
+        package_state: Vec::new(),
+        deployed_files: vec![super::status::ModuleFileStatus {
+            path: under_home(".config/nvim/init.lua"),
+            state: super::status::ModuleFilePresence::Drifted,
+        }],
+        drift: vec![super::status::ModuleDrift {
+            event: drift_event(11, under_home(".config/nvim/init.lua")),
+            owner: "nvim".into(),
+            surface: super::status::SURFACE_FILES,
+            item: under_home(".config/nvim/init.lua"),
+        }],
+        drift_checked_live: true,
+        last_scan_at: None,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
+    };
+    let source_show = super::output_types::SourceShowOutput {
+        name: "team".into(),
+        url: under_home("team-config"),
+        branch: "main".into(),
+        priority: 100,
+        accept_recommended: false,
+        profile: None,
+        sync_interval: "5m".into(),
+        auto_apply: false,
+        pin_version: None,
+        state: None,
+        managed_resources: vec![super::output_types::SourceResourceEntry {
+            resource_type: "file".into(),
+            resource_id: under_home(".zshrc"),
+        }],
+        modules: Vec::new(),
+        policy: None,
+        manifest: None,
+    };
+    let source_list = vec![super::output_types::SourceListEntry {
+        name: "team".into(),
+        url: Some(under_home("team-config")),
+        priority: Some(100),
+        version: None,
+        status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+        last_fetched: None,
+        signed: None,
+        require_signed_commits: None,
+        last_commit: None,
+        drift_count: None,
+    }];
+    let backups = vec![super::output_types::BackupListEntry {
+        name: "notes".into(),
+        source: under_home("notes"),
+        schedule: None,
+        retention: 3,
+        last_run_status: None,
+        last_run_at: None,
+        last_run_clean: None,
+        next_run_at: None,
+        snapshots: None,
+    }];
+    let module_show = super::module::ModuleShowOutput {
+        name: "nvim".into(),
+        metadata: super::module::ModuleShowMetadata { version: None },
+        directory: under_home(".config/cfgd/modules/nvim"),
+        source: "local".into(),
+        depends: Vec::new(),
+        state: None,
+        spec: Default::default(),
+    };
+    // The compliance surfaces name a checked file by its `<category>:<target>`
+    // key, and the export line names the file it wrote.
+    let check =
+        |status: cfgd_core::compliance::ComplianceStatus| cfgd_core::compliance::ComplianceCheck {
+            category: "file".into(),
+            target: Some(under_home("perm-conf")),
+            status,
+            detail: Some("permissions 0o600, expected 0o644".into()),
+            ..Default::default()
+        };
+    let snapshot = |status| cfgd_core::compliance::ComplianceSnapshot {
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        machine: cfgd_core::compliance::MachineInfo {
+            hostname: "host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "base".into(),
+        sources: Vec::new(),
+        checks: vec![check(status)],
+        summary: cfgd_core::compliance::ComplianceSummary {
+            compliant: 0,
+            warning: 1,
+            violation: 0,
+        },
+    };
+    let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
+    let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
+
+    let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
+        (
+            "cfgd compliance snapshot",
+            super::compliance::build_compliance_summary_doc(&after, now, "->"),
+        ),
+        (
+            "cfgd compliance export",
+            super::compliance::build_compliance_export_doc(
+                &after,
+                &std::path::Path::new(&under_home("compliance")).join("snapshot.json"),
+            ),
+        ),
+        (
+            "cfgd compliance diff",
+            super::compliance::build_compliance_diff_doc(
+                1,
+                2,
+                &before,
+                &after,
+                &super::compliance::compute_compliance_diff(&before, &after),
+                "->",
+            ),
+        ),
+        (
+            "cfgd status",
+            super::status::build_fleet_status_doc(
+                &fleet,
+                &cfgd_core::output::ConfigHeader {
+                    config_path: Some(&config_path),
+                    sources: &[],
+                    profile: Some("base"),
+                    profile_inherits: &[],
+                    modules: &[],
+                    arrow: "->",
+                },
+                &[],
+                now,
+                &Default::default(),
+                &Default::default(),
+            ),
+        ),
+        (
+            "cfgd status <module>",
+            super::status::build_module_status_doc(
+                &module,
+                super::status::ModuleStatusView::Compact,
+                now,
+            ),
+        ),
+        (
+            "cfgd status <module> -o wide",
+            super::status::build_module_status_doc(
+                &module,
+                super::status::ModuleStatusView::Inventory { show_values: false },
+                now,
+            ),
+        ),
+        (
+            "cfgd source show",
+            super::source::show::build_source_show_doc(&source_show, None, None, now),
+        ),
+        (
+            "cfgd source list",
+            super::source::list::build_source_list_doc(&source_list, true, now),
+        ),
+        (
+            "cfgd backup list",
+            super::backup::build_backup_list_doc(&backups, now),
+        ),
+        (
+            "cfgd module show",
+            super::module::list_show::build_module_show_doc(
+                &module_show,
+                None,
+                &[],
+                false,
+                "->",
+                now,
+            ),
+        ),
+    ];
+    for (surface, doc) in docs {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        printer.emit(doc);
+        drop(printer);
+        let payload = cap
+            .json()
+            .expect("every listing carries a payload")
+            .to_string();
+        assert!(
+            payload.contains(&home_posix),
+            "{surface}'s `-o json` payload keeps the absolute path:\n{payload}"
+        );
+        surfaces.push((surface, cap.human()));
+    }
+
+    for (surface, text) in surfaces {
+        assert!(
+            !text.contains(&home_posix),
+            "{surface} spells a path under home absolutely where the rows beside it fold it:\n{text}"
+        );
+    }
+    assert!(
+        rows[0].value == "~/.config/cfgd/cfgd.yaml",
+        "the `Config` row folds: {:?}",
+        rows[0].value
+    );
+    assert_eq!(
+        paths.config.file,
+        config_path.posix().to_string(),
+        "the `-o json` payload keeps the absolute path"
+    );
+}
+
+/// Every verb that runs a plan records `managed_resources` rows with no hash,
+/// and settles them through the ONE `refresh_link_deployed_hashes` seam
+/// before it returns — or the daemon's first tick after it backfills the
+/// rows and reports the backfill as deployed files having moved. `init
+/// --apply` skipped the seam `apply` used, which is how a freshly bootstrapped
+/// machine's first idle tick reported a deployed file having changed. A preview
+/// writes no row and needs no refresh; it hatches with
+/// `// no-hash-refresh-ok: <why>` on the `ApplyRun::new` line or the one above.
+#[test]
+fn every_plan_running_verb_settles_its_link_deployed_hashes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut sources = Vec::new();
+    let mut pending = vec![root];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_none_or(|n| n != "tests.rs")
+                && !path.components().any(|c| c.as_os_str() == "tests")
+            {
+                sources.push(path);
+            }
+        }
+    }
+    // The daemon's own applying tick is the third apply path; it holds its
+    // file manager apart from the registry, so it reaches the core seam
+    // directly rather than through the CLI helper.
+    sources.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cfgd-core/src/daemon/reconcile.rs"),
+    );
+    let mut seen = 0usize;
+    let mut unsettled = Vec::new();
+    for path in sources {
+        let body = production_body(&std::fs::read_to_string(&path).unwrap());
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("ApplyRun::new(") {
+                continue;
+            }
+            // The title is on this line's context: a `RunTitle::Plan` run or
+            // a `.preview_only()` run executes nothing and records nothing.
+            let statement: String = lines[n..(n + 12).min(lines.len())].join("\n");
+            let statement = statement.split(';').next().unwrap_or("");
+            if statement.contains("RunTitle::Plan") || statement.contains(".preview_only()") {
+                continue;
+            }
+            let hatched = lines[n.saturating_sub(1)..=n]
+                .iter()
+                .any(|l| l.contains("// no-hash-refresh-ok:"));
+            if hatched {
+                continue;
+            }
+            seen += 1;
+            let rest = lines[n..].join("\n");
+            if !rest.contains("refresh_link_deployed_hashes(") {
+                unsettled.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        seen == 4,
+        "the walk no longer reaches exactly the apply paths (apply, init --apply, module \
+         create --apply, the daemon tick) — it found {seen}"
+    );
+    assert!(
+        unsettled.is_empty(),
+        "a verb that runs a plan must settle its link-deployed hashes through \
+         `refresh_link_deployed_hashes` before it returns:\n{}",
+        unsettled.join("\n")
+    );
+}
+
+/// Every spawn of a manager binary under `packages/` hands the child the PATH
+/// directories this run bootstrapped: through `pkg_run` / `run_pkg_cmd*` /
+/// `run_pkg_query`, or by calling `hand_child_bootstrapped_path` itself before
+/// it spawns. A spawn that is not a manager's (`stat`, `useradd`) says why with
+/// `// own-path-ok:` on the line or the line above. Fifteen `available_version`
+/// arms and two version probes spawned bare, so a brew this run had just
+/// bootstrapped answered `is_available` and then priced nothing.
+#[test]
+fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages_dir);
+    files.sort();
+    let spawns = [
+        ".output()",
+        ".status()",
+        ".spawn()",
+        "command_output_with_timeout(",
+    ];
+    let is_fn_head = |line: &str| {
+        let t = line.trim_start();
+        t.starts_with("fn ")
+            || t.starts_with("pub fn ")
+            || t.starts_with("pub(") && t.contains(" fn ")
+    };
+    let mut offenders = Vec::new();
+    for path in files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let body = std::fs::read_to_string(&path).unwrap();
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !spawns.iter().any(|s| line.contains(s)) {
+                continue;
+            }
+            let head = (0..n).rev().find(|&i| is_fn_head(lines[i])).unwrap_or(0);
+            let handed = lines[head..n]
+                .iter()
+                .any(|l| l.contains("hand_child_bootstrapped_path("));
+            if handed || label_hatched(&lines, n, "// own-path-ok:") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a manager binary spawned without the bootstrapped dirs (route it through \
+         run_pkg_query / pkg_run, call hand_child_bootstrapped_path first, or say why \
+         with `// own-path-ok:`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The helpers that pick a bootstrap's arm, honoring the method the plan named.
+const ARM_SELECTING_HELPERS: &[&str] = &[
+    "bootstrap_brew_arm(",
+    "bootstrap_via_brew_then_system(",
+    "bootstrap_via_system_manager(",
+];
+
+/// Whether a routed `fn bootstrap` body runs an arm of its OWN past the last
+/// arm the shared helpers select, without reading `planned_method`.
+///
+/// Inverted rather than enumerated. A spawn-wrapper allowlist answers for the
+/// wrappers that existed when it was written and silently passes the next one:
+/// naming `pkg_run` / `run_pkg_cmd_live` alone left `run_pkg_cmd`,
+/// `run_pkg_cmd_msg`, `run_pkg_query` and a raw `Command` — six real call
+/// sites in this very directory — free to add a second arm the plan never
+/// chose. So anything past the last helper call that is not a closer or an
+/// `Ok(())` counts as an arm this body decided by itself, and a new shape
+/// fails the walk rather than slipping through it.
+///
+/// Anchored on the LAST helper call rather than the first: scanning from the
+/// first would count a later helper call's own multi-line argument list as
+/// body statements and false-positive on npm and pipx, whose helper calls
+/// span several lines, so an own arm sandwiched between two helper calls
+/// would go unseen — no manager has that shape today.
+fn bootstrap_own_arm_is_unguarded(body: &[&str]) -> bool {
+    let Some(last) = (0..body.len())
+        .rev()
+        .find(|&i| ARM_SELECTING_HELPERS.iter().any(|h| body[i].contains(h)))
+    else {
+        return false;
+    };
+    if body.iter().any(|l| l.contains("planned_method")) {
+        return false;
+    }
+    body[last + 1..].iter().any(|line| {
+        let t = line.trim();
+        !(t.is_empty()
+            || t.starts_with("//")
+            || t == "Ok(())"
+            || t == "return Ok(());"
+            || t.chars()
+                .all(|c| matches!(c, '}' | ')' | ']' | ';' | '?' | ',' | '{')))
+    })
+}
+
+/// The inversion above, driven negatively: the hand-rolled second arm every
+/// spawn wrapper can spell is caught whichever wrapper spells it, and a body
+/// that ends on its helper — or reads `planned_method` in its own arm — is not.
+#[test]
+fn the_bootstrap_arm_walk_catches_an_own_arm_through_any_spawn_wrapper() {
+    let two_arm = |spawn: &str| {
+        vec![
+            "    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {".to_string(),
+            "        if bootstrap_brew_arm(cx, \"probe\", \"probe\")? {".to_string(),
+            "            return Ok(());".to_string(),
+            "        }".to_string(),
+            format!(
+                "        {spawn}(\"probe\", Command::new(\"curl\").arg(\"probe.sh\"), \"install\")?;"
+            ),
+            "        Ok(())".to_string(),
+        ]
+    };
+    for spawn in [
+        "pkg_run",
+        "run_pkg_cmd",
+        "run_pkg_cmd_msg",
+        "run_pkg_query",
+        "run_pkg_cmd_live",
+    ] {
+        let owned = two_arm(spawn);
+        let lines: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert!(
+            bootstrap_own_arm_is_unguarded(&lines),
+            "a second arm spelled with `{spawn}` is an arm the plan never chose"
+        );
+    }
+
+    // The same body, reading the method the plan named: its own arm now
+    // honours it, which is npm's nvm arm and pipx's pip arm.
+    let mut guarded = two_arm("run_pkg_cmd");
+    guarded.insert(4, "        let planned = cx.planned_method();".to_string());
+    let lines: Vec<&str> = guarded.iter().map(String::as_str).collect();
+    assert!(
+        !bootstrap_own_arm_is_unguarded(&lines),
+        "a body consulting `planned_method` decides no arm by itself"
+    );
+
+    // A body that ends on its helper — go's shape — has no tail at all.
+    let lines = [
+        "    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {",
+        "        if bootstrap_brew_arm(cx, \"go\", \"go\")? {",
+        "            return Ok(());",
+        "        }",
+        "",
+        "        bootstrap_via_system_manager(cx, \"golang\", \"go\")",
+    ];
+    assert!(
+        !bootstrap_own_arm_is_unguarded(&lines),
+        "a body whose last statement IS an arm helper adds nothing of its own"
+    );
+}
+
+/// A cascade's PLANNED `via` is binding: the plan elides a module entry
+/// naming a package a provision delivers, and the pair it records is read off
+/// the planned route, so a bootstrap that quietly substituted another arm
+/// would credit the run with a package no route installed and leave the
+/// elided entry delivered by nothing.
+///
+/// The arm-selecting helpers hold that contract — they run the arm the plan
+/// named and fail (`planned_method_unavailable` / `planned_method_failed`)
+/// rather than falling through. So every `fn bootstrap` under `packages/`
+/// either routes through one of them, or says with `// bootstrap-arm-ok:`
+/// that it has a single arm and nothing to diverge to; and a body that adds
+/// an arm of its OWN past the helper (npm's nvm, pipx's pip) consults
+/// `planned_method` itself.
+#[test]
+fn every_multi_arm_bootstrap_honours_the_planned_method() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut files = walk_rust_files(&packages_dir);
+    files.sort();
+    let arm_helpers = ARM_SELECTING_HELPERS;
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for path in files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let production = production_body(&std::fs::read_to_string(&path).unwrap());
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start() != "fn bootstrap(" && !line.contains(" fn bootstrap(&self") {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len());
+            let body = &lines[n..end];
+            seen += 1;
+            if !arm_helpers
+                .iter()
+                .any(|h| body.iter().any(|l| l.contains(h)))
+            {
+                if !label_hatched(&lines, n, "// bootstrap-arm-ok:") {
+                    offenders.push(format!(
+                        "{}:{}: no arm helper and no `// bootstrap-arm-ok:` reason",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+                continue;
+            }
+            if bootstrap_own_arm_is_unguarded(body) {
+                offenders.push(format!(
+                    "{}:{}: an arm of its own past the helper, without consulting \
+                     `planned_method`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        seen >= 10,
+        "the walk no longer reaches the managers' bootstraps — it found {seen}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a bootstrap must honour the method the plan named — route it through \
+         bootstrap_brew_arm / bootstrap_via_brew_then_system / \
+         bootstrap_via_system_manager, consult `planned_method` in an arm of its own, \
+         or say why one arm is all it has with `// bootstrap-arm-ok:`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A docs pointer is a repo-relative path (`docs/spec/module.md#fields`) —
+/// something no terminal auto-links and no reader can paste into a browser.
+/// `ResourceSchema::docs_url` is the ONE derivation that turns it into the
+/// release-pinned GitHub URL, and `KvPair::linked` the ONE slot that renders
+/// it: the short path where the terminal opens an OSC 8 hyperlink, the URL
+/// itself everywhere else.
+///
+/// Both halves are walked, because either alone leaves the other open. A
+/// second `Docs` row built with the plain kv shapes would print the bare path
+/// again; and a pointer rendered under a DIFFERENT key (`Documentation`, a
+/// table column, a hint) would never be seen by a pin that keys on the word
+/// `Docs`. So every `"docs/…"` literal in the crate's production sources is
+/// judged too: it either DECLARES the pointer (a `docs:` field, whose reader
+/// is `docs_url`) or carries `// docs-pointer-ok: <why>`.
+#[test]
+fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut linked = 0usize;
+    let mut rows = Vec::new();
+    let mut pointers = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let at = format!("{}:{}: {}", path.display(), n + 1, code);
+            if code.contains("\"Docs\"") {
+                if code.contains("KvPair::linked(\"Docs\"") {
+                    linked += 1;
+                } else {
+                    rows.push(at.clone());
+                }
+            }
+            // A `docs/` segment inside an absolute URL is already a complete,
+            // clickable reference (a vendor's own documentation), not a
+            // repo-relative pointer this rule is about.
+            if !code.contains("docs/") || code.contains("://") {
+                continue;
+            }
+            // A `docs:` field DECLARES the pointer; `ResourceSchema::docs_url`
+            // is its only reader, and the row pin above covers the render.
+            let declares = code.starts_with("docs:");
+            let hatched = code.contains("// docs-pointer-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// docs-pointer-ok:"));
+            if !declares && !hatched {
+                pointers.push(at);
+            }
+        }
+    }
+    assert!(
+        rows.is_empty(),
+        "a `Docs` row carries the URL `ResourceSchema::docs_url` derives, through \
+         `KvPair::linked` — never the bare repo-relative path a reader cannot open:\n{}",
+        rows.join("\n")
+    );
+    assert_eq!(
+        linked, 1,
+        "a `Docs` row (a kind page's or a field drilldown's) renders through the one \
+         `KvPair::linked` composer; found {linked} call sites"
+    );
+    assert!(
+        pointers.is_empty(),
+        "a repo-relative docs pointer reaches a reader only through \
+         `ResourceSchema::docs_url`; declare it as a `docs:` field or say why with \
+         `// docs-pointer-ok: <why>`:\n{}",
+        pointers.join("\n")
+    );
+}
+
+// -----------------------------------------------------------------------
+// One live-drift engine — erroring checks on every surface
+// -----------------------------------------------------------------------
+
+/// A profile whose only system demand is a gpg key, so pointing
+/// `CFGD_GPG_BIN` at a failing shim makes the gpgKeys probe itself error.
+const GPG_CHECK_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gpgKeys:
+      - name: sig
+        realName: Test User
+        email: sig@example.com
+"#;
+
+/// `status --scan` shares `diff`'s engine, and the engine used to drop an
+/// erroring configurator silently — the scan rendered "No drift detected"
+/// over a machine whose check never ran. The error is its own row, worded
+/// as `diff` words it.
+#[test]
+#[serial_test::serial]
+fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+    let h = CliTestHarness::builder()
+        .profile("default", GPG_CHECK_PROFILE_YAML)
+        .build();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    h.assert_output_contains("gpgKeys");
+    h.assert_output_contains("error checking drift");
+}
+
+/// The same failed check must reach a `-o json` consumer: an empty `drift`
+/// array beside no error entry is indistinguishable from a clean scan.
+#[test]
+#[serial_test::serial]
+fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+    let h = CliTestHarness::builder()
+        .json()
+        .profile("default", GPG_CHECK_PROFILE_YAML)
+        .build();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    let parsed = h.json_output();
+    let errors = parsed
+        .get("systemErrors")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("scan payload carries systemErrors, got: {parsed}"));
+    assert_eq!(errors.len(), 1, "one failed probe, one entry: {errors:?}");
+    assert_eq!(errors[0]["key"], "gpgKeys");
+}
+
+/// `diff` and `status --scan` answer the drift question through the one
+/// engine, so the same machine yields the same recorded finding set through
+/// either surface — including when one check errors: both report it, and
+/// neither records it as drift.
+#[test]
+#[serial_test::serial]
+fn diff_and_scan_agree_on_the_findings() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_GPG_BIN",
+        1,
+        "",
+        "gpg: keyring unavailable",
+    );
+
+    // ONE machine (one tampered target, one failing check), visited by both
+    // surfaces — only the state dir is fresh per run, so the recorded row
+    // sets are comparable id-for-id.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("deployed.txt");
+    std::fs::write(&target, "tampered\n").unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  system:\n    gpgKeys:\n      - name: sig\n        realName: Test User\n        email: sig@example.com\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
+        target.display(),
+    );
+
+    let drift_rows = |run: &dyn Fn(&CliTestHarness)| {
+        let h = CliTestHarness::builder()
+            .profile("default", &profile)
+            .build();
+        let files_dir = h.config_path().join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        std::fs::write(files_dir.join("managed.txt"), "desired\n").unwrap();
+        run(&h);
+        let state = cfgd_core::state::StateStore::open_in_dir(h.state_path()).unwrap();
+        let mut rows: Vec<(String, String)> = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect();
+        rows.sort();
+        (rows, h.output())
+    };
+
+    let (diff_rows, diff_out) = drift_rows(&|h: &CliTestHarness| {
+        super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
+    });
+    let (scan_rows, scan_out) = drift_rows(&|h: &CliTestHarness| {
+        super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
+    });
+
+    assert!(
+        !diff_rows.is_empty(),
+        "the fixture's tampered file is a finding: {diff_out}"
+    );
+    assert_eq!(
+        diff_rows, scan_rows,
+        "one engine, one finding set — diff recorded {diff_rows:?}, scan recorded {scan_rows:?}"
+    );
+    assert!(
+        !diff_rows.iter().any(|(t, _)| t == "system"),
+        "an errored probe is not drift on either surface: {diff_rows:?}"
+    );
+    for (surface, out) in [("diff", &diff_out), ("status --scan", &scan_out)] {
+        assert!(
+            out.contains("error checking drift"),
+            "{surface} reports the failed check, got: {out}"
+        );
+    }
+}
+
+/// The erroring-check contract quantifies over SURFACES: every command that
+/// takes `--exit-code` renders a check that could not run as its own row
+/// (`<key>: error checking drift — <detail>`) and exits `Error` (1) ahead of
+/// `DriftDetected` (5) — an unanswered check is "unknown", never "clean".
+/// This walk reads the population off the real clap definitions, so a NEW
+/// `--exit-code` surface fails here until it joins
+/// `tests/drift_exit_code.rs`'s three-cell matrix (error-only, drift-only,
+/// error-beside-drift) and `docs/cli-reference.md`'s exit-code table.
+#[test]
+fn every_exit_code_surface_reports_an_erroring_check() {
+    use clap::CommandFactory;
+
+    fn collect(cmd: &clap::Command, path: &str, out: &mut Vec<(String, bool)>) {
+        for sub in cmd.get_subcommands() {
+            let sub_path = if path.is_empty() {
+                sub.get_name().to_string()
+            } else {
+                format!("{path} {}", sub.get_name())
+            };
+            if sub
+                .get_arguments()
+                .any(|a| a.get_long() == Some("exit-code"))
+            {
+                let scoped = sub.get_arguments().any(|a| a.get_long() == Some("module"));
+                out.push((sub_path.clone(), scoped));
+            }
+            collect(sub, &sub_path, out);
+        }
+    }
+
+    let cmd = Cli::command();
+    let mut surfaces = Vec::new();
+    collect(&cmd, "", &mut surfaces);
+    surfaces.sort();
+    assert_eq!(
+        surfaces,
+        [
+            ("diff".into(), true),
+            ("status".into(), true),
+            ("verify".into(), true)
+        ],
+        "a new --exit-code surface must report an erroring check as its own \
+         row and exit Error ahead of DriftDetected; cover it in \
+         tests/drift_exit_code.rs and docs/cli-reference.md's exit-code \
+         table, then add it here"
+    );
+
+    // A surface carrying both `--exit-code` and `--module` is TWO surfaces:
+    // the flag-scoped variant runs a different (module-chain) walk with its
+    // own erroring check, and the clap tree cannot show it as a subcommand —
+    // so the weld to the matrix is by spelling. `status --module` and
+    // `diff --module` each hold a cell in `SCOPED_EXIT_CODE_SURFACES`;
+    // `verify --module` deliberately evaluates no env half (a scoped run's
+    // composition is module-only config — `cli/verify.rs`), so it has no
+    // erroring-check cell to hold.
+    //
+    // The spellings are DERIVED from the walked population rather than listed
+    // beside it, so a new surface cannot be added to the clap tree and to the
+    // assertion above while the matrix files stay as they were.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let matrix = std::fs::read_to_string(root.join("tests/drift_exit_code.rs")).unwrap();
+    // `status` reads the store by default, so its live cell arms `--scan`.
+    let scan = |name: &str| {
+        if name == "status" {
+            r#", "--scan""#
+        } else {
+            ""
+        }
+    };
+    let mut spellings = Vec::new();
+    for (name, scoped) in &surfaces {
+        spellings.push(format!(r#"&["{name}"{}, "--exit-code"]"#, scan(name)));
+        if *scoped {
+            spellings.push(format!(
+                r#"&["{name}", "--module", "envmod"{}, "--exit-code"]"#,
+                scan(name)
+            ));
+        }
+    }
+    // `verify --module` deliberately evaluates no env half, so it holds no
+    // erroring-check cell; the STANDING-row cell it does hold is the same
+    // spelling, which is why the derived list still names it.
+    for spelling in &spellings {
+        assert!(
+            matrix.contains(spelling.as_str()),
+            "tests/drift_exit_code.rs no longer holds the `{spelling}` cell — \
+             every --exit-code surface, flag-scoped variants included, keeps \
+             its erroring-check and standing-row matrix rows"
+        );
+    }
+
+    // The weld runs BOTH ways. `contains` catches a surface the clap tree
+    // grew and the matrix never learned; only set-equality catches the
+    // reverse — a cell naming a surface that no longer exists, or never did,
+    // which passes every run while testing nothing.
+    let mut declared: Vec<String> = matrix
+        .split_once("const SURFACES:")
+        .and_then(|(_, rest)| rest.split_once("= ["))
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(block, _)| block)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("&["))
+        .map(|l| l.trim_end_matches(',').to_string())
+        .collect();
+    declared.sort();
+    let mut scoped: Vec<String> = spellings
+        .iter()
+        .filter(|s| s.contains("--module"))
+        .cloned()
+        .collect();
+    scoped.sort();
+    assert_eq!(
+        declared, scoped,
+        "tests/drift_exit_code.rs's scoped SURFACES list is exactly the \
+         flag-scoped population the clap walk found — an entry naming no \
+         surface runs no check"
+    );
+}
+
+/// The device gateway is fed by ONE producer — `cfgd checkin`, whose payload is
+/// `compliance::system_drifts(collect_system_diffs(..))`. That walk asks the
+/// available system CONFIGURATORS and nothing else: no package, file, env or
+/// alias finding has ever reached a fleet surface. Every reader-facing string on
+/// that path therefore names the class it carries, or the fleet reads a
+/// system-settings report as a whole-machine verdict and calls a device with
+/// drifted packages healthy.
+///
+/// A candidate is a quoted literal in which the word `drift` sits next to
+/// another word — prose a person reads, as opposed to the wire values
+/// (`"drift"`, `"drifted"`), ids (`"drift-section"`) and CSS class lists the
+/// same files carry. A candidate names `system setting`, or carries
+/// `// fleet-drift-ok: <why>` on its line or the line above.
+#[test]
+fn every_fleet_drift_surface_names_the_system_settings_class() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let files = [
+        "crates/cfgd/src/cli/checkin.rs",
+        "crates/cfgd-core/src/server_client/mod.rs",
+        "crates/cfgd-operator/src/gateway/api/fleet.rs",
+        "crates/cfgd-operator/src/gateway/api/drift.rs",
+        "crates/cfgd-operator/src/gateway/web/mod.rs",
+        "crates/cfgd-operator/src/controllers/drift_alert.rs",
+        "crates/cfgd-operator/src/controllers/machine_config.rs",
+        "crates/cfgd-operator/src/controllers/mod.rs",
+    ];
+
+    for rel in files {
+        let path = root.join(rel);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        let mut checked = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains('"') {
+                continue;
+            }
+            let lowered = line.to_ascii_lowercase();
+            // A word is a run of identifier characters, so `drift-section`,
+            // `driftCount` and `drift_status` are single tokens that never read
+            // as the English word — only a bare `drift`/`drifted`/`drifts` does,
+            // and only when it touches a space rather than a quote or a tag.
+            let word_char = |c: u8| (c as char).is_ascii_alphanumeric() || c == b'_' || c == b'-';
+            let bytes = lowered.as_bytes();
+            let mut prose = false;
+            let mut start = 0usize;
+            while start < bytes.len() {
+                if !word_char(bytes[start]) {
+                    start += 1;
+                    continue;
+                }
+                let mut end = start;
+                while end < bytes.len() && word_char(bytes[end]) {
+                    end += 1;
+                }
+                // A CSS class list (`class="stat-card drifted"`) touches a space
+                // and is still not prose — and, sitting inside a raw HTML block,
+                // it could not carry a Rust hatch comment anyway.
+                let in_class_attr = lowered[..start].rfind("=\"").is_some_and(|eq| {
+                    !lowered[eq + 2..start].contains('"') && lowered[..eq].ends_with("class")
+                });
+                // Running text: the word sits beside another WORD, not beside a
+                // tag, an operator or a quote. `>Drift Events (` is prose;
+                // `DeviceStatus::Drifted => "drifted"` and `<div>Drifted</div>`
+                // are not.
+                let in_running_text = lowered[..start]
+                    .strip_suffix(' ')
+                    .is_some_and(|s| s.ends_with(|c: char| c.is_ascii_alphabetic()))
+                    || lowered[end..]
+                        .strip_prefix(' ')
+                        .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_alphabetic()));
+                if matches!(&lowered[start..end], "drift" | "drifted" | "drifts")
+                    && in_running_text
+                    && !in_class_attr
+                {
+                    prose = true;
+                    break;
+                }
+                start = end;
+            }
+            if !prose {
+                continue;
+            }
+            checked += 1;
+            let hatched = |s: &str| s.contains("fleet-drift-ok:");
+            if lowered.contains("system setting") || hatched(line) || n > 0 && hatched(lines[n - 1])
+            {
+                continue;
+            }
+            panic!(
+                "{rel}:{} names drift to a reader without naming the class the \
+                 gateway actually carries — the checkin payload is system-\
+                 configurator drift only, so say `system settings` or hatch the \
+                 line with `// fleet-drift-ok: <why>`:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        // Per FILE, because a whole-walk floor cannot tell a file that stopped
+        // saying `drift` from a file the production cut stopped reaching.
+        assert!(
+            checked > 0,
+            "{rel} contributed no reader-facing drift string to the fleet walk — \
+             either the candidate scan stopped matching or the file's production \
+             region is being cut short of the strings it renders"
+        );
+    }
+}
+
+/// A fleet drift row's `field` is composed once and read verbatim thereafter.
+///
+/// The device mints it through `reconciler::system_resource_key`, the ONE
+/// composer of a `<configurator>.<key>` identity, and the gateway's DriftAlert
+/// builder copies the value it was handed. A second `format!` mints a spelling
+/// the CRD's `x-kubernetes-list-map-keys: [field]` merge cannot reconcile with
+/// the first, and a hand-rolled split re-derives a configurator name the
+/// composer never promised to make recoverable.
+///
+/// The web dashboard is the one READER walked, because it is the only surface
+/// that names an individual `field` back out: the ingest handler serializes the
+/// whole detail list, the database stores that string in one column, and the
+/// DriftAlert controller reads a count. A hop that never names the value cannot
+/// mis-spell it, and putting it in the walk would only add a file with nothing
+/// to check.
+#[test]
+fn every_fleet_drift_field_comes_from_the_one_composer() {
+    // Each mint file's `field:` constructions: the device's mint, and the
+    // gateway's copy into the CRD object.
+    const MINTS: [(&str, usize); 2] = [
+        ("crates/cfgd-core/src/server_client/mod.rs", 1),
+        ("crates/cfgd-operator/src/gateway/api/drift.rs", 1),
+    ];
+    const READERS: [&str; 1] = ["crates/cfgd-operator/src/gateway/web/mod.rs"];
+    const HAND_PARSERS: [&str; 5] = ["split(", "splitn(", "rsplit", "strip_prefix(", "find('.')"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for rel in MINTS.iter().map(|(f, _)| *f).chain(READERS) {
+        let path = root.join(rel);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        let mut checked = 0usize;
+        let mut built = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains("field") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                !HAND_PARSERS.iter().any(|p| line.contains(p)),
+                "{rel}:{}: a drift row's `field` is read whole, never taken \
+                 apart — the configurator half is the composer's to write and \
+                 nobody's to re-derive:\n  {}",
+                n + 1,
+                line.trim()
+            );
+            // A struct's own declaration names a TYPE where a construction
+            // names a value, and it is the only `field:` line that does.
+            let named = line.trim_start().trim_start_matches("pub ");
+            if !line.contains("field:") || named.starts_with("field: String") {
+                continue;
+            }
+            built += 1;
+            // rustfmt wraps a long value onto the lines below its `field:`, so
+            // the composer is looked for over the whole construction.
+            let hi = (n + 6).min(lines.len());
+            assert!(
+                lines[n..hi]
+                    .iter()
+                    .any(|l| l.contains("system_resource_key(") || l.contains(".field")),
+                "{rel}:{}: a drift row's `field` is either composed through \
+                 `reconciler::system_resource_key` or copied verbatim from the \
+                 row upstream:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        // Per FILE, because a whole-walk floor cannot tell a file that stopped
+        // naming `field` from a file the production cut stopped reaching.
+        assert!(
+            checked > 0,
+            "{rel} contributed no `field` line to the fleet walk — either the \
+             surface stopped naming the value or the file's production region \
+             is being cut short of the lines that do"
+        );
+        if let Some((_, expected)) = MINTS.iter().find(|(f, _)| *f == rel) {
+            assert_eq!(
+                built, *expected,
+                "{rel} builds {built} drift rows, not {expected} — a new one \
+                 means a second spelling of the fleet's row identity until it \
+                 is reviewed"
+            );
+        }
+    }
+}
+
+/// Every `<configurator>.<key>` identity cfgd-core composes comes from
+/// `reconciler::system_resource_key`.
+///
+/// The crate that OWNS the composer is the one that kept hand-rolling it: a
+/// `format!("{}.{}", sc.name(), drift.key)` in the verify walk was string-
+/// matched against composer-minted rows, and the apply path spelled
+/// `system:{}.{}` where the canonical id is `system:` wrapped around the
+/// composer's output. Either drifts silently — the strings agree today and
+/// diverge the moment the composer's shape moves — which is what the debug
+/// assertion inside the composer exists to catch and a hand-rolled `format!`
+/// walks straight past.
+#[test]
+fn every_core_composed_system_identity_comes_from_the_one_composer() {
+    const HATCH: &str = "composed-id-ok:";
+    // The composed shape in either spelling rustfmt may leave it in.
+    const HAND_COMPOSED: [&str; 2] = ["{}.{}", "{configurator}.{key}"];
+    // The same identity joined the OTHER way, which is how the daemon's tick
+    // spelled it for six migrations' worth of stored rows. A colon join is a
+    // legal composition for half the ids in this directory, so the shape alone
+    // cannot condemn a line — it is an offender only where the arguments are a
+    // configurator and its key.
+    const COLON_COMPOSED: [&str; 2] = ["{}:{}", "{configurator}:{key}"];
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/reconciler")
+        .canonicalize()
+        .expect("cfgd-core reconciler directory");
+    let mut offenders = Vec::new();
+    let mut composed = 0usize;
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&dir);
+    files.sort();
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = cfgd_core::test_helpers::production_slice(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("system_resource_key(") {
+                composed += 1;
+            }
+            let window = lines[i.saturating_sub(2)..(i + 3).min(lines.len())].join(" ");
+            let hand_composed = HAND_COMPOSED.iter().any(|s| line.contains(s))
+                || (COLON_COMPOSED.iter().any(|s| line.contains(s))
+                    && window.contains("configurator"));
+            if line.trim_start().starts_with("//")
+                || !hand_composed
+                || line.contains(HATCH)
+                || (i > 0 && lines[i - 1].contains(HATCH))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `<configurator>.<key>` identity is composed by \
+         `reconciler::system_resource_key`, never spelled by hand (or carries \
+         `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        composed >= 4,
+        "the reconciler composes {composed} system identities through the one \
+         composer, fewer than the four known call sites — a lost call means a \
+         site that went back to spelling the identity itself"
+    );
+}
+
+/// `doctor` probes tooling and environment prerequisites: is `git` on PATH, is
+/// the state store writable, do the declared managers exist, do the declared
+/// packages resolve. It checks no file, env var, alias or system setting against
+/// its declared value, records nothing and heals nothing — so its frame may not
+/// borrow the register `status` and `diff` earn with those checks. The collision
+/// this pin was written for is literal: `diff` renders a `System` section
+/// holding system-configurator drift, and `doctor` rendered a `System` section
+/// holding its own state store and profiles directory.
+#[test]
+fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
+    let body = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
+    )
+    .expect("doctor.rs unreadable");
+    // The words `status`/`diff` spend on a resource they CHECKED, plus the
+    // section name `diff` reserves for configurator drift.
+    const RESERVED: &[&str] = &[
+        "system",
+        "drift",
+        "drifted",
+        "synced",
+        "in sync",
+        "up to date",
+        "managed resources",
+    ];
+
+    // Flattened, because rustfmt wraps a long `.section_if_nonempty(` onto the
+    // line below its opener and a line-scoped scan reads right past it.
+    let production = cfgd_core::test_helpers::production_slice(&body);
+    let flat = production
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .flat_map(|l| l.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut names: Vec<String> = Vec::new();
+    for opener in [
+        ".section( \"",
+        ".section_if_nonempty( \"",
+        ".heading( \"",
+        ".section(\"",
+        ".section_if_nonempty(\"",
+        ".heading(\"",
+        // The closing verdict is the same claim in one line: a doctor that
+        // "passed every check" must not sound like a machine proven in sync.
+        ".status(Role::Ok, \"",
+        ".status(Role::Fail, \"",
+        ".status_with(Role::Ok, \"",
+        ".status_with(Role::Fail, \"",
+    ] {
+        let mut from = 0usize;
+        while let Some(at) = flat[from..].find(opener) {
+            let start = from + at + opener.len();
+            let Some(end) = flat[start..].find('"') else {
+                break;
+            };
+            names.push(flat[start..start + end].to_string());
+            from = start + end;
+        }
+    }
+    for expected in ["Config", "Package Managers", "Passed every check"] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "the doctor walk lost sight of `{expected}` — the scan stopped \
+             matching rather than doctor stopping saying it: {names:?}"
+        );
+    }
+
+    for name in &names {
+        let lowered = name.to_ascii_lowercase();
+        assert!(
+            !RESERVED.iter().any(|r| lowered == *r),
+            "doctor's `{name}` section or verdict borrows the managed-resource \
+             vocabulary `status`/`diff` earn by checking a declared resource \
+             against the machine — doctor checks prerequisites, so name what it \
+             examines"
+        );
+    }
+}
+
+/// `diff`, `verify` and `status` each ask "does this run stand on any drift"
+/// twice — once to word their verdict, once to price `--exit-code` — and a
+/// category folded into one hand-written boolean chain but not the other
+/// silently diverges. So each verb COMPOSES its predicate exactly once, on
+/// the type both readers hold: `DiffSummary::any_drift` is the one OR-chain
+/// over the five summary flags, `VerifyOutput::any_drift` the one
+/// `fail_count > 0 || standing` fold, and each `status` surface passes its
+/// machine-wide `(drift, system_errors)` pair to `DriftVerdict::from_checks`
+/// at one site — `ModuleStatus::drift_verdict` for the module report (its
+/// `Status` word and exit gate both call it), the exit gate of `cmd_status`
+/// for the fleet (whose only machine-wide reader it is; the per-owner
+/// Component Health verdicts are a different fact).
+///
+/// The walk is a CLASS walk, not a count of three spellings: any boolean
+/// chain in those three files naming two or more drift facts is located, its
+/// enclosing `fn` found by brace depth, and a chain outside one of the named
+/// composers is a hit. A count pinned the chains that exist today — a second
+/// predicate spelled differently passed it, and renaming a field failed it
+/// for nothing.
+#[test]
+fn every_verb_composes_its_drift_predicate_once() {
+    // The facts a "does this run stand on any drift" question is built out
+    // of; two of them in one boolean chain IS the composition.
+    const FACTS: [&str; 7] = [
+        "has_file_drift",
+        "fail_count",
+        "standing",
+        "check_errors",
+        "drift.is_empty",
+        "system_errors",
+        "drifted",
+    ];
+    // Where such a chain is allowed to live: each verb's own composer, and
+    // the shared ranking both status surfaces hand their pair to.
+    const COMPOSERS: [&str; 4] = ["any_drift", "check_failed", "drift_verdict", "from_checks"];
+    const HATCH: &str = "drift-chain-ok:";
+    const FLOOR_CHAINS: usize = 3;
+
+    /// Every `fn` in a production body as `(name, first line, last line)`,
+    /// innermost last, by brace depth from its own declaration line.
+    fn fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
+        let mut spans = Vec::new();
+        let mut open: Vec<(String, usize, i32, bool)> = Vec::new();
+        let mut depth: i32 = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap_or(line);
+            if let Some(at) = code.find("fn ") {
+                let rest = &code[at + 3..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                if end > 0 && rest[end..].starts_with(['(', '<']) {
+                    open.push((rest[..end].to_string(), i, depth, false));
+                }
+            }
+            depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+            if let Some(last) = open.last_mut()
+                && !last.3
+                && depth > last.2
+            {
+                last.3 = true;
+            }
+            while let Some((_, _, d, entered)) = open.last() {
+                if *entered && depth <= *d {
+                    let (name, from, _, _) = open.pop().unwrap_or_else(|| unreachable!());
+                    spans.push((name, from, i));
+                } else {
+                    break;
+                }
+            }
+        }
+        spans
+    }
+
+    let sources: std::collections::BTreeMap<String, String> = cli_production_sources()
+        .into_iter()
+        .filter_map(|(path, body)| Some((path.file_name()?.to_str()?.to_string(), body)))
+        .collect();
+
+    let mut offenders = Vec::new();
+    let mut chains = 0usize;
+    for name in ["diff.rs", "verify.rs", "status.rs"] {
+        let body = sources
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} is not among the CLI's production sources"));
+        let lines: Vec<&str> = body.lines().collect();
+        let spans = fn_spans(&lines);
+        let mut last_hit: Option<usize> = None;
+        let code = |l: &str| l.split("//").next().unwrap_or(l).to_string();
+        for i in 0..lines.len() {
+            // The chain's own first line, so a hatch above it is the hatch of
+            // the thing it names; comments are cut, or a rustdoc paragraph
+            // naming two facts reads as a chain.
+            if !FACTS.iter().any(|f| code(lines[i]).contains(f)) {
+                continue;
+            }
+            // Three physical lines, because rustfmt breaks a chain across
+            // them and each half alone names one fact.
+            let window = lines[i..(i + 3).min(lines.len())]
+                .iter()
+                .map(|l| code(l))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !window.contains("||") && !window.contains("&&") {
+                continue;
+            }
+            let named = FACTS.iter().filter(|f| window.contains(**f)).count();
+            if named < 2 {
+                continue;
+            }
+            // One chain, not one per line of it.
+            if last_hit.is_some_and(|prev| i <= prev + 2) {
+                continue;
+            }
+            last_hit = Some(i);
+            chains += 1;
+            if lines[i.saturating_sub(3)..=i]
+                .iter()
+                .any(|l| l.contains(HATCH))
+            {
+                continue;
+            }
+            let owner = spans
+                .iter()
+                .filter(|(_, from, to)| (*from..=*to).contains(&i))
+                .min_by_key(|(_, from, to)| to - from)
+                .map(|(n, _, _)| n.as_str())
+                .unwrap_or("<file scope>");
+            if !COMPOSERS.contains(&owner) {
+                offenders.push(format!(
+                    "{name}:{}: inside `{owner}`: {}",
+                    i + 1,
+                    lines[i].trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        chains >= FLOOR_CHAINS,
+        "the walk found {chains} drift chains across the three verbs — under \
+         the floor, so it stopped matching rather than the verbs stopping \
+         composing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a chain over two or more drift facts belongs in the verb's own \
+         composer ({}), never beside the reader that asks it (or carries \
+         `// {HATCH} <why>`):\n{}",
+        COMPOSERS.join(" / "),
+        offenders.join("\n")
+    );
 }

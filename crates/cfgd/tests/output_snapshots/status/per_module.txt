@@ -1,10 +1,18 @@
 Status: dev-tools
-  Packages      18
+  Status        Synced
+  Last Applied  5m ago
+  Packages      2
   Files         12
+  Shell         3
+    Aliases     1
+    Env         2
+  Scripts       3
+    preApply    1
+    postApply   2
+  System        shell
   Dependencies  base
-  Status        installed
-  Last applied  2026-05-14T10:00:00Z
 
-Deployed Files
-  ✓ /home/user/.config/nvim/init.lua
-  ✗ /home/user/.gitconfig (missing)
+Drift
+  ◉ No drift recorded — drift never checked
+
+→ `cfgd diff` checks the live machine for drift

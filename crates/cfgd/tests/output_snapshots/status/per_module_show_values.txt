@@ -1,0 +1,27 @@
+Status: dev-tools
+  Status        Drifted
+  Last Applied  5m ago
+
+Installed Packages
+  ✓ neovim  — brew
+  ⚠ ripgrep — not installed (brew)
+
+Deployed Files
+  ⚠ /home/user/.config/nvim/init.lua — content differs
+  ✗ /home/user/.gitconfig            — missing
+  ⚠ /home/user/.zshrc                — content differs
+
+Shell
+  Aliases
+    ✓ gs="git status --short"
+  Env
+    ✓ EDITOR="nvim"
+    ✓ PAGER="less -R"
+
+Scripts
+  preApply  — set -euo pipefail
+              mkdir -p ~/.config/nvim
+  postApply — nvim --headless '+Lazy! sync' +qa
+  postApply — echo done
+
+→ Run `cfgd apply --module dev-tools` to reconcile

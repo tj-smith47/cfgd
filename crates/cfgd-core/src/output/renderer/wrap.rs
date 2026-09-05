@@ -2,7 +2,7 @@
 //!
 //! Left to the terminal, a status line longer than the window breaks at
 //! column 0, so its tail reads as a separate unmarked line sitting outside the
-//! layout — `⊙ sudo apt-get install … python3-pip py` followed by
+//! layout — `◉ sudo apt-get install … python3-pip py` followed by
 //! `thon3-venv rustc ruby-full` hard against the left edge. Wrapping here
 //! instead lets the continuation start under the first word of the line above
 //! it, which is what makes it read as the same line.
@@ -48,13 +48,13 @@ pub(crate) fn available_width(sink: &dyn Writer, depth: usize) -> usize {
 /// terminal minus the `depth * 2` indent, and nothing else — the glyph, the
 /// subject, its alignment padding and the duration all live inside it.
 ///
-/// The ONE formula shared by the alignment ceiling
-/// (`Renderer::affordable_column`, via `status.rs`'s `wrap_budget`) and the
-/// live repaint clamp (`line_width`, below). The ceiling pads a settled line
-/// out to exactly this budget, so a clamp read from any tighter formula —
-/// `available_width`'s, say, which is two columns narrower because it
-/// measures the room left AFTER the glyph — amputates the tail of the
-/// duration the padding just right-aligned.
+/// The ONE formula shared by the group alignment column
+/// (`status.rs`'s `group_column`, via its `wrap_budget`) and the live repaint
+/// clamp (`line_width`, below). A group's padded subject reaches at most this
+/// budget, so a clamp read from any tighter formula — `available_width`'s,
+/// say, which is two columns narrower because it measures the room left AFTER
+/// the glyph — amputates the tail of the duration the padding just
+/// right-aligned.
 pub(crate) fn line_budget(cols: usize, depth: usize) -> usize {
     cols.saturating_sub(depth * 2)
 }
@@ -74,6 +74,14 @@ fn display_width(s: &str) -> usize {
     s.chars().filter_map(UnicodeWidthChar::width).sum()
 }
 
+/// Columns a prefix occupies once its styling is discounted. A prefix may
+/// carry SGR — a `command_list`'s opening holds its key's colour — and
+/// `display_width` drops only the `\x1b` itself, counting `[38;5;212m` as
+/// thirteen columns of text and wrapping the row that far early.
+fn visible_width(s: &str) -> usize {
+    display_width(&super::super::strip_ansi(s))
+}
+
 /// Clamp `text` to `max` display columns, marking the cut with `…`.
 ///
 /// For a line that must stay one physical line no matter what — a spinner
@@ -82,8 +90,49 @@ pub(crate) fn clamp(text: &str, max: usize) -> String {
     console::truncate_str(text, max, "…").into_owned()
 }
 
+/// How far back from the column cut [`clamp_at_token`] looks for a token
+/// boundary before it gives up and cuts at the column: wider than any word a
+/// row is likely to carry, narrower than the room a whole path would waste.
+const TOKEN_LOOKBACK: usize = 16;
+
+/// [`clamp`] for a SUBJECT: the cut retreats to the last token boundary — a
+/// space, a comma, a path separator — within [`TOKEN_LOOKBACK`] columns, so
+/// the marker follows a whole token rather than a fragment of one.
+///
+/// A live row's repaint is the one place a composed subject meets a column
+/// cut, and `provision brew via h…` is what the column alone made of
+/// `provision brew via homebrew`: a head a reader cannot match to any row.
+/// `… via…` says the same subject was cut, and says it with words the reader
+/// can find above. A table cell keeps the plain [`clamp`]: its width is the
+/// column's, and a cell has no row above it to match. A run with no boundary
+/// in the lookback — one long path — falls back to the column.
+pub(crate) fn clamp_at_token(text: &str, max: usize) -> String {
+    let plain = super::super::strip_ansi(text);
+    if display_width(&plain) <= max {
+        return text.to_owned();
+    }
+    // The marker takes the last column, so the kept text ends at `limit`.
+    let limit = max.saturating_sub(1);
+    let floor = limit.saturating_sub(TOKEN_LOOKBACK);
+    let mut col = 0;
+    let mut boundary = None;
+    for ch in plain.chars() {
+        if col > limit {
+            break;
+        }
+        if col > 0 && col >= floor && matches!(ch, ' ' | ',' | '/') {
+            boundary = Some(col);
+        }
+        col += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    match boundary {
+        Some(at) => console::truncate_str(text, at + 1, "…").into_owned(),
+        None => clamp(text, max),
+    }
+}
+
 /// Display width of the line's marker column — a leading one-column glyph
-/// (`✓`, `⊙`, `-`, …) plus the space after it. Zero when the line does not
+/// (`✓`, `◉`, `-`, …) plus the space after it. Zero when the line does not
 /// open with one, so a plain sentence wraps flush rather than hanging off its
 /// own first word.
 fn marker_width(visible: &str) -> usize {
@@ -98,35 +147,65 @@ fn marker_width(visible: &str) -> usize {
 }
 
 /// Split a whole message body into the physical lines that render it, hanging
-/// every continuation under the first word after the leading glyph.
+/// every continuation — whether it came from an embedded newline or from
+/// soft-wrapping — at `hang`. A logical line's OWN leading indent stacks on
+/// top of `hang` for the rows that line wraps onto, so a sub-item keeps its
+/// column all the way down. A caveat's second sentence and the tail of a
+/// wrapped sentence are the same thing to a reader, so they belong in the
+/// same column; splitting on `\n` alone left the second sentence at column 0,
+/// reading as an unrelated unmarked line.
 ///
-/// The hang is computed once, from the first logical line, and governs every
-/// line after it — whether that line came from an embedded newline or from
-/// soft-wrapping. A caveat's second sentence and the tail of a wrapped
-/// sentence are the same thing to a reader, so they belong in the same column;
-/// splitting on `\n` alone left the second sentence at column 0, reading as an
-/// unrelated unmarked line.
+/// The shared half of [`wrap_body`] (which derives `hang` from a leading
+/// glyph) and [`super::Emitting::render_command_list`] (whose hang is the
+/// description column its caller already knows — a shape with no glyph to
+/// derive one from).
 ///
 /// `cols` is `None` for a sink that never hard-wraps. The hang still applies
 /// there: indentation is a layout decision, so a redirected run has the same
 /// shape as a terminal one.
-pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<String> {
+pub(crate) fn wrap_body_at_hang(
+    body: &str,
+    first_prefix: &str,
+    hang: &str,
+    cols: Option<usize>,
+) -> Vec<String> {
     let mut logical = body.split('\n');
     let Some(first) = logical.next() else {
         return Vec::new();
     };
-    let hang = " ".repeat(display_width(prefix) + marker_width(&super::super::strip_ansi(first)));
-    let mut out = wrap_segment(first, prefix, &hang, cols);
+    // A logical line's own leading indent (a bulleted sub-item, a code block
+    // inside a caveat) is part of what it says, so the rows it wraps onto
+    // carry it under the hang rather than sliding back to the marker column.
+    let own_indent = |line: &str| -> String {
+        let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+        format!("{hang}{indent}")
+    };
+    let mut out = wrap_segment(first, first_prefix, &own_indent(first), cols);
     for line in logical {
         // A blank line inside the body separates paragraphs; indenting it
         // would leave trailing whitespace with nothing under it.
         if line.trim().is_empty() {
             out.push(String::new());
         } else {
-            out.extend(wrap_segment(line, &hang, &hang, cols));
+            out.extend(wrap_segment(line, hang, &own_indent(line), cols));
         }
     }
     out
+}
+
+/// Split a whole message body into the physical lines that render it, hanging
+/// every continuation under the first word after the leading glyph.
+///
+/// The hang is computed once, from the first logical line, and governs every
+/// line after it (`wrap_body_with_trailer` inherits this, wrapping through
+/// here). See [`wrap_body_at_hang`] for the shared layout once the hang is
+/// known.
+pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<String> {
+    let Some(first) = body.split('\n').next() else {
+        return Vec::new();
+    };
+    let hang = " ".repeat(display_width(prefix) + marker_width(&super::super::strip_ansi(first)));
+    wrap_body_at_hang(body, prefix, &hang, cols)
 }
 
 /// Lay out one logical line: `first_prefix` on its first physical line,
@@ -135,18 +214,48 @@ pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<St
 /// ANSI escapes are carried through without consuming width; a break lands on
 /// the last space that fits, or mid-word when a single word is itself longer
 /// than the line.
-fn wrap_segment(
+///
+/// Reachable from the renderer directly, for the one shape whose hang cannot
+/// be derived from the line itself: a two-column list's description hangs at
+/// the DESCRIPTION column, which only its caller knows — [`wrap_body`] reads
+/// the marker column off the first word instead, which is right for a status
+/// line and would wrap a description back under its own left column.
+pub(crate) fn wrap_segment(
     body: &str,
     first_prefix: &str,
     cont_prefix: &str,
     cols: Option<usize>,
 ) -> Vec<String> {
-    let prefix_width = display_width(first_prefix);
-    let body_width = display_width(&super::super::strip_ansi(body));
+    let prefix_width = visible_width(first_prefix);
+    let cont_width = visible_width(cont_prefix);
+    let visible_body = super::super::strip_ansi(body);
+    let body_width = display_width(&visible_body);
     let Some(cols) = cols else {
         return vec![format!("{first_prefix}{body}")];
     };
-    if cols < MIN_WRAP_WIDTH || prefix_width + body_width <= cols {
+    // Two ways a hang is unaffordable, and the row is then left for the
+    // terminal's own hard wrap rather than chopped into a phantom column.
+    //
+    // It takes more than half the terminal, leaving a sliver no prose reads
+    // well in. The test is proportional rather than `MIN_WRAP_WIDTH`, which
+    // describes a whole line: measured against the remainder, any hang at all
+    // would strand a 24-column terminal unwrapped.
+    //
+    // Or it steals the columns a word needed: a word the terminal could hold
+    // WHOLE must never be split just because the continuation column is
+    // narrower than the line. A word longer than the terminal itself is a
+    // different case and still splits, here as everywhere.
+    let longest_word = visible_body
+        .split_whitespace()
+        .map(display_width)
+        .max()
+        .unwrap_or(0);
+    let hang_splits_a_word = longest_word <= cols && longest_word > cols.saturating_sub(cont_width);
+    if cols < MIN_WRAP_WIDTH
+        || prefix_width + body_width <= cols
+        || cont_width * 2 > cols
+        || hang_splits_a_word
+    {
         return vec![format!("{first_prefix}{body}")];
     }
 
@@ -167,6 +276,8 @@ fn wrap_segment(
     let mut chars = body.chars().peekable();
 
     while let Some(c) = chars.next() {
+        // style-gate-ok: the wrapper READS an escape to price it at zero
+        // columns and copies it through unchanged; it writes none of its own.
         if c == '\u{1b}' {
             // An escape occupies no columns, so it is copied verbatim and the
             // width accounting skips it entirely. The `[` introducing a CSI is
@@ -181,6 +292,29 @@ fn wrap_segment(
                 for esc in chars.by_ref() {
                     current.push(esc);
                     if ('\u{40}'..='\u{7e}').contains(&esc) {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&']') {
+                // An OSC string — the two halves of an OSC 8 hyperlink — runs
+                // to BEL or to the two-character ST rather than to a CSI final
+                // byte. Consumed as a bare two-byte opener its payload would
+                // fall through to the width accounting below and be counted as
+                // visible columns.
+                if let Some(bracket) = chars.next() {
+                    current.push(bracket);
+                }
+                while let Some(esc) = chars.next() {
+                    current.push(esc);
+                    if esc == '\u{07}' {
+                        break;
+                    }
+                    // style-gate-ok: still reading — the OSC string
+                    // terminator, copied through with the rest.
+                    if esc == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        if let Some(st) = chars.next() {
+                            current.push(st);
+                        }
                         break;
                     }
                 }
@@ -215,7 +349,7 @@ fn wrap_segment(
                 wrote_row = true;
                 current = tail;
             }
-            limit = cols.saturating_sub(display_width(if wrote_row { hang } else { first_prefix }));
+            limit = cols.saturating_sub(if wrote_row { cont_width } else { prefix_width });
             current_width = super::super::strip_ansi(&current)
                 .chars()
                 .filter_map(UnicodeWidthChar::width)
@@ -247,6 +381,70 @@ fn wrap_segment(
     out
 }
 
+/// Same layout as [`wrap_body`], but with `trailer` — a status line's
+/// duration suffix — landed on the LAST physical line, at the group's
+/// alignment column when the row wrapped, instead of flowing inline with the
+/// rest of the body.
+///
+/// `body` wraps as if the line were narrower by `trailer`'s own width, on
+/// EVERY physical line it produces, not only the last one: the wrap decision
+/// has no way to know in advance which line will end up last, so reserving
+/// the column throughout is what guarantees room for the trailer once
+/// wrapping is done — and `body_width > cols - trailer_width` is the same
+/// test as `body_width + trailer_width > cols`, so reserving up front decides
+/// wrap-or-not exactly as `wrap_body` already would from the fully composed
+/// string.
+///
+/// A body that still fits on ONE row even with the reservation gets the
+/// trailer glued straight on with no padding, exactly as `wrap_body` alone
+/// would have rendered the fully composed string: an ordinary short status
+/// line already pads its SUBJECT to whatever alignment column its own group
+/// settled (`pad_subject`), and its trailer follows the detail wherever that
+/// ends. Only once wrapping actually split the body does `column` matter —
+/// the group's settled column, measured from the start of the line, the
+/// same one every sibling's trailing content opens at. A last row that ends
+/// short of it pads out to it, so the duration lands where a reader scanning
+/// the block already looks; one that already runs past it glues the trailer
+/// inline, the same as an unwrapped sibling too wide for the column. `None`
+/// is a group that settled NO column (`group_column` answered 0), and there
+/// the trailer glues inline on every row alike: anchoring it to the terminal
+/// edge instead put the one wrapped row's duration twenty columns right of
+/// siblings that all glued theirs, on a line that read as belonging to
+/// nothing.
+pub(crate) fn wrap_body_with_trailer(
+    body: &str,
+    prefix: &str,
+    cols: Option<usize>,
+    trailer: Option<&str>,
+    column: Option<usize>,
+) -> Vec<String> {
+    let Some(trailer) = trailer else {
+        return wrap_body(body, prefix, cols);
+    };
+    let trailer_width = display_width(&super::super::strip_ansi(trailer));
+    let reserved = cols.map(|c| c.saturating_sub(trailer_width));
+    let mut out = wrap_body(body, prefix, reserved);
+    let wrapped = out.len() > 1;
+    let Some(last) = out.last_mut() else {
+        // `wrap_body` never actually returns an empty vec (its own empty-body
+        // arm still yields one row carrying the prefix), but nothing here
+        // depends on that holding forever — the trailer still gets a row.
+        out.push(format!("{prefix}{trailer}"));
+        return out;
+    };
+    if wrapped && let Some(column) = column {
+        let last_width = display_width(&super::super::strip_ansi(last));
+        // Never past the row budget: a column the trailer cannot fit
+        // beside is no column for this row.
+        let fits = cols.is_none_or(|c| column + trailer_width <= c);
+        if fits && last_width < column {
+            last.push_str(&" ".repeat(column - last_width));
+        }
+    }
+    last.push_str(trailer);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,9 +456,9 @@ mod tests {
 
     #[test]
     fn continuation_hangs_under_the_first_word_after_the_glyph() {
-        let out = wrap_body("⊙ alpha bravo charlie delta", "", Some(24));
+        let out = wrap_body("◉ alpha bravo charlie delta", "", Some(24));
         assert_eq!(out.len(), 2, "got: {out:?}");
-        assert_eq!(out[0], "⊙ alpha bravo charlie");
+        assert_eq!(out[0], "◉ alpha bravo charlie");
         assert_eq!(out[1], "  delta");
     }
 
@@ -296,6 +494,16 @@ mod tests {
         assert_eq!(out[1], "delta echo");
     }
 
+    /// A hang can be small enough to keep half the terminal and still leave
+    /// less room than a word needs. The word fits the line, so the hang is
+    /// what would split it, and the row is left alone instead.
+    #[test]
+    fn a_word_the_terminal_could_hold_whole_is_not_split_by_the_hang() {
+        let hang = " ".repeat(12);
+        let out = wrap_segment("run now please administrator", "", &hang, Some(24));
+        assert_eq!(out, vec!["run now please administrator"], "got: {out:?}");
+    }
+
     #[test]
     fn a_word_longer_than_the_line_is_broken_rather_than_overflowing() {
         let out = wrap_body("abcdefghijklmnopqrstuvwxyz0123456789", "", Some(24));
@@ -308,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_terminal_too_narrow_to_wrap_usefully_is_left_alone() {
-        let long = "⊙ alpha bravo charlie delta echo foxtrot";
+        let long = "◉ alpha bravo charlie delta echo foxtrot";
         assert_eq!(wrap_body(long, "", Some(10)), vec![long.to_string()]);
     }
 
@@ -325,7 +533,7 @@ mod tests {
     fn the_hang_comes_from_the_first_line_not_each_continuation() {
         // "Temporal" is eight columns wide, so a continuation asked for its own
         // marker width would get zero and fall back to column 0.
-        let out = wrap_body("⊙ alpha\nTemporal support is disabled.", "", Some(80));
+        let out = wrap_body("◉ alpha\nTemporal support is disabled.", "", Some(80));
         assert_eq!(out[1], "  Temporal support is disabled.");
     }
 
@@ -343,10 +551,25 @@ mod tests {
         assert_eq!(out, vec!["  - head", "", "    tail"]);
     }
 
+    /// A logical line that carries its OWN indent (a caveat's bulleted
+    /// sub-list, an `Add to ~/.bashrc:` block) keeps it on the rows the wrap
+    /// splits it into: the continuation hangs under the line's first word,
+    /// not under the marker column the whole body hangs from. Lost, a
+    /// wrapped sub-item's tail slid left under the bullet and read as a new
+    /// item of the outer list.
+    #[test]
+    fn a_wrapped_line_keeps_its_own_indent_on_its_continuation_rows() {
+        let out = wrap_body("◉ head\n  - alpha bravo charlie delta echo", "", Some(24));
+        assert_eq!(out[0], "◉ head");
+        assert_eq!(out[1], "    - alpha bravo");
+        assert_eq!(out[2], "    charlie delta echo");
+        assert_eq!(out.len(), 3, "got: {out:?}");
+    }
+
     #[test]
     fn a_continuation_that_is_itself_too_long_wraps_to_the_same_column() {
-        let out = wrap_body("⊙ head\nalpha bravo charlie delta echo", "", Some(24));
-        assert_eq!(out[0], "⊙ head");
+        let out = wrap_body("◉ head\nalpha bravo charlie delta echo", "", Some(24));
+        assert_eq!(out[0], "◉ head");
         assert_eq!(out[1], "  alpha bravo charlie");
         assert_eq!(out[2], "  delta echo");
     }
@@ -388,6 +611,40 @@ mod tests {
         );
     }
 
+    /// The subject clamp retreats to a token, the plain clamp does not; a
+    /// boundary too far back is not worth the columns and the column cut
+    /// stands.
+    #[test]
+    fn clamp_at_token_cuts_after_a_whole_token_and_marks_it() {
+        let line = "○ brew install gum — queued behind provision brew via homebrew";
+        let out = clamp_at_token(line, 41);
+        assert_eq!(out, "○ brew install gum — queued behind…", "got: {out:?}");
+        assert!(display_width(&out) <= 41);
+        assert_eq!(
+            clamp_at_token(
+                "deploy ~/.config/nvim/init.lua, ~/.config/nvim/lazy-lock.json",
+                40
+            ),
+            "deploy ~/.config/nvim/init.lua, ~…",
+            "a path separator is a boundary too, and the last one that fits wins"
+        );
+        // Styled text keeps its escapes and is measured without them.
+        let styled = "\x1b[2m○ brew install gum — queued behind provision\x1b[0m";
+        let out = clamp_at_token(styled, 30);
+        assert!(
+            out.starts_with("\x1b[2m") && out.ends_with("\x1b[0m"),
+            "got: {out:?}"
+        );
+        assert_eq!(
+            super::super::super::strip_ansi(&out),
+            "○ brew install gum — queued…"
+        );
+        // No boundary within the lookback: the column cut stands.
+        let path = "x".repeat(60);
+        assert_eq!(clamp_at_token(&path, 20), clamp(&path, 20));
+        assert_eq!(clamp_at_token("short", 20), "short");
+    }
+
     #[test]
     fn clamp_cuts_to_display_columns_and_marks_the_cut() {
         let out = clamp(&"x".repeat(200), 40);
@@ -404,5 +661,120 @@ mod tests {
             let w: usize = line.chars().filter_map(UnicodeWidthChar::width).sum();
             assert!(w <= 24, "line over budget: {line:?} ({w} cols)");
         }
+    }
+
+    /// The apt-install shape: a subject long enough that wrapping is
+    /// unavoidable, plus a duration that must not simply flow inline
+    /// wherever the last word happens to land.
+    const WRAPPING_BODY: &str = "\u{2713} apt install build-essential, make, unzip, git, curl, ripgrep, xclip, wl-clipboard, xdg-utils, npm, python3, python3-pip, python3-venv, rustc, ruby-full, libyaml-dev";
+
+    fn wrapped_rows(column: Option<usize>) -> (Vec<String>, usize) {
+        let trailer = " (23.6s)";
+        let cols = 118;
+        let out = wrap_body_with_trailer(WRAPPING_BODY, "    ", Some(cols), Some(trailer), column);
+        assert!(out.len() > 1, "the body needed to wrap: {out:?}");
+        for line in &out {
+            let w = display_width(&super::super::super::strip_ansi(line));
+            assert!(w <= cols, "line over budget: {line:?} ({w} cols)");
+        }
+        let last = out.last().unwrap_or(&out[0]);
+        assert!(
+            last.ends_with(trailer),
+            "the trailer lands on the last row: {last:?}"
+        );
+        for line in &out[..out.len() - 1] {
+            assert!(
+                !line.contains("23.6s"),
+                "the trailer never lands on an earlier row: {out:?}"
+            );
+        }
+        let last_width = display_width(&super::super::super::strip_ansi(last));
+        (out, last_width)
+    }
+
+    #[test]
+    fn a_wrapped_row_in_a_group_with_no_column_glues_its_trailer_inline() {
+        // `group_column` answered 0 — every sibling glues its duration one
+        // space after its subject — so the wrapped row does too. Anchoring it
+        // to the terminal edge instead was the one duration on the page that
+        // sat in a column nothing else occupied.
+        let (out, last_width) = wrapped_rows(None);
+        let last = out.last().unwrap_or(&out[0]);
+        let body_end = last.trim_end_matches(" (23.6s)");
+        assert!(
+            !body_end.ends_with(' '),
+            "no padding between the last word and the trailer: {last:?}"
+        );
+        assert!(
+            last_width < 118,
+            "the trailer never reaches for the terminal edge: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_row_in_a_group_with_a_column_pads_its_last_line_to_that_column() {
+        // The group settled a column past where this row's last line ends, so
+        // the trailer opens exactly there — where every sibling's trailing
+        // content opens — and not at `cols`.
+        let (_, unpadded_width) = wrapped_rows(None);
+        let column = unpadded_width + 10;
+        let (out, last_width) = wrapped_rows(Some(column));
+        assert_eq!(
+            last_width,
+            column + " (23.6s)".len(),
+            "the trailer opens at the group column: {:?}",
+            out.last()
+        );
+    }
+
+    #[test]
+    fn a_wrapped_row_already_past_the_group_column_glues_its_trailer_inline() {
+        // The column sits inside this row's last line: nothing to pad to, so
+        // the trailer follows the body as it does on an unwrapped sibling
+        // that is also too wide for the column.
+        let (unpadded, unpadded_width) = wrapped_rows(None);
+        let body_width = unpadded_width - " (23.6s)".len();
+        let (out, _) = wrapped_rows(Some(body_width.saturating_sub(5)));
+        assert_eq!(out, unpadded);
+    }
+
+    #[test]
+    fn a_group_column_the_trailer_cannot_fit_beside_is_ignored() {
+        // Padding to a column that leaves no room for the trailer would push
+        // it over the row budget; the row glues instead.
+        let (unpadded, _) = wrapped_rows(None);
+        let (out, _) = wrapped_rows(Some(118 - 3));
+        assert_eq!(out, unpadded);
+    }
+
+    #[test]
+    fn a_body_that_still_fits_with_the_trailer_reserved_is_not_padded_to_the_edge() {
+        // Wrapping was never triggered — the trailer glues straight onto the
+        // one row exactly as `wrap_body` alone renders the fully composed
+        // string, so an ordinary short status line does not stretch out to
+        // the terminal's edge just because it carries a duration.
+        let out = wrap_body_with_trailer(
+            "✓ install ripgrep",
+            "  ",
+            Some(80),
+            Some(" (1.2s)"),
+            Some(40),
+        );
+        assert_eq!(out, vec!["  ✓ install ripgrep (1.2s)"]);
+    }
+
+    #[test]
+    fn a_non_wrapping_sink_appends_the_trailer_with_no_padding() {
+        let out = wrap_body_with_trailer("✓ done", "  ", None, Some(" (1.2s)"), Some(40));
+        assert_eq!(out, vec!["  ✓ done (1.2s)"]);
+    }
+
+    #[test]
+    fn no_trailer_wraps_exactly_like_wrap_body() {
+        let body = "alpha bravo charlie delta echo";
+        assert_eq!(
+            wrap_body_with_trailer(body, "", Some(24), None, None),
+            wrap_body(body, "", Some(24))
+        );
     }
 }

