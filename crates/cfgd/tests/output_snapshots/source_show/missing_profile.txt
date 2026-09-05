@@ -19,7 +19,7 @@ Managed Resources
   ──────────────────
   package  brew/curl
   file     ~/.bashrc
-  env      EDITOR   
+  env      EDITOR
 
 Modules
   ◉ dev-tools

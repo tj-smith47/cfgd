@@ -1,5 +1,5 @@
 Available Profiles
 Profile  Active  Inherits  Modules
 ──────────────────────────────────
-default  yes     -         0      
-work     no      default   0      
+default  yes     -         0
+work     no      default   0

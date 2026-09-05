@@ -306,13 +306,32 @@ impl Renderer {
             // tall as its tallest cell.
             let height = laid_out.iter().map(Vec::len).max().unwrap_or(0);
             for physical in 0..height {
+                // The row ends on its last non-empty cell. Emptiness is judged
+                // on the plain cell, before any paint: a role-styled empty cell
+                // is `ESC[..mESC[0m`, which is not empty but shows nothing. A
+                // physical line with no glyph in any column is not a row —
+                // a wrapped row's short continuation line, a blank last column —
+                // so nothing is emitted for it at all.
+                let Some(tail) = laid_out
+                    .iter()
+                    .rposition(|lines| lines.get(physical).is_some_and(|c| !c.is_empty()))
+                else {
+                    continue;
+                };
                 let line: String = laid_out
                     .iter()
                     .enumerate()
+                    .take(tail + 1)
                     .map(|(i, lines)| {
                         let cell = lines.get(physical).map(String::as_str).unwrap_or("");
-                        let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell));
-                        let pad = " ".repeat(pad);
+                        // Nothing sits to the right of the last cell, so it is
+                        // never padded: a trailing pad is invisible on a
+                        // terminal but real bytes in a pipe or a golden.
+                        let pad = if i == tail {
+                            String::new()
+                        } else {
+                            " ".repeat(widths[i].saturating_sub(UnicodeWidthStr::width(cell)))
+                        };
                         // An owner column's cell is painted token by token —
                         // the padding stays outside the coats, so the column
                         // aligns on the plain width like every other.
@@ -501,52 +520,86 @@ mod tests {
         );
     }
 
-    /// The rule under a table's header spans the WHOLE grid, never one column
-    /// short of it. It is joined by `──` where the header is joined by `  `,
-    /// which is what makes the two widths agree — a join that ever stops
-    /// matching leaves the rule visibly under-hanging the last column, and the
-    /// eye reads the grid as one column narrower than it is.
+    /// The rule under a table's header spans the WHOLE grid, and every data
+    /// row ends where its own text does.
+    ///
+    /// The two halves answer different questions. The rule is joined by `──`
+    /// where the header is joined by `  `, which is what makes those two
+    /// widths agree — a join that stops matching leaves the rule visibly
+    /// under-hanging the last column, and the eye reads the grid as one column
+    /// narrower than it is. So the header keeps the pad its widest cell earned
+    /// and the rule spans it. A DATA row has nothing to its right to align to
+    /// (cfgd tables carry no vertical borders), so padding its last cell only
+    /// buys trailing spaces: invisible on a terminal, real bytes in a pipe, a
+    /// golden or a copied selection. It therefore ends on its last glyph and
+    /// stays within the grid rather than filling it.
+    ///
+    /// A physical line with no glyph in ANY column is not a row and is emitted
+    /// as nothing at all — a table whose every row is empty renders its header
+    /// and its rule, which is why each case declares how many data lines it
+    /// expects.
     ///
     /// Walks the shapes a table can take rather than one fixture, so the next
-    /// column kind (a wrapped cell, a clamped cell, a wide glyph) is measured
-    /// by this test the day it is added.
+    /// column kind (a wrapped cell, a clamped cell, a wide glyph, a
+    /// role-styled empty cell) is measured by this test the day it is added.
     #[test]
     fn every_table_shape_rules_the_full_width_of_its_grid() {
-        let cases: Vec<(&str, Table)> = vec![
-            ("single column", Table::new(["Name"]).row(["alice"])),
+        let cases: Vec<(&str, Table, usize)> = vec![
+            ("single column", Table::new(["Name"]).row(["alice"]), 1),
             (
                 "header wider than every row",
                 Table::new(["Reconcile Interval", "Drift"]).row(["300s", "0"]),
+                1,
             ),
             (
                 "row wider than its header",
                 Table::new(["Name", "Status"]).row(["a-very-long-source-name", "Active"]),
+                1,
             ),
             (
                 "the daemon status Sources grid",
                 Table::new(["Name", "Status", "Drift", "Last Sync"])
                     .row(["local", "Active", "0", "never"])
                     .row(["team", "Failed", "7", "2d ago"]),
+                2,
             ),
             (
                 "wide glyphs",
                 Table::new(["Name", "Score"])
                     .row(["京都", "100"])
                     .row(["ok", "3"]),
+                2,
             ),
-            ("emoji", Table::new(["Icon", "Meaning"]).row(["✅", "done"])),
+            (
+                "emoji",
+                Table::new(["Icon", "Meaning"]).row(["✅", "done"]),
+                1,
+            ),
             (
                 "an empty cell in the last column",
                 Table::new(["Name", "Note"]).row(["local", ""]),
+                1,
             ),
+            (
+                "a blank last column on a row whose neighbour is shorter than its header",
+                Table::new(["Name", "Note"]).row(["a", ""]),
+                1,
+            ),
+            (
+                "a role-styled empty last cell",
+                Table::new(["Name", "Note"]).row_styled([("local", None), ("", Some(Role::Warn))]),
+                1,
+            ),
+            ("every cell empty", Table::new(["A"]).row([""]), 0),
             (
                 "wrapping cells",
                 Table::new(["Name", "Description"])
                     .wrapping()
                     .row(["mod", "a description long enough to break across lines"]),
+                2,
             ),
         ];
-        for (label, t) in cases {
+        for (label, t, data_lines) in cases {
             let buf = Arc::new(Mutex::new(String::new()));
             let sink = NarrowSink(StringSink(buf.clone()), 40);
             let r = Renderer::new(Theme::default(), Verbosity::Normal);
@@ -571,11 +624,21 @@ mod tests {
                 grid,
                 "{label}: the rule must span the full grid width:\n{out}"
             );
+            assert_eq!(
+                lines.len() - 2,
+                data_lines,
+                "{label}: a physical line with no glyph in any column is not a \
+                 row and is never emitted:\n{out}"
+            );
             for row in &lines[2..] {
-                assert_eq!(
-                    UnicodeWidthStr::width(*row),
-                    grid,
-                    "{label}: every data row occupies the full grid width:\n{out}"
+                assert!(
+                    UnicodeWidthStr::width(*row) <= grid,
+                    "{label}: a data row stays inside the grid the rule spans:\n{out}"
+                );
+                assert!(
+                    !row.ends_with(char::is_whitespace),
+                    "{label}: a data row ends on its last glyph, never on a \
+                     pad nothing sits to the right of: {row:?}\n{out}"
                 );
             }
         }

@@ -2,4 +2,4 @@ Modules
 Module  Source  Status   
 ─────────────────────────
 git     local   installed
-neovim  remote  pending  
+neovim  remote  pending

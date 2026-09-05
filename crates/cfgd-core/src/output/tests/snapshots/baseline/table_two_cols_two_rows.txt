@@ -1,4 +1,4 @@
 Name   Age
 ──────────
-alice  30 
-bob    25 
+alice  30
+bob    25

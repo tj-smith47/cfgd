@@ -1,4 +1,4 @@
 Sources
 Name         Source                          Priority  Status   Last Sync  Requires Signed
 ──────────────────────────────────────────────────────────────────────────────────────────
-team-config  https://github.com/team/config  100       Unknown  never      no             
+team-config  https://github.com/team/config  100       Unknown  never      no

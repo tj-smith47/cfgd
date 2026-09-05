@@ -2623,3 +2623,86 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
          running a verb; its needles have drifted from the fixtures"
     );
 }
+
+/// Every committed golden under both snapshot roots, and every line of one
+/// that ends in whitespace is a table HEADER.
+///
+/// A table pads its last column so the `──` rule spans the same width the
+/// header does — cfgd tables carry no vertical borders, so the header's own
+/// pad is the only thing the rule can agree with. A DATA row has nothing to
+/// its right, so its pad buys only trailing bytes: invisible on a terminal,
+/// but real in a pipe, in a copied selection and in a golden, where they made
+/// twenty files carry whitespace no reader could see. `Renderer::render_table`
+/// ends a data row on its last glyph; this walk is what says so for the
+/// SHIPPED population, so a golden re-blessed from a regressed renderer is
+/// caught by the goldens themselves rather than by the eye.
+///
+/// A header is read off the structure, ANSI-free: the next non-blank line
+/// under it is the `─` rule. Both floors matter: a walk that stopped finding
+/// the roots would otherwise pass by finding nothing, and only a header whose
+/// widest CELL is wider than its own word carries a pad at all, so the header
+/// count is far below the golden count.
+#[test]
+fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
+    let root = workspace_root();
+    let mut stack = vec![
+        root.join("crates/cfgd/tests/output_snapshots"),
+        root.join("crates/cfgd-core/src/output/tests/snapshots"),
+    ];
+    let mut goldens = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "txt") {
+                goldens.push(path);
+            }
+        }
+    }
+    goldens.sort();
+
+    let mut headers = 0usize;
+    let mut offenders = Vec::new();
+    for path in &goldens {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let text = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.is_empty() || !line.ends_with(char::is_whitespace) {
+                continue;
+            }
+            let ruled = lines[i + 1..]
+                .iter()
+                .find(|n| !n.trim().is_empty())
+                .is_some_and(|n| n.trim_start().starts_with('─'));
+            if ruled {
+                headers += 1;
+            } else {
+                offenders.push(format!(
+                    "{}:{}: {line:?}",
+                    path.display().to_string().replace('\\', "/"),
+                    i + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a rendered line ends on its last glyph unless it is a table header, \
+         whose pad is what the `──` rule spans; re-bless the golden from a \
+         renderer that does not pad a data row's last cell:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        goldens.len() >= 300 && headers >= 10,
+        "the walk saw {headers} table headers across {} goldens; it has \
+         stopped reaching the snapshot roots",
+        goldens.len()
+    );
+}

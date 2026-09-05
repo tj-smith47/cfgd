@@ -18,10 +18,10 @@ Component Health (checked 5m ago)
 Managed Resources
   Type     Owner             Resource                                    Source
   ─────────────────────────────────────────────────────────────────────────────
-  file     profile:default   ~/.bashrc                                   local 
-  package  profile:default   brew: bat, ripgrep                          local 
-  env      cfgd:env          /home/user/.cfgd.env                        local 
-  file     module:dev-tools  /home/user/.config/nvim (12 files)          local 
-  package  module:dev-tools  apt: cargo, gcc, git                        local 
-  package  module:dev-tools  brew: age, fd, neovim                       local 
-  script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local 
+  file     profile:default   ~/.bashrc                                   local
+  package  profile:default   brew: bat, ripgrep                          local
+  env      cfgd:env          /home/user/.cfgd.env                        local
+  file     module:dev-tools  /home/user/.config/nvim (12 files)          local
+  package  module:dev-tools  apt: cargo, gcc, git                        local
+  package  module:dev-tools  brew: age, fd, neovim                       local
+  script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local

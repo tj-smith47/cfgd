@@ -11,7 +11,7 @@ Last Apply
 Sources
   Name         Source                          Priority  Status  Commit        Last Sync  Signed  Requires Signed
   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  team-config  https://github.com/team/config  100       Active  abc123456789  1h ago     yes     yes            
+  team-config  https://github.com/team/config  100       Active  abc123456789  1h ago     yes     yes
 
 Pending Decisions (1 item)
   source:team-config
