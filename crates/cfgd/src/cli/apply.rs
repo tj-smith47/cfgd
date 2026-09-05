@@ -565,15 +565,18 @@ pub fn run_apply(
         gc_orphaned_custom_packages(state, &registry, printer);
     }
 
-    // Check if filtered plan has actions
-    let has_actions = if let Some(ref pf) = phase_filter {
-        plan.phases.iter().any(|p| {
-            p.owned_actions()
-                .any(|(owner, a)| reconciler::action_matches_phase_filter(&p.name, owner, a, pf))
-        })
-    } else {
-        !plan.is_empty()
-    };
+    // Whether this run's tree will DRAW anything, asked through the one
+    // in-scope walk both trees render from — scoped exactly as the run is. A
+    // module skipped whole is not work: the header's `Modules` row states it
+    // and no phase block holds it, so a plan carrying nothing else takes the
+    // no-work path instead of closing on `0 actions succeeded`. A pre-skipped
+    // action still counts here: its row is drawn, and says why it cannot run.
+    let has_actions = !reconciler::in_scope_tree(
+        &plan,
+        phase_filter.as_ref(),
+        reconciler::PhaseCoverage::Rendered,
+    )
+    .is_empty();
 
     // A schedule-less backup runs on every apply regardless of reconciler
     // diff, so a converged machine (the common case once a fleet is settled)

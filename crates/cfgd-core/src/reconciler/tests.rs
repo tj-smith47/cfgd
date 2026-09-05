@@ -7301,15 +7301,10 @@ fn apply_skipped_module_does_not_fire_on_change() {
         )
         .unwrap();
 
-    let module_result = result
-        .action_results
-        .iter()
-        .find(|r| r.description.contains("module:skippedmod:skip"))
-        .expect("module skip action should be recorded");
-    assert!(module_result.success);
     assert!(
-        !module_result.changed,
-        "a planned module skip must record changed=false"
+        result.action_results.is_empty(),
+        "a module skipped whole settles no outcome: {:?}",
+        result.action_results
     );
     assert!(
         !on_change_marker.exists(),
@@ -12263,7 +12258,7 @@ fn apply_module_deploy_files_symlink_strategy() {
 }
 
 #[test]
-fn apply_module_skip_reports_skipped() {
+fn apply_module_skip_produces_no_result() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -12301,15 +12296,15 @@ fn apply_module_skip_reports_skipped() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert!(result.action_results[0].success);
     assert!(
-        !result.action_results[0].changed,
-        "a planned module skip did nothing and must record changed=false"
+        result.action_results.is_empty(),
+        "a module skipped whole is the header's own clause, so the apply \
+         settles no outcome for it: {:?}",
+        result.action_results
     );
-    assert!(
-        result.action_results[0].description.contains("skip"),
-        "desc: {}",
-        result.action_results[0].description
+    assert_eq!(
+        result.planned_total, 0,
+        "and promised none either, so the two sides still agree"
     );
 }
 
@@ -21029,9 +21024,10 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
         )
         .unwrap();
 
-    // All three module actions should have run: the owner filter selects
-    // module-owned work in every phase it landed in, not scripts only.
-    assert_eq!(result.action_results.len(), 3);
+    // Both runnable module actions should have run: the owner filter selects
+    // module-owned work in every phase it landed in, not scripts only. The
+    // module skipped whole is dispatched nowhere, so it settles no outcome.
+    assert_eq!(result.action_results.len(), 2);
     let descs: Vec<&str> = result
         .action_results
         .iter()
@@ -21039,7 +21035,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
         .collect();
     assert!(descs.iter().any(|d| d.starts_with("module:nvim:script")));
     assert!(descs.iter().any(|d| d.starts_with("module:nvim:packages")));
-    assert!(descs.iter().any(|d| d.starts_with("module:nvim:skip")));
+    assert!(!descs.iter().any(|d| d.starts_with("module:nvim:skip")));
 }
 
 #[test]
@@ -25925,6 +25921,103 @@ fn an_executed_action_is_timed_and_a_skipped_one_is_not() {
     );
 }
 
+/// A module skipped whole is stated once, by the `Modules` header clause, and
+/// counted by no surface: not the header's `Actions N planned`, not the tree,
+/// not the apply's rollup, not the daemon's notify-only sentence.
+///
+/// It is not work — nothing under the module was probed and nothing will be
+/// done — so counting it promised a row no reader could see: the header said
+/// `2 planned` where the tree drew one, and the rollup then reported
+/// `1 action skipped` for a row nobody saw. `-o json` is unaffected: the plan
+/// payload still lists the `Skip` under its phase, with its kind and reason.
+#[test]
+fn a_module_skipped_whole_is_counted_by_no_surface() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Modules,
+                &Owner::profile("work"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "wsl-tools".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "platform not matched (requires: windows)".to_string(),
+                    },
+                    origin: None,
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![install_action("brew", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let attempted = 1;
+
+    assert_eq!(
+        plan.total_actions(),
+        attempted,
+        "the header's promise and the apply's tally"
+    );
+    assert_eq!(
+        plan.listed_action_count(),
+        attempted,
+        "and the rows the tree will draw"
+    );
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let tree = crate::output::strip_ansi(&cap.human());
+    assert_eq!(
+        tree.lines().filter(|l| l.trim().starts_with('-')).count(),
+        attempted,
+        "the tree draws one row per attempted action: {tree}"
+    );
+    assert!(
+        !tree.contains("wsl-tools"),
+        "and none for the module skipped whole: {tree}"
+    );
+
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    assert_eq!(result.planned_total, attempted);
+    assert_eq!(result.action_results.len(), attempted);
+    assert_eq!(
+        result.succeeded() + result.skipped() + result.failed(),
+        attempted,
+        "the rollup's clauses sum to what was planned: {out}"
+    );
+    assert_eq!(result.skipped(), 0, "no clause for a row nobody saw: {out}");
+
+    // The `-o json` payload keeps every fact: only the COUNTS drop the skip.
+    let payload = serde_json::to_value(&plan).expect("plan serializes");
+    let kinds: Vec<String> = payload["phases"]
+        .as_array()
+        .expect("phases")
+        .iter()
+        .flat_map(|p| {
+            p["groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|g| g["actions"].as_array().into_iter().flatten())
+        })
+        .map(|a| a.to_string())
+        .collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|a| a.contains("wsl-tools") && a.contains("platform not matched")),
+        "the skip and its reason still travel on the wire: {kinds:?}"
+    );
+}
+
 /// A plan resolves session-manager availability from the machine and renders
 /// the publish it is CERTAIN to skip as skipped — with the detail the apply
 /// would give — while leaving it out of `N actions planned`.
@@ -26217,18 +26310,27 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
     );
     assert!(!out.contains("Phases   Modules"), "got: {out}");
     assert!(
-        out.contains("2 planned"),
-        "a skip is an in-scope action and is counted: {out}"
+        out.contains("1 planned"),
+        "a module skipped whole is stated by the Modules row and counted \
+         nowhere: {out}"
     );
+    let rollup = out
+        .lines()
+        .find(|l| l.contains("Apply complete"))
+        .unwrap_or_else(|| panic!("a run closes on its rollup: {out}"));
     assert!(
-        out.contains("1 action succeeded") && out.contains("\u{2205} 1 skipped"),
-        "the rollup reconciles against the planned count, and a skip is \
-         counted as a skip rather than as work that was done: {out}"
+        rollup.contains("1 action succeeded") && !rollup.contains("skipped"),
+        "the rollup reconciles against the planned count, and has no clause \
+         for a row nobody saw: {rollup:?}\n{out}"
     );
 
-    // A run whose ONLY in-scope work is a platform-gated skip renders header +
-    // annotation + rollup and NOTHING else — asserted as the complete
+    // A run whose ONLY in-scope action is a platform-gated skip renders header
+    // + annotation + rollup and NOTHING else — asserted as the complete
     // transcript, because "no heading" is what a stray warning line satisfies.
+    // The header states no `Actions` row and the rollup no skipped clause: the
+    // skip is the `Modules` row's clause and is counted by neither end. (The
+    // CLI never reaches this shape — `cmd_apply` takes its no-work path when
+    // the tree will draw nothing — so the rollup here is the core's own.)
     let skip_only = Plan {
         phases: vec![Phase::from_actions(
             PhaseName::Modules,
@@ -26285,11 +26387,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             "Apply".to_string(),
             "Profile  work".to_string(),
             "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
-            "Actions  1 planned".to_string(),
-            "\u{2713} Apply complete".to_string(),
-            // The skip states itself in the role its own row wears, rather
-            // than riding the tick's detail as though it were work done.
-            "\u{2205} 1 action skipped".to_string(),
+            "\u{2713} Apply complete \u{2014} 0 actions succeeded".to_string(),
         ],
         "header + annotation + rollup and nothing else"
     );
@@ -26298,10 +26396,11 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
 #[test]
 fn every_action_emits_exactly_one_line() {
     // One action from each arm whose bespoke status line the tree replaced,
-    // except the one that cannot share a run (`SecretAction::ResolveEnv` feeds
-    // the collector that triggers a late env regeneration, so it is pinned by
-    // `a_resolve_env_action_emits_one_line`): if any comes back, this run emits
-    // more lines than actions.
+    // except the two that cannot share a run: `SecretAction::ResolveEnv` feeds
+    // the collector that triggers a late env regeneration (pinned by
+    // `a_resolve_env_action_emits_one_line`), and a module skipped whole emits
+    // no line at all (`a_module_skipped_whole_is_counted_by_no_surface`). If
+    // any of the rest comes back, this run emits more lines than actions.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
@@ -26324,13 +26423,6 @@ fn every_action_emits_exactly_one_line() {
             kind: ModuleActionKind::DeployFiles {
                 files: vec![],
                 declared_total: 0,
-            },
-            origin: None,
-        }),
-        Action::Module(ModuleAction {
-            module_name: "nvim".to_string(),
-            kind: ModuleActionKind::Skip {
-                reason: "encryption mode Always incompatible".to_string(),
             },
             origin: None,
         }),

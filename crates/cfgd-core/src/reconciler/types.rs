@@ -1033,16 +1033,21 @@ impl Phase {
 
 /// How many of `actions` an apply will ATTEMPT.
 ///
-/// An action [`Action::pre_skip_reason`] answers for is still LISTED — its row
-/// says why it cannot run here — and is never counted. This is the ONE spelling
-/// of that filter: [`Phase::action_count`] (and through it
-/// [`Plan::total_actions`]) counts a whole plan with it, and a caller holding a
-/// scoped subtree counts the same subset the same way, so a plan's footer, its
+/// Two shapes are excluded. An action [`Action::pre_skip_reason`] answers for is
+/// still LISTED — its row says why it cannot run here — and is never counted. A
+/// module skipped whole ([`is_module_skip`]) is not listed either: the header's
+/// `Modules` row states the skip and its reason once, both trees omit the phase
+/// holding it, and the executor never dispatches it, so counting it would
+/// promise a row no reader can see.
+///
+/// This is the ONE spelling of that filter: [`Phase::action_count`] (and through
+/// it [`Plan::total_actions`]) counts a whole plan with it, and a caller holding
+/// a scoped subtree counts the same subset the same way, so a plan's footer, its
 /// `-o json` total and the apply's tally cannot price one plan three ways.
 pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usize {
     actions
         .into_iter()
-        .filter(|a| a.pre_skip_reason().is_none())
+        .filter(|a| a.pre_skip_reason().is_none() && !is_module_skip(a))
         .count()
 }
 
@@ -1101,25 +1106,15 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// The actions this run promises to attempt, and the number its apply
+    /// tallies against.
+    ///
+    /// Neither a pre-skipped action nor a module skipped whole is one, for the
+    /// two different reasons [`attempted_count`] states. The `-o json` payload
+    /// still carries every action under its phase, kind and reason included:
+    /// only the COUNTS drop them.
     pub fn total_actions(&self) -> usize {
         self.phases.iter().map(|p| p.action_count()).sum()
-    }
-
-    /// The actions that stand for a FINDING — every attempted action except a
-    /// module `Skip`.
-    ///
-    /// [`total_actions`](Self::total_actions) is the plan/apply promise: what a
-    /// run will list and tally, the skip included, because the plan renders it
-    /// as a planned, skipped action. A module skipped whole probed nothing, so
-    /// [`action_drift_rows`] mints no row for it and a drift count that
-    /// included it would report divergence no verb can settle.
-    pub fn drift_action_count(&self) -> usize {
-        attempted_count(
-            self.phases
-                .iter()
-                .flat_map(|p| p.actions())
-                .filter(|a| !is_module_skip(a)),
-        )
     }
 
     /// Every action the plan's tree prints a ROW for: every phase but
@@ -1127,11 +1122,10 @@ impl Plan {
     ///
     /// The coverage is [`super::PhaseCoverage::Rendered`]'s — a module skipped
     /// whole is annotated by the header's `Modules` row rather than drawn as a
-    /// block, so counting it here would name a row no reader can see. Neither
-    /// [`total_actions`](Self::total_actions) nor
-    /// [`drift_action_count`](Self::drift_action_count) answers this either:
-    /// both drop what the host already declined, and the tree prints it. A
-    /// sentence closing a run whose BODY is that tree counts against this.
+    /// block, so counting it here would name a row no reader can see.
+    /// [`total_actions`](Self::total_actions) does not answer this either: it
+    /// drops what the host already declined, and the tree prints it. A sentence
+    /// closing a run whose BODY is that tree counts against this.
     pub fn listed_action_count(&self) -> usize {
         self.phases
             .iter()
