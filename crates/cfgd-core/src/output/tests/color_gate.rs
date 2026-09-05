@@ -134,6 +134,50 @@ fn a_live_row_paints_no_escape_onto_a_colourless_stream() {
     }
 }
 
+/// The progress bar is the second escape writer, and answers to the same
+/// decision — through every preset, and through the PRODUCTION entry point.
+///
+/// indicatif resolves a template's style fields itself, against `console`'s
+/// colour flags rather than the printer's decision, so the template has to
+/// carry that decision. It carried it by half: the colourless arm kept
+/// `{bar:30./dim}` on the theory that `dim` is an attribute and `NO_COLOR`
+/// governs colour alone, and so wrote `\x1b[2m` into a stream the printer had
+/// decided against. Filled and empty are told apart by `progress_chars` now,
+/// which both templates share, so nothing is lost by spending no escape.
+#[test]
+#[serial_test::serial]
+fn a_progress_bar_paints_no_escape_onto_a_colourless_stream() {
+    // A style token resolves through `console`'s process-global flags, so with
+    // them off the template's tokens vanish on their own and the walk proves
+    // nothing about the template. Turn them ON, as the reported condition was.
+    let _terminal = crate::output::printer::ColorGlobalOn::set();
+
+    let colors = ColorChoice::Never.resolve(&OutputFormat::Table);
+    assert!(!colors, "ColorChoice::Never must resolve to no colour");
+    for name in Theme::PRESET_NAMES {
+        let (p, buf) =
+            Printer::for_test_with_live_bars_themed(Theme::from_preset(name).with_colors(colors));
+        {
+            let bar = p.progress_bar(4, "installing");
+            bar.bar.set_position(2);
+            bar.bar.tick();
+        }
+        let out = raw(&buf);
+        assert!(
+            out.contains("2/4"),
+            "preset {name}'s bar did not draw at all: {out:?}"
+        );
+        assert!(
+            !out.contains('\u{1b}'),
+            "preset {name}'s bar wrote an escape onto a colourless stream: {out:?}"
+        );
+        assert!(
+            out.contains('█') && out.contains('░'),
+            "preset {name}'s bar lost the glyph contrast that replaces `dim`: {out:?}"
+        );
+    }
+}
+
 /// Every escape `output/` writes comes from the gate, or says why not.
 ///
 /// The gate is `ThemedStyle::apply_to`'s `Display` (`theme.rs`), the one place
@@ -158,10 +202,34 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
         }
     }
 
-    // The escape a WRITER emits: the introducer plus its CSI/OSC bracket. A
-    // reader comparing a bare `\u{1b}` char (the strippers, the wrapper's
-    // width scan) is not writing one and is deliberately not matched.
-    const WRITES: &[&str] = &["\\x1b[", "\\x1b]", "\\u{1b}[", "\\u{1b}]"];
+    // The CLASS, not one spelling of it. An escape reaches a stream as a
+    // literal in any of Rust's notations, as the raw byte, or through a
+    // library that writes one on the caller's behalf: indicatif resolves a
+    // template's style fields into SGR, and `console::Style` is the crate the
+    // gate wraps. Reading one is matched too — a comparison against a bare
+    // `\u{1b}` is how a stripper is spelled, and a stripper that stopped
+    // agreeing with the gate is the same defect from the other side — so those
+    // sites carry a hatch saying which half they are.
+    const WRITES: &[&str] = &[
+        "\\x1b",
+        "\\x1B",
+        "\\u{1b}",
+        "\\u{1B}",
+        "0x1b",
+        "0x1B",
+        "27u8",
+        "ESC",
+        "ProgressStyle::with_template",
+        ".template(",
+        "console::Style",
+        "Style::new()",
+    ];
+    // Applying a `ThemedStyle` IS passing through the gate: `apply_to` returns
+    // the `StyledText` whose `Display` holds the colour decision, so a line
+    // spelling it is the sanctioned mechanism rather than a bypass. Counted,
+    // not hatched — a walk that demanded a hatch on every painter would put
+    // sixty of them in `output/` and stop meaning anything.
+    const GATED: &str = ".apply_to(";
     const HATCH: &str = "// style-gate-ok:";
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output");
@@ -174,6 +242,7 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
         root.display()
     );
 
+    let mut gated = 0usize;
     let mut hatched = 0usize;
     let mut offenders = Vec::new();
     for path in &files {
@@ -191,10 +260,11 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
             if code.starts_with("//") {
                 continue;
             }
-            let writes_escape = WRITES.iter().any(|needle| line.contains(needle));
-            let applies_console_style =
-                line.contains("console::Style") || line.contains("Style::new()");
-            if !writes_escape && !applies_console_style {
+            if line.contains(GATED) {
+                gated += 1;
+                continue;
+            }
+            if !WRITES.iter().any(|needle| line.contains(needle)) {
                 continue;
             }
             // The hatch is read off the contiguous comment block above the
@@ -224,11 +294,17 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
         "an escape reached a stream without passing the colour gate:\n{}",
         offenders.join("\n")
     );
-    // A floor, so a walk that stopped matching anything cannot pass silently:
-    // the cursor's show/hide sequences, the OSC 8 composer and the emulated
-    // terminal's mode change are the standing hatches.
+    // Floors, so a walk that stopped matching anything cannot pass silently.
+    // Every painter under `output/` reaches bytes through `apply_to`, so the
+    // gated count is in the dozens; the hatches are the cursor's show/hide
+    // sequences, the OSC 8 composer, the emulated terminal's mode change, the
+    // two strippers and the three indicatif templates.
     assert!(
-        hatched >= 3,
+        gated > 40,
+        "the walk matched {gated} gated painters; it has stopped seeing them"
+    );
+    assert!(
+        hatched >= 8,
         "the walk matched {hatched} hatched sites; it has stopped seeing the escapes it guards"
     );
 }

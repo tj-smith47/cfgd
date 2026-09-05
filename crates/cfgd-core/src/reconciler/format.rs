@@ -211,6 +211,13 @@ pub fn format_action_description(action: &Action) -> String {
             ModuleActionKind::Skip { .. } => {
                 format!("module:{}:skip", ma.module_name)
             }
+            ModuleActionKind::FilesRefused { .. } => {
+                format!(
+                    "module:{}:{}",
+                    ma.module_name,
+                    super::MODULE_FACET_FILES_REFUSED
+                )
+            }
         },
         Action::Env(ea) => match ea {
             EnvAction::WriteEnvFile { path, .. } => {
@@ -844,6 +851,11 @@ fn format_module_action_body(action: &ModuleAction) -> String {
         }
         ModuleActionKind::Skip { reason } => {
             format!("skip: {reason}")
+        }
+        // The refusal's own sentence, in the shape every other refusal takes
+        // (`ManagerAction::Refuse`): what cfgd will not do, then why.
+        ModuleActionKind::FilesRefused { reason } => {
+            format!("cannot deploy files — {reason}")
         }
     }
 }

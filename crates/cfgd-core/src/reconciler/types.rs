@@ -505,9 +505,32 @@ pub enum ModuleActionKind {
         script: ScriptEntry,
         phase: ScriptPhase,
     },
-    /// Skip a module (dependency not met, user declined, etc.).
+    /// The HOST declined this module whole — a platform gate answered before
+    /// any of its work was priced. Nothing under it was probed, so it is
+    /// counted nowhere: the header's `Modules` row states the skip and its
+    /// reason once, neither tree draws a row, and no apply dispatches it.
     Skip { reason: String },
+    /// This module's FILE work is refused — an encryption demand its strategy
+    /// cannot honour, a source that is not encrypted, an encryption check that
+    /// could not run. The module itself is fine and its other phases proceed;
+    /// only the deploy is withheld.
+    ///
+    /// Unlike [`ModuleActionKind::Skip`] this is a finding the reader must act
+    /// on, so it is an ACTION ROW everywhere: the header counts it, both trees
+    /// draw it at [`crate::output::Role::Warn`], and the apply settles it as a
+    /// skip carrying `reason` as its detail. It manages no resource and mints
+    /// no drift row — cfgd refused to touch the files rather than finding them
+    /// diverged.
+    FilesRefused { reason: String },
 }
+
+/// The facet a refused file deploy's tracking id carries
+/// ([`ModuleActionKind::FilesRefused`]), the sibling of `skip`'s.
+///
+/// Both name a module row that stands for NO resource on the machine, which is
+/// why `record_managed_resources` writes neither and no live check re-mints
+/// one.
+pub const MODULE_FACET_FILES_REFUSED: &str = "files-refused";
 
 /// System configuration action.
 #[derive(Debug, Serialize)]
@@ -1035,7 +1058,7 @@ impl Phase {
 ///
 /// Two shapes are excluded. An action [`Action::pre_skip_reason`] answers for is
 /// still LISTED — its row says why it cannot run here — and is never counted. A
-/// module skipped whole ([`is_module_skip`]) is not listed either: the header's
+/// module skipped whole ([`module_skipped_whole`]) is not listed either: the header's
 /// `Modules` row states the skip and its reason once, both trees omit the phase
 /// holding it, and the executor never dispatches it, so counting it would
 /// promise a row no reader can see.
@@ -1047,7 +1070,7 @@ impl Phase {
 pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usize {
     actions
         .into_iter()
-        .filter(|a| a.pre_skip_reason().is_none() && !is_module_skip(a))
+        .filter(|a| a.pre_skip_reason().is_none() && !module_skipped_whole(a))
         .count()
 }
 
@@ -1550,26 +1573,29 @@ impl DriftRow {
 /// [`apply_heals_action_rows`] holds them back from the heal. They are cleared
 /// by the tick's own complement, when a later plan stops carrying the skip.
 ///
-/// `ModuleActionKind::Skip` is the one Skip that mints NO row. The other four
-/// name a resource cfgd probed and could not converge; a module skipped whole
-/// (a platform gate, an encryption incompatibility) was never probed at all, so
-/// there is nothing under it to diverge. That is why the tick keeps the rows
+/// The two module kinds that mint NO row are `ModuleActionKind::Skip` and
+/// `ModuleActionKind::FilesRefused`. The other four Skips name a resource cfgd
+/// probed and could not converge; a module the host declined whole was never
+/// probed at all, and a refused file deploy is cfgd declining to touch the
+/// files rather than finding them diverged — in neither case is there anything
+/// under it to report as divergence. That is why the tick keeps the rows
 /// standing under such a module rather than re-finding them
 /// (`daemon::reconcile`'s `tick_cannot_refind`), and why no CLI check can
-/// re-mint a `<name>:skip` row: a gate is information, not divergence. The plan
-/// and the apply still list the skip as a planned, skipped action.
+/// re-mint a `<name>:skip` row: a gate is information, not divergence. Both
+/// kinds are still LISTED — the refusal as a counted action row, the host
+/// decline as the header's `Modules` clause.
 pub fn action_drift_rows(
     action: &Action,
     registry: &crate::providers::ProviderRegistry,
 ) -> Vec<DriftRow> {
-    if action.pre_skip_reason().is_some() || is_module_skip(action) {
+    if action.pre_skip_reason().is_some() || module_skipped_whole(action) {
         return Vec::new();
     }
     match action {
         Action::Module(ma) => match &ma.kind {
-            // Settled by the guard above; the arm is what keeps the match
-            // exhaustive over `ModuleActionKind`.
-            ModuleActionKind::Skip { .. } => Vec::new(),
+            // `Skip` is settled by the guard above; both arms are what keep
+            // the match exhaustive over `ModuleActionKind`.
+            ModuleActionKind::Skip { .. } | ModuleActionKind::FilesRefused { .. } => Vec::new(),
             ModuleActionKind::DeployFiles { files, .. } => files
                 .iter()
                 .map(|f| {
@@ -1716,8 +1742,8 @@ fn presence_drift_rows<'a>(
 /// nothing about it. Resolving those rows on a skip would report a machine
 /// converged by the very run that declined to touch it.
 ///
-/// `ModuleActionKind::Skip` is held back as a belt: [`action_drift_rows`] mints
-/// no row for it at all, so the heal it would perform is over an empty set.
+/// The two module kinds are held back as a belt: [`action_drift_rows`] mints no
+/// row for either, so the heal each would perform is over an empty set.
 #[must_use]
 pub fn apply_heals_action_rows(action: &Action) -> bool {
     !matches!(
@@ -1726,15 +1752,24 @@ pub fn apply_heals_action_rows(action: &Action) -> bool {
             | Action::System(SystemAction::Skip { .. })
             | Action::Secret(SecretAction::Skip { .. })
             | Action::File(FileAction::Skip { .. })
-    ) && !is_module_skip(action)
+            | Action::Module(ModuleAction {
+                kind: ModuleActionKind::FilesRefused { .. },
+                ..
+            })
+    ) && !module_skipped_whole(action)
 }
 
-/// Whether this action is a module skipped WHOLE.
+/// Whether the HOST declined this module whole — [`ModuleActionKind::Skip`] and
+/// nothing else.
 ///
 /// The one spelling every reader of that fact shares: the count that prices a
-/// tick's drift, the heal predicate, and `action_drift_rows`' own arm.
+/// tick's drift, the heal predicate, `action_drift_rows`' own arm and the
+/// apply's dispatch guard. A refused file deploy
+/// ([`ModuleActionKind::FilesRefused`]) is deliberately NOT this: it is work
+/// the reader must see, counted and drawn like any other action, and folding it
+/// in here is what made it vanish from the apply.
 #[must_use]
-pub fn is_module_skip(action: &Action) -> bool {
+pub fn module_skipped_whole(action: &Action) -> bool {
     matches!(
         action,
         Action::Module(ModuleAction {

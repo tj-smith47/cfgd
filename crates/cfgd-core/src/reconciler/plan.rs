@@ -35,12 +35,10 @@ type ManagerOrder<'a> = (
 
 /// The phase a module action belongs to.
 ///
-/// Total: every variant returns a phase and nothing panics. `Skip` is the one
-/// kind whose phase the *emit site* decides — `plan_modules` emits a
-/// platform-gated skip and a file-encryption skip from different places and
-/// only `plan_modules` can tell them apart — and its arm here answers with the
-/// meta phase, the answer that is correct for the only `Skip` a caller could
-/// route through this function by mistake.
+/// Total, and the ONE answer: every variant returns a phase and nothing panics,
+/// so no emit site names a phase of its own. The two refusals used to share a
+/// variant whose phase only `plan_modules` could tell apart, which is how a
+/// refused file deploy inherited the meta phase's "counted nowhere" treatment.
 fn phase_for_module_kind(kind: &ModuleActionKind) -> PhaseName {
     match kind {
         ModuleActionKind::RunScript { phase, .. } => match phase {
@@ -58,25 +56,18 @@ fn phase_for_module_kind(kind: &ModuleActionKind) -> PhaseName {
         },
         ModuleActionKind::InstallPackages { .. } => PhaseName::Packages,
         ModuleActionKind::DeployFiles { .. } => PhaseName::Files,
+        // The refusal is FILE work withheld, so it stays attached to the phase
+        // that work belongs to; a module the host declined whole names the meta
+        // phase rather than the phase of any work it would have done.
+        ModuleActionKind::FilesRefused { .. } => PhaseName::Files,
         ModuleActionKind::Skip { .. } => PhaseName::Modules,
     }
 }
 
 /// Build a module action tagged with the phase its kind routes to.
 fn routed(module: &ResolvedModule, kind: ModuleActionKind) -> (PhaseName, Action) {
-    routed_to(module, phase_for_module_kind(&kind), kind)
-}
-
-/// Build a module action tagged with an explicitly named phase — the emit-site
-/// form, for the two `Skip` shapes whose phase only the emit site can tell
-/// apart.
-fn routed_to(
-    module: &ResolvedModule,
-    phase: PhaseName,
-    kind: ModuleActionKind,
-) -> (PhaseName, Action) {
     (
-        phase,
+        phase_for_module_kind(&kind),
         Action::Module(ModuleAction::with_origin(
             module.name.clone(),
             kind,
@@ -629,9 +620,8 @@ impl<'a> super::Reconciler<'a> {
             // whole module that is gated off this host, so it names the meta
             // phase rather than the phase of any work it would have done.
             if let Some(reason) = &module.platform_skip_reason {
-                actions.push(routed_to(
+                actions.push(routed(
                     module,
-                    PhaseName::Modules,
                     ModuleActionKind::Skip {
                         reason: reason.clone(),
                     },
@@ -762,12 +752,9 @@ impl<'a> super::Reconciler<'a> {
                                     | crate::config::FileStrategy::Hardlink
                             )
                         {
-                            // This module's FILE work cannot proceed — the skip
-                            // stays attached to the phase that work belongs to.
-                            body.push(routed_to(
+                            body.push(routed(
                                 module,
-                                PhaseName::Files,
-                                ModuleActionKind::Skip {
+                                ModuleActionKind::FilesRefused {
                                     reason: format!(
                                         "encryption mode Always incompatible with {:?} for {}",
                                         strategy,
@@ -782,25 +769,23 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    body.push(routed_to(
+                                    body.push(routed(
                                         module,
-                                        PhaseName::Files,
-                                        ModuleActionKind::Skip {
+                                        ModuleActionKind::FilesRefused {
                                             reason: format!(
                                                 "file {} requires encryption (backend: {}) but is not encrypted",
                                                 file.source.posix(),
                                                 enc.backend
                                             ),
-                                        },
+                                    },
                                     ));
                                     encryption_ok = false;
                                     break;
                                 }
                                 Err(e) => {
-                                    body.push(routed_to(
+                                    body.push(routed(
                                         module,
-                                        PhaseName::Files,
-                                        ModuleActionKind::Skip {
+                                        ModuleActionKind::FilesRefused {
                                             reason: format!(
                                                 "encryption check failed for {}: {}",
                                                 file.source.posix(),

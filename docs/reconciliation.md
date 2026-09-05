@@ -346,8 +346,8 @@ configurator this host does not have) keeps its row through an apply: the run di
 not converge it, so nothing about it was proven. The next reconcile that can check
 it is what clears it.
 
-A module skipped whole (a platform gate, an encryption backend this host cannot
-read) records no row at all, because nothing under it was probed: the skip says
+A module skipped whole (a platform gate) records no row at all, because nothing
+under it was probed: the skip says
 something about the host, not about a resource that diverged. Neither tree draws
 a block for it: the header's `Modules` row names it and the reason
 (`Modules  git, nvim (mac skipped: platform not matched (requires: macos))`),
@@ -356,6 +356,25 @@ nowhere either: the header's `Actions N planned`, the apply's rollup clauses and
 that closing count all price the actions this run will attempt, and a module
 skipped whole is not one. `-o json` still lists the skip under its phase, with
 its kind and reason.
+
+A module whose FILE work is refused is the opposite case, and reads differently
+on purpose. When an entry declares `encryption.mode: Always` under a `Symlink`
+or `Hardlink` strategy, or its source is not encrypted with the declared
+backend, or the encryption check cannot run, cfgd will not deploy that module's
+files — but the module itself is fine and its other phases proceed. That is a
+finding you have to act on, so it is an action row like any other: counted by
+`Actions N planned`, drawn under `Phase: Files` in both trees with its reason,
+and settled by the apply as a warning-roled skip the rollup counts.
+
+```
+Phase: Files
+  profile: work
+    ⚠ cannot deploy files — file secrets/id_rsa requires encryption (backend: sops) but is not encrypted
+```
+
+It still records nothing: cfgd refused to write the files rather than finding
+them diverged, so there is no `Managed Resources` row and no drift row under it.
+`-o json` spells it as its own action kind (`refuse`).
 
 The same holds for an action this host declined outright — the live-session
 publish on a box with no session manager. It is drawn in the plan and apply

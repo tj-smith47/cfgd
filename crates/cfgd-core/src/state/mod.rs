@@ -605,14 +605,26 @@ const MIGRATIONS: &[&str] = &[
     // migration 23's reasoning, and deleting its tracking row by migration
     // 9's: a module row is bookkeeping the next apply re-derives, carrying no
     // `uninstall_cmd` for anything to act on.
+    //
+    // The predicate is `module_row_facet`'s, spelled in SQL: that reader judges
+    // the FIRST separator, so only `<name>:skip` with no earlier `:` or `/` is
+    // a skip row. A `GLOB '*:skip'` is broader and would resolve a row whose
+    // own grammar happens to end in those five characters
+    // (`mod:extra:skip`, `mod/path:skip`) — rows this migration was never
+    // about, and which no producer of a skip row can mint.
     "UPDATE drift_events
          SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE resource_type = 'module'
-         AND resource_id GLOB '*:skip'
+         AND resource_id LIKE '%:skip'
+         AND instr(resource_id, ':') = length(resource_id) - 4
+         AND instr(resource_id, '/') = 0
          AND resolved_by IS NULL AND resolved_at IS NULL;
 
      DELETE FROM managed_resources
-       WHERE resource_type = 'module' AND resource_id GLOB '*:skip';",
+       WHERE resource_type = 'module'
+         AND resource_id LIKE '%:skip'
+         AND instr(resource_id, ':') = length(resource_id) - 4
+         AND instr(resource_id, '/') = 0;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

@@ -147,17 +147,20 @@ mod tests {
         assert_ne!(colon, theme.accent.apply_to(":").to_string());
     }
 
-    /// Colour off drops the colour-only slots to bare text, while the label
-    /// slot's bold survives: bold is an attribute, not a colour, and
-    /// attributes are load-bearing under `--no-color` (per no-color.org, the
-    /// same rule every other heading renders by).
+    /// Colour off drops every slot to bare text — the label's bold included.
+    /// An attribute reaches the terminal as an escape exactly like a colour
+    /// does, and `--color never` / `NO_COLOR` promise a stream carrying none.
     #[test]
-    fn colour_disabled_keeps_only_the_label_attrs() {
+    fn colour_disabled_drops_every_slots_escapes() {
         let theme = Theme::from_preset("dracula").with_colors(false);
         let styled = TitleLabel::new("Module", "vim-config").styled(&theme);
-        assert_eq!(strip_ansi(&styled), "Module: vim-config");
-        let label = theme.header.apply_to("Module").to_string();
-        assert_eq!(styled, format!("{label}: vim-config"));
+        assert_eq!(styled, "Module: vim-config");
+        // Not vacuous: the same heading really is painted with colour on, and
+        // the label slot really does spend an attribute there.
+        let on = Theme::from_preset("dracula").with_colors(true);
+        let painted = TitleLabel::new("Module", "vim-config").styled(&on);
+        assert!(painted.contains('\u{1b}'), "got {painted:?}");
+        assert_eq!(strip_ansi(&painted), "Module: vim-config");
     }
 
     /// Correlates the `:` and ` <value>` halves directly against

@@ -21,7 +21,7 @@ use super::sidecar::SidecarOutcome;
 use super::types::{
     Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
-    ReconcileContext, ScriptAction, ScriptPhase, SystemAction, is_module_skip,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction, module_skipped_whole,
 };
 use crate::providers::{
     ActionNote, FileAction, NoteSink, PackageAction, ProviderRegistry, SecretAction,
@@ -329,6 +329,13 @@ fn declared_noop_role(action: &Action) -> Option<Role> {
             kind: ModuleActionKind::Skip { .. },
             ..
         }) => Some(Role::Skipped),
+        // A refused file deploy is a finding the reader must act on — an
+        // encryption demand nothing on this host can honour — so it warns
+        // rather than reading as ordinary withheld work.
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::FilesRefused { .. },
+            ..
+        }) => Some(Role::Warn),
         _ => None,
     }
 }
@@ -1231,7 +1238,7 @@ impl<'a> super::Reconciler<'a> {
                 // not work: the tree draws no row for it and the plan promised
                 // none, so dispatching it would settle an outcome and a
                 // `skipped` tally against a row nobody saw.
-                if is_module_skip(action) {
+                if module_skipped_whole(action) {
                     continue;
                 }
                 let next = plan_positions.len();
@@ -2149,12 +2156,17 @@ impl<'a> super::Reconciler<'a> {
                 None => description,
             };
             let (rtype, rid) = parse_resource_from_description(description);
-            // A module skipped whole was never probed, so the run manages
-            // nothing under it and heals nothing: the skip is information about
-            // this host (a platform gate, an encryption incompatibility), not a
-            // resource cfgd put on the machine. The sibling of the
+            // Neither module row stands for a resource on the machine: a
+            // module the host declined whole was never probed, and a refused
+            // file deploy is cfgd declining to write rather than something it
+            // wrote. Both are information about this host. The sibling of the
             // `SYSTEM_SKIPPED_DETAIL` guard above.
-            if rtype == "module" && super::module_row_facet(&rid) == Some("skip") {
+            if rtype == "module"
+                && matches!(
+                    super::module_row_facet(&rid),
+                    Some("skip" | super::MODULE_FACET_FILES_REFUSED)
+                )
+            {
                 continue;
             }
             // The rows this action stands for, from the ONE producer the daemon
@@ -2460,7 +2472,7 @@ impl<'a> super::Reconciler<'a> {
             skipped: success
                 && not_attempted.is_none()
                 && !action_reports_its_own_status(action)
-                && settled_success_role(action, action_changed) == Role::Skipped,
+                && settled_success_role(action, action_changed) != Role::Ok,
             not_attempted,
             // Only when the run landed FEWER than it named: the description
             // beside it is the planned set, so an equal count restates it.

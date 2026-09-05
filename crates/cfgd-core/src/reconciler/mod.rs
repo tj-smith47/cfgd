@@ -87,10 +87,10 @@ pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
     Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP,
-    ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, ManagerAction, ModuleAction, ModuleActionKind,
-    Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
-    action_drift_rows, apply_heals_action_rows, attempted_count, is_module_skip,
+    ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, MODULE_FACET_FILES_REFUSED, ManagerAction,
+    ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
+    Plan, ReconcileContext, RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction,
+    Tier, action_drift_rows, apply_heals_action_rows, attempted_count, module_skipped_whole,
     package_action_drift_rows, package_drift_resource_id, package_entry_drift_id,
     split_package_drift_resource_id,
 };

@@ -276,6 +276,8 @@ pub(crate) fn wrap_segment(
     let mut chars = body.chars().peekable();
 
     while let Some(c) = chars.next() {
+        // style-gate-ok: the wrapper READS an escape to price it at zero
+        // columns and copies it through unchanged; it writes none of its own.
         if c == '\u{1b}' {
             // An escape occupies no columns, so it is copied verbatim and the
             // width accounting skips it entirely. The `[` introducing a CSI is
@@ -307,6 +309,8 @@ pub(crate) fn wrap_segment(
                     if esc == '\u{07}' {
                         break;
                     }
+                    // style-gate-ok: still reading — the OSC string
+                    // terminator, copied through with the rest.
                     if esc == '\u{1b}' && chars.peek() == Some(&'\\') {
                         if let Some(st) = chars.next() {
                             current.push(st);

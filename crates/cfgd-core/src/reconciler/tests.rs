@@ -7564,7 +7564,8 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
                 ModuleActionKind::InstallPackages { .. }
                 | ModuleActionKind::DeployFiles { .. }
                 | ModuleActionKind::RunScript { .. }
-                | ModuleActionKind::Skip { .. } => {
+                | ModuleActionKind::Skip { .. }
+                | ModuleActionKind::FilesRefused { .. } => {
                     assert_eq!(rtype, "module");
                     assert!(
                         !rid.contains('/'),
@@ -13943,13 +13944,13 @@ fn plan_modules_encryption_always_with_symlink_skips() {
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
-            ModuleActionKind::Skip { reason } => {
+            ModuleActionKind::FilesRefused { reason } => {
                 assert!(
                     reason.contains("encryption mode Always incompatible"),
                     "got: {reason}"
                 );
             }
-            other => panic!("Expected Skip, got {:?}", other),
+            other => panic!("Expected FilesRefused, got {:?}", other),
         },
         other => panic!("Expected Module action, got {:?}", other),
     }
@@ -14126,10 +14127,10 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
-            ModuleActionKind::Skip { reason } => {
+            ModuleActionKind::FilesRefused { reason } => {
                 assert!(reason.contains("encryption check failed"), "got: {reason}");
             }
-            other => panic!("Expected Skip, got {:?}", other),
+            other => panic!("Expected FilesRefused, got {:?}", other),
         },
         other => panic!("Expected Module action, got {:?}", other),
     }
@@ -14207,8 +14208,8 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
     assert!(
         kinds
             .iter()
-            .any(|k| matches!(k, ModuleActionKind::Skip { reason } if reason.contains("encryption check failed"))),
-        "must emit Skip with check-failed reason"
+            .any(|k| matches!(k, ModuleActionKind::FilesRefused { reason } if reason.contains("encryption check failed"))),
+        "must emit FilesRefused with check-failed reason"
     );
     assert!(
         !kinds
@@ -14268,13 +14269,13 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
-            ModuleActionKind::Skip { reason } => {
+            ModuleActionKind::FilesRefused { reason } => {
                 assert!(
                     reason.contains("requires encryption") && reason.contains("not encrypted"),
                     "got: {reason}"
                 );
             }
-            other => panic!("Expected Skip, got {:?}", other),
+            other => panic!("Expected FilesRefused, got {:?}", other),
         },
         other => panic!("Expected Module action, got {:?}", other),
     }
@@ -26015,6 +26016,123 @@ fn a_module_skipped_whole_is_counted_by_no_surface() {
             .iter()
             .any(|a| a.contains("wsl-tools") && a.contains("platform not matched")),
         "the skip and its reason still travel on the wire: {kinds:?}"
+    );
+}
+
+/// A refused file deploy is an ACTION ROW on every surface — the opposite of
+/// the module skipped whole above, and the reason the two stopped sharing a
+/// variant.
+///
+/// The host declining a module whole probed nothing and is counted nowhere.
+/// Refusing a module's FILE work is a finding the reader must act on: an
+/// encryption demand no strategy on this host can honour leaves declared files
+/// undeployed, and folding it into the same variant made it uncounted in the
+/// plan and invisible in the apply. So the header counts it, both trees draw
+/// it with its reason, the apply settles it as a skip, and `-o json` carries
+/// its own kind. It still manages no resource and mints no drift row — cfgd
+/// refused to write, it did not find the files diverged.
+#[test]
+fn a_refused_file_deploy_is_a_row_on_every_surface() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let reason = "file secrets/id_rsa requires encryption (backend: sops) but is not encrypted";
+    let refusal = || {
+        Action::Module(ModuleAction {
+            module_name: "ssh".to_string(),
+            kind: ModuleActionKind::FilesRefused {
+                reason: reason.to_string(),
+            },
+            origin: None,
+        })
+    };
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Files, &Owner::profile("work"), vec![refusal()]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![install_action("brew", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    assert_eq!(
+        plan.total_actions(),
+        2,
+        "the refusal is counted like any other action"
+    );
+    assert_eq!(plan.listed_action_count(), 2, "and drawn like one");
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let tree = crate::output::strip_ansi(&cap.human());
+    assert!(
+        tree.contains("cannot deploy files") && tree.contains(reason),
+        "the plan tree draws the refusal with its reason: {tree}"
+    );
+
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    assert_eq!(result.planned_total, 2);
+    assert!(
+        out.contains("cannot deploy files") && out.contains(reason),
+        "the apply prints the refusal too: {out}"
+    );
+    assert_eq!(
+        result.skipped(),
+        1,
+        "and settles it as a skip the rollup counts: {out}"
+    );
+    assert_eq!(
+        result.succeeded() + result.skipped() + result.failed(),
+        2,
+        "the rollup's clauses sum to what was planned: {out}"
+    );
+
+    // A row the reader must act on: the apply paints it at `Warn`, not at the
+    // neutral `Skipped` a module the host declined would have taken.
+    let theme = crate::output::Theme::default();
+    let (warn, _) = crate::output::renderer::role_glyph(&theme, crate::output::Role::Warn);
+    let warn = warn.expect("the Warn role carries a glyph");
+    let painted = out
+        .lines()
+        .find(|l| l.contains("cannot deploy files"))
+        .unwrap_or_else(|| panic!("no refusal row in:\n{out}"));
+    assert!(
+        painted.trim_start().starts_with(warn),
+        "the refusal row wears the Warn glyph {warn:?}: {painted:?}"
+    );
+
+    // It manages nothing and finds nothing: no tracking row, no drift row.
+    assert!(
+        crate::reconciler::action_drift_rows(&refusal(), &registry).is_empty(),
+        "a refusal mints no drift row"
+    );
+    assert!(
+        !crate::reconciler::apply_heals_action_rows(&refusal()),
+        "and heals none either"
+    );
+    let tracked: Vec<String> = state
+        .managed_resources()
+        .expect("managed resources")
+        .into_iter()
+        .map(|r| r.resource_id)
+        .collect();
+    assert!(
+        !tracked.iter().any(|r| r.contains("ssh")),
+        "the refusal put nothing on the machine to track: {tracked:?}"
+    );
+
+    // The wire spells the new kind under its own phase.
+    let payload = serde_json::to_value(&plan).expect("plan serializes");
+    let wire = payload.to_string();
+    assert!(
+        wire.contains("FilesRefused") && wire.contains(reason),
+        "the refusal and its reason travel on the wire: {wire}"
     );
 }
 
