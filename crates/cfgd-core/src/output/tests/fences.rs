@@ -2426,8 +2426,8 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
 #[test]
 fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
     let source = concat!(
-        "// env-mutator-uncalled-ok: not on the roster's own line.\n",
         "const ENV_MUTATION_SEEDS: &[&str] = &[\n",
+        "    // env-mutator-uncalled-ok: a hatch beside the OTHER table.\n",
         "    \"env::set_var\",\n",
         "];\n",
         "\n",
