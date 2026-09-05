@@ -475,10 +475,17 @@ fn strip_ansi(s: &str) -> String {
 ///
 /// Windows plans a different SET of rows, which is why the gate is on the
 /// whole test rather than on a substituted span: the POSIX plan writes
-/// `~/.cfgd.env` and injects a source line into `~/.bashrc`, two actions;
-/// Windows writes a PowerShell profile and injects nothing into an rc file
-/// no shell there reads, so the rows the golden holds in order, and the
-/// `2 actions planned` counting them, are not the rows that render. A
+/// `~/.cfgd.env` and injects a source line into `~/.bashrc`, two actions.
+/// Windows writes `~/.cfgd-env.ps1` and injects the same dot-source line into
+/// TWO profiles — `Documents/PowerShell/Microsoft.PowerShell_profile.ps1` and
+/// `Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1`, the second
+/// and third targets `env_engine::windows_targets` pushes, each of which
+/// `reconciler::env` turns into its own inject action against a fresh home
+/// holding neither file. That is three rows against the golden's two, sharing
+/// no target with them, so neither the rows the golden holds in order nor the
+/// `2 actions planned` counting them survive the platform. The probe's
+/// `git_bash_present: false` is what keeps it at three: Git Bash present, that
+/// same host plans the POSIX pair on top. A
 /// difference of one DIALECT inside an otherwise identical render takes the
 /// other shape instead — `diff_standing_rows_human` keeps its render on every
 /// OS by holding a placeholder in the golden and pinning the dialect beside it

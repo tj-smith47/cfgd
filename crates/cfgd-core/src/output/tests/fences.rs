@@ -508,16 +508,45 @@ fn blank_string_literals(line: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| line.to_string())
 }
 
-/// The code half of a line: everything before a comment-opening `//`, judged
+/// The code half of a line: what is left once its comments are gone, judged
 /// on the literal-blanked line so a `//` inside a string (a URL in an
 /// argument) cannot truncate the code half, and so parens or the word
 /// `stderr` inside a literal cannot join a call's argument text.
+///
+/// A `//` cuts the line; a `/* … */` span is BLANKED byte-for-byte instead,
+/// because code follows a block comment on the same line — the crate spells
+/// its inline argument names that way (`render_section_open(name,
+/// /*keep_when_empty=*/ true)`). Blanking is also what keeps every byte
+/// position found on this rendering indexing the raw line exactly, which the
+/// argument scan relies on, and what keeps a brace between the delimiters from
+/// moving [`function_source`]'s depth.
 fn code_half(line: &str) -> String {
-    let blanked = blank_string_literals(line);
-    match blanked.find("//") {
-        Some(pos) => blanked[..pos].to_string(),
-        None => blanked,
+    let mut bytes = blank_string_literals(line).into_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        match (bytes[i], bytes[i + 1]) {
+            (b'/', b'/') => {
+                bytes.truncate(i);
+                break;
+            }
+            (b'/', b'*') => {
+                // A span with no close on this line OPENS a multi-line
+                // comment, whose remaining lines [`LineMask`] masks: blanking
+                // to the end of the line is the same answer for the part of
+                // that comment the mask never sees.
+                let close = bytes[i + 2..]
+                    .windows(2)
+                    .position(|w| w == b"*/")
+                    .map_or(bytes.len(), |at| i + 2 + at + 2);
+                bytes[i..close].fill(b' ');
+                i = close;
+            }
+            _ => i += 1,
+        }
     }
+    // Every replaced byte is an ASCII space and every delimiter is ASCII, so
+    // the buffer is valid UTF-8 by construction.
+    String::from_utf8(bytes).unwrap_or_else(|_| line.to_string())
 }
 
 /// Whether the construction on `lines[at]` is exempted by a `// <marker> <why>`
@@ -1218,6 +1247,14 @@ impl LineMask {
 /// holding a YAML fixture read as the body of the test above it, which made
 /// that test a member of populations it never joined and judged it on text it
 /// does not contain.
+///
+/// PARTIAL, not total: a declaration whose braces never balance before the
+/// input ends panics out of [`function_source`], which names the line the
+/// declaration opened on and that line's text. Every caller here reads whole
+/// files it does not author, and the alternative — a slice cut at the end of
+/// the input — is a body the walk believes it read and did not, so a desynced
+/// scan stops the test rather than answering from a slice it invented.
+/// `an_unbalanced_declaration_stops_the_walk` holds the contract.
 fn source_functions(body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let mut mask = LineMask::default();
@@ -1266,6 +1303,68 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Whether a line's code half opens a `const` or `static` ITEM rather than a
+/// `const fn`, whatever visibility stands in front of it.
+fn opens_const_item(code: &str) -> bool {
+    let mut t = code.trim_start();
+    if let Some(scope) = t.strip_prefix("pub(") {
+        let Some((_, tail)) = scope.split_once(')') else {
+            return false;
+        };
+        t = tail.trim_start();
+    } else if let Some(rest) = t.strip_prefix("pub ") {
+        t = rest.trim_start();
+    }
+    !opens_function(code) && (t.starts_with("const ") || t.starts_with("static "))
+}
+
+/// The `const` and `static` items a source declares outside every function
+/// body, each paired with its opening line number.
+///
+/// [`source_functions`]' complement over the same file: an item written
+/// between two declarations belongs to no slice, so it is the text every
+/// function-scoped walk here reads not at all. An item runs from its
+/// declaration to the `;` that closes it, counted on
+/// [`LineMask::source_code`] so a `;` inside a literal or a comment ends none,
+/// and only once the bracket depth the declaration opened has come back down —
+/// a `[u8; 4]` in the type would otherwise end the item on its own first line
+/// and hide the initializer this exists to read.
+fn const_items_outside_functions(body: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = body.lines().collect();
+    let in_a_function: Vec<std::ops::RangeInclusive<usize>> = source_functions(body)
+        .iter()
+        // Both ends are 0-based indices of `lines`, off a 1-based opening line
+        // and a slice that always holds at least the declaration itself; the
+        // additions come first, so a one-line declaration at line 1 does not
+        // take the subtraction below zero.
+        .map(|(open, slice)| (open - 1)..=(open + slice.lines().count() - 2))
+        .collect();
+    let mut mask = LineMask::default();
+    let mut out = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut depth = 0i32;
+    for (i, line) in lines.iter().enumerate() {
+        let code = mask.source_code(line);
+        if open.is_none()
+            && opens_const_item(&code)
+            && !in_a_function.iter().any(|r| r.contains(&i))
+        {
+            open = Some(i);
+            depth = 0;
+        }
+        let Some(at) = open else {
+            continue;
+        };
+        depth += code.matches(['(', '[', '{']).count() as i32
+            - code.matches([')', ']', '}']).count() as i32;
+        if depth <= 0 && code.contains(';') {
+            out.push((at + 1, lines[at..=i].join("\n")));
+            open = None;
+        }
+    }
+    out
+}
+
 /// No cfgd-core fixture hand-spells the generated env file's name or its
 /// dialect.
 ///
@@ -1286,6 +1385,17 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
 /// VERBATIM names that too (`WriteEnvFile`, `plan_env_with_home`,
 /// `ScriptShell` — where the shell, not the host, picks the dialect). A
 /// function that spells a tell and names none of them is hand-spelling.
+///
+/// FUNCTION-scoped is also the CEILING, and it names the whole population:
+/// [`source_functions`] hands back one slice per declaration, so a `const`
+/// holding a fixture BETWEEN two declarations is read here not at all. The
+/// alternative was worse rather than wider — such an item used to fall inside
+/// the slice of the function above it, judged under exemptions it never named
+/// and reported at that function's line — and a tell in a file-scope item is
+/// left to the reader. Where the population can be held EMPTY instead of
+/// attributed, it is:
+/// [`no_item_outside_a_function_body_mutates_the_process_environment`] walks
+/// the same items for the mutation tells.
 #[test]
 fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let joins = [
@@ -1539,6 +1649,48 @@ fn the_masking_arms_read_comments_and_char_literals_as_not_source() {
     assert_eq!(funcs[1].0, 12, "the sibling after the masks still opens");
 }
 
+/// A brace between `/*` and `*/` on one physical line is comment, not code.
+///
+/// That is the shape the workspace carries — an inline argument name
+/// (`/*keep_when_empty=*/`) puts comment bytes in the middle of a line of
+/// ordinary code — and counting a brace there moves where the scan thinks the
+/// function closes: the slice runs on past its own `}` and swallows the
+/// declaration below it, which then belongs to no slice and is judged by
+/// nothing.
+#[test]
+fn a_brace_inside_a_one_line_block_comment_does_not_move_the_close() {
+    let body = concat!(
+        "fn real() {\n",
+        "    let x = 1; /* { */\n",
+        "    render(name, /*keep_when_empty=*/ true);\n",
+        "}\n",
+        "fn after() {}\n"
+    );
+    let funcs = source_functions(body);
+    assert_eq!(funcs.len(), 2, "{funcs:?}");
+    assert_eq!(funcs[0].0, 1);
+    assert_eq!(
+        funcs[0].1.lines().count(),
+        4,
+        "the slice ends at the function's own close: {:?}",
+        funcs[0].1
+    );
+    assert_eq!(funcs[1].0, 5, "the sibling opens at its own line");
+}
+
+/// A declaration the brace scan cannot close stops the walk instead of
+/// handing back a slice cut at the end of the input.
+///
+/// The fixture is what a desync looks like from here — a body the input ends
+/// inside — and the alternative is a slice that merely LOOKS like a function,
+/// judged as if it were whole. A caller reads whole files it does not author,
+/// so the loud answer is the only one that cannot be believed by mistake.
+#[test]
+#[should_panic(expected = "without closing the declaration opened at line 2")]
+fn an_unbalanced_declaration_stops_the_walk() {
+    source_functions("// a header line\nfn f() {\n    let x = 1;\n");
+}
+
 /// The producer-tell matcher reads whole identifiers: an identifier that
 /// EXTENDS a producer's name exempts nothing, while the call, path and
 /// pattern shapes around the real name still match.
@@ -1625,8 +1777,17 @@ const UNCALLED_HATCH: &str = "env-mutator-uncalled-ok:";
 /// Bounded by brace depth over the rest of the file rather than by the next
 /// `fn` line: a helper declared INSIDE a test body would otherwise cut the
 /// test's slice short and hide everything the test does after it. Braces are
-/// counted on [`code_half`], so one inside a literal or a trailing comment
-/// does not move the depth.
+/// counted on [`code_half`], so one inside a literal, behind a `//` or between
+/// `/*` and `*/` does not move the depth.
+///
+/// The one brace it still counts is the CEILING: a `{` or `}` standing after
+/// the inner close of a NESTED block comment on one physical line
+/// (`/* outer /* inner */ { */`), where the line scan pairs the first `*/`
+/// with the opening `/*` and rustc pairs it with the inner one. Nesting ACROSS
+/// lines is not that shape — [`LineMask`] carries a depth there — and the
+/// workspace spells every block comment it has as a single unnested one-line
+/// span, so a line scan that counted nesting would be answering a question
+/// nothing asks.
 ///
 /// `head` is the declaration's own SPAN of `lines[open]`, which is the whole
 /// line for an ordinary declaration and the remainder past the delimiter for
@@ -2092,6 +2253,67 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         "`SERIAL_FLOORS` must name every file the walk finds non-zero and no other.\n\
          Rows to add:\n{}\nRows naming a file that now yields nothing: {stale:?}",
         missing.join("\n")
+    );
+}
+
+/// No item outside a function body writes the process environment.
+///
+/// The walks above are FUNCTION-scoped: they cut a file into
+/// [`source_functions`] slices and read those, so a `const` or `static`
+/// declared between two of them is read by neither
+/// [`every_test_mutating_the_process_environment_serializes_itself`] nor
+/// [`every_env_mutating_test_helper_is_named_in_the_mutator_roster`]. A
+/// `LazyLock` initializer calling `EnvVarGuard::set` would write the
+/// environment of every test in the binary — ordered by first use rather than
+/// by any test, serialized by no attribute, and named in no offender list.
+///
+/// The population is empty today, so this walk keeps it empty rather than
+/// teaching four walks to attribute a file-scope write to tests that never
+/// mention it. `// env-mutator-ok: <why>` above the declaration hatches a
+/// write that is not process-global, as it does for a helper.
+#[test]
+fn no_item_outside_a_function_body_mutates_the_process_environment() {
+    let mut items = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it.
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (open, item) in const_items_outside_functions(&body) {
+            items += 1;
+            if !mutates_process_env(&item) || hatched(&lines, open - 1, MUTATOR_HATCH) {
+                continue;
+            }
+            offenders.push(format!(
+                "{}:{}: {}",
+                path.display(),
+                open,
+                lines[open - 1].trim()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an item outside every function body must not write the process \
+         environment — no test can serialize against it and no walk can \
+         attribute it:\n{}",
+        offenders.join("\n")
+    );
+    // The floor is the POPULATION, not the offenders: an empty offender list
+    // reads the same whether the walk saw every item or none of them, and the
+    // scan it sees them through is the one `source_functions` keeps changing.
+    // Set AT what the workspace holds rather than under it, the way
+    // `SERIAL_FLOORS` is: a margin is exactly the room a slice change needs to
+    // stop seeing a few files in silence.
+    assert!(
+        items >= 667,
+        "the walk read {items} items outside a function body; it has stopped \
+         seeing the workspace's declarations"
     );
 }
 
