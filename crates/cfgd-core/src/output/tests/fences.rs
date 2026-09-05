@@ -2470,6 +2470,23 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         vec![1, 4],
         "a declaration spelled inside the tail's literal opened a slice: {opens:?}"
     );
+
+    // A comment's text is not code either: the compiler never reads it, so a
+    // terminator and a declaration written there describe nothing the file
+    // does, and a scan that stopped at literals would still open on them.
+    let commented = concat!(
+        "fn holder() {\n",
+        "    let banner = r#\"\n",
+        "\"#; } // ; fn f() {}\n",
+        "fn after() {}\n"
+    );
+    let cut = source_functions(commented);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
+    assert_eq!(
+        opens,
+        vec![1, 4],
+        "a declaration spelled in the tail's comment opened a slice: {opens:?}"
+    );
 }
 
 /// The uncalled-entry hatch is read off the roster's own line.
