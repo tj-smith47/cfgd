@@ -3026,8 +3026,14 @@ unsafe fn restore_env(var: &str, prior: Option<std::ffi::OsString>) {
     }
 }
 
-/// Builder for [`CosignTestShim`]. All fields default to the most common
-/// existing variant: argv logging on, keygen off, exit 0, empty stderr.
+/// Builder for [`CosignTestShim`], reached only through
+/// [`CosignTestShim::builder`], which seeds the most common existing variant:
+/// argv logging on, keygen off, exit 0, empty stderr.
+///
+/// The fields are private and the type carries no `Default`, so that
+/// constructor is the only way to hold one — which is what lets the roster
+/// count `CosignTestShim::builder` and watch every test that reaches this
+/// builder's own environment write.
 pub struct CosignTestShimBuilder {
     argv_logging: bool,
     keygen: bool,

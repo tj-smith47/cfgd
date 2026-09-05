@@ -1219,10 +1219,11 @@ fn source_functions(body: &str) -> Vec<(usize, String)> {
         let rest = mask.source_remainder(line);
         // On the line that CLOSES a literal, what precedes the declaration is
         // the tail of the statement the literal belonged to (`"#;`), so the
-        // declaration does not start the span. Only that case looks past a
-        // terminator: doing it on an ordinary line would let the `;` inside a
-        // one-line body hide the body's own declaration.
-        let decl = match rest.rfind(';') {
+        // declaration does not start the span. It is the FIRST terminator that
+        // ends that tail: a later one belongs to the declaration's own body,
+        // and looking past it would hide the declaration it introduces. Only a
+        // closing line looks past anything at all.
+        let decl = match rest.find(';') {
             Some(at) if began_masked => rest.get(at + 1..).unwrap_or(""),
             _ => rest,
         };
@@ -1901,17 +1902,20 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
                 .or_insert(!takes_a_receiver(&slice));
             sources.entry(name).or_default().push((open, source));
         }
-        // A roster entry earns its place by COUNTING: a call site in the suite,
-        // not the declaration it names. `test_helpers.rs` is where the helpers
-        // live, so its own mentions prove nothing.
+        // A roster entry earns its place by COUNTING the source lines that CALL
+        // it — inside the declarations this walk cut, never the file's own
+        // `use` block, which names a helper without reaching it.
+        // `test_helpers.rs` is where the helpers live, so its mentions prove
+        // nothing.
         //
-        // The fold is the expensive half and does not depend on the entry, so
-        // it happens once for the file rather than once per entry per
-        // declaration.
+        // The fold does not depend on the entry, so it happens once for the
+        // file's declarations rather than once per entry per declaration.
         if !path.ends_with(Path::new("test_helpers.rs")) {
-            let code: Vec<String> = crate::test_helpers::logical_source_lines(&body)
-                .iter()
-                .map(|(_, line)| code_half(line))
+            let code: Vec<String> = sources
+                .values()
+                .flatten()
+                .flat_map(|(_, src)| crate::test_helpers::logical_source_lines(src))
+                .map(|(_, line)| code_half(&line))
                 .collect();
             for (entry, hits) in &mut entry_hits {
                 *hits += code.iter().filter(|line| line.contains(*entry)).count();
@@ -2404,17 +2408,20 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
     let closing = concat!(
         "fn holder() {\n",
         "    let banner = r#\"\n",
-        "\"#; fn sibling() {}\n",
+        "\"#; fn sibling() { let x = 1; }\n",
         "fn after() {}\n"
     );
-    let opens: Vec<usize> = source_functions(closing)
-        .iter()
-        .map(|(open, _)| *open)
-        .collect();
+    let cut = source_functions(closing);
+    let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
         vec![1, 3, 4],
         "the declaration on the literal's closing line opened no slice: {opens:?}"
+    );
+    assert!(
+        cut[1].1.contains("fn sibling"),
+        "the slice opened past the declaration's own terminator: {:?}",
+        cut[1].1
     );
 }
 
