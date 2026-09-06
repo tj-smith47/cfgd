@@ -3554,6 +3554,7 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
         active: false,
         source: "local".into(),
         status: "available".into(),
+        checked: true,
         packages: 3,
         files: 2,
         depends: 2,
@@ -4209,6 +4210,7 @@ fn module_list_entry_json_fields() {
         active: true,
         source: "local".to_string(),
         status: "applied".to_string(),
+        checked: true,
         packages: 3,
         files: 2,
         depends: 1,
@@ -7420,6 +7422,7 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         drift: Vec::new(),
         drift_checked_live: false,
         last_scan_at: None,
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -7466,6 +7469,7 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         None,
         &[],
         false,
+        true,
         "->",
         now,
     ));

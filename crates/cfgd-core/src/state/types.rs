@@ -493,6 +493,12 @@ pub enum DriftVerdict {
     Drifted,
     /// A check that would have answered could not run.
     Unknown,
+    /// No check covers this owner at all: nothing ran live, no machine-wide
+    /// scan stands, and no scoped scan stamped it. Distinct from [`Self::Clean`],
+    /// which reports an answered check that found nothing — the record's own
+    /// fact is all such an owner has, and it is stated with the record's
+    /// confidence rather than dressed up as a verdict.
+    Unchecked,
 }
 
 impl DriftVerdict {
@@ -500,6 +506,11 @@ impl DriftVerdict {
     /// unresolved finding names this owner, and whether any check of its
     /// could not run. The ranking lives HERE, so no surface can order the two
     /// facts its own way.
+    ///
+    /// This is the ANSWERED-check fold and never returns [`Self::Unchecked`]:
+    /// whether a check covers the owner at all is a question about the run and
+    /// the store, which the caller asks (`cli::status::check_covers`) and
+    /// substitutes for the `Clean` this fold cannot earn.
     pub fn from_checks(drifted: bool, check_errored: bool) -> Self {
         match (check_errored, drifted) {
             (true, _) => Self::Unknown,
@@ -541,6 +552,11 @@ pub fn module_status_display(stored: &str, drift: DriftVerdict) -> (&'static str
         (MODULE_STATUS_INSTALLED, DriftVerdict::Unknown) => ("Unknown", Role::Warn),
         (MODULE_STATUS_INSTALLED, DriftVerdict::Drifted) => ("Drifted", Role::Warn),
         (MODULE_STATUS_INSTALLED, DriftVerdict::Clean) => ("Synced", Role::Ok),
+        // The record's own fact, with the record's confidence: this module's
+        // last apply completed, and nothing has since checked whether the
+        // machine still agrees. `Synced` here is the claim the record cannot
+        // make.
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Installed", Role::Ok),
         _ => ("NotApplied", Role::Pending),
     }
 }
@@ -738,7 +754,7 @@ mod module_status_tests {
         assert_eq!(MODULE_STATUS_ERROR, "error");
     }
 
-    /// Wire contract, pinned byte-for-byte: the four words this function
+    /// Wire contract, pinned byte-for-byte: the five words this function
     /// returns are ALSO the `state` field of the `cfgd status <module>`
     /// `-o json` payload, so a machine consumer matches on them. A reword is a
     /// wire break and has to be made on purpose here rather than land as an
@@ -765,6 +781,10 @@ mod module_status_tests {
             module_status_display("", DriftVerdict::Clean).0,
             "NotApplied"
         );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked).0,
+            "Installed"
+        );
     }
 
     #[test]
@@ -787,6 +807,18 @@ mod module_status_tests {
             module_status_display(MODULE_STATUS_ERROR, DriftVerdict::Drifted),
             ("Failed", Role::Fail)
         );
+        // No check covers the module, so the word is the record's own fact.
+        // `Ok` and not `Pending`: the apply really did complete, and only the
+        // claim about the machine agreeing with it is missing.
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
+            ("Installed", Role::Ok)
+        );
+        // A failed apply still outranks the absence of a check.
+        assert_eq!(
+            module_status_display(MODULE_STATUS_ERROR, DriftVerdict::Unchecked),
+            ("Failed", Role::Fail)
+        );
     }
 
     /// A check that could not run outranks the drift answer it withheld, and
@@ -805,6 +837,14 @@ mod module_status_tests {
             DriftVerdict::Unknown
         );
         assert_eq!(DriftVerdict::from_checks(true, true), DriftVerdict::Unknown);
+        // The ANSWERED-check fold never mints `Unchecked`: whether a check
+        // covers the owner at all is the caller's question, not this one's.
+        for (drifted, errored) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_ne!(
+                DriftVerdict::from_checks(drifted, errored),
+                DriftVerdict::Unchecked
+            );
+        }
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unknown),
             ("Unknown", Role::Warn)

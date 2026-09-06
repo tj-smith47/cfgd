@@ -14059,6 +14059,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
             super::status::StatusOutput {
                 drift: recorded_drift("2026-05-13T10:02:00Z"),
                 last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                scoped_scans: Default::default(),
                 ..component_health_fixture()
             },
             super::status::SCAN_HINT,
@@ -14067,6 +14068,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
             "no drift, evidence gone stale",
             super::status::StatusOutput {
                 last_scan_at: Some("2026-05-13T10:02:00Z".to_string()),
+                scoped_scans: Default::default(),
                 ..component_health_fixture()
             },
             super::status::SCAN_HINT,
@@ -14124,6 +14126,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         deployed_files: Vec::new(),
         drift_checked_live: false,
         last_scan_at: Some(timestamp.to_string()),
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
         drift: vec![super::status::ModuleDrift {
@@ -31893,7 +31896,11 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
         classification_degraded_code: None,
         classification_degraded_reason: None,
         drift_checked_live: false,
-        last_scan_at: None,
+        // A scan on record: the walk is about where the verdict WORD lands
+        // in the detail, so every row must carry the one an answered check
+        // earns.
+        last_scan_at: Some("2026-05-12T14:00:00Z".to_string()),
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -32066,6 +32073,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:02:00Z".into()),
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     }
@@ -32249,6 +32257,90 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         !raw.contains(&theme.error.apply_to("module:broken").to_string()),
         "a health row's subject never takes the row's role coat in:\n{raw:?}"
     );
+}
+
+/// A Component Health row reads `Synced` only where a check actually covers
+/// its owner. Three renders off one fixture:
+///
+/// - nothing stamped: every row states the record's own fact (`Installed`)
+///   under a heading that says drift was never checked. `Synced` beside
+///   `(drift never checked)` was the defect — the word claimed an answer no
+///   check had produced, and both halves rendered from the same document.
+/// - the machine-wide stamp: a full walk covered every owner, so every row
+///   earns `Synced`.
+/// - only `module:nvim` scoped: a scoped scan checks one module's own files,
+///   packages and env ITEMS — never the env FILES or the profile's packages —
+///   so nvim earns the verdict and `cfgd:env` does not, and the heading is
+///   dated by the scoped stamp rather than reading as never checked.
+#[test]
+#[serial_test::serial]
+fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let render = |output: &super::status::StatusOutput| {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(component_health_doc(output, Some("base"), printer.arrow()));
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+    let row = |section: &str, owner: &str| {
+        section
+            .lines()
+            .find(|l| l.contains(owner))
+            .unwrap_or_else(|| panic!("no `{owner}` health row in:\n{section}"))
+            .to_string()
+    };
+
+    let mut unchecked = component_health_fixture();
+    unchecked.last_scan_at = None;
+    let rendered = render(&unchecked);
+    let section = component_health_section(&rendered);
+    assert!(
+        section.starts_with(" (drift never checked)"),
+        "an unstamped host says so on the heading:\n{section}"
+    );
+    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+        let line = row(section, owner);
+        assert!(
+            line.contains("— Installed") && !line.contains("Synced"),
+            "`{owner}` may not read Synced with no check behind it:\n{line}"
+        );
+    }
+
+    let machine_wide = component_health_fixture();
+    let rendered = render(&machine_wide);
+    let section = component_health_section(&rendered);
+    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+        let line = row(section, owner);
+        assert!(
+            line.contains("— Synced"),
+            "a machine-wide scan covers `{owner}`:\n{line}"
+        );
+    }
+
+    let mut scoped = component_health_fixture();
+    scoped.last_scan_at = None;
+    scoped.scoped_scans.insert(
+        cfgd_core::reconciler::Owner::module("nvim").token(),
+        "2026-05-14T10:02:00Z".into(),
+    );
+    let rendered = render(&scoped);
+    let section = component_health_section(&rendered);
+    assert!(
+        section.starts_with(" (checked 3m ago)"),
+        "a scoped scan dates the report it left:\n{section}"
+    );
+    assert!(
+        row(section, "module:nvim").contains("— Synced"),
+        "the scanned module earns its verdict:\n{section}"
+    );
+    for uncovered in ["cfgd:env", "module:git", "profile:base"] {
+        let line = row(section, uncovered);
+        assert!(
+            line.contains("— Installed"),
+            "a scoped scan of nvim vouches for nothing else, `{uncovered}` read:\n{line}"
+        );
+    }
 }
 
 /// The fleet dashboard has no standalone Drift section: each unresolved
@@ -32737,6 +32829,7 @@ fn last_apply_leads_on_its_verdict() {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -34723,6 +34816,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: None,
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -34752,6 +34846,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         }],
         drift_checked_live: true,
         last_scan_at: None,
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -34911,6 +35006,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 None,
                 &[],
                 false,
+                true,
                 "->",
                 now,
             ),

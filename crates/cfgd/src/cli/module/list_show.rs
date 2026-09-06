@@ -45,12 +45,25 @@ fn source_role(source: &str) -> Option<Role> {
 
 /// The Status cell: the display word and its tint, both from the workspace's
 /// one module-state vocabulary. No row here can read `Drifted` or `Unknown` —
-/// both come from a check, and `module list` runs none: it reports recorded
-/// state only.
-fn status_cell(status: &str) -> (String, Option<Role>) {
-    let (word, role) =
-        cfgd_core::state::module_status_display(status, cfgd_core::state::DriftVerdict::Clean);
+/// both come from a finding, and `module list` runs no check: it reports
+/// recorded state only. `checked` says whether any check covers the module at
+/// all, so a module nothing has ever checked reads the record's own
+/// `Installed` instead of a `Synced` no check earned.
+fn status_cell(status: &str, checked: bool) -> (String, Option<Role>) {
+    let (word, role) = cfgd_core::state::module_status_display(status, recorded_verdict(checked));
     (word.to_string(), Some(role))
+}
+
+/// The verdict a surface that runs NO check of its own reports: `Clean` when
+/// something else's check covers the module, [`cfgd_core::state::DriftVerdict::Unchecked`]
+/// when nothing does. `Drifted` is unreachable here — these surfaces read no
+/// finding rows.
+fn recorded_verdict(checked: bool) -> cfgd_core::state::DriftVerdict {
+    if checked {
+        cfgd_core::state::DriftVerdict::Clean
+    } else {
+        cfgd_core::state::DriftVerdict::Unchecked
+    }
 }
 
 /// Build the `cfgd module list` Doc. Caller owns `entries` (constructed from
@@ -75,7 +88,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
                 (e.name.clone(), None),
                 (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                status_cell(&e.status),
+                status_cell(&e.status, e.checked),
                 (e.packages.to_string(), None),
                 (e.files.to_string(), None),
                 (e.depends.to_string(), None),
@@ -89,7 +102,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
                 (e.name.clone(), None),
                 (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                status_cell(&e.status),
+                status_cell(&e.status, e.checked),
                 (
                     format!(
                         "{}, {}, {}",
@@ -137,11 +150,16 @@ pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow:
 }
 
 /// Build the `cfgd module show` Doc from precomputed inputs.
+///
+/// `checked` is whether any check covers this module — the caller's read of
+/// the machine-wide scan stamp and this module's own scoped one, since this
+/// surface runs no check itself.
 pub fn build_module_show_doc(
     output: &ModuleShowOutput,
     lock_entry: Option<&ModuleLockEntry>,
     packages: &[PackageDisplay],
     show_values: bool,
+    checked: bool,
     arrow: &str,
     now: &str,
 ) -> Doc {
@@ -175,10 +193,8 @@ pub fn build_module_show_doc(
 
     if let Some(state_rec) = &output.state {
         // Recorded state only, same as the list table — see `status_cell`.
-        let (word, role) = cfgd_core::state::module_status_display(
-            &state_rec.status,
-            cfgd_core::state::DriftVerdict::Clean,
-        );
+        let (word, role) =
+            cfgd_core::state::module_status_display(&state_rec.status, recorded_verdict(checked));
         rows.push(KvPair::role_valued("Status", word, role));
         // The age, not the recorded instant: `-o json`'s `state.installedAt`
         // carries the exact moment, and the row a person reads answers how
@@ -316,6 +332,10 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
 
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_map = module_state_map(&state);
+    // Two reads for the whole table, never one per row: every Status cell
+    // asks whether a check covers its own module.
+    let machine_checked = state.last_scan_at()?.is_some();
+    let scoped_scans = state.scoped_scan_stamps()?;
 
     let mut names: Vec<String> = all_modules.keys().cloned().collect();
     names.sort();
@@ -344,6 +364,9 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
                 active: in_profile,
                 source: source_type.to_string(),
                 status,
+                checked: machine_checked
+                    || scoped_scans
+                        .contains_key(&cfgd_core::reconciler::Owner::module(name).token()),
                 packages: module.spec.packages.len(),
                 files: module.spec.files.len(),
                 depends: module.spec.depends.len(),
@@ -399,6 +422,13 @@ pub(crate) fn cmd_module_show(
 
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_rec = state.module_state_by_name(name)?;
+    // This surface runs no check, so the Status word states the record's fact
+    // unless something else's check covers the module: the machine-wide scan
+    // stamp, or a scoped scan of this module's own chain.
+    let checked = state.last_scan_at()?.is_some()
+        || state
+            .scoped_scan_stamps()?
+            .contains_key(&cfgd_core::reconciler::Owner::module(name).token());
 
     let output = ModuleShowOutput {
         name: name.to_string(),
@@ -489,6 +519,7 @@ pub(crate) fn cmd_module_show(
         lock_entry,
         &packages,
         show_values,
+        checked,
         printer.arrow(),
         &cfgd_core::utc_now_iso8601(),
     ));
@@ -514,20 +545,50 @@ mod role_mapping_tests {
     #[test]
     fn status_cell_speaks_the_display_vocabulary() {
         assert_eq!(
-            status_cell("installed"),
+            status_cell("installed", true),
             ("Synced".to_string(), Some(Role::Ok))
         );
         assert_eq!(
-            status_cell("error"),
+            status_cell("error", true),
             ("Failed".to_string(), Some(Role::Fail))
         );
         for no_record in ["pending", "available", ""] {
             assert_eq!(
-                status_cell(no_record),
+                status_cell(no_record, true),
                 ("NotApplied".to_string(), Some(Role::Pending)),
                 "{no_record:?} should read NotApplied"
             );
         }
+    }
+
+    /// `module list` runs no check of its own, so `Synced` on its rows is a
+    /// claim borrowed from somebody else's: the machine-wide scan stamp, or a
+    /// scoped scan of that module. With neither, the row states the record's
+    /// own fact — the module was installed, and nothing has looked since.
+    /// The word a person reads changes; the `status` token `-o json` carries
+    /// does not.
+    #[test]
+    fn module_list_reads_synced_only_for_a_module_a_check_covers() {
+        assert_eq!(
+            status_cell("installed", false),
+            ("Installed".to_string(), Some(Role::Ok)),
+            "a module nothing has checked may not read Synced"
+        );
+        assert_eq!(
+            status_cell("installed", true),
+            ("Synced".to_string(), Some(Role::Ok)),
+            "a covered module keeps the verdict its check earned"
+        );
+        // A failed apply is the record's own fact either way: no check is
+        // involved in reading it back.
+        assert_eq!(
+            status_cell("error", false),
+            ("Failed".to_string(), Some(Role::Fail))
+        );
+        assert_eq!(
+            status_cell("available", false),
+            ("NotApplied".to_string(), Some(Role::Pending))
+        );
     }
 }
 

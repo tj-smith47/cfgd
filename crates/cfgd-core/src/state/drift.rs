@@ -254,6 +254,75 @@ impl StateStore {
         Some(timestamp)
     }
 
+    /// Record that a SCOPED live drift check just ran over `scopes` — one
+    /// owner token per member of the run's resolved chain, exactly as
+    /// [`crate::reconciler::Owner::token`] spells it (`module:nvim`), which
+    /// is the grammar every reader looks a scope up by.
+    ///
+    /// A scoped check deliberately never moves the machine-wide stamp
+    /// [`record_scan`] writes — one module's files and packages are not
+    /// evidence the machine was checked — so without this a scoped scan that
+    /// healed every row it found left the report with no date at all, and the
+    /// verdicts read off it claimed a check nothing could point at.
+    ///
+    /// Infallible on the same policy as [`record_scan`], for the same reason:
+    /// every caller already has its answer by the time it stamps, and a
+    /// refused stamp must cost the NEXT run's freshness line rather than fail
+    /// the run that found the drift. Returns the timestamp it wrote, `None`
+    /// when the write was refused or `scopes` was empty.
+    ///
+    /// [`record_scan`]: StateStore::record_scan
+    pub fn record_scoped_scan<'a>(
+        &self,
+        scopes: impl IntoIterator<Item = &'a str>,
+    ) -> Option<String> {
+        let timestamp = crate::utc_now_iso8601();
+        let mut stmt = match self.conn.prepare(
+            "INSERT INTO scoped_scans (scope, timestamp) VALUES (?1, ?2)
+                 ON CONFLICT(scope) DO UPDATE SET timestamp = excluded.timestamp",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to record scoped scan timestamp");
+                return None;
+            }
+        };
+        let mut wrote = false;
+        for scope in scopes {
+            match stmt.execute(params![scope, timestamp]) {
+                Ok(_) => wrote = true,
+                Err(e) => {
+                    tracing::warn!(error = %e, scope, "failed to record scoped scan timestamp")
+                }
+            }
+        }
+        wrote.then_some(timestamp)
+    }
+
+    /// Every scope a [`record_scoped_scan`] has stamped, with the instant it
+    /// was last stamped at — read ONCE per render, since every verdict on the
+    /// screen asks whether a check covers its own owner.
+    ///
+    /// [`record_scoped_scan`]: StateStore::record_scoped_scan
+    pub fn scoped_scan_stamps(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT scope, timestamp FROM scoped_scans")
+            .map_err(|e| crate::errors::StateError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| crate::errors::StateError::Database(e.to_string()))?;
+        let mut stamps = std::collections::BTreeMap::new();
+        for row in rows {
+            let (scope, timestamp) =
+                row.map_err(|e| crate::errors::StateError::Database(e.to_string()))?;
+            stamps.insert(scope, timestamp);
+        }
+        Ok(stamps)
+    }
+
     /// Pin the recorded scan stamp at `timestamp` and refuse every later
     /// write to it, so a crate that cannot reach the connection can still
     /// drive the refused-write branch of [`record_scan`] and see what its own

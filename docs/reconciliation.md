@@ -296,6 +296,24 @@ cfgd tracks state in a SQLite database at `~/.local/state/cfgd/state.db` (Linux;
 | **Module state** | Per-module install time, package/file hashes, git source commits | Detecting when a module is outdated |
 | **Source tracking** | Per-source fetch time, commit, version, sync status | Multi-source sync and conflict history |
 | **Pending decisions** | Unresolved recommended/optional items from source updates | `cfgd decide`, daemon policy |
+| **Scan stamps** | When the whole machine was last checked, and when each scoped (`--module`) check ran | Dating every `Synced` verdict a report renders |
+
+### What dates a verdict
+
+A `Synced` verdict is a claim about the machine, so a report may only make it
+where a check actually covered the owner. cfgd keeps two stamps for that:
+
+| Stamp | Written by | Covers |
+|---|---|---|
+| Machine-wide (`last_scan`) | `cfgd diff`, `cfgd verify`, `cfgd status --scan`, a daemon reconcile tick | Every owner: modules, cfgd's env surfaces, the profile |
+| Scoped (`scoped_scans`) | `cfgd diff --module`, `cfgd verify --module`, `cfgd status <module> --scan` | Every module of the chain that check resolved, keyed `module:<name>` |
+
+An owner neither stamp covers reads `Installed` — the record's own fact, that
+the last apply completed and nothing has looked since — rather than `Synced`.
+A scoped check stamps its own chain and deliberately leaves the machine-wide
+stamp alone: one module's files and packages are not evidence the machine was
+checked, and `cfgd:env` and `profile:*` stay uncovered by it.
+
 
 ### What a drift row names
 

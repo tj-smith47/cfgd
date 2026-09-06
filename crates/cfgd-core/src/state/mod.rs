@@ -625,6 +625,16 @@ const MIGRATIONS: &[&str] = &[
          AND resource_id LIKE '%:skip'
          AND instr(resource_id, ':') = length(resource_id) - 4
          AND instr(resource_id, '/') = 0;",
+    // Migration 25: the per-scope scan stamp. `last_scan` dates a check of
+    // the WHOLE machine, so a scoped (`--module`) check had nowhere to record
+    // that it ran: it healed its rows and left the report undated, and every
+    // verdict read off that report claimed a check nothing could point at.
+    // Keyed by the owner token `Owner::token` spells (`module:nvim`), the
+    // same grammar the Component Health row that reads it renders.
+    "CREATE TABLE IF NOT EXISTS scoped_scans (
+        scope TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL
+    );",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

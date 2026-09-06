@@ -144,6 +144,7 @@ fn clean_output() -> StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T10:00:00Z".into()),
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     }
@@ -238,6 +239,7 @@ fn drift_output() -> StatusOutput {
         classification_degraded_reason: None,
         drift_checked_live: false,
         last_scan_at: Some("2026-05-14T08:00:00Z".into()),
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     }
@@ -331,6 +333,7 @@ fn per_module_output() -> ModuleStatus {
         system_errors: Vec::new(),
         standing: Vec::new(),
         last_scan_at: None,
+        scoped_scans: Default::default(),
     }
 }
 
@@ -444,6 +447,7 @@ fn per_module_scanned_output() -> ModuleStatus {
         system_errors: Vec::new(),
         standing: Vec::new(),
         last_scan_at: None,
+        scoped_scans: Default::default(),
     }
 }
 

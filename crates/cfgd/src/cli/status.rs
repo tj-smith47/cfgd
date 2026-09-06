@@ -50,6 +50,16 @@ pub struct StatusOutput {
     /// non-scanning branch, where the two values are the same.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_scan_at: Option<String>,
+    /// When each SCOPED check last ran, keyed by the owner token
+    /// [`cfgd_core::reconciler::Owner::token`] spells (`module:nvim`) — what
+    /// `cfgd diff --module`, `cfgd verify --module` and `cfgd status <module>
+    /// --scan` stamp, since none of them may move the machine-wide
+    /// `lastScanAt`. A verdict's coverage is read from here and `lastScanAt`
+    /// together: a scoped scan checks a module's own files, packages and env
+    /// ITEMS, never the env FILES or the profile's packages, so only a module
+    /// token can appear as a key.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scoped_scans: std::collections::BTreeMap<String, String>,
     /// System configurators whose live drift probe itself errored during a
     /// `--scan`. "Could not check" is an unknown verdict, not a clean one:
     /// each renders as its own Drift-section row and `--exit-code` escalates
@@ -243,6 +253,12 @@ pub struct ModuleStatus {
     /// full check has ever run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_scan_at: Option<String>,
+    /// The scoped scan stamps, the same map and the same keys the fleet
+    /// payload carries: a `--module` check of THIS module dates its own
+    /// report, so `cfgd status nvim` after `cfgd status nvim --scan` reads as
+    /// checked without any machine-wide scan having run.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scoped_scans: std::collections::BTreeMap<String, String>,
     /// A `--scan` run's checks that could not run — today only the env probe
     /// (the primary managed env file exists but could not be read, so every
     /// env verdict of this scan is unknown). The SAME `systemErrors` shape
@@ -283,10 +299,23 @@ impl ModuleStatus {
     /// Drift section, checks that could not run — into the verdict both the
     /// `Status` word and the `--exit-code` gate read, so the word a reader
     /// sees and the code a script sees cannot rank the two facts differently.
+    ///
+    /// A module no check covers reads `Unchecked` rather than the `Clean` an
+    /// empty Drift section would otherwise earn: this module's own scoped
+    /// stamp counts, so `cfgd status nvim` after `cfgd status nvim --scan`
+    /// still reports a verdict a check stands behind.
     fn drift_verdict(&self) -> cfgd_core::state::DriftVerdict {
-        cfgd_core::state::DriftVerdict::from_checks(
-            !self.drift.is_empty(),
-            !self.system_errors.is_empty(),
+        covered_verdict(
+            cfgd_core::state::DriftVerdict::from_checks(
+                !self.drift.is_empty(),
+                !self.system_errors.is_empty(),
+            ),
+            check_covers(
+                &cfgd_core::reconciler::Owner::module(&self.name).token(),
+                self.drift_checked_live,
+                self.last_scan_at.as_deref(),
+                &self.scoped_scans,
+            ),
         )
     }
 }
@@ -843,6 +872,7 @@ pub fn build_fleet_status_doc(
     // closing hint were three spellings of one suggestion.
     let freshest = freshest_check_stamp(
         output.last_scan_at.as_deref(),
+        output.scoped_scans.values().map(String::as_str),
         output.drift.iter().map(|d| d.timestamp.as_str()),
     );
     let stale = !output.drift_checked_live
@@ -1482,7 +1512,9 @@ const COMPONENT_HEALTH_SECTION: &str = "Component Health";
 /// age and its unsubtractable-stamp fallback come from
 /// [`cfgd_core::humanize_age_cell`], the same degradation every other age
 /// slot takes; the ISO instant stays in `-o json`'s `lastScanAt`. `None` with
-/// `checked_live` false is a host no check ever stamped.
+/// `checked_live` false is a host nothing has ever checked — neither a
+/// machine-wide scan nor a scoped one, since [`freshest_check_stamp`] folds
+/// both before this is asked.
 fn drift_checked_note(checked_live: bool, last_scan_at: Option<&str>, now: &str) -> String {
     if checked_live {
         return "checked live now".to_string();
@@ -1493,18 +1525,59 @@ fn drift_checked_note(checked_live: bool, last_scan_at: Option<&str>, now: &str)
     }
 }
 
-/// The most recent instant a check stands behind a recorded report: the
-/// machine-wide scan stamp, or a recorded drift row minted after it — a
-/// scoped scan records rows but deliberately never moves the stamp, so its
-/// findings are the only date it leaves, and `drift never checked` under
-/// rows a check just produced dates the report falsely. Both recorded
-/// surfaces feed their freshness note and staleness gate from this one fold.
-/// ISO 8601 UTC stamps from [`cfgd_core::utc_now_iso8601`] compare lexically.
+/// The most recent instant a check stands behind a recorded report, folded
+/// over all three things that can date one: the machine-wide scan stamp, the
+/// scoped scans' own stamps, and a recorded drift row minted after either. A
+/// scoped scan deliberately never moves the machine-wide stamp — one module's
+/// files and packages are not evidence the machine was checked — so it dates
+/// the report through `scoped_stamps` instead, and a scoped scan that healed
+/// every row it found leaves a date rather than reading as never checked.
+/// Both recorded surfaces feed their freshness note and staleness gate from
+/// this one fold. ISO 8601 UTC stamps from [`cfgd_core::utc_now_iso8601`]
+/// compare lexically.
 fn freshest_check_stamp<'a>(
     last_scan_at: Option<&'a str>,
+    scoped_stamps: impl Iterator<Item = &'a str>,
     row_stamps: impl Iterator<Item = &'a str>,
 ) -> Option<&'a str> {
-    row_stamps.chain(last_scan_at).max()
+    row_stamps.chain(scoped_stamps).chain(last_scan_at).max()
+}
+
+/// Whether a check stands behind a verdict for `owner_token`: this run checked
+/// live, the machine-wide scan stamp stands, or a scoped scan stamped this
+/// owner.
+///
+/// The ONE coverage question every surface deriving a component's word asks,
+/// so a `Synced` can never render beside an annotation saying nothing was ever
+/// checked. Only a module token can be a `scoped` key — a scoped scan checks a
+/// module's own files, packages and env ITEMS, never the env FILES or the
+/// profile's packages — so `cfgd:env` and `profile:*` are covered by a live
+/// check or the machine-wide stamp alone, without a second branch here.
+fn check_covers(
+    owner_token: &str,
+    checked_live: bool,
+    last_scan_at: Option<&str>,
+    scoped: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    checked_live || last_scan_at.is_some() || scoped.contains_key(owner_token)
+}
+
+/// [`check_covers`] applied to a verdict: an owner no check covers cannot earn
+/// the `Clean` [`cfgd_core::state::DriftVerdict::from_checks`] returns when it
+/// found nothing, and reads [`cfgd_core::state::DriftVerdict::Unchecked`]
+/// instead. `Drifted` and `Unknown` come through untouched — an unresolved
+/// finding and a check that errored are each themselves evidence, and a row
+/// rendering the finding beneath it must not call the owner unchecked.
+fn covered_verdict(
+    verdict: cfgd_core::state::DriftVerdict,
+    covered: bool,
+) -> cfgd_core::state::DriftVerdict {
+    match verdict {
+        cfgd_core::state::DriftVerdict::Clean if !covered => {
+            cfgd_core::state::DriftVerdict::Unchecked
+        }
+        other => other,
+    }
 }
 
 /// One Component Health row: the owner the run's trees head their groups
@@ -1866,9 +1939,17 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             let own_findings = findings.remove(&token);
             let is_drifted = own_findings.is_some();
             let own_findings = own_findings.unwrap_or_default();
-            let drift = cfgd_core::state::DriftVerdict::from_checks(
-                is_drifted,
-                unanswered.contains(&token),
+            let drift = covered_verdict(
+                cfgd_core::state::DriftVerdict::from_checks(
+                    is_drifted,
+                    unanswered.contains(&token),
+                ),
+                check_covers(
+                    &token,
+                    output.drift_checked_live,
+                    output.last_scan_at.as_deref(),
+                    &output.scoped_scans,
+                ),
             );
             let shortfall = drifted.get(&token).filter(|kinds| !kinds.is_empty());
             let module = (owner.kind == cfgd_core::reconciler::OwnerKind::Module)
@@ -2076,6 +2157,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     // hint turns on the same staleness.
     let freshest = freshest_check_stamp(
         output.last_scan_at.as_deref(),
+        output.scoped_scans.values().map(String::as_str),
         output.drift.iter().map(|d| d.event.timestamp.as_str()),
     );
     let stale = !output.drift_checked_live
@@ -2084,14 +2166,19 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     doc = match view {
         ModuleStatusView::Compact => {
             // Same split as the fleet dashboard: only the recorded branch
-            // dates its Drift section. The stamp alone stays the empty
-            // section's `verified` claim — only the full walk it dates
-            // covered this module's files and packages too.
+            // dates its Drift section. A stamp is the empty section's
+            // `verified` claim — the machine-wide walk, or a scoped scan of
+            // THIS module, which covered its own files and packages.
             let (verified, note) = if output.drift_checked_live {
                 (true, None)
             } else {
                 (
-                    output.last_scan_at.is_some(),
+                    check_covers(
+                        &cfgd_core::reconciler::Owner::module(&output.name).token(),
+                        false,
+                        output.last_scan_at.as_deref(),
+                        &output.scoped_scans,
+                    ),
                     Some(drift_checked_note(false, freshest, now)),
                 )
             };
@@ -2363,6 +2450,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         drift: Vec::new(),
         drift_checked_live: false,
         last_scan_at: None,
+        scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -2412,6 +2500,10 @@ pub(super) fn cmd_status(
     // staleness signal is about what the RECORDED state was last checked
     // against, not about the scan this very invocation is about to perform.
     let last_scan_at = state.last_scan_at()?;
+    // One read for the whole render: every Component Health verdict below asks
+    // whether a check covers its own owner, and a per-row query would be one
+    // statement per component on a dashboard that is already the fast path.
+    let scoped_scans = state.scoped_scan_stamps()?;
     let drift_events = state.unresolved_drift()?;
     let source_records = if !cfg.spec.sources.is_empty() {
         state.config_sources()?
@@ -2596,6 +2688,7 @@ pub(super) fn cmd_status(
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
         drift_checked_live: do_scan,
         last_scan_at,
+        scoped_scans,
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
@@ -2761,7 +2854,10 @@ fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
     match verdict {
         cfgd_core::state::DriftVerdict::Unknown => cfgd_core::exit::ExitCode::Error.exit(),
         cfgd_core::state::DriftVerdict::Drifted => cfgd_core::exit::ExitCode::DriftDetected.exit(),
-        cfgd_core::state::DriftVerdict::Clean => {}
+        // `--exit-code` implies a scan, so the verdict is always an answered
+        // one here; an uncovered owner exits clean for the same reason a clean
+        // one does — this gate prices findings, and there are none.
+        cfgd_core::state::DriftVerdict::Clean | cfgd_core::state::DriftVerdict::Unchecked => {}
     }
 }
 
@@ -2881,7 +2977,8 @@ pub(super) fn cmd_status_module(
     // Deliberately no `record_scan` below, unlike the fleet-wide path and the
     // sibling scans in `diff`/`verify`: the stamp dates the FLEET-wide
     // dashboard's header, and one module's files and packages are not evidence
-    // the machine was checked.
+    // the machine was checked. The chain's own scopes are stamped instead, by
+    // `record_scoped_scan_findings` itself.
     //
     let platform = cfgd_core::platform::Platform::current();
     let mut drift: Vec<ModuleDrift> = Vec::new();
@@ -3270,6 +3367,9 @@ pub(super) fn cmd_status_module(
         // RECORDED stamp was taken too, since a module scan deliberately never
         // moves it.
         last_scan_at: state.last_scan_at()?,
+        // Read AFTER the scan above, so a scanning run's payload carries the
+        // stamp that scan just wrote rather than the one it replaced.
+        scoped_scans: state.scoped_scan_stamps()?,
         drift,
         system_errors,
         standing: standing_rows,
@@ -3363,6 +3463,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: false,
             last_scan_at: None,
+            scoped_scans: Default::default(),
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
@@ -4320,7 +4421,11 @@ mod tests {
             classification_degraded_code: None,
             classification_degraded_reason: None,
             drift_checked_live: false,
-            last_scan_at: None,
+            // A scan on record, so the rows carry the verdict whose
+            // parenthetical this test is about rather than the bare recorded
+            // fact an unchecked host states.
+            last_scan_at: Some("2026-05-12T14:00:00Z".to_string()),
+            scoped_scans: Default::default(),
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
@@ -4400,6 +4505,7 @@ mod tests {
                 classification_degraded_reason: None,
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
+                scoped_scans: Default::default(),
                 system_errors: Vec::new(),
                 standing: Vec::new(),
             };
@@ -4479,10 +4585,13 @@ mod tests {
     /// exactly that (`Drift undetermined`, no tick) — the two are pinned here
     /// to one role for one fact: neither paints `Ok` over an unverified one.
     ///
-    /// The MODULE surface and `diff` are the whole population: the fleet has
-    /// no Drift section — its disclaimer is the Component Health heading's
-    /// annotation, pinned by `the_fleet_heading_annotation_states_the_checks_freshness`
-    /// and `status_dates_the_drift_verdict_and_hints_when_it_is_stale`.
+    /// The fleet surface has no Drift section, so its half of this rule is
+    /// its Component Health ROWS: an owner no check covers states the
+    /// record's own fact rather than a verdict, asserted below and walked in
+    /// full by `a_component_health_row_earns_synced_only_from_a_check_that_covers_it`.
+    /// Its heading annotation is pinned by
+    /// `the_fleet_heading_annotation_states_the_checks_freshness` and
+    /// `status_dates_the_drift_verdict_and_hints_when_it_is_stale`.
     #[test]
     fn no_recorded_verdict_claims_a_check_that_never_ran() {
         let tick = cfgd_core::output::Theme::default().icon_ok;
@@ -4514,6 +4623,7 @@ mod tests {
                 deployed_files: Vec::new(),
                 drift_checked_live: checked_live,
                 last_scan_at: last_scan_at.map(str::to_string),
+                scoped_scans: Default::default(),
                 system_errors: Vec::new(),
                 standing: Vec::new(),
                 drift: Vec::new(),
@@ -4568,6 +4678,62 @@ mod tests {
             !undetermined.starts_with(&tick),
             "diff paints no tick over an unverified fact either: {undetermined}"
         );
+
+        // The fleet surface's half of the same rule, on its ROWS: an owner no
+        // check covers states the record's own fact, never a verdict. Its
+        // heading already says nothing was checked, and `Synced` beneath that
+        // annotation is the contradiction this rule exists to forbid.
+        let fleet = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: vec![ModuleStatusEntry {
+                name: "nvim".into(),
+                packages: 0,
+                files: 1,
+                scripts: 0,
+                status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+                platform_skip_reason: None,
+                declared: Default::default(),
+            }],
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_fleet_status_doc(
+            &fleet,
+            &cfgd_core::output::ConfigHeader {
+                config_path: Some(std::path::Path::new("/etc/cfgd/cfgd.yaml")),
+                sources: &[],
+                profile: Some("default"),
+                profile_inherits: &[],
+                modules: &[],
+                arrow: printer.arrow(),
+            },
+            &[],
+            "2026-05-14T10:05:00Z",
+            &Default::default(),
+            &Default::default(),
+        ));
+        drop(printer);
+        let unchecked_fleet = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !unchecked_fleet.contains("Synced"),
+            "an unchecked fleet row claims no verdict: {unchecked_fleet}"
+        );
+        assert!(
+            unchecked_fleet.contains("module:nvim") && unchecked_fleet.contains("— Installed"),
+            "it states the record's own fact instead: {unchecked_fleet}"
+        );
     }
 
     /// A module whose own report carries an unresolved erroring check has not
@@ -4594,6 +4760,7 @@ mod tests {
             deployed_files: Vec::new(),
             drift_checked_live: true,
             last_scan_at: None,
+            scoped_scans: Default::default(),
             system_errors: vec![super::super::output_types::SystemCheckError {
                 key: "brew:neovim".to_string(),
                 error: "brew reports neovim at 0.12.5_1".to_string(),
@@ -4689,6 +4856,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: true,
             last_scan_at: None,
+            scoped_scans: Default::default(),
             system_errors: vec![super::super::output_types::SystemCheckError {
                 key: "brew:neovim".to_string(),
                 error: "brew reports neovim at 0.12.5_1".to_string(),
@@ -4810,6 +4978,7 @@ mod tests {
             deployed_files: Vec::new(),
             drift_checked_live: true,
             last_scan_at: None,
+            scoped_scans: Default::default(),
             system_errors: vec![super::super::output_types::SystemCheckError {
                 key: "/home/user/.cfgd.env".to_string(),
                 error: "Is a directory (os error 21)".to_string(),
@@ -4873,6 +5042,7 @@ mod tests {
             classification_degraded_reason: None,
             drift_checked_live: false,
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+            scoped_scans: Default::default(),
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
@@ -5008,6 +5178,7 @@ mod tests {
             // Old enough for the scan hint to be earned; the fresh case sets
             // its own stamp.
             last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+            scoped_scans: Default::default(),
             system_errors: Vec::new(),
             standing: Vec::new(),
         }
@@ -5455,6 +5626,7 @@ mod tests {
             ),
             drift_checked_live: false,
             last_scan_at: None,
+            scoped_scans: Default::default(),
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
@@ -6603,8 +6775,10 @@ mod tests {
             output.contains("Packages") && output.contains('1'),
             "module declares 1 package, got: {output}"
         );
+        // No check has run on this host, so the recorded fact is the whole
+        // verdict — `Synced` here would claim an answer nothing produced.
         assert!(
-            output.contains("Synced"),
+            output.contains("Installed"),
             "should print state-store status, got: {output}"
         );
     }
@@ -6830,7 +7004,7 @@ mod tests {
         drop(printer);
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Synced") && !output.contains("NotApplied"),
+            output.contains("Installed") && !output.contains("NotApplied"),
             "a converged module must not report itself unapplied, got: {output}"
         );
     }
@@ -7434,6 +7608,7 @@ mod tests {
             system_errors: Vec::new(),
             standing: Vec::new(),
             last_scan_at: None,
+            scoped_scans: Default::default(),
         }
     }
 
@@ -7753,6 +7928,150 @@ mod tests {
             store.last_scan_at().unwrap(),
             None,
             "a scoped check must never write the machine-wide stamp"
+        );
+    }
+
+    /// A scoped check stamps EVERY member of the chain it resolved, not just
+    /// the module the invocation named: the dependency's rows were re-checked
+    /// by the same pass, so its verdicts stand on the same evidence. The
+    /// stamps are owner tokens, the grammar every reader looks a scope up by,
+    /// and the machine-wide stamp stays unwritten.
+    #[test]
+    #[serial_test::serial]
+    fn a_scoped_scan_stamps_every_member_of_its_chain() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+
+        let dep_dir = config_dir.path().join("modules").join("dep-mod");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        std::fs::write(dep_dir.join("conf"), "dep content\n").unwrap();
+        std::fs::write(
+            dep_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dep-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
+                tmp_home.path().join("dep-file.txt").display()
+            ),
+        )
+        .unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("conf"), "module content\n").unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  depends:\n    - dep-mod\n  files:\n    - source: conf\n      target: {}\n",
+                tmp_home.path().join("mod-file.txt").display()
+            ),
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let printer = cfgd_core::test_helpers::test_printer();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let stamps = store.scoped_scan_stamps().unwrap();
+        for name in ["test-mod", "dep-mod"] {
+            let token = cfgd_core::reconciler::Owner::module(name).token();
+            assert!(
+                stamps.contains_key(&token),
+                "`{token}` must be stamped by the scan that re-checked it, got: {stamps:?}"
+            );
+        }
+        assert_eq!(
+            store.last_scan_at().unwrap(),
+            None,
+            "a scoped check must never write the machine-wide stamp"
+        );
+    }
+
+    /// The demo's own sequence: a recorded row, a scoped scan that heals it,
+    /// then the fleet dashboard. The scan resolves every row it found and
+    /// writes no machine-wide stamp, so before the scoped stamp existed the
+    /// report had nothing left to date itself by and read `drift never
+    /// checked` — under rows the same store had just proved clean.
+    #[test]
+    #[serial_test::serial]
+    fn a_scoped_scan_that_heals_everything_still_dates_the_report() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("conf"), "module content\n").unwrap();
+        let module_target = tmp_home.path().join("mod-file.txt");
+        std::fs::write(&module_target, "module content\n").unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
+                module_target.display()
+            ),
+        )
+        .unwrap();
+        {
+            let store =
+                cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+            store
+                .record_drift(
+                    "module",
+                    &format!("test-mod{}", module_target.to_string_lossy()),
+                    None,
+                    Some("x"),
+                    "local",
+                )
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let printer = cfgd_core::test_helpers::test_printer();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        assert!(
+            store.unresolved_drift().unwrap().is_empty(),
+            "the scan healed everything it found, leaving no row to date the report by"
+        );
+        assert_eq!(store.last_scan_at().unwrap(), None);
+
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !rendered.contains("drift never checked"),
+            "a scoped scan dates the report it left:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Component Health (checked "),
+            "the heading reads the scoped stamp's age:\n{rendered}"
         );
     }
 

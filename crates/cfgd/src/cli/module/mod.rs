@@ -14,6 +14,14 @@ pub struct ModuleListEntry {
     pub active: bool,
     pub source: String,
     pub status: String,
+    /// Whether any check covers this module — a machine-wide scan on record,
+    /// or a scoped one that stamped this module. `module list` runs no check
+    /// of its own, so an uncovered row states the record's own fact
+    /// (`Installed`) rather than a `Synced` nothing earned. Display only: the
+    /// `status` token beside it is the untouched wire value a `-o json`
+    /// consumer reads.
+    #[serde(skip)]
+    pub checked: bool,
     pub packages: usize,
     pub files: usize,
     pub depends: usize,

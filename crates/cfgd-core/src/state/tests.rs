@@ -3301,7 +3301,7 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         store
             .record_drift("package", "brew:skip", None, None, "local")
             .unwrap();
-        rewind_schema_version(&store, MIGRATIONS.len() - 1);
+        rewind_schema_version(&store, 24);
     }
 
     let store = StateStore::open(&path).unwrap();
@@ -3359,6 +3359,44 @@ fn concurrent_in_memory_stores_are_independent() {
 }
 
 // --- schema migration ---
+
+#[test]
+fn migration_25_adds_the_scoped_scan_table_without_touching_the_machine_wide_stamp() {
+    // A store at 25 is one that has never held a scoped scan stamp. Opening
+    // it must create the table and leave `last_scan` exactly as it was: the
+    // two dates answer different questions — one check of the whole machine,
+    // one check of a single module's scope — and a migration that reset the
+    // machine-wide stamp would report a scanned host as never checked.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        store.record_scan().unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE scoped_scans;")
+            .unwrap();
+        rewind_schema_version(&store, 25);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len());
+    assert_eq!(
+        store.scoped_scan_stamps().unwrap(),
+        std::collections::BTreeMap::new(),
+        "the table lands empty and readable"
+    );
+    assert!(
+        store.last_scan_at().unwrap().is_some(),
+        "the machine-wide stamp survives the upgrade"
+    );
+    let stamped = store.record_scoped_scan(["module:nvim"]).unwrap();
+    assert_eq!(
+        store.scoped_scan_stamps().unwrap().get("module:nvim"),
+        Some(&stamped),
+        "the new table takes a stamp keyed by the owner token"
+    );
+}
 
 #[test]
 fn schema_version_after_open() {

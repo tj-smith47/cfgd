@@ -579,7 +579,9 @@ Component Health (checked 3m ago)
 
 The heading's annotation dates the recorded drift verdicts: how long ago the
 machine was last checked, or `(drift never checked)` when no scan has ever
-run. The counts are taken from the rows the `Managed Resources` table below
+run. A row only reads `Synced` where a check actually covered that owner — a
+machine-wide scan, or a scoped (`--module`) one that stamped that module. An
+owner nothing has checked reads `Installed` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
 paints rather than from any declaration, so a health line and the rows under
 it cannot disagree; a kind an owner holds none of is dropped rather than
 rendered as `0`, and an owner holding nothing reads its bare verdict. The
@@ -596,11 +598,12 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of five states:
+A module reads as one of six states:
 
 | State | Meaning | Where it can appear |
 |---|---|---|
-| `Synced` | converged, with every check behind it answered | any status surface |
+| `Synced` | converged, with every check behind it answered | any status surface where a check covers the module |
+| `Installed` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
 | `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |

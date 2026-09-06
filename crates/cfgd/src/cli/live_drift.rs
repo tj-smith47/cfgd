@@ -19,8 +19,8 @@
 //! configurator it never probed — stays standing for its own writer to
 //! settle. A SCOPED check (`--module`) records and resolves only rows whose
 //! resource ids fall in its own scope — the keys it actually re-checked
-//! ([`record_scoped_scan_findings`]) — and leaves the machine-wide stamp
-//! alone. Its scope can still hold a row it never re-checked (a bare legacy
+//! ([`record_scoped_scan_findings`]) — stamps its own scopes and leaves the
+//! machine-wide stamp alone. Its scope can still hold a row it never re-checked (a bare legacy
 //! module id, a batched package id no scanned package matches): that row
 //! stays standing exactly as the full-machine check's does, attributed
 //! through [`cfgd_core::reconciler::row_attributable_to_module`] — the same
@@ -324,6 +324,12 @@ pub(super) struct ScopedStanding {
 /// outside `checked` is touched, and the machine-wide scan stamp is the
 /// caller's to NOT write.
 ///
+/// Every member of `chain` is stamped as a scoped scan inside the same
+/// transaction, so no caller can record scoped findings without dating them:
+/// a scan that healed every row it found used to leave the report with no
+/// date at all, and the verdicts read off it then claimed a check nothing
+/// could point at.
+///
 /// `check_errors` names the keys this run could not answer for. They are
 /// withheld from the resolve on the full walk's rule: a check that errored
 /// vouches for nothing, so its recorded rows stand.
@@ -368,6 +374,14 @@ pub(super) fn record_scoped_scan_findings<'a>(
     // One transaction over the batch, for the same WAL-write economy as the
     // full scan's; per-row failures stay warnings.
     if let Err(e) = state.in_transaction(|| {
+        // The scope tokens this check covered, in the grammar every reader
+        // looks one up by. Written before the rows so a refused stamp is
+        // visible in the same warning stream as a refused row.
+        let scopes: Vec<String> = chain
+            .iter()
+            .map(|m| cfgd_core::reconciler::Owner::module(&m.name).token())
+            .collect();
+        state.record_scoped_scan(scopes.iter().map(String::as_str));
         let mut found: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
         for r in findings {
             record_finding(state, r);

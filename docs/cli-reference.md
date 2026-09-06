@@ -576,8 +576,13 @@ claim about the machine right now:
 The recorded dashboard dates itself on the verdicts the date qualifies: the
 Component Health heading carries `checked 6m ago` (`drift never checked` when
 no scan is on record, `checked live now` after `--scan`), the freshest of the
-machine-wide scan stamp and the recorded rows' own timestamps, since a scoped
-scan records rows without moving the stamp. Each unresolved recorded finding
+machine-wide scan stamp, the scoped scans' own stamps, and the recorded rows'
+timestamps, since a scoped scan stamps its own chain rather than moving the
+machine-wide stamp. A row reads `Synced` only where one of those checks
+covered that owner: an owner nothing has checked reads `Installed`, the
+record's own fact, so a verdict can never claim an answer no check produced.
+A scoped scan covers the modules it resolved and nothing else — `cfgd:env` and
+`profile:*` need a machine-wide check. Each unresolved recorded finding
 nests under the health row of the owner it belongs to, stating its terse
 cause, and the owner's verdict flips to `Drifted` with the shortfall as its
 parenthetical:
@@ -593,8 +598,9 @@ Once that freshest evidence passes the daemon's default reconcile interval the
 report closes on a hint pointing at `cfgd diff`, so a stale dashboard says so
 rather than reading as a clean machine. `-o json` carries the stamp itself as
 `lastScanAt` (an ISO 8601 timestamp, absent when there has been no
-machine-wide scan) and each row's `timestamp` beside it, with the findings as
-the flat `drift` array.
+machine-wide scan), the scoped stamps as `scopedScans` (an object keyed
+`module:<name>`, absent when no scoped scan has run) and each row's
+`timestamp` beside them, with the findings as the flat `drift` array.
 
 A recorded `env-var` or `alias` row is re-read against the machine before it is
 shown. If the declared line is the line the managed env file now holds, the row
@@ -612,9 +618,10 @@ re-read.
 `--scan` performs the live, read-only scan `diff`/`verify` do and folds its
 findings into the display: `driftCheckedLive` flips to `true` and `drift`
 reflects what the scan actually found. A fleet-wide `--scan` also records the
-scan, so its `lastScanAt` is the stamp this run wrote; `--scan --module` does
-not record one, because a single module's check is not evidence the machine was
-scanned. It composes with `--module` (scanning that one module) and with
+scan, so its `lastScanAt` is the stamp this run wrote; `--scan --module`
+writes no machine-wide stamp — a single module's check is not evidence the
+machine was scanned — and stamps every module of the chain it resolved under
+`scopedScans` instead, which is what dates that module's own verdicts. It composes with `--module` (scanning that one module) and with
 `--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
 when the scan found drift, or `1` when a check itself failed (a system
 configurator's probe, or a pinned package whose manager reports no version): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
@@ -697,14 +704,16 @@ granularity), package rows whose packages the chain declares under the
 recorded manager, and `env-var`/`alias` rows attributed to the last chain
 module declaring the name (the merge's own winner). The verdict carries the
 same freshness vocabulary the fleet's Component Health heading does — `checked
-2h ago`, dated by the freshest of the machine-wide stamp and the rows' own
-timestamps, or `No drift recorded — drift never checked` when there is
-neither — and the module
-`-o json` payload carries the same `lastScanAt` the fleet payload does. A
+2h ago`, dated by the freshest of the machine-wide stamp, this module's own
+scoped stamp and the rows' own timestamps, or `No drift recorded — drift never
+checked` when there is none — and the module
+`-o json` payload carries the same `lastScanAt` and `scopedScans` the fleet
+payload does. A
 recorded module-file finding also marks its Deployed Files row `drifted`
 rather than `not scanned`. A `--scan` replaces the recorded rows with what
 the live check found; the payload's `lastScanAt` still names the recorded
-stamp, because a single module's scan never writes one.
+machine-wide stamp, because a single module's scan never writes one — it
+stamps its own chain under `scopedScans`.
 
 `-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
 order rather than an object (a JSON object is a sorted map on the way out, and
@@ -791,10 +800,12 @@ render only.
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).
 `state` is the verdict the human Status row shows, always present, one of
-`Synced`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted` needs a live
-scan: both words come from one derivation, so a `state` of `Drifted` always has
-the findings under `drift` to back it, and a `state` of `Unknown` always has the
-rows under `systemErrors` that say which check could not run.
+`Synced`, `Installed`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted`
+needs a live scan: both words come from one derivation, so a `state` of
+`Drifted` always has the findings under `drift` to back it, and a `state` of
+`Unknown` always has the rows under `systemErrors` that say which check could
+not run. `Installed` is the module's recorded fact with no check behind it:
+neither `lastScanAt` nor a `scopedScans` entry for this module stands.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
@@ -1577,9 +1588,12 @@ failure rather than migrated.
 
 ### `cfgd module list`
 
-List all available modules with their state: `Synced`, `Failed`, or
-`NotApplied`. The `-o json` payload's `status` field carries the stored
-token instead (`installed`, `error`, `pending`, `available`).
+List all available modules with their state: `Synced`, `Installed`, `Failed`,
+or `NotApplied`. This surface runs no check of its own, so a module reads
+`Synced` only where another check covers it — a machine-wide scan on record,
+or a scoped scan of that module — and `Installed` otherwise. The `-o json`
+payload's `status` field carries the stored token instead (`installed`,
+`error`, `pending`, `available`).
 
 ### `cfgd module show <name>`
 

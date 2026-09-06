@@ -1,5 +1,5 @@
 Status: dev-tools
-  Status        Synced
+  Status        Installed
   Last Applied  5m ago
   Packages      2
   Files         12

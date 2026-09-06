@@ -38,6 +38,7 @@ fn happy_entries() -> Vec<ModuleListEntry> {
             active: true,
             source: "local".into(),
             status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
+            checked: true,
             packages: 3,
             files: 5,
             depends: 0,
@@ -47,6 +48,7 @@ fn happy_entries() -> Vec<ModuleListEntry> {
             active: true,
             source: "remote".into(),
             status: "pending".into(),
+            checked: true,
             packages: 7,
             files: 2,
             depends: 1,
@@ -56,6 +58,7 @@ fn happy_entries() -> Vec<ModuleListEntry> {
             active: false,
             source: "local".into(),
             status: "available".into(),
+            checked: true,
             packages: 1,
             files: 0,
             depends: 0,
@@ -196,6 +199,7 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
         None,
         &[],
         false,
+        true,
         printer.arrow(),
         NOW,
     ));
@@ -270,6 +274,7 @@ fn module_show_happy_human() {
         Some(&lock),
         &pkgs,
         false,
+        true,
         printer.arrow(),
         NOW,
     ));
@@ -288,6 +293,7 @@ fn module_show_happy_json() {
         Some(&lock),
         &pkgs,
         false,
+        true,
         printer.arrow(),
         NOW,
     ));
