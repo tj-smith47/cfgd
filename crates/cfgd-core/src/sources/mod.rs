@@ -272,12 +272,11 @@ impl SourceManager {
         // longest wait any composing command takes and the one that used to
         // happen with nothing on screen. Narrated here rather than at the call
         // sites, so every command that composes gets it from one place.
-        // SILENT on both arms: `load_source` already writes the permanent
-        // failure lines for the source it could not fetch (`✗ Cloning source
-        // '<name>'` plus `✗ Failed to clone source '<name>'`), so a settled
-        // `Fail` here would be the same failure a third time — and `Role::Fail`
-        // survives `Verbosity::Quiet`, so it would land beside a `-o json`
-        // payload too.
+        // SILENT on both arms, the rule every wait in this file keeps: a bar
+        // whose failure is also RETURNED retires silently, because the
+        // receiver's own line is the settled failure. A settled `Fail` here
+        // would say it twice, and `Role::Fail` survives `Verbosity::Quiet`, so
+        // the second copy would land beside a `-o json` payload too.
         printer.narrate_silent("Refreshing sources", |sp| -> Result<()> {
             for spec in sources {
                 sp.set_message(format!("Refreshing source:{}", spec.name));
@@ -844,11 +843,9 @@ impl SourceManager {
                 Ok(_) => {
                     let _ = spinner.finish_ok(format!("Fetched source '{}' (libgit2)", spec.name));
                 }
-                Err(e) => {
-                    let _ = spinner
-                        .finish_fail(format!("Failed to fetch source '{}' (libgit2)", spec.name))
-                        .detail(crate::output::collapse_to_subject_line(e));
-                }
+                // Silent on the failing arm: the failure this bar would settle
+                // is the error the call RETURNS, and every receiver words it.
+                Err(_) => spinner.finish_silent(),
             }
             fetch_result?;
         }
@@ -951,11 +948,9 @@ impl SourceManager {
             Ok(_) => {
                 let _ = spinner.finish_ok(format!("Cloned source '{}' (libgit2)", spec.name));
             }
-            Err(e) => {
-                let _ = spinner
-                    .finish_fail(format!("Failed to clone source '{}' (libgit2)", spec.name))
-                    .detail(crate::output::collapse_to_subject_line(e));
-            }
+            // Silent on the failing arm: the failure this bar would settle is
+            // the error the call RETURNS, and every receiver words it.
+            Err(_) => spinner.finish_silent(),
         }
         clone_result?;
 
@@ -2157,11 +2152,10 @@ pub fn git_clone_with_fallback(
         Ok(_) => {
             let _ = spinner.finish_ok(format!("Cloned {} (libgit2)", url));
         }
-        Err(msg) => {
-            let _ = spinner
-                .finish_fail(format!("Failed to clone {} (libgit2)", url))
-                .detail(crate::output::collapse_to_subject_line(msg));
-        }
+        // Silent on the failing arm: the failure this bar would settle is the
+        // error the call RETURNS, and its receiver words it (`init`'s `Clone
+        // failed: <e>`).
+        Err(_) => spinner.finish_silent(),
     }
     result
 }

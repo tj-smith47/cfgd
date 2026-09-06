@@ -1532,6 +1532,37 @@ fn git_clone_with_fallback_invalid_url() {
     );
 }
 
+/// A wait whose failure is also RETURNED retires its bar silently.
+///
+/// The three clone/fetch bars in this module settle a `Fail` line for an error
+/// they hand straight back to the caller, and every receiver words it: `source
+/// add` printed the library's line, then its own title, then the same failure
+/// again. `Role::Fail` survives `Verbosity::Quiet`, so no sink the caller picks
+/// can suppress the first copy — the bar has to stay quiet itself.
+#[test]
+fn a_clone_that_returns_its_failure_settles_no_line_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("clone");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let err =
+        git_clone_with_fallback("file:///nonexistent/path/repo", &target, &printer).unwrap_err();
+    assert!(!err.is_empty(), "the failure must reach the caller");
+    let out = crate::test_helpers::captured_text(&buf);
+    // The positive half keeps the negative one from passing on an empty
+    // capture: the wait really did run and really did narrate.
+    assert!(
+        out.contains("Cloning file:///nonexistent/path/repo"),
+        "the clone must announce the wait it is, got: {out:?}"
+    );
+    assert!(
+        !out.contains("Failed to clone file:///nonexistent/path/repo (libgit2)"),
+        "the caller words this failure, so the bar behind it settles no line of \
+         its own, got: {out:?}"
+    );
+}
+
 #[test]
 fn git_clone_with_fallback_refuses_a_populated_destination_without_deleting_it() {
     // The cleanup between the CLI and libgit2 attempts is an unconditional
