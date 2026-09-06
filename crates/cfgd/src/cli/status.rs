@@ -8053,7 +8053,13 @@ mod tests {
             store
                 .record_drift(
                     "module",
-                    &format!("test-mod{}", module_target.to_string_lossy()),
+                    // The id the scan itself will mint, from the one composer
+                    // over a `/`-folded target: a native spelling here matches
+                    // no checked id on Windows, so the row would never heal.
+                    &super::super::live_drift::module_file_resource_id(
+                        "test-mod",
+                        &cfgd_core::to_posix_string(&module_target),
+                    ),
                     None,
                     Some("x"),
                     "local",
