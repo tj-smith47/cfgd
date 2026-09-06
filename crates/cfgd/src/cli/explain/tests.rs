@@ -1166,11 +1166,15 @@ fn no_schema_description_addresses_a_maintainer_instead_of_a_user() {
     }
     // Reached through the ONE derivation of the workspace's golden roots
     // rather than by a second spelling of the path: a root that moves fails
-    // there by name, where a private join would silently judge nothing.
+    // there by name, where a private join would silently judge nothing. The
+    // match is the whole workspace-relative tail because `golden` alone is the
+    // derivation's directory-NAME guard: a second tree under that name is
+    // resolved by the sorted list's order, which puts `crates/cfgd` ahead of
+    // `crates/cfgd-core`, and this walk would judge its files instead.
     let goldens = cfgd_core::test_helpers::snapshot_golden_roots()
         .into_iter()
-        .find(|r| r.ends_with("golden"))
-        .expect("the golden root is named in `KNOWN_GOLDEN_ROOTS`")
+        .find(|r| r.ends_with("crates/cfgd-core/tests/golden"))
+        .expect("`crates/cfgd-core/tests/golden` is named in `KNOWN_GOLDEN_ROOTS`")
         .join("schema");
     let mut judged = 0;
     for entry in std::fs::read_dir(&goldens).expect("golden schema dir") {

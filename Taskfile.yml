@@ -112,6 +112,9 @@ tasks:
     deps: [_check:tmp-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
+      # The cfgd and cfgd-operator rustdocs each peak near 10 GB; two in flight on a
+      # 12 GB host is an OOM kill, so this step alone runs one crate at a time.
+      CARGO_BUILD_JOBS: 1
     cmds:
       - cargo doc --workspace --no-deps --document-private-items --all-features
 

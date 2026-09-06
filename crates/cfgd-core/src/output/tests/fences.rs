@@ -1229,6 +1229,20 @@ impl LineMask {
 /// names the path it read.
 const FIXTURE_SOURCE: &str = "<fixture>";
 
+/// The label a file walk names `path` by: workspace-relative, `/`-folded.
+///
+/// [`workspace_root`] is a `..`-joined absolute path and [`PathBuf`] never
+/// normalizes one away, so the absolute spelling names a file as
+/// `…/crates/cfgd-core/../../crates/cfgd-core/src/…` here and with `\`
+/// between the components on Windows — three renderings of one file, none of
+/// which a reader can paste. Stripping the root leaves the spelling a CI log,
+/// a Windows run and this box all print identically. An offender line takes
+/// the same label as a desync panic, so a walk names a file one way whatever
+/// it found there.
+fn source_label(path: &Path) -> String {
+    crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(path))
+}
+
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
 ///
@@ -1258,8 +1272,11 @@ const FIXTURE_SOURCE: &str = "<fixture>";
 /// a desynced scan stops the test rather than answering from a slice it
 /// invented. `source` is what makes that answer actionable: a walk over the
 /// workspace reads hundreds of files, and a line number alone names none of
-/// them. Every file walk passes the path it already holds; a literal fixture
-/// passes [`FIXTURE_SOURCE`].
+/// them. `source` is the workspace-relative posix path of a file — the ONE
+/// spelling [`source_label`] folds every walk's path to — or
+/// [`FIXTURE_SOURCE`] for a literal;
+/// `every_path_holding_walk_labels_its_source_workspace_relative` holds that
+/// split.
 /// `an_unbalanced_declaration_stops_the_walk` holds the contract.
 fn source_functions(source: &str, body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
@@ -1469,7 +1486,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         // pins the raw assignment syntax through helpers with no `generate_*`
         // name of their own to match on.
         let is_env_engine_owner = path.ends_with(Path::new("reconciler/env_engine.rs"));
-        let shown = path.display().to_string();
+        let shown = source_label(&path);
         // A file's two halves, judged by ONE block: an exemption or a tell
         // means the same thing whether the text was written inside a
         // declaration or between two of them, and a second judgement is how
@@ -1719,6 +1736,102 @@ fn an_unbalanced_declaration_stops_the_walk() {
     source_functions(
         FIXTURE_SOURCE,
         "// a header line\nfn f() {\n    let x = 1;\n",
+    );
+}
+
+/// The text of a call's first argument, read from just past its `(`.
+///
+/// Depth-aware, so a label composed by a call of its own arrives whole; a
+/// call the input never closes yields nothing rather than the rest of the
+/// file.
+fn first_argument(rest: &str) -> Option<&str> {
+    let mut depth = 0i32;
+    for (at, c) in rest.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' if depth == 0 => return Some(&rest[..at]),
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => return Some(&rest[..at]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every label a path-holding walk hands the scanner is workspace-relative
+/// and `/`-folded.
+///
+/// The sibling of the desync pin above: that one holds that the panic NAMES a
+/// source, this one that the name is the same string wherever it was
+/// produced. [`workspace_root`] is a `..`-joined absolute path, so an
+/// unfolded label spells one file three ways — with the `..` components here,
+/// with `\` between them on a Windows run, and workspace-relative in a walk
+/// that strips the root — and a panic read from a CI log matches none of the
+/// others. [`source_label`] is that one fold.
+///
+/// Held on this file's own call sites, because a caller handing the scanner
+/// the path it already holds compiles just as well: the spelling is the
+/// CALLER's to get right and nothing in the signature can ask for it.
+#[test]
+fn every_path_holding_walk_labels_its_source_workspace_relative() {
+    for path in workspace_rust_files() {
+        let label = source_label(&path);
+        assert!(
+            !label.starts_with('/') && !label.contains('\\'),
+            "the label of {} must be workspace-relative and `/`-folded: {label:?}",
+            path.display()
+        );
+    }
+
+    let own_path = workspace_root().join("crates/cfgd-core/src/output/tests/fences.rs");
+    let own = std::fs::read_to_string(&own_path).unwrap_or_else(|e| panic!("{own_path:?}: {e}"));
+    // Composed at run time: a needle spelled whole would match this roster
+    // itself and read the roster's own punctuation as a label.
+    let calls = [
+        "source_functions",
+        "const_items_outside_functions",
+        "function_source",
+    ]
+    .map(|n| format!("{n}("));
+    let mut labels = 0usize;
+    let mut offenders = Vec::new();
+    for needle in &calls {
+        for (at, _) in own.match_indices(needle.as_str()) {
+            let before = &own[..at];
+            // The declarations take `source: &str`; only a CALL passes a label.
+            if before.ends_with("fn ")
+                || before.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let Some(arg) = first_argument(&own[at + needle.len()..]) else {
+                continue;
+            };
+            labels += 1;
+            let arg = arg.trim();
+            if arg == "FIXTURE_SOURCE" || arg == "source" || arg.contains("source_label(") {
+                continue;
+            }
+            // A label held in a local is judged where the local is bound.
+            if let Some(local) = arg.strip_prefix('&')
+                && own.contains(&format!("let {local} = source_label("))
+            {
+                continue;
+            }
+            offenders.push(arg.to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a walk names the file it read through `source_label`, or one file is \
+         spelled two ways between a desync panic and an offender line: \
+         {offenders:?}"
+    );
+    // The floor is the POPULATION: an empty offender list reads the same
+    // whether the scan found every call site or none of them.
+    assert!(
+        labels >= 20,
+        "the scan read {labels} scanner call sites; it has stopped seeing them"
     );
 }
 
@@ -2117,7 +2230,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         let mut sources: std::collections::BTreeMap<String, Vec<(usize, String)>> =
             std::collections::BTreeMap::new();
         let mut free: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
-        for (open, slice) in source_functions(&path.display().to_string(), &body) {
+        for (open, slice) in source_functions(&source_label(&path), &body) {
             let Some(name) = declared_fn_name(&slice) else {
                 continue;
             };
@@ -2186,11 +2299,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
             }
         }
 
-        let relative = path
-            .strip_prefix(&root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = source_label(&path);
         for (name, decls) in &sources {
             for (open, _) in decls {
                 let start = attribute_block_start(&lines, open - 1);
@@ -2317,7 +2426,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
             continue;
         };
         let lines: Vec<&str> = body.lines().collect();
-        for (open, item) in const_items_outside_functions(&path.display().to_string(), &body) {
+        for (open, item) in const_items_outside_functions(&source_label(&path), &body) {
             items += 1;
             if !mutates_process_env(&item) || hatched(&lines, open - 1, MUTATOR_HATCH) {
                 continue;
@@ -2490,7 +2599,6 @@ fn calls_named(body: &str, name: &str) -> bool {
 /// counts.
 #[test]
 fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
-    let root = workspace_root();
     let mut derived: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files_read = 0usize;
     let mut offenders = Vec::new();
@@ -2514,7 +2622,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         let mut opens: Vec<usize> = Vec::new();
         let mut sources: Vec<String> = Vec::new();
         let mut exported: Vec<bool> = Vec::new();
-        for (open, slice) in source_functions(&path.display().to_string(), &body) {
+        for (open, slice) in source_functions(&source_label(&path), &body) {
             let Some(name) = declared_fn_name(&slice).map(str::to_string) else {
                 continue;
             };
@@ -2569,11 +2677,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
             }
         }
 
-        let relative = path
-            .strip_prefix(&root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = source_label(&path);
         for at in 0..sources.len() {
             if !reaches[at] || !exported[at] {
                 continue;
@@ -2957,7 +3061,6 @@ fn the_literal_fold_reports_the_physical_line_a_logical_line_opens_on() {
 /// is the failure this walk exists to prevent.
 #[test]
 fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
-    let root = workspace_root();
     let mut tests_seen = 0usize;
     let mut judged = Vec::new();
     let mut offenders = Vec::new();
@@ -2966,7 +3069,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         // A crate's integration tests: `src/` holds the unit tests, which reach
         // the check through the same `~` but are the library's own and are
         // covered by their crate's fixtures.
-        let posix = path.to_string_lossy().replace('\\', "/");
+        let posix = crate::to_posix_string(&path);
         if !posix.contains("/tests/") || posix.contains("/src/") {
             continue;
         }
@@ -2974,11 +3077,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
             continue;
         };
         let lines: Vec<&str> = body.lines().collect();
-        let relative = path
-            .strip_prefix(&root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = source_label(&path);
 
         for (open, slice) in source_functions(&relative, &body) {
             let Some(name) = declared_fn_name(&slice) else {
