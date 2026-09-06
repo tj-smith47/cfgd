@@ -162,7 +162,11 @@ single-source-of-truth wiring.
   escaping there would leak backslashes into help output, so those four carry
   `#[allow(rustdoc::invalid_html_tags)]`. Everywhere else, prefer a backtick
   code span over a backslash escape for a literal that looks like an HTML
-  tag — it resolves the same lint and reads cleaner in the source.
+  tag — it resolves the same lint and reads cleaner in the source. The gate
+  lives in `task ci` and `task check` beside this job, and deliberately NOT in
+  `task lint` (the `task commit` chain): the two rustdocs are a four-minute
+  serial leg that peaks near 10 GB, and a broken link is a merge blocker, not
+  a commit blocker — CI refuses it before it lands.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

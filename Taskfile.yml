@@ -434,11 +434,10 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, doc, audit, build, snapshot dry-run)
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in `task ci` and CI, not here
     cmds:
       - task: tidy
       - task: clippy
-      - task: doc
       - task: audit
       - task: build
       - task: snapshot
