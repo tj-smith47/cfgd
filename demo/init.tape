@@ -5,6 +5,15 @@
 # demo/scripts/record.sh, which arranges both. No mp4 is asked for on purpose:
 # h264 is 4:2:0, and the chroma smear on thin coloured glyphs would be baked in
 # before the GIF's palette pass ever ran.
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (the settled
+# LazyVim dashboard, the thing one command produced) gets +1.5s on top; a beat
+# whose output is a single line holds 2s; a typed line that prints nothing
+# holds 1s, and a full screen of content takes the ceiling. A reader needs time
+# in proportion to what landed on screen, so each Sleep below carries the line
+# count it was computed from, measured off a real render rather than guessed.
+# The settle before the hero hold is not a dwell — it waits out the start-up
+# toasts — and the closing hold reads nothing and stays 2s.
 Output "demo/.out/raw/"
 
 Require docker
@@ -68,7 +77,8 @@ Sleep 1s
 
 Type "nvim"
 Enter
-Sleep 3s
+# `nvim: command not found`, 1 line → 2s
+Sleep 2s
 
 Type "cfgd init --from tj-smith47/cfgd-config --apply-module nvim --theme dracula --yes"
 Sleep 700ms
@@ -84,9 +94,10 @@ Enter
 Wait@60m /cfgd\$$/
 # Everything from here plays at 1:1 — the ramp's tail starts at the moment the
 # install finishes, so the payoff is soaked at real speed rather than ramping up
-# only once the editor is already open. Long enough to read the apply summary
-# before the next beat pushes it up.
-Sleep 5s
+# only once the editor is already open. The settled apply fills the frame
+# (~55 lines) → the rule's 6s ceiling, which is what the summary has to be read
+# in before the next beat pushes it up.
+Sleep 6s
 
 # The one beat the apply cannot do for us: this shell was started before
 # ~/.bashrc learned to source ~/.cfgd.env, so its PATH is still the pre-apply
@@ -112,12 +123,11 @@ Wait+Screen@20s /Cargo\.toml/
 # anything. lazy.nvim's update panel no longer joins them: it fires only when
 # the fixture's lazy-lock trails the plugins it pins, and that lock is
 # refreshed upstream before a take, so the span is sized to the startup
-# toasts alone.
+# toasts alone. This is a settle, not a dwell — nothing is being read yet.
 Sleep 4s
-# The hero frames: LazyVim with the repo tree, no toasts left on top of it.
-# Long enough to read the dashboard, short enough that the loop does not sit on
-# a still image — at 6s the hold read as the recording having stalled.
-Sleep 4s
+# The hero frames: LazyVim with the repo tree, no toasts left on top of it. A
+# full editor screen → the rule's 6s ceiling, +1.5s as this tape's payoff beat.
+Sleep 7500ms
 
 Type ":qa"
 Enter
@@ -130,18 +140,20 @@ Wait@30s /cfgd\$$/
 Sleep 500ms
 Type "nvim --version | head -1"
 Enter
-# The closing frame is the claim the whole recording exists to prove, and a
-# loop that cuts away from it the instant it appears reads as an accident.
-# The extra 3s over the read-time minimum is deliberate breathing room before
-# the loop snaps back to the opening prompt.
-Sleep 8s
+# The closing frame is the claim the whole recording exists to prove: 1 line → 2s.
+Sleep 2s
+
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back.
+Sleep 2s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
-# decimates everything between them. Two spans must land inside those ends:
-# the opening typing (~11s at 50ms plus container start, under a 22s head) and
-# everything from the install finishing onward — the 5s summary read, the env
-# source, nvim's start, the 12s settle, the 4s hero hold, the quit and the
-# version beats (34.5s to 37.0s measured across takes, under a 41s tail). Only the
-# install itself is compressed. Lengthen a beat here and the matching head/tail
-# second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
-# that has to play at real speed.
+# decimates everything between them. Two spans must land inside those ends: the
+# opening typing plus the install's first settled progress rows (~27s measured,
+# under a 32s head) and everything from the apply's rollup line onward — the 6s
+# summary read, the env source, nvim's start, the 4s settle, the 7.5s hero
+# hold, the quit, the version beat and the closing breath (26.7s measured on a
+# 230.2s take, under a 30s tail). Only the install between them is compressed.
+# Lengthen a beat here and the matching head/tail second in
+# demo/scripts/make-gif.sh moves with it, or the ramp eats footage that has to
+# play at real speed.

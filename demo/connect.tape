@@ -1,6 +1,14 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # that a module can be attached to a pod that is already running, so the
 # before and the after both have to be watchable.
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 7,
+# `netcheck.sh` running inside the pod) gets +1.5s on top; a beat whose output
+# is a single line holds 2s; a typed line that prints nothing holds 1s. A
+# reader needs time in proportion to what landed on screen, so each Sleep below
+# carries the line count it was computed from, measured off a real render of
+# that verb rather than guessed. The closing hold reads nothing and stays 2s.
 Output "demo/.out/connect/"
 
 # Records on the HOST against the same throwaway kind cluster k8s.tape uses
@@ -68,7 +76,8 @@ Sleep 1s
 Type "head nettools/module.yaml nettools/bin/netcheck.sh"
 Enter
 Wait@30s /demo\$$/
-Sleep 4s
+# 15 lines → 3.0s
+Sleep 3s
 
 # Beat 2: the policy that makes the rest of this tape possible. The Module points
 # at the pushed artifact, and `mountPolicy: Debug` stages the module's CSI
@@ -78,7 +87,8 @@ Sleep 4s
 Type "cat debug-module.yaml"
 Enter
 Wait@30s /demo\$$/
-Sleep 5s
+# 7 lines → 2.2s
+Sleep 2200ms
 
 # Beat 3: the "not in the container" half, proven rather than asserted. The pod
 # carries the annotation and is running, and its own container has no
@@ -87,7 +97,8 @@ Sleep 5s
 Type "kubectl exec app -c app -- ls /cfgd-modules"
 Enter
 Wait@60s /demo\$$/
-Sleep 5s
+# 2 lines → 2s
+Sleep 2s
 
 # Beat 4: attach it. One command adds an ephemeral container to the pod that is
 # already running, mounts the staged module into it, and puts the module's bin
@@ -95,7 +106,8 @@ Sleep 5s
 Type "kubectl cfgd debug app --module nettools:v1 --image busybox:1.36"
 Enter
 Wait@60s /demo\$$/
-Sleep 5s
+# 7 lines → 2.2s
+Sleep 2200ms
 
 # Beat 5: the shell, taken with the command the previous beat printed. The
 # prompt is the one cfgd set on the ephemeral container, so it names the module
@@ -106,6 +118,7 @@ Sleep 5s
 Type "kubectl attach -n demo app -c cfgd-debug -it"
 Enter
 Wait+Screen@60s /\[cfgd:nettools:v1\]/
+# 5 lines → 2s
 Sleep 2s
 
 # Beat 6: the same directory the app container lacked, mounted here — the
@@ -113,7 +126,8 @@ Sleep 2s
 Type "ls /cfgd-modules/nettools/bin"
 Enter
 Wait+Screen@30s /netcheck\.sh/
-Sleep 4s
+# 1 line → 2s
+Sleep 2s
 
 # Beat 7: the payoff. `netcheck.sh` is the module's own file, reached by name
 # off the PATH cfgd set, and it reports the address and resolver of the pod it
@@ -122,20 +136,23 @@ Sleep 4s
 Type "netcheck.sh"
 Enter
 Wait+Screen@30s /resolver/
-Sleep 6s
+# 3 lines → 2s, +1.5s as this tape's payoff beat
+Sleep 3500ms
 
 # Leaving the shell ends the ephemeral container with it.
 Type "exit"
 Enter
 Wait@60s /demo\$$/
-Sleep 4s
+# 2 lines → 2s
+Sleep 2s
 
 # Beat 8: the boundary held. The application's own container never gained the
 # module — the mount was scoped to the debug shell, which has now gone.
 Type "kubectl exec app -c app -- ls /cfgd-modules"
 Enter
 Wait@60s /demo\$$/
-Sleep 5s
+# 2 lines → 2s
+Sleep 2s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

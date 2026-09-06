@@ -6,6 +6,16 @@
 # the pull triggers reports that nothing is left to do. The money shot is
 # B's nvim gutter switching from absolute to relative line numbers on its
 # second open.
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 11, B's
+# gutter counting from the cursor) gets +1.5s on top; a beat whose output is a
+# single line holds 2s; a typed line that prints nothing — a shell hop or a
+# local edit — holds 1s, and an editor screen is a full frame of content, so it
+# takes the ceiling. A reader needs time in proportion to what landed on
+# screen, so each Sleep below carries the line count it was computed from,
+# measured off a real render rather than guessed. The closing hold reads
+# nothing and stays 2s.
 Output "demo/.out/sync/"
 
 Require docker
@@ -62,7 +72,8 @@ Sleep 1s
 Type "docker exec -it machine-b bash -l"
 Enter
 Wait@15s /machine-b:~\$$/
-Sleep 2s
+# a hop prints nothing → 1s
+Sleep 1s
 
 # Beat 2: B's daemon is alive and syncing — running, zero drift, and the
 # `local` source (the machine's own clone of the shared config repo) active,
@@ -70,7 +81,8 @@ Sleep 2s
 Type "cfgd daemon status"
 Enter
 Wait@30s /machine-b:~\$$/
-Sleep 5s
+# 17 lines → 3.2s
+Sleep 3200ms
 
 # Beat 3: BEFORE — the module's own options file in B's nvim, opened at the
 # line that declares the numbering (`opt.number = true`, line 52), with the
@@ -97,7 +109,8 @@ Enter
 Sleep 10s
 Show
 Wait+Screen@10s /52 opt\.number = true/
-Sleep 5s
+# a full editor screen → the rule's 6s ceiling
+Sleep 6s
 Type ":qa"
 Enter
 Wait@15s /machine-b:~\$$/
@@ -123,7 +136,8 @@ Sleep 1s
 Type "docker exec -it machine-a bash -l"
 Enter
 Wait@15s /machine-a:~\$$/
-Sleep 2s
+# a hop prints nothing → 1s
+Sleep 1s
 
 # Beat 5: the config dir IS a git clone of the shared source — turn on
 # relative line numbers in the nvim module, right beneath the module's own
@@ -138,7 +152,8 @@ Sleep 1s
 Type "f=modules/nvim/files/lua/config/options.lua"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 500ms
+# prints nothing → 1s
+Sleep 1s
 Type "sed -i '/^opt.number = true/a opt.relativenumber = true -- count from the cursor line' $f"
 Enter
 Wait@10s /cfgd\$$/
@@ -149,18 +164,21 @@ Sleep 1s
 Type "git diff | grep -vE '^@{2}'"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 5s
+# 11 lines → 2.6s
+Sleep 2600ms
 
 # Beat 6: commit and push — the change leaves A for the shared source. This
 # is the last manual action in the demo; everything after is the daemon's.
 Type "git commit -am 'nvim: relative line numbers'"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+# 2 lines → 2s
+Sleep 2s
 Type "git push"
 Enter
 Wait@30s /cfgd\$$/
-Sleep 4s
+# 8 lines → 2.3s
+Sleep 2300ms
 
 # Beat 7: back to machine B. Nothing is typed at it beyond looking — the
 # 5s-interval autoPull daemon is what moves the change.
@@ -190,7 +208,8 @@ Show
 Sleep 1s
 Enter
 Wait+Screen@60s /(?s)sync: pulled.*reconcile: complete/
-Sleep 4s
+# 29 log lines → 4.4s
+Sleep 4400ms
 Ctrl+C
 Wait@10s /machine-b:~\$$/
 Sleep 1s
@@ -200,14 +219,16 @@ Sleep 1s
 Type "cfgd daemon status"
 Enter
 Wait@30s /machine-b:~\$$/
-Sleep 4s
+# 17 lines → 3.2s
+Sleep 3200ms
 
 # Beat 10: A's commit is at the tip of B's clone — nobody ran git here.
 # `--abbrev=12` so git names the commit the way the daemon log above does.
 Type "git -C ~/.config/cfgd --no-pager log -1 --abbrev=12 --format='%h %s'"
 Enter
 Wait+Screen@10s /relative line numbers/
-Sleep 4s
+# 1 line → 2s
+Sleep 2s
 
 # Beat 11: AFTER — the same file at the same line, reopened: the inserted
 # option now sits directly beneath `opt.number = true`, and the gutter
@@ -229,7 +250,8 @@ Enter
 Sleep 10s
 Show
 Wait+Screen@10s /1 opt\.relativenumber = true/
-Sleep 5s
+# a full editor screen → the rule's 6s ceiling, +1.5s as this tape's payoff beat
+Sleep 7500ms
 
 # The take ends inside nvim, on the payoff, so the loop rests on the gutter
 # rather than on scrollback. Closing hold — the last beat's own hold already

@@ -543,8 +543,8 @@ a run judges ownership against is always the store it opened.
 
 Show configuration status, drift, and pending decisions.
 
-![the status surfaces: component health, a recorded drift finding, and the wide per-file table](../demo/cfgd-status.gif)
-*A converged machine, a file sabotaged from outside cfgd, the scan that records it, the same finding read back off the record, the heal, and the machine at full granularity.*
+![the status surfaces: component health, a recorded drift finding, and the wide per-file table](../demo/cfgd-drift.gif)
+*A converged machine, a file sabotaged from outside cfgd, the scan that records it, `cfgd status` reading that record back with no scan of its own, the heal, and `cfgd status -o wide` at one row per deployed file.*
 
 ```sh
 cfgd status                                 # human-readable table

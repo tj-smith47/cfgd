@@ -1,6 +1,15 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # the authoring loop on an ALREADY-CONVERGED machine: discover the schema,
 # change one thing, watch cfgd do exactly that one thing and then nothing.
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 6's
+# `catn`, the line the authoring loop exists to land) gets +1.5s on top; a beat
+# whose output is a single line holds 2s; a typed line that prints nothing
+# holds 1s. A reader needs time in proportion to what landed on screen, so each
+# Sleep below carries the line count it was computed from, measured off a real
+# render of that verb rather than guessed. The closing hold reads nothing and
+# stays 2s.
 Output "demo/.out/author/"
 
 Require docker
@@ -11,7 +20,12 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+# 1320x1200 at font size 15 measures 125x60. The tallest single render below is
+# the closing `cfgd status -o wide` at ~39 lines — the plain dashboard's 34
+# lines with the file aggregate blown into one row per deployed file — and it
+# is preceded by a clear, so the grid only has to hold it plus the line that
+# typed it.
+Set Height 1200
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -59,21 +73,24 @@ Sleep 1s
 Type "cfgd status"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 31 lines → 4.6s
+Sleep 4600ms
 
 # Beat 1: render the schema/field docs for a resource path — proves you can
 # discover what a profile accepts without opening docs or an editor.
 Type "cfgd explain profile.spec.packages"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 27 lines → 4.2s
+Sleep 4200ms
 
 # Beat 2: recurse into one manager key — brew is not just a list, it carries
 # taps / formulae / casks / a Brewfile path, which is what beat 3 leans on.
 Type "cfgd explain profile.spec.packages.brew"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 4s
+# 14 lines → 2.9s
+Sleep 2900ms
 
 # Beat 2b: the same field, recursively, so every shape under `brew` and the
 # field's own Docs row (a link on a terminal that opens one, the release-
@@ -85,7 +102,8 @@ Enter
 Type "cfgd explain profile.spec.packages.brew --recursive"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 18 lines → 3.3s
+Sleep 3300ms
 
 # Beat 3: mutate the profile from the CLI — a tap, a formula delivered
 # through brew, and a shell alias, one command, no editor. The tap token
@@ -102,7 +120,8 @@ Enter
 Type "    --alias catn='cat -n'"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 4s
+# 8 lines → 2.3s
+Sleep 2300ms
 
 # Beat 4: preview what the update queued. Beat 3's delta appears with the
 # brew index refresh it needs, and the session publish this box has no
@@ -111,7 +130,8 @@ Sleep 4s
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 6s
+# 22 lines → 3.7s
+Sleep 3700ms
 
 # Beat 5: converge. The tap is added before the formula that may only exist
 # inside it, then gum installs; nothing nvim-owned re-runs.
@@ -120,7 +140,8 @@ Sleep 6s
 Type "cfgd apply --yes"
 Enter
 Wait@5m /cfgd\$$/
-Sleep 6s
+# 29 lines → 4.4s
+Sleep 4400ms
 
 # Beat 6: the payoff, both halves. This shell's copy of ~/.cfgd.env predates
 # the write cfgd apply just made, so re-source it first — on its own line,
@@ -131,17 +152,19 @@ Sleep 6s
 Type "source ~/.cfgd.env"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+# prints nothing → 1s
+Sleep 1s
 Type "gum --version"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+# 1 line → 2s
+Sleep 2s
 Type "catn ~/.cfgd.env"
 Enter
 Wait@10s /cfgd\$$/
-# The beat the whole authoring loop exists to land: held long enough to find
-# the alias line in the numbered file.
-Sleep 7s
+# The beat the whole authoring loop exists to land: 9 lines (8 numbered, the
+# PATH line wrapping onto a second row) → 2.4s, +1.5s as the payoff beat.
+Sleep 3900ms
 
 # Beat 7: the idempotency shot — the same apply again, and cfgd says the
 # whole machine is up to date in one line. Nothing re-installs, no module
@@ -149,17 +172,21 @@ Sleep 7s
 Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 6 lines → 2.1s
+Sleep 2100ms
 
-# Beat 8: the same status as beat 1, now carrying what the loop authored —
-# the tap, the formula and the alias under the profile's own owner, beside
-# the module's rows.
+# Beat 8: the same status as beat 0, now carrying what the loop authored —
+# the tap, the formula and the alias under the profile's own owner, beside the
+# module's rows — and at full granularity: `-o wide` blows the file aggregate
+# into one row per deployed file and fills the Method column for every row that
+# has one.
 Type "clear"
 Enter
-Type "cfgd status"
+Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 6s
+# ~39 lines → 5.4s
+Sleep 5400ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

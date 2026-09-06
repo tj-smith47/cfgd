@@ -22,23 +22,26 @@ cd "$(dirname "$0")/../.."
 TAPE=demo/init.tape
 FRAMES=demo/.out/raw
 OUT=demo/cfgd-demo.gif
-# The 1:1 opening is ~11s of scripted beats — two typed commands at 50ms, the
-# 700ms pause before Enter, the 3s nvim glance — plus however long the
-# container needs to reach a prompt, which is unscripted and swings with the
-# page cache. 22 clears a cold start; on a warm take the slack is spent
-# playing the first install lines at 1:1, which costs GIF seconds but can
-# never truncate the typing the demo opens on.
-HEAD=22
-# The tail starts at the moment the install finishes, so the whole payoff plays
-# at 1:1: the 5s summary read, `source ~/.cfgd.env`, nvim's start, the 12s toast
-# settle, the 4s hero hold, `:qa`, the screen restore, and the version line with
-# its 8s hold — 34.5s to 37.0s measured across takes, the spread being nvim's
-# own variable start. 41 covers the LONGEST payoff seen with margin; the
-# margin is paid on a short take as a few seconds of 1:1 spinner before the
-# apply settles, which is the right side to err on — at 45 the boundary
-# landed ~7s early and the GIF sat on a frozen install log. Too small and the
-# summary or the hero hold falls into the compressed middle.
-TAIL=41
+# The head has to hold the opening typing AND the install's first real progress
+# lines, or the ramp starts while the viewer is still reading the first thing
+# cfgd printed. Measured on a take: ~10s of scripted beats (two typed commands
+# at 50ms, the 700ms pause before Enter, the 2s nvim glance), the container
+# start on top of it (unscripted, swings with the page cache), the plan tree at
+# ~12s, `refresh apt index` settling at ~15s and `provision brew` settling with
+# its version at ~27s. 32 ends just after that, with margin for a cold
+# container start; on a warm take the slack is spent playing more install lines
+# at 1:1, which costs GIF seconds but can never truncate what the demo opens on.
+HEAD=32
+# The tail begins at the apply's rollup line, so the whole payoff plays at 1:1:
+# the 6s summary read, `source ~/.cfgd.env`, nvim's start, the 4s toast settle,
+# the 7.5s hero hold, `:qa`, the screen restore, and the version line with its
+# 2s hold plus the closing breath. Measured off the frames of a 230.2s take:
+# the rollup lands 26.7s from the end. 30 covers that plus nvim's own variable
+# start; the margin is paid as a few seconds of 1:1 install log before the
+# rollup, which is the right side to err on. Too small and the rollup or the
+# summary read falls into the compressed middle; too large and the ramp
+# decelerates onto a frozen install log, which is what 41 did.
+TAIL=30
 # The install is the substance of the demo, not dead air to skip past: at 12s
 # the middle ran fast enough that the package and bootstrap lines were
 # unreadable smears. 26s halves that rate, which is fast enough to stay a

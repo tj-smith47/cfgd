@@ -1,6 +1,14 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
 # the backup/tamper/restore loop itself, so nothing in it is worth compressing
 # away.
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 5, the
+# restore) gets +1.5s on top; a beat whose output is a single line holds 2s; a
+# typed line that prints nothing holds 1s. A reader needs time in proportion to
+# what landed on screen, so each Sleep below carries the line count it was
+# computed from, measured off a real render of that verb rather than guessed.
+# The closing hold reads nothing and stays 2s.
 Output "demo/.out/backup/"
 
 Require docker
@@ -73,26 +81,30 @@ Sleep 1s
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 4 lines → 2s
+Sleep 2s
 
 # Beat 2: take the snapshot. The output names the stamped snapshot it wrote.
 Type "cfgd backup run"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 10 lines → 2.5s
+Sleep 2500ms
 
 # Beat 3: tamper from outside cfgd, then show the damage. Combined into one
 # line — echo prints nothing itself, so the visible output is entirely cat's.
 Type "echo 'oops' > ~/notes.md && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 1 line → 2s
+Sleep 2s
 
 # Beat 4: the snapshot inventory — what restore can put back.
 Type "cfgd backup list notes --snapshots"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 4 lines → 2s
+Sleep 2s
 
 # Beat 5: the payoff. --yes skips the confirmation prompt for a clean,
 # deterministic recording (the CLI reference's own examples restore this
@@ -100,7 +112,8 @@ Sleep 4s
 Type "cfgd backup restore notes --yes && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 17 lines → 3.2s, +1.5s as this tape's payoff beat
+Sleep 4700ms
 
 # Beat 5b: the restore is itself reversible. The pre-restore safety copy is a
 # sidecar beside the source, and rollback puts it back through the same
@@ -108,7 +121,8 @@ Sleep 4s
 Type "cfgd backup rollback notes --yes && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 14 lines → 2.9s
+Sleep 2900ms
 
 # Beat 6: close the loop on the ledger — the unit counts exactly the snapshot
 # it took (the restore's safety copy is a sidecar beside the source, never a
@@ -117,7 +131,8 @@ Sleep 4s
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 5 lines → 2s
+Sleep 2s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

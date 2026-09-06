@@ -4,6 +4,14 @@
 # an upstream change, review it, accept it, apply it), then the trust wall
 # (the same source demanding signed commits, refused unsigned and accepted
 # signed).
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 10, the
+# refusal) gets +1.5s on top; a beat whose output is a single line holds 2s; a
+# typed line that prints nothing holds 1s. A reader needs time in proportion to
+# what landed on screen, so each Sleep below carries the line count it was
+# computed from, measured off a real render of that verb rather than guessed.
+# The closing hold reads nothing and stays 2s.
 Output "demo/.out/source-trust/"
 
 Require docker
@@ -124,7 +132,8 @@ Sleep 1s
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 3s
+# 6 lines → 2.1s
+Sleep 2100ms
 
 # Beat 2: subscribe, on camera. `source add` renders the manifest before it
 # writes — the profile the source provides and what that profile declares
@@ -137,7 +146,8 @@ Sleep 3s
 Type "cfgd source add file://$HOME/team-config --name jarvispro --branch master --profile team --yes"
 Enter
 Wait@30s /cfgd\$$/
-Sleep 6s
+# 19 lines → 3.4s
+Sleep 3400ms
 
 Hide
 Type "clear"
@@ -153,25 +163,29 @@ Sleep 1s
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 13 lines → 2.8s
+Sleep 2800ms
 
 # Beat 4: the decision, with its content. Each row names the resource and
 # what accepting it sets (`PAGER=less`), under the source that delivers it.
 Type "cfgd decide"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 5s
+# 5 lines → 2s
+Sleep 2s
 
 # Beat 5: accept, then apply. Accepting records the decision; apply is what
 # moves the machine — the env write lands on camera.
 Type "cfgd decide accept --all"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+# 3 lines → 2s
+Sleep 2s
 Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 5s
+# 19 lines → 3.4s
+Sleep 3400ms
 
 # Hidden: the team ships a change upstream — a second env var in the team
 # profile. `-c commit.gpgsign=false` because the signing demand is act two's
@@ -191,7 +205,8 @@ Sleep 1s
 Type "cfgd sync"
 Enter
 Wait@30s /cfgd\$$/
-Sleep 4s
+# 16 lines → 3.1s
+Sleep 3100ms
 
 # Beat 7: what arrived is a new decision, not a silent change: only GOPRIVATE
 # is pending now, because PAGER was answered in beat 5. Accept and apply
@@ -199,21 +214,25 @@ Sleep 4s
 Type "cfgd decide"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 5 lines → 2s
+Sleep 2s
 Type "cfgd decide accept --all"
 Enter
 Wait@10s /cfgd\$$/
+# 3 lines → 2s
 Sleep 2s
 Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 4s
+# 19 lines → 3.4s
+Sleep 3400ms
 
 # Beat 8: the subscription at rest — synced, healthy, applied.
 Type "cfgd source list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 4 lines → 2s
+Sleep 2s
 
 # ── Act two: the trust wall ────────────────────────────────────────────────
 
@@ -231,17 +250,19 @@ Sleep 1s
 Type "cfgd source update jarvispro --require-signed-commits"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+# 6 lines → 2.1s
+Sleep 2100ms
 
 # Beat 10: the wall itself. `cfgd sync` really fetches the fixture, really
 # runs `git log --format=%G?` against its HEAD, and really refuses — the
 # unsigned-HEAD line below is cfgd's own, unedited, under the source it
-# refuses. Held at the tape's longest because the refusal is the whole claim
-# and must be legible on its own before the screen clears for the fix.
+# refuses. This is the tape's payoff beat: the refusal is the whole claim, and
+# it must be legible on its own before the screen clears for the fix.
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 6s
+# 17 lines → 3.2s, +1.5s as this tape's payoff beat
+Sleep 4700ms
 
 # Beat 11: the fix. A brand-new signed commit (never an amend — cfgd's fetch
 # only fast-forwards the cache, and an amended HEAD is a diverged rewrite the
@@ -263,7 +284,8 @@ Sleep 1s
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 18 lines → 3.3s
+Sleep 3300ms
 
 # Beat 12: the subscription, described by the tool: its state, the policy it
 # now runs under (`Require Signed Commits  yes`), and the profile it
@@ -272,16 +294,18 @@ Sleep 4s
 Type "cfgd source show jarvispro"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 6s
+# 32 lines → 4.7s
+Sleep 4700ms
 
-# Beat 13: the payoff — the arc closes where act one rested: a healthy
-# subscription, now behind a signing demand it satisfies. `cfgd status` also
+# Beat 13: the arc closes where act one rested — a healthy subscription, now
+# behind a signing demand it satisfies. `cfgd status` also
 # proves it but buries the source row under the module's full
 # managed-resource table, which has nothing to do with this tape's claim.
 Type "cfgd source list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+# 4 lines → 2s
+Sleep 2s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

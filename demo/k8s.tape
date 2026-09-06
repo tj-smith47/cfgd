@@ -1,6 +1,14 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is a
 # single chain (module → registry → cluster → pod → update → convergence), and
 # every link in it has to be watchable or the chain is not what was shown.
+#
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 5, the
+# module's own file running inside the pod) gets +1.5s on top; a beat whose
+# output is a single line holds 2s; a typed line that prints nothing holds 1s.
+# A reader needs time in proportion to what landed on screen, so each Sleep
+# below carries the line count it was computed from, measured off a real render
+# of that verb rather than guessed. The closing hold reads nothing and stays 2s.
 Output "demo/.out/k8s/"
 
 # One of the two tapes that record on the HOST rather than inside the demo
@@ -66,7 +74,8 @@ Sleep 1s
 Type "head tools/module.yaml tools/bin/hello.sh"
 Enter
 Wait@30s /demo\$$/
-Sleep 5s
+# 13 lines → 2.8s
+Sleep 2800ms
 
 # Beat 2: the module leaves the workstation, signed. `./tools` is an ordinary
 # module directory (module.yaml + bin/hello.sh); push turns it into an OCI
@@ -77,7 +86,8 @@ Sleep 5s
 Type "cfgd module push ./tools --artifact localhost:5001/demo/tools:v1 --sign --key ./cosign.key"
 Enter
 Wait@60s /demo\$$/
-Sleep 4s
+# 7 lines → 2.2s
+Sleep 2200ms
 
 # Beat 3: the module becomes a cluster object. The Module resource is cluster-scoped
 # and carries the artifact reference under the name the CLUSTER reaches the
@@ -86,11 +96,13 @@ Sleep 4s
 Type "kubectl apply -f module-cr.yaml"
 Enter
 Wait@60s /demo\$$/
+# 1 line → 2s
 Sleep 2s
 Type "kubectl get modules"
 Enter
 Wait@30s /demo\$$/
-Sleep 4s
+# 2 lines → 2s
+Sleep 2s
 
 # `clear` only — VHS's `Hide` pauses recording, it does not erase the
 # terminal, so without this the pod half of the demo would open underneath the
@@ -107,7 +119,8 @@ Sleep 1s
 Type "cat pod.yaml"
 Enter
 Wait@30s /demo\$$/
-Sleep 5s
+# 13 lines → 2.8s
+Sleep 2800ms
 
 # One line: admission and readiness are one thought. The mutating webhook
 # rewrites the pod on admission and the CSI driver pulls the artifact and
@@ -116,7 +129,8 @@ Sleep 5s
 Type "kubectl apply -f pod.yaml && kubectl wait --for=condition=Ready pod/demo-pod --timeout=180s"
 Enter
 Wait@5m /demo\$$/
-Sleep 4s
+# 2 lines → 2s
+Sleep 2s
 
 # Beat 5: the payoff, and the line the whole first act exists for — held
 # longer than the plumbing around it. The module's file is inside the pod, at
@@ -124,7 +138,8 @@ Sleep 4s
 Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
-Sleep 6s
+# 1 line → 2s, +1.5s as this tape's payoff beat
+Sleep 3500ms
 
 Hide
 Type "clear"
@@ -138,13 +153,15 @@ Sleep 1s
 Type "sed -i 's/TJ/Taylor/' tools/bin/hello.sh && cat tools/bin/hello.sh"
 Enter
 Wait@30s /demo\$$/
-Sleep 4s
+# 2 lines → 2s
+Sleep 2s
 
 # Beat 7: v2 leaves the workstation the same way v1 did — signed, same key.
 Type "cfgd module push ./tools --artifact localhost:5001/demo/tools:v2 --sign --key ./cosign.key"
 Enter
 Wait@60s /demo\$$/
-Sleep 4s
+# 7 lines → 2.2s
+Sleep 2200ms
 
 # Beat 8: the cluster learns about v2. The Module's Artifact column flipping to
 # :v2 is the desired state moving; the pod annotation moves with it so the
@@ -154,22 +171,26 @@ Sleep 4s
 Type "sed -i 's/:v1/:v2/' module-cr.yaml pod.yaml && kubectl apply -f module-cr.yaml"
 Enter
 Wait@60s /demo\$$/
-Sleep 1s
+# 1 line → 2s
+Sleep 2s
 Type "kubectl wait --for=jsonpath='{.status.observedGeneration}'=2 module/tools --timeout=120s"
 Enter
 Wait@3m /demo\$$/
-Sleep 1s
+# 1 line → 2s
+Sleep 2s
 Type "kubectl get modules"
 Enter
 Wait@30s /demo\$$/
-Sleep 4s
+# 2 lines → 2s
+Sleep 2s
 
 # Beat 9: the drift, on camera. The running pod was admitted against v1 and
 # still serves it — desired state says Taylor, the machine still says TJ.
 Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
-Sleep 6s
+# 1 line → 2s
+Sleep 2s
 
 # Beat 10: convergence. Module content is injected at admission, so the pod
 # rolls once (one line: replace, wait) and comes back on v2. `replace --force`
@@ -182,11 +203,13 @@ Sleep 6s
 Type "kubectl replace --force -f pod.yaml && kubectl wait --for=condition=Ready pod/demo-pod --timeout=180s"
 Enter
 Wait@5m /demo\$$/
-Sleep 3s
+# 3 lines → 2s
+Sleep 2s
 Type "kubectl exec demo-pod -- /cfgd-modules/tools/bin/hello.sh"
 Enter
 Wait@60s /demo\$$/
-Sleep 6s
+# 1 line → 2s
+Sleep 2s
 
 # Beat 11: the plugin closes the loop. `kubectl cfgd` is cfgd's own kubectl
 # plugin (the same binary, reached through a `kubectl-cfgd` name on PATH), and
@@ -197,7 +220,8 @@ Sleep 6s
 Type "kubectl cfgd status"
 Enter
 Wait@60s /demo\$$/
-Sleep 4s
+# 9 lines → 2.4s
+Sleep 2400ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.
