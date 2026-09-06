@@ -12,8 +12,8 @@
 # holds 1s, and a full screen of content takes the ceiling. A reader needs time
 # in proportion to what landed on screen, so each Sleep below carries the line
 # count it was computed from, measured off a real render rather than guessed.
-# The settle before the hero hold is not a dwell — it waits out the start-up
-# toasts — and the closing hold reads nothing and stays 2s.
+# The settle before the hero hold is not a dwell — it waits for the tree's
+# scan — and the closing hold reads nothing and stays 2s.
 Output "demo/.out/raw/"
 
 Require docker
@@ -61,8 +61,12 @@ Enter
 # after it to the binary cfgd's own ~/.cfgd.env put on PATH. `--hostname
 # jarvispro` names the container the same way the machine this demo stands in
 # for is named, so the prompt reads as a real host rather than Docker's random
-# hex id.
-Type "docker run --rm -it --hostname jarvispro cfgd-demo:latest bash -l"
+# hex id. Named, and kept after it exits: the ramp needs to know the source
+# second the apply reached its scripts phase, and that is read from the
+# container's own output (`docker logs -t`, a wall-clock stamp per line) by
+# demo/scripts/record.sh, which removes the container once it has the log. An
+# `--rm` container takes its log with it.
+Type "docker run -it --name cfgd-demo-init --hostname jarvispro cfgd-demo:latest bash -l"
 Enter
 # The container prompt ends in the workdir name; matching `cfgd$` instead of a
 # bare `$` keeps package-manager output from satisfying the wait early.
@@ -118,13 +122,15 @@ Wait+Screen@20s /Welcome, TJ Smith!/
 # empty pane; waiting on real tree content turns a bad take into a hard
 # failure instead of a silently-wrong GIF.
 Wait+Screen@20s /Cargo\.toml/
-# The first interactive start raises notifications that cover half the editor.
-# They expire on their own, so this settles the screen rather than showing
-# anything. lazy.nvim's update panel no longer joins them: it fires only when
-# the fixture's lazy-lock trails the plugins it pins, and that lock is
-# refreshed upstream before a take, so the span is sized to the startup
-# toasts alone. This is a settle, not a dwell — nothing is being read yet.
-Sleep 4s
+# The tree has just painted its first entries; this lets its scan finish and
+# the statusline settle before the hold starts counting. It is a settle, not a
+# dwell — nothing is being read yet. lazy.nvim's update panel is not waited
+# for: it fires only when the fixture's lazy-lock trails the plugins it pins,
+# and that lock is refreshed upstream before a take. On a take where it does
+# appear the lock is stale, and the fix is the refresh, not a longer settle
+# (measured: the panel covers the dashboard for ~7s, longer than any settle
+# worth paying for).
+Sleep 1s
 # The hero frames: LazyVim with the repo tree, no toasts left on top of it. A
 # full editor screen → the rule's 6s ceiling, +1.5s as this tape's payoff beat.
 Sleep 7500ms
@@ -148,12 +154,14 @@ Sleep 2s
 Sleep 2s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
-# decimates everything between them. Two spans must land inside those ends: the
-# opening typing plus the install's first settled progress rows (~27s measured,
-# under a 32s head) and everything from the apply's rollup line onward — the 6s
-# summary read, the env source, nvim's start, the 4s settle, the 7.5s hero
-# hold, the quit, the version beat and the closing breath (26.7s measured on a
-# 230.2s take, under a 30s tail). Only the install between them is compressed.
-# Lengthen a beat here and the matching head/tail second in
-# demo/scripts/make-gif.sh moves with it, or the ramp eats footage that has to
-# play at real speed.
+# decimates everything between them in two tiers, split where the apply opens
+# its scripts phase. Two spans must land inside the 1:1 ends: the opening
+# typing plus the install's first settled progress rows (brew's version at
+# ~25.5s measured, under a 26s head) and everything from the apply's rollup
+# line onward — the 6s summary read, the env source, nvim's start, the 1s
+# settle, the 7.5s hero hold, the quit, the version beat and the closing
+# breath (23.9s measured, under a 27s tail). Only the install between them is
+# compressed. Lengthen a
+# beat here and the matching head/tail second in demo/scripts/make-gif.sh
+# moves with it, or the ramp eats footage that has to play at real speed. The
+# tier boundary needs no such care: it is read off the take.

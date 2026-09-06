@@ -34,6 +34,20 @@ fi
 # destination that already holds files.
 rm -rf "$RAW"
 
+# A tape that names its container (`docker run --name <x>`, no `--rm`) gets
+# that container's output kept beside the frames, one wall-clock stamp per
+# line: the ramp reads the moment the apply reached its scripts phase from it,
+# against the frames' own mtimes. The name is read out of the tape for the
+# same reason the Output line is. A container left by a killed take would
+# refuse the name, so it is removed before the tape runs; the log is removed
+# with the frames so a failed take cannot pair a stale log with new frames.
+CONTAINER="$(sed -n 's/.*docker run .*--name \([^ ]*\).*/\1/p' "$TAPE" | head -1)"
+LOG="demo/.out/${NAME}.log"
+rm -f "$LOG"
+if [ -n "$CONTAINER" ]; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+fi
+
 # vhs writes a PNG pair per recorded frame into $TMPDIR, which for a take this
 # long is several hundred MB. On Linux /tmp is tmpfs, so every one of those
 # frames is resident RAM competing with the headless chromium vhs screenshots
@@ -52,7 +66,8 @@ rm -rf "$RAW"
 # containerised tapes share nothing else), and a scratch shared between them is
 # wiped by whichever take starts last, leaving the earlier ones writing frames
 # into a directory that no longer exists.
-export TMPDIR="$PWD/demo/.out/tmp/$(basename "$RAW")"
+TMPDIR="$PWD/demo/.out/tmp/$(basename "$RAW")"
+export TMPDIR
 rm -rf "$TMPDIR"
 mkdir -p "$TMPDIR"
 
@@ -63,6 +78,15 @@ vhs "$TAPE"
 if [ ! -d "$RAW" ]; then
     echo "$RAW was never written — the tape produced no recording." >&2
     exit 1
+fi
+
+if [ -n "$CONTAINER" ]; then
+    if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
+        echo "$TAPE names container $CONTAINER but the take never started it — nothing to time the ramp against." >&2
+        exit 1
+    fi
+    docker logs -t "$CONTAINER" > "$LOG" 2>&1
+    docker rm -f "$CONTAINER" >/dev/null
 fi
 
 # The floor is calibrated off a genuine early death, not off any particular

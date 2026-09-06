@@ -46,13 +46,12 @@ fi
 
 # fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
 # delay and playback does not drift against the recorded timing. That is the
-# OUTPUT rate only. The frames are demuxed at the rate the take really achieved,
-# measured off the frames' own mtimes: a take recorded while a package install
-# saturates the host misses the rate its tape declared, and demuxing at the
-# declared rate would replay the session faster than it ran.
+# OUTPUT rate only. The frames are demuxed on their own mtimes (`ts_from_file`),
+# never at a rate — see make-gif.sh for the swing a take's capture rate makes
+# within one recording and what an average-rate demux did to its holds.
 FPS=50
-SRC_FPS=$(bash "$(dirname "$0")/capture-rate.sh" "$FRAMES")
-dur=$(awk -v n="$frames" -v f="$SRC_FPS" 'BEGIN { printf "%.2f", n / f }')
+dur=$(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' -printf '%T@\n' |
+    awk 'NR == 1 { lo = $1; hi = $1 } $1 < lo { lo = $1 } $1 > hi { hi = $1 } END { printf "%.2f\n", hi - lo }')
 
 # The frames are the bare terminal, with none of the surrounding padding the
 # tape asks for, so the canvas has to be rebuilt here. Both numbers are read
@@ -94,7 +93,7 @@ FILTER="[0][1]overlay[merged];\
 [merged]pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:${BG}[padded];\
 [padded]fps=${FPS}[vf]"
 
-INPUTS=(-framerate "$SRC_FPS" -i "$TEXT" -framerate "$SRC_FPS" -i "$CURSOR")
+INPUTS=(-ts_from_file 2 -i "$TEXT" -ts_from_file 2 -i "$CURSOR")
 
 PALETTE="demo/.out/${NAME}-palette.png"
 trap 'rm -f "$PALETTE"' EXIT
@@ -105,4 +104,4 @@ ${FILTER};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
 ffmpeg -y -loglevel error "${INPUTS[@]}" -i "$PALETTE" -filter_complex "\
 ${FILTER};[vf][2:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT"
 
-echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames at ${SRC_FPS}fps = ${dur}s take at 1:1)"
+echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames over a ${dur}s take at 1:1)"
