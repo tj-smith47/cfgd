@@ -4040,9 +4040,9 @@ mod tests {
     /// The dashboard opens on the same `Modules` row `cfgd diff` does — two
     /// surfaces, two independent resolutions of one profile.
     ///
-    /// The README demo opened on a `cfgd status` naming a profile and nothing
-    /// it resolved to, two commands above an apply header that named `nvim` —
-    /// one machine, two headers, only one of which said what was on it. The
+    /// A `cfgd status` naming a profile and nothing it resolved to, two
+    /// commands above an apply header that named `nvim`, is one machine with
+    /// two headers, only one of which said what was on it. The
     /// fixture is what makes the two capable of DISAGREEING: `editor` pulls
     /// `core` in through `depends`, so the resolved set differs from the
     /// declared list in membership and in order, and `off-host` is gated off
@@ -8017,7 +8017,7 @@ mod tests {
         );
     }
 
-    /// The demo's own sequence: a recorded row, a scoped scan that heals it,
+    /// The full sequence: a recorded row, a scoped scan that heals it,
     /// then the fleet dashboard. The scan resolves every row it found and
     /// writes no machine-wide stamp, so before the scoped stamp existed the
     /// report had nothing left to date itself by and read `drift never

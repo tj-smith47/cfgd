@@ -3186,6 +3186,12 @@ fn cmd_init_from_git_source_with_explicit_target() {
     );
 }
 
+/// `init` is the BODY-wait shape of `output-module.md`'s two-shape rule: the
+/// frame reports the wait it opened, so the title commits FIRST.
+///
+/// The clone paints its live window beneath the last committed line, so a
+/// title deferred until the clone returns is written after the output it
+/// introduces.
 #[test]
 fn init_heading_commits_before_the_clone_window_paints() {
     // The clone runs inside a live output window, which paints beneath the

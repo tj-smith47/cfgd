@@ -448,6 +448,141 @@ fn cmd_module_list_shows_modules() {
     assert!(output.contains("beta"), "should list beta, got: {output}");
 }
 
+/// A store fixture for the two surfaces that render a recorded module state
+/// and run no check of their own: a config dir holding `names`, a state dir of
+/// its own, and an `installed` record for every one of them.
+fn setup_recorded_modules(names: &[&str]) -> (tempfile::TempDir, super::Cli) {
+    let dir = setup_config_dir();
+    for name in names {
+        make_module(
+            dir.path(),
+            name,
+            &format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+            ),
+        );
+    }
+    let mut cli = test_cli(dir.path());
+    cli.state_dir = Some(dir.path().join("state"));
+    cli.cache_dir = Some(dir.path().join("cache"));
+    let store = recorded_state(&cli);
+    for name in names {
+        store
+            .upsert_module_state(name, None, "pkgs", "files", None, "installed")
+            .unwrap();
+    }
+    (dir, cli)
+}
+
+fn recorded_state(cli: &super::Cli) -> cfgd_core::state::StateStore {
+    crate::cli::registry::open_state_store(cli.state_dir.as_deref(), cli.scope()).unwrap()
+}
+
+fn rendered_list(cli: &super::Cli) -> String {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_list(cli, &printer).unwrap();
+    drop(printer);
+    cfgd_core::test_helpers::captured_text(&buf)
+}
+
+fn rendered_show(cli: &super::Cli, name: &str) -> String {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_show(cli, &printer, name, false).unwrap();
+    drop(printer);
+    cfgd_core::test_helpers::captured_text(&buf)
+}
+
+/// The one row naming `name`, so a per-module verdict is read off its own row
+/// rather than off a table another module's cell could satisfy.
+fn row_for<'a>(rendered: &'a str, name: &str) -> &'a str {
+    rendered
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some(name))
+        .unwrap_or_else(|| panic!("no row for {name} in:\n{rendered}"))
+}
+
+/// `module list` runs no check, so `Synced` on a row is a claim borrowed from
+/// a check somebody else recorded — asserted against the real store rather
+/// than a hand-built `checked` flag: an `installed` record alone reads
+/// `Installed`, a scoped scan of one module's own token earns `Synced` for
+/// THAT module only, and the machine-wide stamp earns it for every row.
+#[test]
+fn module_list_borrows_synced_from_the_scan_the_store_recorded() {
+    let (dir, cli) = setup_recorded_modules(&["alpha", "beta"]);
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+
+    let unchecked = rendered_list(&cli);
+    assert!(
+        row_for(&unchecked, "alpha").contains("Installed"),
+        "a record no check covers states its own fact, got:\n{unchecked}"
+    );
+    assert!(
+        row_for(&unchecked, "beta").contains("Installed"),
+        "a record no check covers states its own fact, got:\n{unchecked}"
+    );
+
+    recorded_state(&cli)
+        .record_scoped_scan(["module:alpha"])
+        .unwrap();
+    let scoped = rendered_list(&cli);
+    assert!(
+        row_for(&scoped, "alpha").contains("Synced"),
+        "the scanned module keeps the verdict its own scan earned, got:\n{scoped}"
+    );
+    assert!(
+        row_for(&scoped, "beta").contains("Installed"),
+        "one module's scan is no evidence about its neighbour, got:\n{scoped}"
+    );
+
+    recorded_state(&cli).record_scan().unwrap();
+    let machine = rendered_list(&cli);
+    for name in ["alpha", "beta"] {
+        assert!(
+            row_for(&machine, name).contains("Synced"),
+            "a machine-wide scan covers every module, got:\n{machine}"
+        );
+    }
+}
+
+/// `module show`'s Status row answers the same question off the same store,
+/// so the two surfaces cannot call one machine state by two names.
+#[test]
+fn module_show_borrows_synced_from_the_scan_the_store_recorded() {
+    let (dir, cli) = setup_recorded_modules(&["alpha", "beta"]);
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+
+    let unchecked = rendered_show(&cli, "alpha");
+    assert!(
+        unchecked.contains("Installed"),
+        "a record no check covers states its own fact, got:\n{unchecked}"
+    );
+
+    recorded_state(&cli)
+        .record_scoped_scan(["module:alpha"])
+        .unwrap();
+    let scoped = rendered_show(&cli, "alpha");
+    assert!(
+        scoped.contains("Synced"),
+        "the scanned module keeps the verdict its own scan earned, got:\n{scoped}"
+    );
+    let neighbour = rendered_show(&cli, "beta");
+    assert!(
+        neighbour.contains("Installed") && !neighbour.contains("Synced"),
+        "one module's scan is no evidence about its neighbour, got:\n{neighbour}"
+    );
+
+    recorded_state(&cli).record_scan().unwrap();
+    for name in ["alpha", "beta"] {
+        let machine = rendered_show(&cli, name);
+        assert!(
+            machine.contains("Synced"),
+            "a machine-wide scan covers every module, got:\n{machine}"
+        );
+    }
+}
+
 #[test]
 fn cmd_module_list_json_empty() {
     let dir = setup_config_dir();
@@ -6129,9 +6264,12 @@ mod cmd_module_add_remote_local_bare {
         drop(printer2);
 
         let out = cfgd_core::test_helpers::captured_text(&buf2);
+        // The resolution is reported by the `New Ref` row: the run RESOLVED a
+        // ref the invocation never named, so the comparison block is where the
+        // reader learns which one.
         assert!(
-            out.contains("Latest version: mymod/v2.0.0"),
-            "no-ref arm should resolve the highest published tag: {out}"
+            out.contains("New Ref") && out.contains("mymod/v2.0.0"),
+            "no-ref arm should name the tag it resolved: {out}"
         );
 
         let lockfile_v2 = modules::load_lockfile(&config_dir(&cli)).unwrap();

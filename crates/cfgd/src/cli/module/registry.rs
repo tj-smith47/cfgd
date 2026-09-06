@@ -288,8 +288,6 @@ pub fn cmd_module_upgrade(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
-
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer(printer);
@@ -301,6 +299,10 @@ pub fn cmd_module_upgrade(
     let entry_idx = match entry_idx {
         Some(idx) => idx,
         None => {
+            // heading-first-ok: a refusal reaching no fetch narrates nothing,
+            // so the title has no wait to land with; it heads the error line
+            // below it
+            printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
             let local_modules = modules::load_modules(&config_dir)?;
             if local_modules.contains_key(name) {
                 return Err(crate::cli::cli_error(
@@ -343,11 +345,18 @@ pub fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let old_local_path =
-        modules::fetch_git_source(&old_pinned_src, &cache_base, name, &lib_printer)?;
+    // Every fetch runs BEFORE the title: they are this verb's wait, and the
+    // frame they fill reports their RESULT (the two commits), not the fetches
+    // themselves. The lib printer stays Quiet so the clone transcript does not
+    // commit lines above a title this run has not printed yet.
+    let old_local_path = printer.narrate_silent(
+        format!("Fetching module:{name} @ {}", old_entry.pinned_ref),
+        |_| modules::fetch_git_source(&old_pinned_src, &cache_base, name, &lib_printer),
+    )?;
     let old_module = modules::load_module(&old_local_path)?;
 
     // Build the new URL with the updated ref
+    let mut resolved_ref = false;
     let new_ref = match new_ref {
         Some(r) => r.to_string(),
         None => {
@@ -355,19 +364,20 @@ pub fn cmd_module_upgrade(
             // default-branch HEAD. Module versions are git tags named
             // `<module>/<version>`; resolve the highest over the remote so a
             // shallow install-time cache doesn't hide newer tags.
-            printer.status_simple(
-                Role::Info,
-                format!("Resolving latest published version for '{}'", name),
-            );
-            match modules::latest_module_version_remote(&old_git_src.repo_url, name)? {
+            let latest = printer.narrate_silent(
+                format!("Resolving the latest published version of module:{name}"),
+                |_| modules::latest_module_version_remote(&old_git_src.repo_url, name),
+            )?;
+            match latest {
                 Some(version) => {
-                    let tag = format!("{}/{}", name, version);
-                    printer
-                        .status(Role::Info, "Latest version")
-                        .qualifier(tag.clone());
-                    tag
+                    resolved_ref = true;
+                    format!("{}/{}", name, version)
                 }
                 None => {
+                    // heading-first-ok: a run that resolved no version fetches
+                    // nothing more, so the title has no result to land with; it
+                    // heads the error line below it
+                    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
                     return Err(crate::cli::cli_error(
                         name,
                         "no_versions",
@@ -389,13 +399,17 @@ pub fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let new_local_path = modules::fetch_git_source(&new_src, &cache_base, name, &lib_printer)?;
+    let new_local_path = printer
+        .narrate_silent(format!("Fetching module:{name} @ {new_ref}"), |_| {
+            modules::fetch_git_source(&new_src, &cache_base, name, &lib_printer)
+        })?;
     let new_module = modules::load_module(&new_local_path)?;
     let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
     let new_commit = modules::get_head_commit_sha(&repo_dir)?;
     let new_integrity = modules::hash_module_contents(&new_local_path)?;
 
     if new_commit == old_entry.commit {
+        printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
         printer.emit(
             Doc::new()
                 .status(Role::Info, "Module is already at this version")
@@ -411,11 +425,16 @@ pub fn cmd_module_upgrade(
     // What is being compared heads the comparison: the two commits are the
     // run's INPUT facts, so they open the screen as one block rather than
     // sitting between the diff's rows and the signature verdict under them.
-    printer.kv_block([
-        ("Old Commit", old_entry.commit.as_str()),
-        ("New Commit", new_commit.as_str()),
-        ("New Integrity", new_integrity.as_str()),
-    ]);
+    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
+    let mut rows = vec![("Old Commit", old_entry.commit.as_str())];
+    // Only when the run RESOLVED it: a ref the invocation named is already on
+    // the screen the reader typed it into.
+    if resolved_ref {
+        rows.push(("New Ref", new_ref.as_str()));
+    }
+    rows.push(("New Commit", new_commit.as_str()));
+    rows.push(("New Integrity", new_integrity.as_str()));
+    printer.kv_block(rows);
 
     // Show diff
     let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());

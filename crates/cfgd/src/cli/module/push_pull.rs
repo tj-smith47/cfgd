@@ -56,6 +56,8 @@ pub fn cmd_module_push(
     // the section's depth instead of depth 0.
     let mut applied_name: Option<String> = None;
     let (digest, resolved_platform, signed, attestation_attached) = {
+        // heading-first-ok: push_module is handed this printer and narrates its
+        // bar at the section's depth, so the frame reports its own wait
         let push_sec = printer.section("Push Module");
         let _inherit = printer.depth_inheritance();
         push_sec.kv_block(header);
@@ -427,19 +429,32 @@ pub fn cmd_module_pull(
         pull_sec.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
         if require_signature {
-            cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
-                crate::cli::cli_error(
-                    artifact_ref,
-                    "verify_failed",
-                    e.to_string(),
-                    serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
-                )
-            })?;
+            // A registry round-trip with no printer of its own: narrated under
+            // the section, retiring silently into the verdict row below it.
+            printer
+                .narrate_silent("Verifying signature", |_| {
+                    cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
+                })
+                .map_err(|e| {
+                    crate::cli::cli_error(
+                        artifact_ref,
+                        "verify_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+                    )
+                })?;
             printer.status_simple(Role::Ok, "Verified signature");
         }
 
         if verify_attestation {
-            cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts)
+            printer
+                .narrate_silent("Verifying SLSA provenance attestation", |_| {
+                    cfgd_core::oci::verify_attestation(
+                        artifact_ref,
+                        "slsaprovenance1",
+                        &verify_opts,
+                    )
+                })
                 .map_err(|e| {
                     crate::cli::cli_error(
                         artifact_ref,

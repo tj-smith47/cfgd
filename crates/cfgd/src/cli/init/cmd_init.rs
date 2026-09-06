@@ -45,10 +45,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // `resolve_from`/`clone_into`, `scaffold`) that keep their `&Printer`
     // signature and call `printer.status_simple`/`hint` directly rather than
     // through a bound `SectionGuard`.
+    // heading-first-ok: the clone paints its own live window beneath the
+    // committed header, so this frame reports the wait it opened
     let init_section = printer.section("Initialize cfgd");
     // The clone below runs inside a live output window, which paints beneath
     // the last committed line — a heading still deferred to its first status
     // would be written after the output it introduces.
+    //
+    // heading-first-ok: committing the header IS what puts the clone's window
+    // under it rather than over the title
     init_section.commit_header();
     let init_depth = printer.depth_inheritance();
 

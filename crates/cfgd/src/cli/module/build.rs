@@ -54,15 +54,21 @@ pub fn cmd_module_build(
         build_sec.kv_block(header);
 
         if targets.len() == 1 {
-            let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
+            // The build IS the wait this frame reports: the bar runs under
+            // the section and retires silently into the `Built to` row below
+            // it, the way the per-target branch settles each of its own.
+            let output_dir = printer
+                .narrate_silent("Building module", |_| {
+                    cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
+                })
                 .map_err(|e| {
-                crate::cli::cli_error(
-                    dir,
-                    "build_failed",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                    serde_json::json!({ "dir": dir, "target": targets[0] }),
-                )
-            })?;
+                    crate::cli::cli_error(
+                        dir,
+                        "build_failed",
+                        cfgd_core::output::collapse_to_subject_line(&e),
+                        serde_json::json!({ "dir": dir, "target": targets[0] }),
+                    )
+                })?;
             printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
             output_artifacts.push(output_dir.display().to_string());
 

@@ -326,8 +326,8 @@ pub(super) struct ScopedStanding {
 ///
 /// Every member of `chain` is stamped as a scoped scan inside the same
 /// transaction, so no caller can record scoped findings without dating them:
-/// a scan that healed every row it found used to leave the report with no
-/// date at all, and the verdicts read off it then claimed a check nothing
+/// a scan that heals every row it found would otherwise leave the report with
+/// no date at all, and the verdicts read off it would claim a check nothing
 /// could point at.
 ///
 /// `check_errors` names the keys this run could not answer for. They are
@@ -1004,8 +1004,8 @@ mod tests {
     ///
     /// The table is the rule's memory. A type joining
     /// [`FULL_CHECK_RESOLVABLE_TYPES`] with no verdict here fails this test,
-    /// so the next member is classified before it ships rather than after a
-    /// demo shows `cfgd status` advising the command that just ran.
+    /// so the next member is classified before it ships rather than after
+    /// `cfgd status` is caught advising the command that just ran.
     #[test]
     fn every_checked_drift_grammar_states_whether_an_apply_resolves_its_row() {
         // (type, where the apply resolves it — `reconciler::apply`'s

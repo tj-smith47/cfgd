@@ -464,7 +464,8 @@ mod tests {
     }
 
     /// The machine-wide "last scan" stamp is written by a fleet-wide verify
-    /// and by nothing narrower.
+    /// and by nothing narrower — and a `--module` run dates the scope it DID
+    /// check under its own owner token.
     ///
     /// That stamp is the sole input to the recorded `status` header's age line
     /// and to its `--scan` hint, so a run that checked ONE module's files and
@@ -507,13 +508,18 @@ mod tests {
         let printer = quiet_printer();
 
         cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
-        let stamp_after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
-            .unwrap()
-            .last_scan_at()
-            .unwrap();
+        let after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+        let stamp_after_module = after_module.last_scan_at().unwrap();
         assert_eq!(
             stamp_after_module, None,
             "one module's verify re-dated the whole dashboard"
+        );
+        assert!(
+            after_module
+                .scoped_scan_stamps()
+                .unwrap()
+                .contains_key("module:test-mod"),
+            "the module it DID check must be dated, or every verdict read off that              scan cites a check no stamp can point at"
         );
 
         cmd_verify(&cli, &printer, None, false).unwrap();

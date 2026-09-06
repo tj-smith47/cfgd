@@ -16604,7 +16604,7 @@ fn cli_file_body(relative: &str) -> String {
 /// step, from the ONE composer (`success_next_step`) both families share.
 /// `source update` hinted only on its failure arm and `source remove` never;
 /// `module push`, `pull` and `build` — the three verbs that hand an artifact to
-/// somebody else — closed on nothing while the demo's next beat hand-typed the
+/// somebody else — closed on nothing, leaving the reader to hand-type the
 /// `kubectl apply` that `push --apply` performs. A verb that genuinely ends a
 /// workflow is hatched in the walk's own table, with its reason.
 ///
@@ -31370,8 +31370,8 @@ fn is_composed_call(arg: &str) -> bool {
 /// A closing hint names the command that comes next. `cfgd decide accept`
 /// closed on `Changes will take effect on next reconcile` — the one next step
 /// in the product that named no command, pointing at a background reconcile a
-/// daemon-less machine never runs, while the demo's very next beat typed the
-/// command the tool had declined to name. Every other hint in the take named
+/// daemon-less machine never runs, leaving the reader to type the command the
+/// tool had declined to name. Every other hint in the take named
 /// its command in backticks; the walk holds the whole `crates/cfgd/src/cli/`
 /// population to that shape.
 ///
@@ -32264,8 +32264,9 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 ///
 /// - nothing stamped: every row states the record's own fact (`Installed`)
 ///   under a heading that says drift was never checked. `Synced` beside
-///   `(drift never checked)` was the defect — the word claimed an answer no
-///   check had produced, and both halves rendered from the same document.
+///   `(drift never checked)` is the contradiction this pin refuses: the word
+///   would claim an answer no check produced, and both halves render from the
+///   same document.
 /// - the machine-wide stamp: a full walk covered every owner, so every row
 ///   earns `Synced`.
 /// - only `module:nvim` scoped: a scoped scan checks one module's own files,
@@ -36308,23 +36309,25 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
     );
 }
 
-/// A command's title lands WITH its result, never over the wait that produces
-/// it.
+/// Every wait is narrated either IN the frame it fills or BEFORE that frame; a
+/// title over a frozen screen is the defect.
 ///
-/// `apply`, `plan`, `verify`, `doctor` and `status` all do the same thing: the
-/// long wait narrates into the live region with an empty screen behind it, and
-/// the heading is the first permanent line of the report the wait produced.
-/// `diff`, `sync`, `source update` and `module registry add` painted their
-/// heading (and, for two of them, a whole header block) first, so the reader
-/// watched a spinner turn under a report with nothing in it — the shape the
-/// demo recordings made obvious.
+/// Two shapes, decided by whether the frame REPORTS the wait as a row of its
+/// own. A BODY wait is reported by the frame (`✓ Pushed module`, `Initialized
+/// at …`, the Gateway verdict): the title lands first and the wait narrates
+/// under it, through a bar the library call is handed or one the section
+/// opens. A PRE-FRAME wait is reported by nothing in the frame (a fetch that
+/// only feeds a comparison): it narrates first, and the title lands with the
+/// result it produced.
 ///
-/// Read off the source, per function: the first line that puts a live wait on
-/// the screen against the first line that paints a heading. A wait is
-/// `narrate`, `narrate_silent`, a `.spinner(` of the caller's own, or a call
-/// to `live_drift_results` — the machine-wide scan, which narrates inside the
-/// engine rather than at its callers. `// heading-first-ok: <why>` on the
-/// heading line hatches a surface whose heading genuinely precedes its wait.
+/// Read off the source, per function: every wait after the first unhatched
+/// title. A wait is a bar of the caller's own (`narrate`, `narrate_silent`,
+/// `.spinner(`), or one of the library calls that IS a wait with no bar at its
+/// call site — a machine-wide scan, a git fetch or clone, a registry
+/// round-trip, a gateway checkin. It passes when it sits inside a narrating
+/// call, when its own call is handed the printer (`Some(printer)`, the
+/// in-frame shape), or when the title above it carries
+/// `// heading-first-ok: <why>`.
 #[test]
 fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
     const WAITS: &[&str] = &[
@@ -36332,8 +36335,27 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         ".narrate_silent(",
         ".spinner(",
         "live_drift_results(",
+        "fetch_git_source(",
+        "clone_into(",
+        "oci::build_module(",
+        "oci::push_module(",
+        "oci::pull_module(",
+        "oci::verify_signature(",
+        "oci::verify_attestation(",
+        ".checkin(",
     ];
-    const HEADINGS: &[&str] = &[".heading(", ".heading_title(", ".heading_owner_prefixed("];
+    const NARRATORS: &[&str] = &[".narrate(", ".narrate_silent(", ".spinner("];
+    // A library call handed the printer narrates INSIDE the frame; a Quiet
+    // stand-in (`&lib_printer`) is exactly the shape that leaves the screen
+    // frozen, so only the real one counts.
+    const IN_FRAME: &str = "Some(printer)";
+    const HEADINGS: &[&str] = &[
+        ".heading(",
+        ".heading_title(",
+        ".heading_owner_prefixed(",
+        ".section(",
+        ".commit_header(",
+    ];
     let mut judged: Vec<String> = Vec::new();
     let mut offenders = Vec::new();
     for (path, body) in cli_production_sources() {
@@ -36380,12 +36402,12 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
                     j = opener;
                 }
             };
-            let first = |needles: &[&str]| {
-                (start..end).find(|&i| needles.iter().any(|c| lines[i].contains(c)) && !hatched(i))
-            };
-            let (Some(wait), Some(heading)) = (first(WAITS), first(HEADINGS)) else {
+            let holds = |i: usize, needles: &[&str]| needles.iter().any(|c| lines[i].contains(c));
+            let waits: Vec<usize> = (start..end).filter(|&i| holds(i, WAITS)).collect();
+            let titles: Vec<usize> = (start..end).filter(|&i| holds(i, HEADINGS)).collect();
+            if waits.is_empty() || titles.is_empty() {
                 continue;
-            };
+            }
             judged.push(
                 lines[start]
                     .split("fn ")
@@ -36394,12 +36416,61 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
                     .unwrap_or_default()
                     .to_string(),
             );
-            if heading < wait {
+            let Some(&title) = titles.iter().find(|&&i| !hatched(i)) else {
+                continue;
+            };
+            // Whether a wait narrates in the frame: inside a narrating call
+            // (its own line, or one of the statements it sits in), or handed
+            // the printer by the call itself.
+            let narrated = |w: usize| {
+                if holds(w, NARRATORS) {
+                    return true;
+                }
+                // Upward at this statement's own level and every level it
+                // sits in: a bar opened as a binding beside the wait narrates
+                // it just as a bar wrapping it does. Lines deeper than the
+                // current level belong to a sibling statement and are skipped.
+                let indent = |l: &str| l.len() - l.trim_start().len();
+                let mut level = indent(lines[w]);
+                let mut j = w;
+                while j > start {
+                    j -= 1;
+                    if lines[j].trim().is_empty() {
+                        continue;
+                    }
+                    let here = indent(lines[j]);
+                    if here > level {
+                        continue;
+                    }
+                    if holds(j, NARRATORS) {
+                        return true;
+                    }
+                    level = here;
+                }
+                // The call's own argument list, however many lines it spans.
+                let mut depth = 0i32;
+                for line in &lines[w..end] {
+                    if line.contains(IN_FRAME) {
+                        return true;
+                    }
+                    depth += line.matches('(').count() as i32;
+                    depth -= line.matches(')').count() as i32;
+                    if depth <= 0 {
+                        break;
+                    }
+                }
+                false
+            };
+            for &w in waits.iter().filter(|&&w| w > title) {
+                if narrated(w) {
+                    continue;
+                }
                 offenders.push(format!(
-                    "{}:{}: {}",
+                    "{}:{}: {} (title at :{})",
                     path.display(),
-                    heading + 1,
-                    lines[heading].trim()
+                    w + 1,
+                    lines[w].trim(),
+                    title + 1
                 ));
             }
         }
@@ -36411,6 +36482,12 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         "run_sync",
         "run_source_update",
         "cmd_module_add_remote",
+        "cmd_module_upgrade",
+        "cmd_module_build",
+        "cmd_module_push",
+        "cmd_module_pull",
+        "cmd_checkin",
+        "cmd_init",
     ] {
         assert!(
             judged.iter().any(|f| f == name),
@@ -36418,13 +36495,13 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         );
     }
     assert!(
-        judged.len() >= 5,
+        judged.len() >= 11,
         "the walk no longer reaches the waiting commands — it judged {judged:?}"
     );
     assert!(
         offenders.is_empty(),
-        "the wait narrates first and the heading lands with the result it \
-         produced — move the heading below the wait, or hatch the line with \
+        "a wait either narrates in the frame it fills or before that frame — \
+         narrate it, hand the call the printer, or hatch the title with \
          `// heading-first-ok: <why>`:\n{}",
         offenders.join("\n")
     );
@@ -36437,7 +36514,8 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
 /// run, and every mutating verb but three rendered it flush left. `module
 /// push` / `pull` / `build` passed it to their own `SectionGuard`, which
 /// indented the run's last word to the section's depth and its `$` command
-/// block one further — the placement the demo feedback named. A hint that
+/// block one further, so the run's closing word read as a note on the section
+/// above it. A hint that
 /// really does qualify the ROW above it (the `sync` local-pull failure, a
 /// backup's rollback note) is a different thing and stays inside its section;
 /// it is not built from `success_next_step`.

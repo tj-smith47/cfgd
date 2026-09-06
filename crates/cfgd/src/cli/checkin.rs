@@ -12,6 +12,8 @@ pub fn cmd_checkin(
     api_key: Option<&str>,
     device_id: Option<&str>,
 ) -> anyhow::Result<()> {
+    // heading-first-ok: the gateway round-trip narrates one layer down, under
+    // the Gateway section that reports its verdict
     printer.heading("Checkin");
 
     let ctx = RunContext::new(cli, printer);
@@ -121,6 +123,9 @@ pub fn cmd_checkin(
         // No bar of its own: the round-trip is narrated one layer down under
         // the same label, and two spinners animating for one request read as
         // two requests. What this section owns is the VERDICT.
+        //
+        // heading-first-ok: the section reports the round-trip it opened, and
+        // `checkin` narrates through the printer it is handed
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
         let result = client
