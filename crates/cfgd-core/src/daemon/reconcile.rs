@@ -731,11 +731,24 @@ fn reconcile_tick(
         }
     });
 
-    // This tick just performed a live drift scan of the machine, whatever it
-    // found — the recorded-state `status` header's staleness signal reads
-    // from here, not from `drift_events` (which goes empty on a clean host
-    // and so cannot date a clean scan).
-    store.record_scan();
+    // This tick just performed a live drift scan, whatever it found — the
+    // recorded-state `status` header's staleness signal reads from here, not
+    // from `drift_events` (which goes empty on a clean host and so cannot date
+    // a clean scan). WHICH stamp it moves is decided by what the tick looked
+    // at: a per-module tick is evidence about one module, and the rows it may
+    // heal are exactly that module's, so it dates that module's scope and
+    // leaves the machine-wide stamp to a profile-wide tick. Stamping
+    // `last_scan` from a file-watch tick would date every owner off a check
+    // that never looked at the env surfaces or the profile.
+    match module_filter {
+        None => {
+            store.record_scan();
+        }
+        Some(name) => {
+            let scope = crate::reconciler::Owner::module(name).token();
+            store.record_scoped_scan(std::iter::once(scope.as_str()));
+        }
+    }
 
     // A file deployed by symlink is edited THROUGH the link, which is the source
     // changing and so is never drift — the tick above found none, and no action

@@ -7823,13 +7823,14 @@ mod tests {
         );
     }
 
-    /// A module-scoped scan is evidence about ONE module, not the machine:
-    /// it must not write the machine-wide `last_scan` stamp, must not
-    /// resolve another module's (or the machine's) recorded rows, and must
-    /// still record and resolve rows inside its own scope.
+    /// A module-scoped scan is evidence about ONE module, not the machine, and
+    /// dates itself accordingly: it stamps its own scope, leaves the
+    /// machine-wide `last_scan` where a full check left it, resolves no other
+    /// module's (or the machine's) recorded rows, and still records and
+    /// resolves rows inside its own scope.
     #[test]
     #[serial_test::serial]
-    fn a_module_scoped_scan_stamps_nothing_and_touches_only_its_own_rows() {
+    fn a_module_scoped_scan_moves_no_machine_wide_stamp_and_touches_only_its_own_rows() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -7889,6 +7890,16 @@ mod tests {
             None,
             "one module's scan must not date the machine-wide dashboard"
         );
+        assert_eq!(
+            store
+                .scoped_scan_stamps()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["module:test-mod".to_string()],
+            "the scan dates the scope it did cover"
+        );
         let rows = store.unresolved_drift().unwrap();
         assert!(
             rows.iter()
@@ -7928,6 +7939,13 @@ mod tests {
             store.last_scan_at().unwrap(),
             None,
             "a scoped check must never write the machine-wide stamp"
+        );
+        assert!(
+            store
+                .scoped_scan_stamps()
+                .unwrap()
+                .contains_key("module:test-mod"),
+            "the second scoped surface dates its own scope too"
         );
     }
 

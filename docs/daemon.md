@@ -4,7 +4,7 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 ## What It Does
 
-1. **File watching**: uses the OS's file change notification system (inotify on Linux, FSEvents on macOS) to detect when managed files change. Rapid changes are batched (500ms window), so saving a file in your editor does not trigger three reconciles.
+1. **File watching**: uses the OS's file change notification system (inotify on Linux, FSEvents on macOS) to detect when managed files change. Rapid changes are batched (500ms window), so saving a file in your editor does not trigger three reconciles. A tick woken this way re-checks only the module whose file moved, so it dates that module's scope and leaves the machine-wide scan stamp for the interval tick (see [What dates a verdict](reconciliation.md#what-dates-a-verdict)).
 
 2. **Reconciliation loop**: on a configurable interval (default 5 minutes), diffs the entire desired state against actual state and reports or fixes drift.
 

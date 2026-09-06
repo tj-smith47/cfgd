@@ -13144,6 +13144,97 @@ spec:
         );
     }
 
+    /// A per-module tick probes ONE module, so the date it leaves covers that
+    /// module's scope and nothing else: the machine-wide stamp every owner's
+    /// verdict reads stays where the last profile-wide tick left it. A tick
+    /// that stamped `last_scan` would let `cfgd status` call the env surfaces
+    /// and the profile `Synced` off a check that never looked at them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_per_module_tick_stamps_its_module_and_leaves_the_machine_wide_stamp_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - test-mod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec: {}\n",
+        )
+        .unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let tick = |module_filter: Option<&'static str>| {
+            let cp = config_path.clone();
+            let sd = state_dir.clone();
+            crate::spawn_blocking_with_test_home(move || {
+                let state = Arc::new(Mutex::new(DaemonState::new()));
+                let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+                let printer = test_printer();
+                handle_reconcile(
+                    &cp,
+                    None,
+                    ReconcileCtx {
+                        state: &state,
+                        notifier: &notifier,
+                        notify_on_drift: false,
+                        hooks: &NoopHooks,
+                        state_dir_override: Some(&sd),
+                        explicit_state_dir: true,
+                        cache_dir_override: None,
+                        printer: &printer,
+                        module_filter,
+                        auto_apply_override: Some(false),
+                        drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
+                        scope: crate::Scope::User,
+                        abort: never_abort(),
+                        cache: fresh_tick_cache(),
+                    },
+                );
+            })
+        };
+
+        tick(Some("test-mod")).await.unwrap();
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        assert_eq!(
+            store.last_scan_at().unwrap(),
+            None,
+            "a per-module tick checked no machine-wide surface and must move no machine-wide stamp"
+        );
+        assert_eq!(
+            store
+                .scoped_scan_stamps()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["module:test-mod".to_string()],
+            "the tick dates exactly the scope it probed"
+        );
+        drop(store);
+
+        tick(None).await.unwrap();
+        assert!(
+            StateStore::open_in_dir(&state_dir)
+                .unwrap()
+                .last_scan_at()
+                .unwrap()
+                .is_some(),
+            "a profile-wide tick checked every owner and dates the machine-wide stamp"
+        );
+    }
+
     /// A per-module tick probes one module, so it may heal only rows it can
     /// attribute to that module by identity — its own module-file rows —
     /// never another module's, the machine-wide surfaces, or per-package
