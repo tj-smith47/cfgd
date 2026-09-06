@@ -2075,6 +2075,7 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
     state: Mutex::new(PathEnvGateState {
         readers: 0,
+        readers_waiting: 0,
         writer: false,
         writers_waiting: 0,
     }),
@@ -2089,6 +2090,7 @@ struct PathEnvGate {
 
 struct PathEnvGateState {
     readers: usize,
+    readers_waiting: usize,
     writer: bool,
     writers_waiting: usize,
 }
@@ -2100,12 +2102,20 @@ impl PathEnvGate {
 
     fn acquire_read(&self) {
         let mut state = self.locked();
+        state.readers_waiting += 1;
+        // Announced before parking, exactly as the write half announces its
+        // own arrival, so a test can observe the queued reader rather than
+        // sleep a guess at when it arrives. A reader admitted straight away
+        // never releases the mutex in between, so the bump it does not park
+        // on is unobservable.
+        self.signal.notify_all();
         while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
             state = self
                 .signal
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        state.readers_waiting -= 1;
         state.readers += 1;
     }
 
@@ -2175,6 +2185,24 @@ pub fn await_queued_path_writer(timeout: std::time::Duration) -> bool {
     state.writers_waiting > 0
 }
 
+/// [`await_queued_path_writer`]'s twin over the read half: block until a
+/// thread is waiting to take [`path_env_read_guard`], answering `false` if
+/// none arrives within `timeout`.
+///
+/// What proves a `PATH` reader QUEUED on a held mutation window rather than
+/// answering from inside it. The queue is the whole claim — the answer a
+/// reader would have given from inside the window is a machine with nothing
+/// on it — and a sleep in its place would pass whenever it happened to be
+/// long enough, proving nothing about the admission rule.
+pub fn await_queued_path_reader(timeout: std::time::Duration) -> bool {
+    let state = PATH_ENV_LOCK.locked();
+    let (state, _) = PATH_ENV_LOCK
+        .signal
+        .wait_timeout_while(state, timeout, |gate| gate.readers_waiting == 0)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.readers_waiting > 0
+}
+
 thread_local! {
     /// Depth of nested [`path_env_read_guard`] acquisitions on this thread.
     static SPAWN_GUARD_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -2183,11 +2211,13 @@ thread_local! {
 }
 
 /// Shared read guard held across a read of `PATH`. Acquired at the top of
-/// `reconciler::scripts::execute_script` and inside the `git` command
-/// factories, so every script- and git-spawning test is covered automatically;
-/// a test that asserts a *successful* `command_path` / `command_available` /
-/// `require_tool` resolution takes it by hand. A test asserting a resolution
-/// *fails* does not need it — an empty `PATH` cannot turn a miss into a hit.
+/// `reconciler::scripts::execute_script`, inside the `git` command factories
+/// and inside `command_path` itself, so a script-spawning, git-spawning or
+/// command-resolving test is covered by the seam it goes through: a test that
+/// asserts a *successful* `command_path` / `command_available` /
+/// `require_tool` resolution needs no guard of its own. A test asserting a
+/// resolution *fails* never did — an empty `PATH` cannot turn a miss into a
+/// hit.
 ///
 /// Re-entrant by design: a `CwdGuard`/`PathShimGuard` window (which hold the
 /// exclusive guard) composing with a spawn inside it is normal, and a thread

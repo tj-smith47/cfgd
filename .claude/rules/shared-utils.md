@@ -312,7 +312,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 The **30-second memo convention** and the exclusion a TTL guard needs are in `util/process.rs`'s and `test_helpers.rs`'s module docs. Read them before adding a memo or a pin.
 
 - `command_available(cmd)` — is this command on PATH; the `is_some()` view over `command_path`.
-- `command_path(cmd)` — resolve a command to its executable path, memoized per name (misses included). Searches `$PATH` then the bootstrapped directories.
+- `command_path(cmd)` — resolve a command to its executable path, memoized per name (misses included). Searches `$PATH` then the bootstrapped directories, and takes the `PATH` read guard itself, so no caller answers from a test's empty-`PATH` window.
 - `command_resolution_generation()` / `invalidate_command_resolution()` — the ONE counter behind the path and availability memos. Any new path that puts a binary on the machine, or takes one off it, calls the invalidator.
 - `ProviderRegistry::package_managers()` / `system_configurators()` + `add_*` / `extend_*` / `set_package_managers` (`providers/mod.rs`) — the read and write halves of two PRIVATE vectors; every mutator retires its own availability sweep. Never widen the fields back to `pub`.
 - **A configurator's REGISTRATION is unconditional; `is_available()` is the only availability answer** — a tool probe in `cli/registry.rs`'s registration block makes `plan` call a registered configurator "not registered", and for `gpgKeys` it also fires before that configurator's own `CFGD_GPG_BIN` seam is read. `no_system_configurator_registration_is_gated_on_a_tool_probe` walks the block.
@@ -412,8 +412,9 @@ Plain `cfgd_core::*` exports from `util/paths.rs` that make a captured render ho
 Reached via `cfgd_core::test_helpers::*`, gated behind the `test-helpers` Cargo feature. Pair every env-var consumer with `serial_test::serial`; which exclusion each TTL guard needs is in that module's doc.
 
 - `BootstrappedPathDirsGuard::capture()` / `::capture_and_clear()` — RAII snapshot+restore of the bootstrapped-PATH registry, REQUIRED in any fixture driving a bootstrap; emptying `PATH` is not sufficient for a "not found" branch.
-- `path_env_read_guard()` / `path_env_mutation_guard()` — the gate over the process-global `PATH`. A mutating test takes the WRITE guard, declared before its `EnvVarGuard`; never spawn while holding the write guard.
+- `path_env_read_guard()` / `path_env_mutation_guard()` — the gate over the process-global `PATH`. A mutating test takes the WRITE guard, declared before its `EnvVarGuard`; never spawn while holding the write guard. Every production `PATH` reader takes the READ guard at its own seam (`every_production_path_read_takes_the_read_guard`), so no test takes one by hand for a resolution.
 - `await_queued_path_writer(timeout)` — blocks until a writer is queued; the observable a concurrency test needs instead of a sleep.
+- `await_queued_path_reader(timeout)` — its twin over the read half: blocks until a reader is queued, for a claim that a resolution PARKED on a held mutation window rather than answering from inside it.
 - `await_blocking_source_acquire(timeout)` — the same observable for the source lock's blocking arm. Wait on this, never on `on_wait`, which fires BEFORE the acquire.
 - `CommandPathMemoTtlGuard::{never_expires, always_expired, pinned}` — RAII pin of the `command_path` TTL; needs no serialization.
 - `AvailableVersionMemoTtlGuard::…` — the same for the available-version ceiling; pair with `#[serial_test::serial(available_version_memo)]`.

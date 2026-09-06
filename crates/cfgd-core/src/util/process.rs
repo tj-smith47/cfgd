@@ -328,7 +328,17 @@ pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
 /// inside a sort key, and the secret planner asks once per declared reference.
 /// A miss is the expensive case — it stats every directory on `PATH` before
 /// answering — so negative answers are memoized too.
+///
+/// The `PATH` read is bracketed by `path_env_read_guard`, the same re-entrant
+/// guard every other production `PATH` reader in the workspace takes.
 pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
+    // A walk landing inside a test's empty-`PATH` window answers "not found"
+    // for every manager on the machine, and the caller acts on that answer at
+    // once — the memo cannot even carry it, being keyed by the `PATH` value.
+    // Re-entrant, so a writer probing under its own window is unaffected.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
     let path_env = std::env::var_os("PATH");
     let generation = command_resolution_generation();
     if let Some(memoized) = memoized_command_path(cmd, path_env.as_deref(), generation) {
@@ -1101,6 +1111,56 @@ mod tests {
             command_path(stem).as_deref(),
             Some(expected.as_path()),
             "a lookup under a different PATH must not read the old PATH's answer"
+        );
+    }
+
+    /// A resolution arriving inside a test's empty-`PATH` window QUEUES on the
+    /// gate instead of answering from that window.
+    ///
+    /// The queue is the whole claim: a walk let through would report every
+    /// manager on the machine missing, and its caller acts on that at once —
+    /// a module's bare package "cannot be resolved" mid-plan, on a host that
+    /// holds every manager it names. So the reader is observed parked, with no
+    /// sleep standing in for the observation, and the answer it finally gives
+    /// is the one the RESTORED `PATH` justifies: `None`, the probe tool having
+    /// only ever lived in the window's own directory.
+    #[test]
+    #[serial]
+    fn a_resolution_queues_behind_a_tests_empty_path_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-queued-reader";
+        write_probe_tool(dir.path(), stem);
+
+        let excl = crate::test_helpers::path_env_mutation_guard();
+        let dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+
+        // Non-vacuous: the tool really is resolvable through the window's
+        // `PATH`. This thread already holds the exclusive guard, so its own
+        // read guard is the re-entrant no-op that keeps the probe from
+        // queueing behind itself.
+        assert!(
+            command_path(stem).is_some(),
+            "the probe tool must resolve while the window's PATH is in force"
+        );
+
+        let name = stem.to_string();
+        let reader = std::thread::spawn(move || command_path(&name));
+        assert!(
+            crate::test_helpers::await_queued_path_reader(std::time::Duration::from_secs(5)),
+            "the resolution never queued on the gate — it read the window's PATH"
+        );
+
+        // `PATH` first, the registry next, the gate last: the reader is
+        // admitted only once the environment it will read is the real one.
+        drop(path);
+        drop(dirs);
+        drop(excl);
+
+        assert_eq!(
+            reader.join().expect("the reader thread finishes"),
+            None,
+            "the reader answered from the window's PATH instead of the restored one"
         );
     }
 

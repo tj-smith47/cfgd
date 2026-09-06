@@ -2406,6 +2406,80 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// teaching four walks to attribute a file-scope write to tests that never
 /// mention it. `// env-mutator-ok: <why>` above the declaration hatches a
 /// write that is not process-global, as it does for a helper.
+/// Every production read of `PATH` sits inside a `path_env_read_guard()` span.
+///
+/// `PATH` is process-global and the test suite empties it to drive
+/// command-not-found branches, so an unguarded read answers from whatever
+/// window it lands in: a walk let through a mutation window reports every
+/// package manager on the machine missing, and its caller acts on that at
+/// once. The gate is what makes a read and a mutation unable to overlap, and
+/// a reader that never takes it is outside the gate whatever the readers
+/// beside it do.
+///
+/// Function-scoped, like the walks above: the guard counts wherever in the
+/// enclosing declaration it was taken, because it is held to the end of that
+/// span. The needle is the two `env::var` spellings, which is the walk's
+/// ceiling — a read through a `use std::env::var` import would go unseen, and
+/// nothing in the workspace writes one.
+///
+/// `// path-read-ok: <why>` on the read's own line, or the line above it,
+/// hatches a reader whose crate cannot name the `test-helpers` feature the
+/// guard is gated on.
+#[test]
+fn every_production_path_read_takes_the_read_guard() {
+    const NEEDLES: &[&str] = &["env::var(", "env::var_os("];
+    const HATCH: &str = "path-read-ok:";
+    let mut reads = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it, and the test
+        // corpus mutates `PATH` on purpose.
+        if path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new("tests.rs"))
+            || path.ends_with(Path::new("test_helpers.rs"))
+            || path.components().any(|c| c.as_os_str() == "tests")
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let body = crate::test_helpers::production_slice(&raw);
+        let lines: Vec<&str> = body.lines().collect();
+        let relative = source_label(&path);
+        for (open, slice) in source_functions(&relative, &body) {
+            let guarded = slice.contains("path_env_read_guard()");
+            for (offset, line) in slice.lines().enumerate() {
+                let code = code_half(line);
+                // The literal is blanked out of the code half, so the variable
+                // NAME is read off the raw line and only its `env::var` call
+                // off the half that proves it is code at all.
+                if !line.contains("\"PATH\"") || !NEEDLES.iter().any(|n| code.contains(n)) {
+                    continue;
+                }
+                reads += 1;
+                let at = open - 1 + offset;
+                if guarded || hatched(&lines, at, HATCH) {
+                    continue;
+                }
+                offenders.push(format!("{relative}:{}: {}", at + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a production read of `PATH` must sit in a span that takes \
+         `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        reads >= 4,
+        "the walk found {reads} production `PATH` reads; it has stopped \
+         finding them"
+    );
+}
+
 #[test]
 fn no_item_outside_a_function_body_mutates_the_process_environment() {
     let mut items = 0usize;

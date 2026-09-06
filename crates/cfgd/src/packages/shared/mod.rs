@@ -1108,6 +1108,11 @@ fn path_with_brew() -> Option<String> {
         return None;
     }
 
+    // `process_path_with_dirs_prepended` is the guarded reader this duplicates,
+    // but its dedup compares PATH ENTRIES where this asks whether the whole
+    // string CONTAINS the first brew directory, so routing through it would
+    // change which PATHs get brew prepended.
+    // path-read-ok: the guard is gated on a cfgd-core feature this crate cannot name
     if let Ok(current_path) = std::env::var("PATH")
         && !current_path.contains(&dirs[0])
     {

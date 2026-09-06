@@ -161,6 +161,12 @@ fn prepend_bootstrapped_path_dirs(env: &mut Vec<(String, String)>, path_dirs: &[
     if path_dirs.is_empty() {
         return;
     }
+    // Every caller builds the environment BEFORE `execute_script` opens its
+    // own guarded span, so this inherited read sits outside it: landing in a
+    // test's empty-`PATH` window would hand the script a base `PATH` the
+    // machine never had. Re-entrant, and compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
     // A PATH the script's own declared environment set wins as the base: the
     // author asked for it, so the bootstrapped directories go in FRONT of that
     // rather than in front of whatever this process inherited.
