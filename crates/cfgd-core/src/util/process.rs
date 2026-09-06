@@ -329,8 +329,9 @@ pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
 /// A miss is the expensive case — it stats every directory on `PATH` before
 /// answering — so negative answers are memoized too.
 ///
-/// The `PATH` read is bracketed by `path_env_read_guard`, the same re-entrant
-/// guard every other production `PATH` reader in the workspace takes.
+/// The `PATH` read is bracketed by `path_env_read_guard`, the re-entrant guard
+/// a production `PATH` reader takes at its own seam or says in a
+/// `// path-read-ok:` why it cannot.
 pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
     // A walk landing inside a test's empty-`PATH` window answers "not found"
     // for every manager on the machine, and the caller acts on that answer at
@@ -641,11 +642,11 @@ pub fn path_with_dirs_prepended(current: &str, dirs: &[std::path::PathBuf]) -> O
 
 /// [`path_with_dirs_prepended`] over THIS PROCESS's `PATH`.
 ///
-/// The read is bracketed by the same re-entrant read guard every other
-/// production `PATH` reader in the workspace takes, which is why it lives here
-/// rather than at the call site: a consumer outside cfgd-core cannot name the
-/// `test-helpers` feature the guard is gated on, and an unsynchronized read
-/// ahead of a guarded spawn re-opens the window the lock exists to close.
+/// The read is bracketed by the re-entrant read guard a production `PATH`
+/// reader takes at its own seam, which is why it lives here rather than at the
+/// call site: a consumer outside cfgd-core cannot name the `test-helpers`
+/// feature the guard is gated on, and an unsynchronized read ahead of a
+/// guarded spawn re-opens the window the lock exists to close.
 pub fn process_path_with_dirs_prepended(dirs: &[std::path::PathBuf]) -> Option<String> {
     if dirs.is_empty() {
         return None;
@@ -959,6 +960,11 @@ mod tests {
     #[test]
     #[serial]
     fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
+        // The window this brackets is the BOOTSTRAPPED REGISTRY, not `PATH`:
+        // the two resolutions below straddle a registry write, and a
+        // concurrent `capture_and_clear()` between them would empty the list
+        // the second one resolves through. `command_path`'s own guard is
+        // released between the calls and so cannot hold that span.
         let _path = crate::test_helpers::path_env_read_guard();
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1146,8 +1152,14 @@ mod tests {
 
         let name = stem.to_string();
         let reader = std::thread::spawn(move || command_path(&name));
+        // THIS reader's park is the claim: a gate-wide count would be
+        // satisfied by any other test's reader queueing in the same window,
+        // which is exactly the case an unguarded `command_path` produces.
         assert!(
-            crate::test_helpers::await_queued_path_reader(std::time::Duration::from_secs(5)),
+            crate::test_helpers::await_queued_path_reader(
+                reader.thread().id(),
+                std::time::Duration::from_secs(5)
+            ),
             "the resolution never queued on the gate — it read the window's PATH"
         );
 

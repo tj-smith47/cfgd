@@ -350,7 +350,7 @@ strip_attr_lines() {
 }
 
 # --- Extract test blocks from a file (the inverse of strip) ---
-# The test-hygiene gates (sleep-ok, raw-capture-ok, path-guard-ok) anchor to
+# The test-hygiene gates (sleep-ok, raw-capture-ok) anchor to
 # TEST code only — a raw sleep or a raw capture-buffer read is a production
 # concern nowhere else. A whole-file test module (the same naming convention
 # `strip_test_blocks_from_file`'s callers exclude) is entirely in scope; an
@@ -1554,116 +1554,6 @@ if [[ -n "$raw_capture_violations" ]]; then
     echo "$raw_capture_violations" | head -20
 else
     log_ok "No raw Printer capture-buffer reads in test code"
-fi
-
-log_section "PATH-guarded resolution asserts in test code (path-guard-ok:)"
-# A test asserting a SUCCESSFUL command_path/command_available/require_tool
-# resolution reads the process-global PATH; without path_env_read_guard() (or
-# the mutation guard) a concurrent test emptying PATH to drive a
-# command-not-found branch can land between the read and the assertion and
-# flip a should-pass resolution to a false negative. A test asserting FAILURE
-# needs no guard — an empty PATH cannot turn a miss into a hit.
-#
-# Function-scoped: walks each #[test] fn's body (brace-depth tracked) inside
-# the test-only corpus, and flags it only if a positive-assertion shape
-# appears WITHOUT a guard call anywhere in the same function body. An assertion
-# is tracked from `assert…!(` to its closing paren, so the call it asserts on
-# counts wherever inside it the formatter put it. Escape hatch, anywhere in
-# that same span — on the call line, on the `assert…!(` line, or on a comment
-# line directly above either:
-#   // path-guard-ok: <negative assertion / guard held by harness>
-path_guard_violations=$(while IFS= read -r -d '' rsfile; do
-    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
-        function reset_fn() {
-            in_fn = 0; depth = 0; has_positive = 0; has_guard = 0
-            delete positive_lines; positive_lines_n = 0
-            delete positive_marked; in_assert = 0; assert_bal = 0; assert_marked = 0
-        }
-        function flush_fn() {
-            if (in_fn && has_positive && !has_guard) {
-                for (k = 1; k <= positive_lines_n; k++) {
-                    if (!positive_marked[k]) print positive_lines[k]
-                }
-            }
-            reset_fn()
-        }
-        # A resolution call whose SUCCESS is being claimed. The `file:line:`
-        # prefix, the crate path and ALL whitespace come off first, so
-        # `! crate::command_available(` reads as the negative it is and a
-        # parenthesised `(command_available(` still reads as positive.
-        function positive_call(line,   c) {
-            c = line
-            sub(/^[^:]*:[0-9]+:/, "", c)
-            gsub(/cfgd_core::|crate::/, "", c)
-            gsub(/[[:space:]]/, "", c)
-            if (c ~ /(^|[^!])command_available\(/) return 1
-            if (c ~ /(^|[^!])command_path\([^)]*\)\.is_some\(\)/) return 1
-            if (c ~ /(^|[^!])require_tool\([^)]*\)\.is_ok\(\)/) return 1
-            return 0
-        }
-        BEGIN { reset_fn() }
-        {
-            code = code_only($0); comment = LAST_COMMENT
-            is_fn_start = (code ~ /^[^:]*:[0-9]+:[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)
-            if (!in_fn && is_fn_start) {
-                in_fn = 1; depth = 0
-            }
-            if (in_fn) {
-                # Outside an assertion, only an unwrapping resolution claims
-                # success on its own.
-                is_positive = (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
-                    (code ~ /(cfgd_core::|crate::)?require_tool\([^)]*\)\.(expect|unwrap|is_ok)\(/)
-                # An assertion is a SPAN, not a line: rustfmt wraps a long one
-                # over several, and a gate that only ever read the `assert!(`
-                # line reported OK forever for every wrapped shape. Balance the
-                # parens from the macro to its close and judge each line inside.
-                line_marked = 0
-                if (!in_assert) {
-                    if (match(code, /assert(_eq|_ne)?!\(/)) {
-                        rest = substr(code, RSTART)
-                        assert_bal = gsub(/\(/, "(", rest) - gsub(/\)/, ")", rest)
-                        if (positive_call(code)) is_positive = 1
-                        if (assert_bal > 0) {
-                            in_assert = 1
-                            # The marker written where the docs say to write it
-                            # — on the macro line or directly above it — has to
-                            # reach the call line the span later flags.
-                            assert_marked = marker_applies(comment, prev, prev_comment, "path-guard-ok:")
-                            line_marked = assert_marked
-                        }
-                    }
-                } else {
-                    if (positive_call(code)) is_positive = 1
-                    if (carries_marker(comment, "path-guard-ok:")) assert_marked = 1
-                    line_marked = assert_marked
-                    assert_bal += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
-                    # A marker belongs to ONE assertion; the next one in the
-                    # same function argues for itself.
-                    if (assert_bal <= 0) { in_assert = 0; assert_marked = 0 }
-                }
-                if (is_positive) {
-                    positive_lines_n++
-                    positive_lines[positive_lines_n] = $0
-                    positive_marked[positive_lines_n] = line_marked || \
-                        marker_applies(comment, prev, prev_comment, "path-guard-ok:")
-                    has_positive = 1
-                }
-                if (code ~ /path_env_read_guard\(\)|path_env_mutation_guard\(\)/) has_guard = 1
-                opens = gsub(/{/, "{", code)
-                closes = gsub(/}/, "}", code)
-                depth += opens - closes
-                if (depth <= 0 && opens + closes > 0) flush_fn()
-            }
-            prev = $0; prev_comment = comment; prev_code = code
-        }
-        END { flush_fn() }
-    '
-done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
-if [[ -n "$path_guard_violations" ]]; then
-    log_error "Test asserts a successful command_path/command_available/require_tool resolution without path_env_read_guard()/path_env_mutation_guard() (races a concurrent test's PATH mutation — see shared-utils.md's ProbePath section, or annotate // path-guard-ok: <why>):"
-    echo "$path_guard_violations" | head -20
-else
-    log_ok "Every positive command_path/command_available/require_tool assertion is PATH-guarded"
 fi
 
 cli_mod="crates/cfgd/src/cli/mod.rs"

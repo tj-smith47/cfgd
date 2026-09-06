@@ -2416,11 +2416,22 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// a reader that never takes it is outside the gate whatever the readers
 /// beside it do.
 ///
-/// Function-scoped, like the walks above: the guard counts wherever in the
-/// enclosing declaration it was taken, because it is held to the end of that
-/// span. The needle is the two `env::var` spellings, which is the walk's
-/// ceiling — a read through a `use std::env::var` import would go unseen, and
-/// nothing in the workspace writes one.
+/// The judgement is the INNERMOST declaration the read sits in, and the guard
+/// has to be named on a code line of that declaration: it is held to the end
+/// of the span it was taken in, and an enclosing declaration's guard says
+/// nothing about a nested one that runs on its own. A guard taken by a callee
+/// is deliberately not accepted — the span it holds is the callee's, and a
+/// caller reading `PATH` before or after that call reads it unguarded. A
+/// mention inside a comment or a string literal vouches for nothing, the
+/// needle being read off [`code_half`].
+///
+/// A read outside every declaration — a file-scope `static` or `LazyLock`
+/// initializer — is counted and FAILS, as [`no_item_outside_a_function_body_mutates_the_process_environment`]
+/// holds the mutation half: an initializer runs ordered by first use, inside
+/// no span any guard could bracket. The needle is the two `env::var`
+/// spellings, which is the walk's ceiling — a read through a
+/// `use std::env::var` import would go unseen, and nothing in the workspace
+/// writes one.
 ///
 /// `// path-read-ok: <why>` on the read's own line, or the line above it,
 /// hatches a reader whose crate cannot name the `test-helpers` feature the
@@ -2447,23 +2458,41 @@ fn every_production_path_read_takes_the_read_guard() {
         let body = crate::test_helpers::production_slice(&raw);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
-        for (open, slice) in source_functions(&relative, &body) {
-            let guarded = slice.contains("path_env_read_guard()");
-            for (offset, line) in slice.lines().enumerate() {
-                let code = code_half(line);
-                // The literal is blanked out of the code half, so the variable
-                // NAME is read off the raw line and only its `env::var` call
-                // off the half that proves it is code at all.
-                if !line.contains("\"PATH\"") || !NEEDLES.iter().any(|n| code.contains(n)) {
-                    continue;
-                }
-                reads += 1;
-                let at = open - 1 + offset;
-                if guarded || hatched(&lines, at, HATCH) {
-                    continue;
-                }
-                offenders.push(format!("{relative}:{}: {}", at + 1, line.trim()));
+        // Each declaration as the line range it covers and whether its own
+        // code names the guard. Both ends are 0-based indices of `lines`, off
+        // a 1-based opening line and a slice holding at least the declaration
+        // itself.
+        let spans: Vec<(std::ops::RangeInclusive<usize>, bool)> =
+            source_functions(&relative, &body)
+                .into_iter()
+                .map(|(open, slice)| {
+                    let guarded = slice
+                        .lines()
+                        .any(|line| code_half(line).contains("path_env_read_guard()"));
+                    ((open - 1)..=(open + slice.lines().count() - 2), guarded)
+                })
+                .collect();
+        // Line by line rather than slice by slice: `source_functions` yields
+        // OVERLAPPING slices, so a read inside a nested declaration counted
+        // once per enclosing slice would inflate the floor a deletion has to
+        // clear.
+        for (at, line) in lines.iter().enumerate() {
+            let code = code_half(line);
+            // The literal is blanked out of the code half, so the variable
+            // NAME is read off the raw line and only its `env::var` call
+            // off the half that proves it is code at all.
+            if !line.contains("\"PATH\"") || !NEEDLES.iter().any(|n| code.contains(n)) {
+                continue;
             }
+            reads += 1;
+            let innermost = spans
+                .iter()
+                .filter(|(span, _)| span.contains(&at))
+                .min_by_key(|(span, _)| span.end() - span.start());
+            if innermost.is_some_and(|(_, guarded)| *guarded) || hatched(&lines, at, HATCH) {
+                continue;
+            }
+            offenders.push(format!("{relative}:{}: {}", at + 1, line.trim()));
         }
     }
 

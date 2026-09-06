@@ -2075,7 +2075,7 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
     state: Mutex::new(PathEnvGateState {
         readers: 0,
-        readers_waiting: 0,
+        readers_waiting: Vec::new(),
         writer: false,
         writers_waiting: 0,
     }),
@@ -2090,7 +2090,12 @@ struct PathEnvGate {
 
 struct PathEnvGateState {
     readers: usize,
-    readers_waiting: usize,
+    /// The threads parked in [`PathEnvGate::acquire_read`], by identity rather
+    /// than by count: a claim that a PARTICULAR resolution queued cannot be
+    /// answered by a stranger's reader arriving in the same window, and a
+    /// count is all a stranger has to satisfy. Never more than a handful of
+    /// entries, so a linear scan beats anything ordered or hashed.
+    readers_waiting: Vec<std::thread::ThreadId>,
     writer: bool,
     writers_waiting: usize,
 }
@@ -2102,20 +2107,30 @@ impl PathEnvGate {
 
     fn acquire_read(&self) {
         let mut state = self.locked();
-        state.readers_waiting += 1;
-        // Announced before parking, exactly as the write half announces its
-        // own arrival, so a test can observe the queued reader rather than
-        // sleep a guess at when it arrives. A reader admitted straight away
-        // never releases the mutex in between, so the bump it does not park
-        // on is unobservable.
-        self.signal.notify_all();
+        let me = std::thread::current().id();
+        let mut queued = false;
         while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
+            if !queued {
+                state.readers_waiting.push(me);
+                queued = true;
+                // Announced from the PARKING path alone, exactly as the write
+                // half announces its own arrival, so a test can observe the
+                // queued reader rather than sleep a guess at when it arrives.
+                // A reader admitted straight away never releases the mutex in
+                // between, so the entry it does not park on is unobservable —
+                // and waking every waiter for it would wake a parked writer
+                // for a predicate a reader admission can only have worsened,
+                // on the hottest call in the test binary.
+                self.signal.notify_all();
+            }
             state = self
                 .signal
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        state.readers_waiting -= 1;
+        if queued && let Some(at) = state.readers_waiting.iter().position(|id| *id == me) {
+            state.readers_waiting.swap_remove(at);
+        }
         state.readers += 1;
     }
 
@@ -2152,6 +2167,11 @@ impl PathEnvGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state = next;
         if result.timed_out() {
+            // Dropped from the queue before the panic: `locked()` swallows the
+            // poison, so a count left standing here would park every later
+            // reader on an idle gate forever — a silent hang in place of the
+            // diagnostic this panic exists to print.
+            state.writers_waiting -= 1;
             panic!(
                 "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
                  holding the gate — this is writer starvation, not a legitimate wait",
@@ -2185,22 +2205,33 @@ pub fn await_queued_path_writer(timeout: std::time::Duration) -> bool {
     state.writers_waiting > 0
 }
 
-/// [`await_queued_path_writer`]'s twin over the read half: block until a
-/// thread is waiting to take [`path_env_read_guard`], answering `false` if
-/// none arrives within `timeout`.
+/// [`await_queued_path_writer`]'s twin over the read half: block until
+/// `thread` is waiting to take [`path_env_read_guard`], answering `false` if
+/// it has not queued within `timeout`.
 ///
 /// What proves a `PATH` reader QUEUED on a held mutation window rather than
 /// answering from inside it. The queue is the whole claim — the answer a
 /// reader would have given from inside the window is a machine with nothing
 /// on it — and a sleep in its place would pass whenever it happened to be
 /// long enough, proving nothing about the admission rule.
-pub fn await_queued_path_reader(timeout: std::time::Duration) -> bool {
+///
+/// Named by THREAD, not by count: `#[serial]` excludes only other serial
+/// tests, so any reader in a 16-thread run satisfies "somebody is queued", and
+/// a pin answered by a stranger's reader goes green on the very regression it
+/// stands for. Take the id off the `JoinHandle` of the thread whose park is
+/// the claim.
+pub fn await_queued_path_reader(
+    thread: std::thread::ThreadId,
+    timeout: std::time::Duration,
+) -> bool {
     let state = PATH_ENV_LOCK.locked();
     let (state, _) = PATH_ENV_LOCK
         .signal
-        .wait_timeout_while(state, timeout, |gate| gate.readers_waiting == 0)
+        .wait_timeout_while(state, timeout, |gate| {
+            !gate.readers_waiting.contains(&thread)
+        })
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    state.readers_waiting > 0
+    state.readers_waiting.contains(&thread)
 }
 
 thread_local! {
