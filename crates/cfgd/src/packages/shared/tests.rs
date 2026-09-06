@@ -819,10 +819,66 @@ fn brew_cmd_returns_valid_command() {
 
 #[test]
 fn brew_path_returns_option() {
-    // Exercise the OnceLock-cached path
-    let _path = brew_path();
-    // Second call tests the cached path
-    let _path2 = brew_path();
+    // The cache is process-wide and answers from whatever `PATH` was live at
+    // the binary's first call, so the composition it holds is pinned by the
+    // two `path_with_brew` cases below; what is provable here is that the
+    // second call answers from the `OnceLock` rather than recomposing.
+    let first = brew_path();
+    let second = brew_path();
+    assert_eq!(first, second, "the cached brew PATH must not move");
+}
+
+/// A `PATH` already holding one brew directory still gains the one it lacks.
+///
+/// The composition dedups by ENTRY, so `sbin` is prepended on its own; the
+/// substring test this replaced saw `bin` in the string and withheld both.
+#[test]
+#[serial_test::serial]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
+    let dirs = brew_path_dirs();
+    // Declared first so it drops last, bracketing the whole PATH window.
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env =
+        cfgd_core::test_helpers::EnvVarGuard::set("PATH", &format!("{}:/usr/bin", dirs[0]));
+
+    let composed = path_with_brew().expect("the sbin directory is missing and must be prepended");
+
+    let expected = vec![dirs[1].clone(), dirs[0].clone(), "/usr/bin".to_string()];
+    assert_eq!(path_entries(&composed), expected);
+}
+
+/// An entry that merely SPELLS a brew directory as its prefix is not that
+/// directory: both are prepended past a `…/bin.bak`.
+#[test]
+#[serial_test::serial]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn path_with_brew_prepends_both_directories_past_a_lookalike_entry() {
+    let dirs = brew_path_dirs();
+    let lookalike = format!("{}.bak", dirs[0]);
+    // Declared first so it drops last, bracketing the whole PATH window.
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env =
+        cfgd_core::test_helpers::EnvVarGuard::set("PATH", &format!("{lookalike}:/usr/bin"));
+
+    let composed = path_with_brew().expect("neither brew directory is on PATH");
+
+    let expected = vec![
+        dirs[0].clone(),
+        dirs[1].clone(),
+        lookalike,
+        "/usr/bin".to_string(),
+    ];
+    assert_eq!(path_entries(&composed), expected);
+}
+
+/// A composed `PATH` as the entries a child would search, so a case states
+/// order and multiplicity rather than one string spelling of both.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn path_entries(composed: &str) -> Vec<String> {
+    std::env::split_paths(composed)
+        .map(|entry| entry.to_string_lossy().into_owned())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

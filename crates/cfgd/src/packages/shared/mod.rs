@@ -1101,25 +1101,14 @@ fn macos_brew_prefix_for_arch(arch: &str) -> &'static str {
 /// After brew bootstrap, add brew's bin directories to the current process PATH
 /// so that brew-installed binaries (and post-apply scripts that use them) work
 /// immediately without requiring a new shell session.
-/// Build a PATH string that includes brew's bin directories.
+///
+/// Through the core composer, which dedups by PATH ENTRY: a `PATH` already
+/// holding `bin` still gains the `sbin` it lacks, an entry that merely spells
+/// one of them as a prefix (`…/bin.bak`) withholds neither, and the read sits
+/// inside the guard every other production `PATH` reader takes.
 fn path_with_brew() -> Option<String> {
-    let dirs = brew_path_dirs();
-    if dirs.is_empty() {
-        return None;
-    }
-
-    // `process_path_with_dirs_prepended` is the guarded reader this duplicates,
-    // but its dedup compares PATH ENTRIES where this asks whether the whole
-    // string CONTAINS the first brew directory, so routing through it would
-    // change which PATHs get brew prepended.
-    // path-read-ok: the guard is gated on a cfgd-core feature this crate cannot name
-    if let Ok(current_path) = std::env::var("PATH")
-        && !current_path.contains(&dirs[0])
-    {
-        let prefix = dirs.join(":");
-        return Some(format!("{}:{}", prefix, current_path));
-    }
-    None
+    let dirs: Vec<std::path::PathBuf> = brew_path_dirs().into_iter().map(Into::into).collect();
+    cfgd_core::process_path_with_dirs_prepended(&dirs)
 }
 
 /// The brew-augmented PATH, cached at first call.
