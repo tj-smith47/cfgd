@@ -89,9 +89,6 @@ pub fn cmd_module_push(
             rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
             applied_name = Some(module_doc.metadata.name.clone());
         }
-        push_sec.hint(super::success_next_step(super::Mutation::ModulePushed {
-            applied: applied_name.as_deref(),
-        }));
         (digest, resolved_platform, signed, attested)
     };
 
@@ -99,15 +96,24 @@ pub fn cmd_module_push(
     // into the manifest, and the operator reads it back into a Module's
     // `PLATFORMS` column, so a payload key naming the artifact's platform
     // answering `null` for a defaulted one is a wrong value, not a silence.
-    printer.emit(Doc::new().with_data(serde_json::json!({
-        "dir": dir,
-        "artifact": artifact,
-        "platform": resolved_platform,
-        "digest": digest,
-        "signed": signed,
-        "attestation": attestation_attached,
-        "applied": applied_name,
-    })));
+    // Outside the section on purpose: this is the RUN's closing next step, not
+    // a note qualifying the row above it, so it lands flush left like every
+    // other mutating verb's.
+    printer.emit(
+        Doc::new()
+            .hint(super::success_next_step(super::Mutation::ModulePushed {
+                applied: applied_name.as_deref(),
+            }))
+            .with_data(serde_json::json!({
+                "dir": dir,
+                "artifact": artifact,
+                "platform": resolved_platform,
+                "digest": digest,
+                "signed": signed,
+                "attestation": attestation_attached,
+                "applied": applied_name,
+            })),
+    );
 
     Ok(())
 }
@@ -476,21 +482,25 @@ pub fn cmd_module_pull(
                 file_count = Some(doc.spec.files.len());
             }
         }
-        pull_sec.hint(super::success_next_step(super::Mutation::ModulePulled {
-            name: module_name.as_deref(),
-        }));
     }
 
-    printer.emit(Doc::new().with_data(serde_json::json!({
-        "artifact": artifact_ref,
-        "output": output,
-        "signatureVerified": require_signature,
-        "attestationVerified": verify_attestation,
-        "moduleName": module_name,
-        "moduleDescription": module_description,
-        "packageCount": package_count,
-        "fileCount": file_count,
-    })));
+    // The run's closing next step, at the run's own depth — see `cmd_module_push`.
+    printer.emit(
+        Doc::new()
+            .hint(super::success_next_step(super::Mutation::ModulePulled {
+                name: module_name.as_deref(),
+            }))
+            .with_data(serde_json::json!({
+                "artifact": artifact_ref,
+                "output": output,
+                "signatureVerified": require_signature,
+                "attestationVerified": verify_attestation,
+                "moduleName": module_name,
+                "moduleDescription": module_description,
+                "packageCount": package_count,
+                "fileCount": file_count,
+            })),
+    );
 
     Ok(())
 }

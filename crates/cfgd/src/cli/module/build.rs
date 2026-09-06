@@ -150,15 +150,18 @@ pub fn cmd_module_build(
                 digest_value = Some(digest);
             }
         }
-        // `output_artifacts[0]` is the module directory the push would take:
-        // the single build's output, or the first platform's for a
-        // multi-platform build whose one index artifact is already pushed.
-        let built = output_artifacts.first().map_or(dir, String::as_str);
-        build_sec.hint(super::success_next_step(match artifact {
-            Some(_) => super::Mutation::ModulePushed { applied: None },
-            None => super::Mutation::ModuleBuilt { output: built },
-        }));
     }
+
+    // `output_artifacts[0]` is the module directory the push would take: the
+    // single build's output, or the first platform's for a multi-platform
+    // build whose one index artifact is already pushed. Rendered outside the
+    // section: this is the RUN's closing next step, not a note qualifying the
+    // row above it, so it lands flush left like every other mutating verb's.
+    let built = output_artifacts.first().map_or(dir, String::as_str);
+    let next_step = super::success_next_step(match artifact {
+        Some(_) => super::Mutation::ModulePushed { applied: None },
+        None => super::Mutation::ModuleBuilt { output: built },
+    });
 
     let mut payload = serde_json::Map::new();
     payload.insert("dir".into(), serde_json::Value::String(dir.to_string()));
@@ -190,7 +193,11 @@ pub fn cmd_module_build(
         payload.insert("digest".into(), serde_json::Value::String(d));
     }
     payload.insert("signed".into(), serde_json::Value::Bool(sign));
-    printer.emit(Doc::new().with_data(serde_json::Value::Object(payload)));
+    printer.emit(
+        Doc::new()
+            .hint(next_step)
+            .with_data(serde_json::Value::Object(payload)),
+    );
 
     Ok(())
 }

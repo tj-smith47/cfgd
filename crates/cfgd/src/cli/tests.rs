@@ -36251,13 +36251,38 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         for (n, &start) in starts.iter().enumerate() {
             let end = starts.get(n + 1).copied().unwrap_or(lines.len());
             // The hatch is read off the whole comment block above the line,
-            // the way every other walk in this file reads its own.
+            // the way every other walk in this file reads its own, and then off
+            // the block above each ENCLOSING statement: a heading written as
+            // one arm of a `match` is hatched once, above the `match`, rather
+            // than once per arm.
             let hatched = |i: usize| {
-                lines[i].contains("heading-first-ok:")
-                    || (start..i)
+                if lines[i].contains("heading-first-ok:") {
+                    return true;
+                }
+                let indent = |l: &str| l.len() - l.trim_start().len();
+                let mut level = indent(lines[i]);
+                let mut j = i;
+                loop {
+                    // The contiguous comment block directly above this level.
+                    let mut k = j;
+                    while k > start && lines[k - 1].trim_start().starts_with("//") {
+                        k -= 1;
+                        if lines[k].contains("heading-first-ok:") {
+                            return true;
+                        }
+                    }
+                    // The statement this one sits in: the first line above it
+                    // indented less than it is. Its own block is read next, so
+                    // an arm of a `match` is hatched once, above the `match`.
+                    let Some(opener) = (start..j)
                         .rev()
-                        .take_while(|&j| lines[j].trim_start().starts_with("//"))
-                        .any(|j| lines[j].contains("heading-first-ok:"))
+                        .find(|&m| !lines[m].trim().is_empty() && indent(lines[m]) < level)
+                    else {
+                        return false;
+                    };
+                    level = indent(lines[opener]);
+                    j = opener;
+                }
             };
             let first = |needles: &[&str]| {
                 (start..end).find(|&i| needles.iter().any(|c| lines[i].contains(c)) && !hatched(i))
@@ -36305,6 +36330,115 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         "the wait narrates first and the heading lands with the result it \
          produced — move the heading below the wait, or hatch the line with \
          `// heading-first-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `success_next_step` is the RUN's closing next step, so it renders at the
+/// run's own depth — never through a section-scoped hint.
+///
+/// The hint is the last thing a mutating verb says, addressed to the whole
+/// run, and every mutating verb but three rendered it flush left. `module
+/// push` / `pull` / `build` passed it to their own `SectionGuard`, which
+/// indented the run's last word to the section's depth and its `$` command
+/// block one further — the placement the demo feedback named. A hint that
+/// really does qualify the ROW above it (the `sync` local-pull failure, a
+/// backup's rollback note) is a different thing and stays inside its section;
+/// it is not built from `success_next_step`.
+///
+/// The population is every production `success_next_step(` under `cli/`,
+/// including one bound to a variable and handed to a hint later. A receiver
+/// the walk cannot vouch for carries `// section-hint-ok: <why>`.
+#[test]
+fn every_mutating_verbs_next_step_renders_at_the_runs_own_depth() {
+    const HATCH: &str = "section-hint-ok:";
+    // The two receivers that render at the run's own depth: the printer
+    // itself, and a `Doc` the verb emits after its section has closed. An
+    // empty receiver is a builder chain (`Doc::new()\n    .hint(…)`).
+    const RUN_DEPTH_RECEIVERS: &[&str] = &["", "printer", "doc"];
+    let mut judged: Vec<String> = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        let starts: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].starts_with("fn ") || lines[i].starts_with("pub"))
+            .filter(|&i| lines[i].contains("fn "))
+            .collect();
+        for (n, &start) in starts.iter().enumerate() {
+            let end = starts.get(n + 1).copied().unwrap_or(lines.len());
+            // A next step bound to a name first and rendered later is the same
+            // hint: the binding is followed into the `.hint(` that takes it.
+            let bindings: Vec<&str> = (start..end)
+                .filter(|&i| lines[i].contains("success_next_step("))
+                .filter_map(|i| lines[i].split_once("let ").map(|(_, r)| r))
+                .filter_map(|r| r.split([' ', ':', '=']).next())
+                .filter(|b| !b.is_empty())
+                .collect();
+            for i in start..end {
+                let Some((before, after)) = lines[i].split_once(".hint(") else {
+                    continue;
+                };
+                let names_next_step = after.contains("success_next_step(")
+                    || bindings.iter().any(|b| {
+                        after
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .any(|t| t == *b)
+                    });
+                if !names_next_step {
+                    continue;
+                }
+                judged.push(
+                    lines[start]
+                        .split("fn ")
+                        .nth(1)
+                        .and_then(|r| r.split(['(', '<']).next())
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+                if lines[i].contains(HATCH)
+                    || (start..i)
+                        .rev()
+                        .take_while(|&j| lines[j].trim_start().starts_with("//"))
+                        .any(|j| lines[j].contains(HATCH))
+                {
+                    continue;
+                }
+                let receiver: String = before
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                if !RUN_DEPTH_RECEIVERS.contains(&receiver.as_str()) {
+                    offenders.push(format!(
+                        "{}:{}: `{receiver}.hint(` — {}",
+                        path.display(),
+                        i + 1,
+                        lines[i].trim()
+                    ));
+                }
+            }
+        }
+    }
+    // The three the finding was written against: a walk that stops seeing one
+    // of them reports no offender and proves nothing.
+    for name in ["cmd_module_push", "cmd_module_pull", "cmd_module_build"] {
+        assert!(
+            judged.iter().any(|f| f == name),
+            "the walk no longer reaches `{name}` — it judged {judged:?}"
+        );
+    }
+    assert!(
+        judged.len() >= 20,
+        "the walk no longer reaches the mutating verbs — it judged {judged:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the run's closing next step renders at the run's own depth — emit it \
+         on the printer or on the `Doc` the verb emits after its section \
+         closes, or hatch the line with `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
 }

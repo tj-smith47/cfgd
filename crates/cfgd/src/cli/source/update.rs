@@ -180,23 +180,19 @@ pub fn run_source_update(
     if cfg.spec.sources.is_empty() {
         // A specific source was requested but the config has no sources: that is
         // a NotFound, not a success. Only the update-ALL form (name == None) is
-        // an informational no-op here.
-        if let Some(name) = name {
-            return Err(source_not_found_error(name));
-        }
-        // A run with one named subject is headed the way every other
-        // single-subject `source` verb is (`Add source:team`), so the family
-        // reads as one family; the plural stays for the form that really does
-        // update all of them.
+        // an informational no-op here, and both arms leave through this block
+        // having fetched nothing.
+        // heading-first-ok: an early return with no source to fetch, so this
+        // path has no wait of its own for a title to land with — the title
+        // heads the line below it instead
         match name {
-            // heading-first-ok: an early return with no source to fetch, so
-            // this path has no wait of its own
             Some(name) => {
-                // heading-first-ok: as above
                 printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name))
             }
-            // heading-first-ok: as above
             None => printer.heading("Update Sources"),
+        }
+        if let Some(name) = name {
+            return Err(source_not_found_error(name));
         }
         printer.emit(
             Doc::new()
@@ -220,6 +216,9 @@ pub fn run_source_update(
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
+        // heading-first-ok: a name matching no configured source fetches
+        // nothing, so the title has no wait of its own to land with
+        printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name));
         return Err(source_not_found_error(name));
     }
 

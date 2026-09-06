@@ -1,6 +1,61 @@
 use super::*;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
+/// Every refusal `cfgd source add` can reach before it clones anything: the two
+/// argument contradictions and a name already subscribed.
+///
+/// Gathered into one answer so the arms that never narrate share ONE title:
+/// each is worded as an error line under the run's own heading, and a heading
+/// printed per arm would be three hatches for one shape.
+fn pre_clone_refusal(
+    printer: &Printer,
+    config_path: &Path,
+    source_name: &str,
+    args: &SourceAddArgs,
+) -> anyhow::Result<Option<anyhow::Error>> {
+    // A pin selects its own git ref (tag or commit), so an explicit branch is
+    // meaningless and contradictory.
+    if args.branch.is_some() && args.pin_version.is_some() {
+        return Ok(Some(crate::cli::cli_error(
+            source_name,
+            "branch_pin_conflict",
+            "--branch and --pin-version are mutually exclusive; a pin selects its own ref",
+            serde_json::json!({}),
+        )));
+    }
+
+    // Argument-injection guard: a `-`-leading pin would be parsed as a git flag
+    // by the downstream `git fetch`/`checkout`.
+    if args
+        .pin_version
+        .as_deref()
+        .is_some_and(|p| p.trim_start().starts_with('-'))
+    {
+        return Ok(Some(crate::cli::cli_error(
+            source_name,
+            "invalid_pin_version",
+            "--pin-version must not start with '-' (a leading dash is reserved for git flags)",
+            serde_json::json!({}),
+        )));
+    }
+
+    if config_path.exists() {
+        let mut cfg = config::load_config(config_path)?;
+        drain_config_deprecations(printer, &mut cfg);
+        if cfg.spec.sources.iter().any(|s| s.name == source_name) {
+            return Ok(Some(crate::cli::cli_error(
+                source_name,
+                "already_exists",
+                format!(
+                    "Source '{source_name}' already exists. Use `cfgd source update` to refresh."
+                ),
+                serde_json::json!({}),
+            )));
+        }
+    }
+    Ok(None)
+}
+
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
     run_source_add(cli, printer, args, true)
 }
@@ -35,49 +90,12 @@ pub(super) fn run_source_add(
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
-    // heading-first-ok: `load_source` below clones through `printer.run`,
-    // which commits the clone's own transcript lines — the title heads the
-    // lines the wait produces rather than landing under them
-    printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
-
-    // A pin selects its own git ref (tag or commit), so an explicit branch is
-    // meaningless and contradictory — reject the combination before any clone.
-    if args.branch.is_some() && args.pin_version.is_some() {
-        return Err(crate::cli::cli_error(
-            &source_name,
-            "branch_pin_conflict",
-            "--branch and --pin-version are mutually exclusive; a pin selects its own ref",
-            serde_json::json!({}),
-        ));
-    }
-
-    // Argument-injection guard: a `-`-leading pin would be parsed as a git flag
-    // by the downstream `git fetch`/`checkout`. Reject early with a clear error.
-    if pin_version.is_some_and(|p| p.trim_start().starts_with('-')) {
-        return Err(crate::cli::cli_error(
-            &source_name,
-            "invalid_pin_version",
-            "--pin-version must not start with '-' (a leading dash is reserved for git flags)",
-            serde_json::json!({}),
-        ));
-    }
-
-    // Check if source already exists in config
     let config_path = cli.config.clone();
-    if config_path.exists() {
-        let mut cfg = config::load_config(&config_path)?;
-        drain_config_deprecations(printer, &mut cfg);
-        if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            return Err(crate::cli::cli_error(
-                &source_name,
-                "already_exists",
-                format!(
-                    "Source '{}' already exists. Use `cfgd source update` to refresh.",
-                    source_name
-                ),
-                serde_json::json!({}),
-            ));
-        }
+    if let Some(refusal) = pre_clone_refusal(printer, &config_path, &source_name, args)? {
+        // heading-first-ok: a refusal reaching no clone narrates nothing, so
+        // the title has no wait to land with — it heads the error line below it
+        printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
+        return Err(refusal);
     }
 
     // Clone and parse the source
@@ -105,11 +123,17 @@ pub(super) fn run_source_add(
     // Surface lib-side load failure with the same {"error": "load_failed", ...}
     // structured shape as the "Ok-but-no-cache-entry" fallback below, so both
     // load-failure paths look identical to structured consumers.
-    // The clone is the wait. It retires silently on both arms because the
-    // failure below is already worded as its own line.
+    // The clone is the wait, and it runs BEFORE anything is painted: the title
+    // lands with what the fetch produced rather than over its bar. The bar
+    // retires silently on both arms because the failure below is already
+    // worded as its own line, and the clone runs against a Quiet sink so git's
+    // own transcript does not commit lines above a title this run has not
+    // printed yet — `source update`'s shape.
+    let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     let load = printer.narrate_silent(format!("Fetching source:{source_name}"), |_| {
-        mgr.load_source(&spec, printer)
+        mgr.load_source(&spec, &silent_printer)
     });
+    printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
     if let Err(e) = load {
         return Err(crate::cli::cli_error(
             &source_name,
