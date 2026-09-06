@@ -18,11 +18,16 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# 1320x1500 at font size 15 measures 125x76. The tallest single render below is
-# the closing `cfgd status -o wide` at 37 lines, and both machine-wide renders
-# are preceded by a clear, so the grid only has to hold one of them plus the
-# line that typed it.
-Set Height 1500
+# 1320x820 at font size 15 measures 125x41. The grid is sized to the tallest
+# single render below — the closing `cfgd status -o wide`, 37 rows including
+# the line that typed it — plus four rows of headroom, because both
+# machine-wide renders are preceded by a clear and so never have to share the
+# frame with what came before them. The beats between the two clears do
+# accumulate past 41 rows and the earlier ones scroll away; each one has
+# already had its own hold by then, and every beat's own output is whole on
+# screen while it is the beat being read. A taller grid only pads the closing
+# frame with empty background.
+Set Height 820
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
