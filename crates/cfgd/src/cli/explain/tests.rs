@@ -1177,8 +1177,10 @@ fn no_schema_description_addresses_a_maintainer_instead_of_a_user() {
         .expect("`crates/cfgd-core/tests/golden` is named in `KNOWN_GOLDEN_ROOTS`")
         .join("schema");
     let mut judged = 0;
+    let mut present = 0;
     for entry in std::fs::read_dir(&goldens).expect("golden schema dir") {
         let path = entry.expect("dir entry").path();
+        present += 1;
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
@@ -1191,9 +1193,20 @@ fn no_schema_description_addresses_a_maintainer_instead_of_a_user() {
         walk_json(&name, &value, &mut found);
         judged += 1;
     }
+    // Two questions, and neither answers the other: the equality fails when a
+    // published schema stops being read — a golden renamed out of `.json` is
+    // skipped in silence — and the floor fails when the tree itself empties,
+    // which the equality alone reads as green.
+    assert_eq!(
+        judged,
+        present,
+        "{present} files under {} and only {judged} judged; a published schema \
+         is going unread",
+        goldens.display()
+    );
     assert!(
-        judged > 0,
-        "no golden schemas judged under {}",
+        judged >= 9,
+        "only {judged} golden schemas judged under {}",
         goldens.display()
     );
     assert!(

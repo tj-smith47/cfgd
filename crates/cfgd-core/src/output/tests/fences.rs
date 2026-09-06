@@ -1225,23 +1225,49 @@ impl LineMask {
     }
 }
 
-/// The `source` label a scan over a literal fixture names, where a file walk
-/// names the path it read.
-const FIXTURE_SOURCE: &str = "<fixture>";
-
-/// The label a file walk names `path` by: workspace-relative, `/`-folded.
+/// The label a scanner names its source by, held in a module of its own so
+/// the inner string is unreachable from outside it.
 ///
-/// [`workspace_root`] is a `..`-joined absolute path and [`PathBuf`] never
-/// normalizes one away, so the absolute spelling names a file as
-/// `…/crates/cfgd-core/../../crates/cfgd-core/src/…` here and with `\`
-/// between the components on Windows — three renderings of one file, none of
-/// which a reader can paste. Stripping the root leaves the spelling a CI log,
-/// a Windows run and this box all print identically. An offender line takes
-/// the same label as a desync panic, so a walk names a file one way whatever
-/// it found there.
-fn source_label(path: &Path) -> String {
-    crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(path))
+/// A `&str` parameter accepted every spelling of a path, so the rule that a
+/// walk names one file one way was the CALLER's to remember and a scanner
+/// handed `path.display()` compiled. With the field private, [`source_label`]
+/// and [`FIXTURE_SOURCE`] are the only ways to hold a [`SourceLabel`] at all,
+/// and the offending shape stops compiling.
+mod label {
+    use std::borrow::Cow;
+    use std::fmt;
+    use std::path::Path;
+
+    /// The label a file walk names a path by: workspace-relative, `/`-folded.
+    ///
+    /// `workspace_root` is a `..`-joined absolute path and `PathBuf` never
+    /// normalizes one away, so the absolute spelling names a file as
+    /// `…/crates/cfgd-core/../../crates/cfgd-core/src/…` here and with `\`
+    /// between the components on Windows — three renderings of one file, none
+    /// of which a reader can paste. Stripping the root leaves the spelling a
+    /// CI log, a Windows run and this box all print identically.
+    pub(super) struct SourceLabel(Cow<'static, str>);
+
+    impl fmt::Display for SourceLabel {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    /// The label a scan over a literal fixture names, where a file walk names
+    /// the path it read.
+    pub(super) static FIXTURE_SOURCE: SourceLabel = SourceLabel(Cow::Borrowed("<fixture>"));
+
+    /// Fold `path` into the one label every walk over it names it by.
+    pub(super) fn source_label(path: &Path) -> SourceLabel {
+        SourceLabel(Cow::Owned(crate::to_posix_string(
+            path.strip_prefix(crate::test_helpers::workspace_root())
+                .unwrap_or(path),
+        )))
+    }
 }
+
+use label::{FIXTURE_SOURCE, SourceLabel, source_label};
 
 /// The functions a source's `fn` lines cut it into, each paired with its
 /// opening line number.
@@ -1272,13 +1298,11 @@ fn source_label(path: &Path) -> String {
 /// a desynced scan stops the test rather than answering from a slice it
 /// invented. `source` is what makes that answer actionable: a walk over the
 /// workspace reads hundreds of files, and a line number alone names none of
-/// them. `source` is the workspace-relative posix path of a file — the ONE
-/// spelling [`source_label`] folds every walk's path to — or
-/// [`FIXTURE_SOURCE`] for a literal;
-/// `every_path_holding_walk_labels_its_source_workspace_relative` holds that
-/// split.
+/// them. `source` is a [`SourceLabel`], whose only constructors are
+/// [`source_label`] and [`FIXTURE_SOURCE`], so a caller cannot hand a scanner
+/// a second spelling of a file it already labelled.
 /// `an_unbalanced_declaration_stops_the_walk` holds the contract.
-fn source_functions(source: &str, body: &str) -> Vec<(usize, String)> {
+fn source_functions(source: &SourceLabel, body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let mut mask = LineMask::default();
     // Each open carries the SPAN the declaration starts at, not just its line:
@@ -1352,7 +1376,7 @@ fn opens_const_item(code: &str) -> bool {
 /// and only once the bracket depth the declaration opened has come back down —
 /// a `[u8; 4]` in the type would otherwise end the item on its own first line
 /// and hide the initializer this exists to read.
-fn const_items_outside_functions(source: &str, body: &str) -> Vec<(usize, String)> {
+fn const_items_outside_functions(source: &SourceLabel, body: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = body.lines().collect();
     let in_a_function: Vec<std::ops::RangeInclusive<usize>> = source_functions(source, body)
         .iter()
@@ -1525,9 +1549,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
             if spells_a_name || spells_a_line || spells_a_dialect_alone || spells_environment_d_path
             {
                 offenders.push(format!(
-                    "{}:{}: {}",
-                    path.display(),
-                    open,
+                    "{shown}:{open}: {}",
                     body.lines().nth(open - 1).unwrap_or("").trim()
                 ));
             }
@@ -1617,7 +1639,7 @@ fn a_fn_spelled_inside_a_string_literal_does_not_open_a_slice() {
         "}\n",
         "fn second() {}\n"
     );
-    let funcs = source_functions(FIXTURE_SOURCE, body);
+    let funcs = source_functions(&FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert!(
@@ -1642,7 +1664,7 @@ fn an_offender_spelling_an_fn_line_inside_a_plain_literal_stays_one_scan_unit() 
         "fn offender() {{\n    let banner = \"\nfn looks_like_an_fn() {{\n\";\n    \
          let p = home.{tell};\n}}\nfn sibling() {{}}\n"
     );
-    let funcs = source_functions(FIXTURE_SOURCE, &body);
+    let funcs = source_functions(&FIXTURE_SOURCE, &body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1, "the offender opens at its own line");
     assert!(
@@ -1677,7 +1699,7 @@ fn the_masking_arms_read_comments_and_char_literals_as_not_source() {
         "}\n",
         "fn after() {}\n"
     );
-    let funcs = source_functions(FIXTURE_SOURCE, body);
+    let funcs = source_functions(&FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert!(
@@ -1705,7 +1727,7 @@ fn a_brace_inside_a_one_line_block_comment_does_not_move_the_close() {
         "}\n",
         "fn after() {}\n"
     );
-    let funcs = source_functions(FIXTURE_SOURCE, body);
+    let funcs = source_functions(&FIXTURE_SOURCE, body);
     assert_eq!(funcs.len(), 2, "{funcs:?}");
     assert_eq!(funcs[0].0, 1);
     assert_eq!(
@@ -1734,104 +1756,75 @@ fn a_brace_inside_a_one_line_block_comment_does_not_move_the_close() {
 )]
 fn an_unbalanced_declaration_stops_the_walk() {
     source_functions(
-        FIXTURE_SOURCE,
+        &FIXTURE_SOURCE,
         "// a header line\nfn f() {\n    let x = 1;\n",
     );
 }
 
-/// The text of a call's first argument, read from just past its `(`.
+/// Every label [`source_label`] folds is workspace-relative and `/`-folded.
 ///
-/// Depth-aware, so a label composed by a call of its own arrives whole; a
-/// call the input never closes yields nothing rather than the rest of the
-/// file.
-fn first_argument(rest: &str) -> Option<&str> {
-    let mut depth = 0i32;
-    for (at, c) in rest.char_indices() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' if depth == 0 => return Some(&rest[..at]),
-            ')' | ']' => depth -= 1,
-            ',' if depth == 0 => return Some(&rest[..at]),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Every label a path-holding walk hands the scanner is workspace-relative
-/// and `/`-folded.
-///
-/// The sibling of the desync pin above: that one holds that the panic NAMES a
-/// source, this one that the name is the same string wherever it was
-/// produced. [`workspace_root`] is a `..`-joined absolute path, so an
-/// unfolded label spells one file three ways — with the `..` components here,
-/// with `\` between them on a Windows run, and workspace-relative in a walk
-/// that strips the root — and a panic read from a CI log matches none of the
-/// others. [`source_label`] is that one fold.
-///
-/// Held on this file's own call sites, because a caller handing the scanner
-/// the path it already holds compiles just as well: the spelling is the
-/// CALLER's to get right and nothing in the signature can ask for it.
+/// The fold the type cannot hold: [`SourceLabel`] closes which STRING a
+/// scanner is handed, not what that string looks like. `workspace_root` is a
+/// `..`-joined absolute path, so an unfolded label spells one file three ways
+/// — with the `..` components here, with `\` between them on a Windows run,
+/// and workspace-relative in a walk that strips the root — and a panic read
+/// from a CI log matches none of the others.
 #[test]
-fn every_path_holding_walk_labels_its_source_workspace_relative() {
+fn every_source_label_is_workspace_relative_and_posix_folded() {
     for path in workspace_rust_files() {
-        let label = source_label(&path);
+        let label = source_label(&path).to_string();
         assert!(
             !label.starts_with('/') && !label.contains('\\'),
             "the label of {} must be workspace-relative and `/`-folded: {label:?}",
             path.display()
         );
     }
+}
 
+/// A walk that folds a label for its scanner names its offender lines by that
+/// same label.
+///
+/// The one shape [`SourceLabel`] does not close: nothing about the scanner's
+/// parameter reaches the `format!` a walk builds its offender line with, so a
+/// walk can label the file it read one way and report a finding in it another
+/// — the exact defect the label exists to prevent, since a desync panic and
+/// an offender line pasted out of one CI log then name two different paths.
+///
+/// Judged inside each declaration's own span, so the walks that fold no label
+/// and spell their offender paths natively are outside the population rather
+/// than hatched out of it. The needle is composed at run time because this
+/// declaration would otherwise match itself.
+#[test]
+fn no_walk_folding_a_label_spells_an_offender_path_natively() {
     let own_path = workspace_root().join("crates/cfgd-core/src/output/tests/fences.rs");
     let own = std::fs::read_to_string(&own_path).unwrap_or_else(|e| panic!("{own_path:?}: {e}"));
-    // Composed at run time: a needle spelled whole would match this roster
-    // itself and read the roster's own punctuation as a label.
-    let calls = [
-        "source_functions",
-        "const_items_outside_functions",
-        "function_source",
-    ]
-    .map(|n| format!("{n}("));
-    let mut labels = 0usize;
+    let label = source_label(&own_path);
+    let native = format!("path.{}()", "display");
+    let mut folding = 0usize;
     let mut offenders = Vec::new();
-    for needle in &calls {
-        for (at, _) in own.match_indices(needle.as_str()) {
-            let before = &own[..at];
-            // The declarations take `source: &str`; only a CALL passes a label.
-            if before.ends_with("fn ")
-                || before.ends_with(|c: char| c.is_alphanumeric() || c == '_')
-            {
-                continue;
-            }
-            let Some(arg) = first_argument(&own[at + needle.len()..]) else {
-                continue;
-            };
-            labels += 1;
-            let arg = arg.trim();
-            if arg == "FIXTURE_SOURCE" || arg == "source" || arg.contains("source_label(") {
-                continue;
-            }
-            // A label held in a local is judged where the local is bound.
-            if let Some(local) = arg.strip_prefix('&')
-                && own.contains(&format!("let {local} = source_label("))
-            {
-                continue;
-            }
-            offenders.push(arg.to_string());
+    for (open, slice) in source_functions(&label, &own) {
+        if !slice.contains("source_label(")
+            || !(slice.contains("source_functions(")
+                || slice.contains("const_items_outside_functions("))
+        {
+            continue;
+        }
+        folding += 1;
+        if slice.contains(&native) {
+            offenders.push(format!("{label}:{open}"));
         }
     }
     assert!(
         offenders.is_empty(),
-        "a walk names the file it read through `source_label`, or one file is \
-         spelled two ways between a desync panic and an offender line: \
-         {offenders:?}"
+        "a walk holding a `SourceLabel` renders that label in its offender \
+         lines too, or it names one file two ways:\n{}",
+        offenders.join("\n")
     );
     // The floor is the POPULATION: an empty offender list reads the same
-    // whether the scan found every call site or none of them.
+    // whether the scan found every walk or none of them.
     assert!(
-        labels >= 20,
-        "the scan read {labels} scanner call sites; it has stopped seeing them"
+        folding >= 6,
+        "the scan read {folding} label-folding walks; it has stopped seeing them"
     );
 }
 
@@ -1948,7 +1941,7 @@ const UNCALLED_HATCH: &str = "env-mutator-uncalled-ok:";
 /// panics naming `source`, the declaration it could not close and that
 /// declaration's own text — the three facts a reader needs to open the file
 /// and see the desync.
-fn function_source(source: &str, lines: &[&str], open: usize, head: &str) -> String {
+fn function_source(source: &SourceLabel, lines: &[&str], open: usize, head: &str) -> String {
     let mut mask = LineMask::default();
     let mut depth = 0i32;
     let mut opened = false;
@@ -2223,6 +2216,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         }
         files_read += 1;
         let lines: Vec<&str> = body.lines().collect();
+        let relative = source_label(&path);
 
         // Every declaration in the file, by name: its sources (a name can be
         // declared more than once, in sibling modules or impl blocks), whether
@@ -2230,7 +2224,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         let mut sources: std::collections::BTreeMap<String, Vec<(usize, String)>> =
             std::collections::BTreeMap::new();
         let mut free: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
-        for (open, slice) in source_functions(&source_label(&path), &body) {
+        for (open, slice) in source_functions(&relative, &body) {
             let Some(name) = declared_fn_name(&slice) else {
                 continue;
             };
@@ -2299,7 +2293,6 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
             }
         }
 
-        let relative = source_label(&path);
         for (name, decls) in &sources {
             for (open, _) in decls {
                 let start = attribute_block_start(&lines, open - 1);
@@ -2321,7 +2314,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
                     .any(|l| l.trim_start().starts_with("#[") && l.contains("serial"))
                 {
                     serialized += 1;
-                    *per_file.entry(relative.clone()).or_default() += 1;
+                    *per_file.entry(relative.to_string()).or_default() += 1;
                     continue;
                 }
                 if (start..*open).any(|at| hatched(&lines, at, SERIAL_HATCH)) {
@@ -2426,17 +2419,13 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
             continue;
         };
         let lines: Vec<&str> = body.lines().collect();
-        for (open, item) in const_items_outside_functions(&source_label(&path), &body) {
+        let relative = source_label(&path);
+        for (open, item) in const_items_outside_functions(&relative, &body) {
             items += 1;
             if !mutates_process_env(&item) || hatched(&lines, open - 1, MUTATOR_HATCH) {
                 continue;
             }
-            offenders.push(format!(
-                "{}:{}: {}",
-                path.display(),
-                open,
-                lines[open - 1].trim()
-            ));
+            offenders.push(format!("{relative}:{open}: {}", lines[open - 1].trim()));
         }
     }
     assert!(
@@ -2616,13 +2605,14 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         let body = crate::test_helpers::production_slice(&raw);
         let lines: Vec<&str> = body.lines().collect();
         let owners = impl_owners(&lines);
+        let relative = source_label(&path);
 
         let mut names: Vec<String> = Vec::new();
         let mut qualified: Vec<String> = Vec::new();
         let mut opens: Vec<usize> = Vec::new();
         let mut sources: Vec<String> = Vec::new();
         let mut exported: Vec<bool> = Vec::new();
-        for (open, slice) in source_functions(&source_label(&path), &body) {
+        for (open, slice) in source_functions(&relative, &body) {
             let Some(name) = declared_fn_name(&slice).map(str::to_string) else {
                 continue;
             };
@@ -2677,7 +2667,6 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
             }
         }
 
-        let relative = source_label(&path);
         for at in 0..sources.len() {
             if !reaches[at] || !exported[at] {
                 continue;
@@ -2735,7 +2724,7 @@ fn a_brace_after_a_literals_close_still_ends_the_function() {
         "fn sibling() {}\n"
     );
     let lines: Vec<&str> = body.lines().collect();
-    let source = function_source(FIXTURE_SOURCE, &lines, 0, lines[0]);
+    let source = function_source(&FIXTURE_SOURCE, &lines, 0, lines[0]);
     assert!(
         source.ends_with("\"#; }"),
         "the slice ends at the brace after the literal's close: {source:?}"
@@ -2792,7 +2781,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, body);
+    let cut = source_functions(&FIXTURE_SOURCE, body);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2810,7 +2799,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; fn sibling() { let x = 1; } }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, closing);
+    let cut = source_functions(&FIXTURE_SOURCE, closing);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2824,7 +2813,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; let s = \"a;b\"; fn sibling() {} }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, quoted);
+    let cut = source_functions(&FIXTURE_SOURCE, quoted);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2841,7 +2830,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; let s = \"; fn ghost() {\"; }\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, inside);
+    let cut = source_functions(&FIXTURE_SOURCE, inside);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2858,7 +2847,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
         "\"#; } // ; fn f() {}\n",
         "fn after() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, commented);
+    let cut = source_functions(&FIXTURE_SOURCE, commented);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(
         opens,
@@ -2885,7 +2874,7 @@ fn a_slice_ends_at_its_declarations_own_close_not_at_the_next_fn() {
         "\n",
         "fn sibling() {}\n"
     );
-    let cut = source_functions(FIXTURE_SOURCE, body);
+    let cut = source_functions(&FIXTURE_SOURCE, body);
     let opens: Vec<usize> = cut.iter().map(|(open, _)| *open).collect();
     assert_eq!(opens, vec![1, 7], "{opens:?}");
     assert!(
