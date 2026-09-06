@@ -730,14 +730,14 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        # The `kubectl cfgd version` sample in docs/installation.md prints the
-        # operator's own version; the cfgd crate's sweep above covers the
-        # client line, this one the operator line. The chart pins the operator
-        # image to this crate's version rather than to the chart's appVersion
-        # (which tracks the agent), so the pin is swept from here too.
-        version_files:
-          - docs/installation.md
-          - chart/cfgd/values.yaml
+        # No version_files: the operator's two literals (its image pin in
+        # chart/cfgd/values.yaml and its line in the `kubectl cfgd version`
+        # sample in docs/installation.md) are maintained by hand. anodizer's
+        # sweep is a whole-file literal replace and it refuses a file enrolled
+        # by crates with different bumps (run 34057560579): the sample shares
+        # its file with the cfgd crate's sweep, and the chart's operator and
+        # CSI pins share one literal in one file. `task chart:tags:check`
+        # guards the pins by asking the registry for the image they render.
         builds:
           - binary: cfgd-operator
             features: []
@@ -804,13 +804,8 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        # Same sample as the operator's enrollment: the CSI line, plus the
-        # chart's CSI image pin. The two crates currently share a version
-        # literal, so a bump of one rewrites both lines and the other crate's
-        # sweep then warns "did not contain version" until it catches up.
-        version_files:
-          - docs/installation.md
-          - chart/cfgd/values.yaml
+        # No version_files, for the operator's reason above: the CSI image
+        # pin and the sample's CSI line are maintained by hand.
         builds:
           - binary: cfgd-csi
             features: []

@@ -8,12 +8,11 @@ operator:
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
     # Pinned to the cfgd-operator crate's own version, which moves independently of
-    # the agent's (appVersion). Kept as a literal rather than a shared anchor because
-    # anodizer's version_files sweep is a whole-file literal replace: while the
-    # operator and CSI crates share a version literal, a bump of one rewrites the
-    # other's line too and the lagging crate's sweep then warns until it catches up
-    # (the same ceiling .anodizer.yaml documents for docs/installation.md).
-    tag: "0.7.0"
+    # the agent's (appVersion). Maintained by hand: anodizer's version_files sweep is
+    # a whole-file literal replace, so it cannot tell this pin from the CSI one below
+    # when the two crates share a literal (see the operator entry in .anodizer.yaml).
+    # `task chart:tags:check` catches a pin nobody pushed.
+    tag: "0.8.0"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -148,8 +147,8 @@ csiDriver:
   image:
     repository: ghcr.io/tj-smith47/cfgd-csi
     # Pinned to the cfgd-csi crate's own version; see the operator image comment
-    # above for why this is a literal rather than a shared anchor.
-    tag: "0.7.0"
+    # above for why this is maintained by hand.
+    tag: "0.7.1"
     pullPolicy: IfNotPresent
   cache:
     maxSizeGi: 5
