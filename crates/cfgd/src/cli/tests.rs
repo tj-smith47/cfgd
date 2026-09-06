@@ -14870,6 +14870,13 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
 /// that opens on a heading. A table's header row is column-0 too and is told
 /// apart by the `─` separator directly beneath it; a surface with no heading
 /// at all (`plugin exec`, `workflow generate`) has nothing to indent under.
+///
+/// PROSE ends the scope, so a block whose nearest preceding line is an
+/// indented non-kv line — a `Doc::paragraph` — is exempt: that is `cfgd
+/// explain`, whose description belongs to the field the heading names and
+/// whose `Location` / `Docs` pointers do not. The two surfaces the rule was
+/// written for are floored by name below, so narrowing it cannot quietly
+/// widen into them: neither puts prose between its heading and its facts.
 #[test]
 fn no_kv_block_renders_at_column_zero_under_a_heading() {
     let is_kv = |l: &str| {
@@ -14897,14 +14904,58 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
             continue;
         }
         judged += 1;
+        // An indented line of running text: no key column, no glue, no glyph.
+        // Prose ends the heading's scope, and every row of the block that
+        // follows it is the surface's own — the exemption is a property of the
+        // BLOCK, so it carries across the block's rows and is dropped by the
+        // next line that is neither blank nor one of them.
+        let is_prose = |l: &str| {
+            l.starts_with(' ')
+                && !is_kv(l.trim_start())
+                && !l.contains(" — ")
+                && l.trim_start().starts_with(char::is_alphanumeric)
+        };
+        let mut after_prose = false;
         for (i, line) in lines.iter().enumerate().skip(1) {
+            if line.trim().is_empty() {
+                continue;
+            }
             let is_table_header = lines
                 .get(i + 1)
                 .is_some_and(|n| n.trim_start().starts_with('─'));
-            if !line.starts_with(' ') && is_kv(line) && !is_table_header {
-                offenders.push(format!("{}:{}: {line}", path.display(), i + 1));
+            // A row of the same block, whatever its key's case: `is_kv`'s
+            // Title-Case test is what makes a line an OFFENDER, not what makes
+            // it part of the block a lowercase `apiVersion` row opens.
+            let block_row = line.split_once("  ").is_some_and(|(key, value)| {
+                !key.is_empty()
+                    && key.len() <= 24
+                    && key.chars().all(|c| c.is_alphanumeric() || c == ' ')
+                    && !value.trim().is_empty()
+            });
+            if !line.starts_with(' ') && block_row && !is_table_header {
+                if is_kv(line) && !after_prose {
+                    offenders.push(format!("{}:{}: {line}", path.display(), i + 1));
+                }
+                continue;
             }
+            after_prose = is_prose(line);
         }
+    }
+    // The two surfaces the rule was written for: their facts follow the
+    // heading (or a kv header block) directly, so no exemption can reach them
+    // and a regression there is an offender above, not a silent pass.
+    for name in ["daemon_status/running.txt", "compliance_snapshot/happy.txt"] {
+        let path = cfgd_core::test_helpers::workspace_root()
+            .join("crates/cfgd/tests/output_snapshots")
+            .join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the floored golden {name} is gone: {e}"));
+        assert!(
+            text.replace("\r\n", "\n")
+                .lines()
+                .any(|l| l.starts_with("  ")),
+            "{name} no longer indents its facts under its heading"
+        );
     }
     assert!(
         judged >= 100,
@@ -15551,6 +15602,7 @@ const RESULT_LINE_VERBS: &[&str] = &[
     "Encrypted",
     "Enrolled",
     "Exported",
+    "Fetched",
     "Generated",
     "Initialized",
     "Injected",
@@ -36043,6 +36095,216 @@ fn every_verb_composes_its_drift_predicate_once() {
          composer ({}), never beside the reader that asks it (or carries \
          `// {HATCH} <why>`):\n{}",
         COMPOSERS.join(" / "),
+        offenders.join("\n")
+    );
+}
+
+/// Every `KvPair::annotated` slot the product renders, with the verdict that
+/// earned it its parenthetical.
+///
+/// The muted `(note)` beside a value costs the reader a second read of the
+/// row, so it has to state a fact the row cannot already show. Two did not:
+/// `source show`'s `Locked Commit  9f3c… (same as last commit)` restated a
+/// comparison the `Last Commit` row two lines above already made, and `module
+/// show`'s `Source  remote (locked)` annotated a value that is `remote`
+/// exactly when the lockfile has an entry — a note that never varies with the
+/// module, above the pinned ref, commit and integrity that ARE the lock. Both
+/// are gone, and this table is what classifies the next one before it ships.
+///
+/// The population is every production `KvPair::annotated(` under `cli/` and
+/// under `cfgd-core`'s `output/`, keyed by the KEY argument as written: a new
+/// slot fails here until its key is named with a verdict.
+#[test]
+fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
+    // (key as written, why the note is load-bearing)
+    const VERDICTS: &[(&str, &str)] = &[
+        (
+            "\"Profile\"",
+            "names the profiles the resolution inherited, which the profile name alone cannot",
+        ),
+        (
+            "\"Modules\"",
+            "names what the resolution ADDED — a depends pull, a platform skip — beside what was declared",
+        ),
+        (
+            "&row.name",
+            "the signature verdict for that module's artifact; nothing else on the row says it",
+        ),
+        (
+            "\"Signing with\"",
+            "the key file the run will sign with, which the key TYPE does not identify",
+        ),
+        (
+            "\"Require Signed Commits\"",
+            "says the demand is bypassed by security.allowUnsigned, or `yes` reads as enforced",
+        ),
+        (
+            "\"Base Snapshot\"",
+            "the snapshot's timestamp, which its id does not carry",
+        ),
+        (
+            "\"Target Snapshot\"",
+            "the snapshot's timestamp, which its id does not carry",
+        ),
+    ];
+    let mut sources = cli_production_sources();
+    let core_output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/output")
+        .canonicalize()
+        .expect("cfgd-core/src/output");
+    for path in walk_rust_files(&core_output) {
+        if path.components().any(|c| c.as_os_str() == "tests") {
+            continue;
+        }
+        if let Ok(body) = std::fs::read_to_string(&path) {
+            let production = production_body(&body);
+            sources.push((path, production));
+        }
+    }
+    let mut found: Vec<(String, String)> = Vec::new();
+    for (path, body) in &sources {
+        for (n, line) in body.lines().enumerate() {
+            let Some(rest) = line.split("KvPair::annotated(").nth(1) else {
+                continue;
+            };
+            // The key is the first argument: the rest of this line up to its
+            // comma, or — when the call wraps — the line below.
+            let key = if rest.trim().is_empty() {
+                body.lines().nth(n + 1).unwrap_or_default().trim()
+            } else {
+                rest.trim()
+            };
+            let key = key.split_once(',').map_or(key, |(first, _)| first);
+            found.push((
+                key.trim_end_matches(',').to_string(),
+                format!("{}:{}", path.display(), n + 1),
+            ));
+        }
+    }
+    assert!(
+        found.len() >= VERDICTS.len(),
+        "the walk no longer reaches the annotated slots — it found {}",
+        found.len()
+    );
+    let unclassified: Vec<&(String, String)> = found
+        .iter()
+        .filter(|(key, _)| !VERDICTS.iter().any(|(k, _)| k == key))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "an annotation costs the reader a second read of the row, so it states a \
+         fact the row cannot show — classify it in this table or drop it:\n{}",
+        unclassified
+            .iter()
+            .map(|(key, at)| format!("{at}: {key}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let unused: Vec<&str> = VERDICTS
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !found.iter().any(|(key, _)| key == k))
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "these verdicts name no slot any more — drop the row:\n{}",
+        unused.join("\n")
+    );
+}
+
+/// A command's title lands WITH its result, never over the wait that produces
+/// it.
+///
+/// `apply`, `plan`, `verify`, `doctor` and `status` all do the same thing: the
+/// long wait narrates into the live region with an empty screen behind it, and
+/// the heading is the first permanent line of the report the wait produced.
+/// `diff`, `sync`, `source update` and `module registry add` painted their
+/// heading (and, for two of them, a whole header block) first, so the reader
+/// watched a spinner turn under a report with nothing in it — the shape the
+/// demo recordings made obvious.
+///
+/// Read off the source, per function: the first line that puts a live wait on
+/// the screen against the first line that paints a heading. A wait is
+/// `narrate`, `narrate_silent`, a `.spinner(` of the caller's own, or a call
+/// to `live_drift_results` — the machine-wide scan, which narrates inside the
+/// engine rather than at its callers. `// heading-first-ok: <why>` on the
+/// heading line hatches a surface whose heading genuinely precedes its wait.
+#[test]
+fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
+    const WAITS: &[&str] = &[
+        ".narrate(",
+        ".narrate_silent(",
+        ".spinner(",
+        "live_drift_results(",
+    ];
+    const HEADINGS: &[&str] = &[".heading(", ".heading_title(", ".heading_owner_prefixed("];
+    let mut judged: Vec<String> = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        // Function spans, read off rustfmt's indentation: a `fn` at column 0
+        // runs until the next one.
+        let starts: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].starts_with("fn ") || lines[i].starts_with("pub"))
+            .filter(|&i| lines[i].contains("fn "))
+            .collect();
+        for (n, &start) in starts.iter().enumerate() {
+            let end = starts.get(n + 1).copied().unwrap_or(lines.len());
+            // The hatch is read off the whole comment block above the line,
+            // the way every other walk in this file reads its own.
+            let hatched = |i: usize| {
+                lines[i].contains("heading-first-ok:")
+                    || (start..i)
+                        .rev()
+                        .take_while(|&j| lines[j].trim_start().starts_with("//"))
+                        .any(|j| lines[j].contains("heading-first-ok:"))
+            };
+            let first = |needles: &[&str]| {
+                (start..end).find(|&i| needles.iter().any(|c| lines[i].contains(c)) && !hatched(i))
+            };
+            let (Some(wait), Some(heading)) = (first(WAITS), first(HEADINGS)) else {
+                continue;
+            };
+            judged.push(
+                lines[start]
+                    .split("fn ")
+                    .nth(1)
+                    .and_then(|r| r.split(['(', '<']).next())
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            if heading < wait {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    heading + 1,
+                    lines[heading].trim()
+                ));
+            }
+        }
+    }
+    // The four the ruling was written against: a walk that stops seeing one of
+    // them reports no offender and proves nothing.
+    for name in [
+        "cmd_diff",
+        "run_sync",
+        "run_source_update",
+        "cmd_module_add_remote",
+    ] {
+        assert!(
+            judged.iter().any(|f| f == name),
+            "the walk no longer reaches `{name}` — it judged {judged:?}"
+        );
+    }
+    assert!(
+        judged.len() >= 5,
+        "the walk no longer reaches the waiting commands — it judged {judged:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the wait narrates first and the heading lands with the result it \
+         produced — move the heading below the wait, or hatch the line with \
+         `// heading-first-ok: <why>`:\n{}",
         offenders.join("\n")
     );
 }

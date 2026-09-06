@@ -173,14 +173,6 @@ pub fn run_source_update(
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<usize> {
-    // A run with one named subject is headed the way every other single-subject
-    // `source` verb is (`Add source:team`), so the family reads as one family;
-    // the plural stays for the form that really does update all of them.
-    match name {
-        Some(name) => printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name)),
-        None => printer.heading("Update Sources"),
-    }
-
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;
     drain_config_deprecations(printer, &mut cfg);
@@ -191,6 +183,20 @@ pub fn run_source_update(
         // an informational no-op here.
         if let Some(name) = name {
             return Err(source_not_found_error(name));
+        }
+        // A run with one named subject is headed the way every other
+        // single-subject `source` verb is (`Add source:team`), so the family
+        // reads as one family; the plural stays for the form that really does
+        // update all of them.
+        match name {
+            // heading-first-ok: an early return with no source to fetch, so
+            // this path has no wait of its own
+            Some(name) => {
+                // heading-first-ok: as above
+                printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name))
+            }
+            // heading-first-ok: as above
+            None => printer.heading("Update Sources"),
         }
         printer.emit(
             Doc::new()
@@ -229,7 +235,37 @@ pub fn run_source_update(
     let mut knob_changes = serde_json::Map::new();
     let solo = sources_to_update.len() == 1 && name.is_some();
 
+    // Every fetch runs BEFORE anything is painted: the fetches are this
+    // verb's wait, and the title lands with their results rather than over a
+    // bar. Each source's prior manifest is read ahead of its own fetch, or the
+    // permission-change comparison below reads the new manifest twice. Each
+    // bar retires silently on both arms — the rows below word every outcome.
+    // The Quiet sink `cli/sync.rs` fetches through: the bar owns the wait's
+    // surface, so the lib's own clone transcript does not land above the title
+    // this run has not printed yet.
+    let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    let mut loads = Vec::with_capacity(sources_to_update.len());
     for source in &sources_to_update {
+        let source_dir = cache_dir.join(&source.name);
+        let old_manifest = if source_dir.exists() {
+            mgr.parse_manifest(&source.name, &source_dir).ok()
+        } else {
+            None
+        };
+        let load = printer.narrate_silent(format!("Fetching source:{}", source.name), |_| {
+            mgr.load_source(source, &silent_printer)
+        });
+        loads.push((old_manifest, load));
+    }
+
+    // The run's title, and the same split every other single-subject `source`
+    // verb keeps between the named form and the plural one.
+    match name {
+        Some(name) => printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name)),
+        None => printer.heading("Update Sources"),
+    }
+
+    for (source, (old_manifest, load)) in sources_to_update.iter().zip(loads) {
         // Whether the fetch landed, held back until the knob rows below have
         // had their say: a bare `√ Updated` beside a row that names the knob it
         // changed is a word the reader already read. A fetch-only run has no
@@ -246,23 +282,6 @@ pub fn run_source_update(
             printer,
             section: owner_sec.as_ref(),
         };
-        // `load_source` narrates the clone/fetch through `printer.run`, which
-        // is a top-level emit: with the owner section open it must render at
-        // the section's depth instead of tripping the structural assert.
-        let _inherit = printer.depth_inheritance();
-        // Capture old manifest before fetching (for permission change detection)
-        let source_dir = cache_dir.join(&source.name);
-        let old_manifest = if source_dir.exists() {
-            mgr.parse_manifest(&source.name, &source_dir).ok()
-        } else {
-            None
-        };
-
-        // The fetch is the wait; the caller words its own failure line just
-        // below, so the bar retires silently on both arms.
-        let load = printer.narrate_silent(format!("Fetching source:{}", source.name), |_| {
-            mgr.load_source(source, printer)
-        });
         match load {
             Ok(()) => {
                 if let Some(cached) = mgr.get(&source.name) {

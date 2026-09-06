@@ -115,9 +115,12 @@ pub(crate) struct RenderState {
     /// that leaves its scope. `last_was_top_heading` answers "was the heading
     /// the LAST thing written" — which is what decides whether the blank line
     /// after it is swallowed — and every emission clears it. Placement is the
-    /// other question: a heading's prose, and the facts that follow the prose,
-    /// both belong under the heading, so the INDENT is decided by this flag
-    /// instead. Armed by `mark_top_heading` and re-armed by the next heading.
+    /// other question: a heading's prose and its kv facts both belong under
+    /// the heading, so the INDENT is decided by this flag instead. Armed by
+    /// `mark_top_heading` and re-armed by the next heading; a ROW ends the
+    /// scope, and so does a PROSE PARAGRAPH — prose is what a heading has to
+    /// say about itself, and the block after it is the surface's own
+    /// (`cfgd explain`'s `Location` / `Docs` pointers at column 0).
     pub(crate) top_heading_scope: bool,
     /// Kind of the most recent top-level group emission, or `None` when the
     /// last thing written was not one (a section body, a section close).
@@ -827,6 +830,12 @@ impl Emitting<'_> {
                     .push(format!("{lead}{}", self.theme.muted.apply_to(body)));
             }
         }
+        // Prose is the heading's LAST word: the paragraph itself nests under
+        // it, and whatever follows is the surface's own block at the report's
+        // depth. `cfgd explain` is the shape that says so — a description
+        // belongs to the field the heading names, its `Location` / `Docs`
+        // pointers do not.
+        self.state.top_heading_scope = false;
         self.mark_top_level_group(TopGroup::Paragraph);
     }
 
@@ -1551,20 +1560,35 @@ mod tests {
 
     /// A description belongs to the thing the heading named, so it nests one
     /// level under it with no blank between — the same binding a kv block
-    /// written there gets. The block that FOLLOWS the description is still the
-    /// heading's, so it nests too and separates as its own group: the indent
-    /// is a fact about scope, the blank line a fact about adjacency. Before
-    /// the two were split, `cfgd explain` printed its prose indented and its
-    /// `Location` / `Docs` rows at column 0 under the same heading.
+    /// written there gets. It is also the heading's LAST word: the block that
+    /// follows prose is the surface's own, so it renders at column 0. That is
+    /// `cfgd explain`'s shape — the field's description indented under the
+    /// path it explains, its `Location` / `Docs` pointers flush left.
     #[test]
-    fn a_paragraph_binds_to_the_heading_above_it() {
+    fn a_paragraph_ends_the_scope_of_the_heading_it_binds_to() {
         let (r, sink, buf) = capture();
         r.render_heading(&sink, "profile.spec.packages.brew <object>");
         r.render_paragraph(&sink, 0, "Homebrew packages.");
         r.render_kv_block(&sink, 0, &[crate::output::KvPair::new("kind", "Profile")]);
         let out = crate::test_helpers::captured_text(&buf);
         assert_eq!(
-            out, "profile.spec.packages.brew <object>\n  Homebrew packages.\n\n  kind  Profile\n",
+            out, "profile.spec.packages.brew <object>\n  Homebrew packages.\n\nkind  Profile\n",
+            "got: {out:?}"
+        );
+    }
+
+    /// The narrowing is PROSE, not "anything after the first block": a
+    /// heading's facts still nest under it, and a second kv block under the
+    /// same heading nests like the first.
+    #[test]
+    fn a_second_kv_block_under_one_heading_nests_like_the_first() {
+        let (r, sink, buf) = capture();
+        r.render_heading(&sink, "Daemon Status");
+        r.render_kv_block(&sink, 0, &[crate::output::KvPair::new("PID", "1")]);
+        r.render_kv_block(&sink, 0, &[crate::output::KvPair::new("Uptime", "1s")]);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out, "Daemon Status\n  PID  1\n\n  Uptime  1s\n",
             "got: {out:?}"
         );
     }

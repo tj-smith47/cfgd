@@ -718,7 +718,7 @@ State
   Status         Active
   Last Sync      2h ago
   Last Commit    9f3c1ab2c4d0
-  Locked Commit  9f3c1ab2c4d0 (same as last commit)
+  Locked Commit  9f3c1ab2c4d0
   Locked Ref     v2.1.0
   Signed         yes
 ```

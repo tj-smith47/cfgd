@@ -2107,8 +2107,8 @@ fn cmd_module_show_table_with_lockfile_entry() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("remote (locked)"),
-        "should show 'remote (locked)' source, got: {output}"
+        output.contains("Source      remote"),
+        "should show a remote source, got: {output}"
     );
     assert!(
         output.contains("v2.0"),

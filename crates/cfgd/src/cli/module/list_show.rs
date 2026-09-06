@@ -161,7 +161,10 @@ pub fn build_module_show_doc(
     ));
 
     if let Some(entry) = lock_entry {
-        rows.push(KvPair::annotated("Source", "remote", "locked"));
+        // No `(locked)` annotation: a remote module is one the lockfile has an
+        // entry for, so the note can never vary with the module — and the
+        // pinned ref, commit and integrity below are the lock itself.
+        rows.push(KvPair::new("Source", "remote"));
         rows.push(KvPair::new("URL", &entry.url));
         rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
         rows.push(KvPair::new("Commit", &entry.commit));

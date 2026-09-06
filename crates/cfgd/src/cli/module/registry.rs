@@ -114,29 +114,35 @@ pub fn cmd_module_add_remote(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading("Add Remote Module");
-
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
 
-    // Streaming: clone-fetch spinner, nested under its own "Fetch" section —
-    // one identifiable step of the multi-step add flow below (review,
-    // signature check, confirm, lockfile write) rather than a bare depth-0
-    // line with nothing marking which phase it belongs to.
+    // The clone is this command's first wait, and it narrates with nothing
+    // else on the screen: the title lands with the result, the shape every
+    // long-waiting verb keeps. The lib call takes a Printer; the Quiet sink
+    // suppresses the lib's progress emissions so the bar owns the user-facing
+    // surface (inversion of control).
+    let lib_printer = null_lib_printer(printer);
+    let fetch_result = printer.narrate_silent(format!("Fetching {}", url), |_| {
+        modules::fetch_remote_module(url, &cache_base, &lib_printer)
+    });
+
+    printer.heading("Add Remote Module");
+
+    // The fetch outcome settles under its own "Fetch" section — one
+    // identifiable step of the multi-step add flow below (review, signature
+    // check, confirm, lockfile write) rather than a bare depth-0 line with
+    // nothing marking which phase it belongs to.
     let fetched = {
         let fetch_sec = printer.section("Fetch");
-        let sp = fetch_sec.spinner(format!("Fetching {}", url));
-        // The lib call takes a Printer; the Quiet sink suppresses the lib's
-        // progress emissions so the spinner owns the user-facing surface
-        // (inversion of control).
-        let lib_printer = null_lib_printer(printer);
-        match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
+        match fetch_result {
             Ok(f) => {
-                sp.finish_ok(format!("Fetched {}", url));
+                fetch_sec.status(Role::Ok, format!("Fetched {}", url));
                 f
             }
             Err(e) => {
-                sp.finish_fail(format!("Failed to fetch {}", url))
+                fetch_sec
+                    .status(Role::Fail, format!("Failed to fetch {}", url))
                     .detail(cfgd_core::output::collapse_to_subject_line(&e));
                 return Err(crate::cli::cli_error(
                     url,
@@ -704,6 +710,9 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     if registries.is_empty() {
         printer.emit(
             Doc::new()
+                // heading-first-ok: an early return with nothing to search and
+                // no wait of its own; the searching path builds its own Doc
+                // after the loop below
                 .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint_commands("Add a registry:", &["cfgd module registry add <git-url>"])

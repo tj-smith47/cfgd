@@ -165,6 +165,9 @@ pub fn cmd_module_keys_rotate(
         ));
     }
 
+    // heading-first-ok: the key-pair generation below inherits the terminal
+    // and prompts for a passphrase, so the title has to be on the screen
+    // before the reader is asked anything
     printer.heading("Rotate Cosign Key Pair");
 
     // Back up old keys

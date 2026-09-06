@@ -93,17 +93,7 @@ pub fn build_source_show_doc(
                 rows.push(KvPair::new("Last Commit", short_commit(commit)));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
-                // The pair is here to be compared, and two identical SHAs two
-                // rows apart is the one case a reader cannot compare at a
-                // glance — the sameness is the fact, so the row states it.
-                let short = short_commit(locked_commit);
-                rows.push(
-                    if state_info.last_commit.as_deref() == Some(locked_commit.as_str()) {
-                        KvPair::annotated("Locked Commit", short, "same as last commit")
-                    } else {
-                        KvPair::new("Locked Commit", short)
-                    },
-                );
+                rows.push(KvPair::new("Locked Commit", short_commit(locked_commit)));
             }
             if let Some(ref locked_ref) = state_info.locked_ref {
                 rows.push(KvPair::new("Locked Ref", locked_ref));

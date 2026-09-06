@@ -96,12 +96,10 @@ pub fn cmd_diff(
     let config_dir = ctx.config_dir();
 
     if let Some(mod_name) = module_filter {
-        printer.heading_title(&TitleLabel::new("Diff", mod_name));
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
     let module_cache = module_cache_dir(cli)?;
-    printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Drift is reported under the same owner that would be named in the plan
@@ -131,20 +129,6 @@ pub fn cmd_diff(
     let composed_sources = desired.sources;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
-
-    // Emitted after the resolve, not before it: the header names what the
-    // profile RESOLVES to, and a `depends` pulls a module the declared list
-    // never mentions into the set the findings below are reported against.
-    printer.kv_rows(cfgd_core::output::config_header_rows(
-        &cfgd_core::output::ConfigHeader {
-            config_path: Some(&cli.config),
-            sources: &composed_sources,
-            profile: Some(profile_name),
-            profile_inherits: &resolved.inherits_chain(),
-            modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
-            arrow: printer.arrow(),
-        },
-    ));
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
     // The engine probes system configurators, some of which resolve
@@ -180,6 +164,25 @@ pub fn cmd_diff(
     // The engine recorded its findings; the scan stamp is the caller's, the
     // same split `status --scan` observes.
     state.record_scan();
+
+    // The title lands WITH the report, the shape every long-waiting verb
+    // keeps: the scan above is the wait, and a heading painted before it
+    // leaves the reader watching a spinner under a report that has nothing in
+    // it yet. The header rows name what the profile RESOLVES to — a `depends`
+    // pulls a module the declared list never mentions into the set the
+    // findings below are reported against — so they could never precede the
+    // resolve either.
+    printer.heading("Diff");
+    printer.kv_rows(cfgd_core::output::config_header_rows(
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&cli.config),
+            sources: &composed_sources,
+            profile: Some(profile_name),
+            profile_inherits: &resolved.inherits_chain(),
+            modules: &cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+            arrow: printer.arrow(),
+        },
+    ));
 
     // Every check that could not run, whichever pass reported it: the payload
     // and the exit gate read one list, and only the RENDER files them by
@@ -553,7 +556,9 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let mgr_map = registry.manager_map();
     let cache_base = module_cache_dir(cli)?;
     let pkg_cx = ctx.package_context()?;
-    let resolved_modules = match modules::resolve_modules(
+    // The module resolution can clone a git-sourced module: it is this path's
+    // first wait, and the title lands after it, not over it.
+    let resolution = modules::resolve_modules(
         &[mod_name.to_string()],
         config_dir,
         &cache_base,
@@ -562,7 +567,9 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &mgr_map,
         Some(&pkg_cx),
         printer,
-    ) {
+    );
+    printer.heading_title(&TitleLabel::new("Diff", mod_name));
+    let resolved_modules = match resolution {
         Ok(mods) => mods,
         // "not found" is reserved for a genuinely unknown module name; any
         // other resolution failure (e.g. a dependency cycle among local

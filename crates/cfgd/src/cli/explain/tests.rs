@@ -659,7 +659,9 @@ fn every_schema_is_reflected_once_per_process_including_the_bad_name_path() {
 fn explain_drilldown_renders_the_documented_shape() {
     // The whole drill-in view, pinned byte-for-byte: the heading is the
     // `Explain: <path>` TitleLabel every sibling report noun uses and carries
-    // the queried field's own type, the description is body text under it, and
+    // the queried field's own type, the description is body text under it —
+    // and the pointer rows after that prose are this surface's own block at
+    // column 0, because prose ends the heading's scope — and
     // the shapes under `Variants` each state their type once (as their name),
     // and the one object shape's fields are the two-column
     // `name <type> — description` list whose name and type columns each
@@ -673,7 +675,7 @@ fn explain_drilldown_renders_the_documented_shape() {
 Explain: profile.spec.packages.brew <([]string | BrewSpec)>
   Homebrew packages (macOS/Linux).
 
-  Docs  https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/profile.md#specpackagesbrew
+Docs  https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/profile.md#specpackagesbrew
 
 Variants
   []string — Package names, as a bare list.

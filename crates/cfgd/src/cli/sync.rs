@@ -89,8 +89,6 @@ pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
 /// refused leg onto a nonzero process exit and a test can read the outcome
 /// without the process leaving under it.
 pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<SyncOutput> {
-    printer.heading("Sync");
-
     // The configuration as this command FOUND it. The body below reports what
     // the pull changed, and the plan the closing hint invites reads the new
     // set — so the header describes the starting point, exactly as `Config`
@@ -123,6 +121,24 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         false,
         composition::ConstraintMode::Report,
     );
+    let config_dir = ctx.config_dir().to_path_buf();
+    // The pull is this run's first wait, and it narrates with NOTHING else on
+    // the screen: the title lands with the result, the shape every
+    // long-waiting verb keeps. A config directory under no version control
+    // has nothing to pull, and the row it settles as is rendered below, in the
+    // section it belongs to.
+    let pull = if cfgd_core::daemon::is_git_repository(&config_dir) {
+        printer
+            .narrate_silent("Pulling from remote", |_| {
+                Ok::<_, std::convert::Infallible>(cfgd_core::daemon::git_pull_sync(&config_dir))
+            })
+            .ok()
+    } else {
+        None
+    };
+
+    printer.heading("Sync");
+
     // The failure the header reports, kept for the payload below so a `-o json`
     // consumer sees what the human line said: `-o json` forces Quiet, which
     // swallows every role but `Fail`, and a CI run reading only `sources` would
@@ -181,8 +197,6 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         },
     ));
 
-    let config_dir = ctx.config_dir().to_path_buf();
-
     let mut sync_payload = SyncOutput {
         local_pulled: false,
         local_pull_error: None,
@@ -192,15 +206,15 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 
     // A config directory under no version control has nothing to pull, so it
     // opens no section at all — the pull is one leg of this run among several.
-    if cfgd_core::daemon::is_git_repository(&config_dir) {
+    if let Some(pull) = pull {
         // The section keeps only its pull outcome: the header's `Config` row
         // already names this location, and stating it again three lines later
         // makes one fact read as two.
         let repo_sec = printer.section("Local Repo");
-        let sp = repo_sec.spinner("Pulling from remote");
-        match cfgd_core::daemon::git_pull_sync(&config_dir) {
+        match pull {
             cfgd_core::daemon::PullOutcome::Moved(movement) => {
-                sp.finish_ok("Pulled new changes from remote")
+                repo_sec
+                    .status(Role::Ok, "Pulled new changes from remote")
                     .detail(format!(
                         "commit: {} {} {}",
                         short_commit(&movement.from),
@@ -210,19 +224,22 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 sync_payload.local_pulled = true;
             }
             cfgd_core::daemon::PullOutcome::UpToDate => {
-                sp.finish_ok("Already up to date");
+                // verdict-row-ok: the state the checkout was already in, not an
+                // act this run performed
+                repo_sec.status(Role::Ok, "Already up to date");
             }
             cfgd_core::daemon::PullOutcome::Failed(e) => {
-                sp.finish_warn("Pull failed")
+                repo_sec
+                    .status(Role::Warn, "Pull failed")
                     .detail(cfgd_core::daemon::pull_failure_summary(&e.message));
                 repo_sec.hint(local_pull_next_step(&e, "cfgd sync"));
                 sync_payload.local_pull_error = Some(e.message);
             }
             // The probe above said otherwise, so the checkout went away
-            // between the two reads — the section is already open, and the
-            // same sentence `cfgd pull` closes on is what it came to.
+            // between the two reads — the same sentence `cfgd pull` closes on
+            // is what it came to.
             cfgd_core::daemon::PullOutcome::NotARepository => {
-                sp.finish_skipped(MSG_NOT_A_REPOSITORY);
+                repo_sec.status(Role::Skipped, MSG_NOT_A_REPOSITORY);
             }
         }
     }

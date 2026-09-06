@@ -35,6 +35,9 @@ pub(super) fn run_source_add(
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
+    // heading-first-ok: `load_source` below clones through `printer.run`,
+    // which commits the clone's own transcript lines — the title heads the
+    // lines the wait produces rather than landing under them
     printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
 
     // A pin selects its own git ref (tag or commit), so an explicit branch is
