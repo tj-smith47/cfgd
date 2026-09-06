@@ -19,6 +19,9 @@
 /// `unknown_variant`. The `Serialize` derive is left untouched, so output stays
 /// canonical and round-trips remain stable.
 ///
+/// The expansion reaches serde through `$crate::serde`, so an invoking crate
+/// needs no `serde` of its own in scope.
+///
 /// `ALL` and `as_str` come from this one token list too, so the parser, the
 /// published schemas, and any rendered spelling cannot drift apart: adding a
 /// variant here updates all three at once, and forgetting to is a compile error
@@ -39,18 +42,20 @@ macro_rules! case_insensitive_enum {
             }
         }
 
-        impl<'de> serde::Deserialize<'de> for $name {
+        impl<'de> $crate::serde::Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
             where
-                D: serde::Deserializer<'de>,
+                D: $crate::serde::Deserializer<'de>,
             {
-                let s = <::std::string::String as serde::Deserialize>::deserialize(deserializer)?;
+                let s = <::std::string::String as $crate::serde::Deserialize>::deserialize(
+                    deserializer,
+                )?;
                 $(
                     if s.eq_ignore_ascii_case($token) {
                         return ::core::result::Result::Ok($variant);
                     }
                 )+
-                ::core::result::Result::Err(<D::Error as serde::de::Error>::unknown_variant(
+                ::core::result::Result::Err(<D::Error as $crate::serde::de::Error>::unknown_variant(
                     &s,
                     &[$($token),+],
                 ))

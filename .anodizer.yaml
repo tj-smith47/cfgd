@@ -217,7 +217,12 @@ workspaces:
       - name: cfgd-core
         path: crates/cfgd-core
         tag_template: "core-v{{ Version }}"
-        depends_on: [cfgd-crd]
+        # cfgd-schema is stated alongside cfgd-crd rather than left to travel
+        # through it: cfgd-crd is an OPTIONAL dependency here (the default `crd`
+        # feature), so a feature-gate change would silently take the only edge
+        # to cfgd-schema with it, while the dependency on cfgd-schema itself is
+        # unconditional.
+        depends_on: [cfgd-crd, cfgd-schema]
         version_sync:
           enabled: true
           mode: cargo

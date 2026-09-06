@@ -4,8 +4,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use cfgd_schema::{EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec};
-#[cfg(test)]
-use cfgd_schema::{ScriptCommand, ScriptEntry, ScriptShell};
 
 use super::parse::check_yaml_anchor_limit;
 use super::profile_spec::{SystemSettings, validate_file_patch_shape};
@@ -356,6 +354,7 @@ impl crate::platform::PlatformGated for ModulePackageEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_schema::{ScriptCommand, ScriptEntry, ScriptShell};
 
     #[test]
     fn module_spec_rejects_unknown_field() {

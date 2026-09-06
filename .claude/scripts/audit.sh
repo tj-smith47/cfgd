@@ -3,7 +3,7 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
+# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -2033,13 +2033,25 @@ log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
 # cfgd-core with `default-features = false` to leave the kube stack out of its
 # image. Any crate that slips into cfgd-core unconditionally — or into a new
 # leaf like cfgd-schema — reaches CSI too, and the weight comes back silently.
-csi_heavy="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>/dev/null \
-  | awk '{print $1}' | sort -u | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
-if [ -n "$csi_heavy" ]; then
-    log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"
-    printf '%s\n' "$csi_heavy"
+# Resolved ONCE, and the resolution is judged before its content is: a `||
+# true` over the whole pipeline cannot tell "no kube crate" from "cargo
+# resolved nothing", so a cold cache or a renamed package would reach the same
+# green a clean tree does. The same vacuous-green shape require_dirs and the
+# ripgrep preamble above exist to prevent.
+if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>&1)"; then
+    log_error "cargo tree -p cfgd-csi did not resolve, so the kube gate proved nothing:"
+    printf '%s\n' "$csi_tree"
+elif ! printf '%s\n' "$csi_tree" | awk '{print $1}' | grep -qx 'cfgd-core'; then
+    log_error "cfgd-csi's tree does not name cfgd-core; the gate is reading the wrong tree"
 else
-    log_ok "cfgd-csi's dependency tree carries no kube/k8s-openapi crate"
+    csi_heavy="$(printf '%s\n' "$csi_tree" | awk '{print $1}' | sort -u \
+      | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
+    if [ -n "$csi_heavy" ]; then
+        log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"
+        printf '%s\n' "$csi_heavy"
+    else
+        log_ok "cfgd-csi's dependency tree carries no kube/k8s-openapi crate"
+    fi
 fi
 
 # --- Summary ---

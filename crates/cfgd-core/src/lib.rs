@@ -1,9 +1,3 @@
-// `case_insensitive_enum!` lives in cfgd-schema beside the enums it was
-// written for; importing it crate-wide keeps every existing call site
-// spelling the macro by its bare name.
-#[macro_use]
-extern crate cfgd_schema;
-
 pub mod backup;
 pub mod compliance;
 pub mod composition;

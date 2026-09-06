@@ -10,6 +10,12 @@
 
 mod enum_de;
 
+// `case_insensitive_enum!` is `#[macro_export]`ed, so its expansion lands in
+// crates that need not depend on serde themselves; `$crate::serde` is how it
+// names the one this crate already has.
+#[doc(hidden)]
+pub use serde;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -447,6 +453,16 @@ pub fn default_backup_retention() -> u32 {
     10
 }
 
+/// Why a file entry's `source` / `strategy` / `patch` / `encryption` shape was
+/// refused, as a complete sentence naming the entry it judged.
+///
+/// The message is the whole error: a caller with its own error type wraps this
+/// one's `Display` (or its field) rather than re-wording the refusal, so the
+/// local YAML parser and the Module CRD state a rejection identically.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct FileShapeError(pub String);
+
 /// Validate the `source` / `strategy` / `patch` / `encryption` shape shared by
 /// `ManagedFileSpec` and `ModuleFileEntry`: `source` is required unless
 /// `strategy` is `Patch`; a `patch` block is required when `strategy` is
@@ -459,46 +475,46 @@ pub fn validate_file_patch_shape(
     patch: Option<&PatchSpec>,
     encryption_declared: bool,
     private: bool,
-) -> Result<(), String> {
+) -> Result<(), FileShapeError> {
     let is_patch = matches!(strategy, Some(FileStrategy::Patch));
     // `private` marks the SOURCE file local-only (gitignored, skipped where it
     // is absent). `Patch` has no source, so the flag can only ever be a no-op
     // that reads as a promise the strategy never keeps.
     if is_patch && private {
-        return Err(format!(
+        return Err(FileShapeError(format!(
             "{subject}: 'private' is not supported with strategy 'patch'"
-        ));
+        )));
     }
     // Every `encryption` mode constrains the SOURCE file a strategy deploys
     // ("must be encrypted in the repo"). `Patch` has no source — it rewrites
     // the target's own plaintext structure — so the constraint could only be
     // silently ignored. Reject it instead of pretending it was honoured.
     if is_patch && encryption_declared {
-        return Err(format!(
+        return Err(FileShapeError(format!(
             "{subject}: 'encryption' is not supported with strategy 'patch'"
-        ));
+        )));
     }
     match (is_patch, patch) {
-        (true, None) => Err(format!(
+        (true, None) => Err(FileShapeError(format!(
             "{subject}: strategy 'patch' requires a 'patch' block"
-        )),
-        (false, Some(_)) => Err(format!(
+        ))),
+        (false, Some(_)) => Err(FileShapeError(format!(
             "{subject}: 'patch' is only valid when strategy is 'patch'"
-        )),
+        ))),
         (true, Some(m)) => match (m.ensure.is_some(), m.script.is_some()) {
-            (true, true) => Err(format!(
+            (true, true) => Err(FileShapeError(format!(
                 "{subject}: 'patch' must set exactly one of 'ensure' or 'script', not both"
-            )),
-            (false, false) => Err(format!(
+            ))),
+            (false, false) => Err(FileShapeError(format!(
                 "{subject}: 'patch' must set exactly one of 'ensure' or 'script'"
-            )),
+            ))),
             _ => Ok(()),
         },
         (false, None) => {
             if source_is_empty {
-                Err(format!(
+                Err(FileShapeError(format!(
                     "{subject}: 'source' is required unless strategy is 'patch'"
-                ))
+                )))
             } else {
                 Ok(())
             }
@@ -528,7 +544,7 @@ mod tests {
         )
         .expect_err("encryption on a patch entry must be refused");
         assert_eq!(
-            err,
+            err.to_string(),
             "module file 'x': 'encryption' is not supported with strategy 'patch'"
         );
     }

@@ -67,7 +67,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `xml_escape(s)` — escape `&<>"'` for XML/plist.
 - `escape_control_chars(s)` — render control characters as visible `\xNN`. The ESCAPE policy of the output system's three (see `output/mod.rs`'s `//!`); reach for it on a string a command builds OUTSIDE the renderer.
 - `cursor_safe(s)` (`output/mod.rs`) — the ONE renderer FOLD for text cfgd did not author. Its routed-slot inventory and the fold/escape/strip split live in that module's `//!`; `output-module.md` states the rule.
-- `cfgd_schema::validate_file_patch_shape(subject, source_is_empty, strategy, patch, encryption_declared, private)` — the ONE source/strategy/patch/encryption shape rule, shared by the local parser and the Module CRD's `validate()`. Returns the bare message; `config::profile_spec`'s wrapper labels it as a `ConfigError`.
+- `cfgd_schema::validate_file_patch_shape(subject, source_is_empty, strategy, patch, encryption_declared, private)` → `Result<(), FileShapeError>` — the ONE source/strategy/patch/encryption shape rule, shared by the local parser and the Module CRD's `validate()`; `config::profile_spec`'s wrapper relabels its message as a `ConfigError`.
 - `PackageListSpec` (`config/profile_spec.rs`) + `ScriptCommand` (`config/module.rs`) — the NAMED map forms of the two list-or-map unions, read by both the deserializer and the schema; a union's object arm is always a named type, or `explain` renders an unresolvable `object`.
 - `sanitize_k8s_name(name)` — RFC 1123 DNS label sanitization.
 - `manager_family(manager)` — the registered manager name's family (`brew-cask` → `brew`), the unit a lane and every exclusion check must agree on. Never where the manager is NAMED rather than serialized.

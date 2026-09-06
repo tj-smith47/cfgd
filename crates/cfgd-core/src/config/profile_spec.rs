@@ -5,9 +5,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use cfgd_schema::{
     BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec,
+    case_insensitive_enum,
 };
-#[cfg(test)]
-use cfgd_schema::{PatchFormat, default_backup_name_pattern, default_backup_retention};
 
 use super::source::{EnvVar, ShellAlias};
 use crate::PathDisplayExt;
@@ -943,7 +942,7 @@ pub(crate) fn validate_file_patch_shape(
         encryption_declared,
         private,
     )
-    .map_err(|message| ConfigError::Invalid { message })?;
+    .map_err(|e| ConfigError::Invalid { message: e.0 })?;
     Ok(())
 }
 
@@ -1163,6 +1162,7 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_schema::{PatchFormat, default_backup_name_pattern, default_backup_retention};
 
     /// A minimal valid backup unit; tests override only the field under test.
     fn backup(name: &str) -> BackupSpec {
