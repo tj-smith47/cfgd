@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::fs;
 
+use serde::Deserialize;
+
 /// Detected operating system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Os {
@@ -48,6 +50,25 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// The detected platform for this process, detected at most once.
+    ///
+    /// Every production reader takes this rather than [`Platform::detect`]:
+    /// detection spawns `sw_vers` on macOS and `freebsd-version` on FreeBSD and
+    /// reads `/etc/os-release` on Linux, and it was being paid per file manager,
+    /// per module walk and per daemon tick. Caching for the life of the process
+    /// needs no invalidation counterpart because none of its inputs can change
+    /// under a running process: the OS, its distribution release file and the
+    /// CPU architecture are fixed at boot, and a distro upgrade that rewrites
+    /// `/etc/os-release` mid-run still leaves the running binary on the kernel
+    /// and userland it started under.
+    ///
+    /// [`Platform::detect`] stays public for the two callers that must observe
+    /// the real host each time: the detection unit tests, and this memo itself.
+    pub fn current() -> &'static Platform {
+        static PLATFORM: std::sync::OnceLock<Platform> = std::sync::OnceLock::new();
+        PLATFORM.get_or_init(Platform::detect)
+    }
+
     /// Detect the current platform.
     ///
     /// - macOS: uses `cfg!(target_os)` and `sw_vers` for version.
@@ -130,6 +151,99 @@ impl Platform {
             Distro::Unknown => "apt", // best-effort default for unknown Linux
         }
     }
+}
+
+/// A declaration carrying its own `platforms:` gate.
+///
+/// One predicate for every level of gating cfgd offers — a whole module, one
+/// package, one env var, one alias — so a surface deciding whether a
+/// declaration belongs on this host, and a surface naming why it does not,
+/// cannot answer differently at two levels. Implementors carry the tag list;
+/// everything read off it is provided here.
+pub trait PlatformGated {
+    /// The tags gating this declaration. Empty gates nothing.
+    fn platforms(&self) -> &[String];
+
+    /// Whether this declaration is part of the desired state on `platform`.
+    fn applies_to(&self, platform: &Platform) -> bool {
+        platform.matches_any(self.platforms())
+    }
+
+    /// The `platforms: macos/linux` annotation a surface listing the DOCUMENT
+    /// (rather than this host's desired state) hangs off the entry, or `None`
+    /// when nothing gates it. One vocabulary for every gated kind: the wrapper
+    /// punctuation is the call site's, the words are not.
+    fn platform_annotation(&self) -> Option<String> {
+        let tags = self.platforms();
+        (!tags.is_empty()).then(|| format!("platforms: {}", tags.join("/")))
+    }
+}
+
+/// The entries of `entries` that belong on `platform`, in declaration order.
+///
+/// The ONE filter every layer fold runs before merging: a gated-out entry is
+/// not part of this host's desired state at all, so it must never reach a
+/// last-writer-wins merge where it would displace a value that does apply.
+pub fn applicable_here<'a, T: PlatformGated>(
+    entries: &'a [T],
+    platform: &'a Platform,
+) -> impl Iterator<Item = &'a T> {
+    entries.iter().filter(move |e| e.applies_to(platform))
+}
+
+/// Reject a `platforms:` tag no host can ever match.
+///
+/// [`Platform::matches_any`] compares tags verbatim, so a misspelled one
+/// silently matches nothing: on a whole module that is at least a visible
+/// Skip action, but on one env var it is a variable that quietly never
+/// appears. Every tag cfgd emits is lowercase `[a-z0-9_]`, and the four
+/// families of near-miss spelling (`darwin`, `win`, `amd64`, `arm64`) are
+/// named against their canonical token rather than merely refused.
+///
+/// Anything else lowercase is accepted: a distro or arch cfgd does not name is
+/// still a legitimate tag for another host ([`Arch::Other`] carries its
+/// target's own spelling).
+pub fn validate_platform_tag(tag: &str) -> std::result::Result<(), String> {
+    let canonical = |t: &str| match t {
+        "darwin" | "osx" | "mac" => Some("macos"),
+        "win" | "win32" | "win64" => Some("windows"),
+        "x64" | "amd64" => Some("x86_64"),
+        "arm64" => Some("aarch64"),
+        _ => None,
+    };
+    let lower = tag.to_ascii_lowercase();
+    if let Some(canon) = canonical(&lower) {
+        return Err(format!(
+            "platform tag '{tag}' is not a platform: tags are matched exactly; use '{canon}'"
+        ));
+    }
+    if tag.is_empty()
+        || !tag
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(format!(
+            "platform tag '{tag}' is not a platform: tags are matched exactly and every tag cfgd \
+             knows is lowercase letters, digits and underscores (for example 'macos', 'ubuntu', 'x86_64')"
+        ));
+    }
+    Ok(())
+}
+
+/// The serde hook every `platforms:` field is deserialized through, so a tag
+/// no host can match is refused where it is written rather than at the machine
+/// it silently skipped.
+pub fn deserialize_platform_tags<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let tags = Vec::<String>::deserialize(deserializer)?;
+    for tag in &tags {
+        validate_platform_tag(tag).map_err(serde::de::Error::custom)?;
+    }
+    Ok(tags)
 }
 
 impl Os {

@@ -1,5 +1,19 @@
 use super::*;
 
+/// [`super::resolve_secret_refs`] with a cache of its own, for the tests whose
+/// subject is the substitution rather than the memo. A fresh cache resolves
+/// exactly what an unmemoized call would, so every assertion below is about the
+/// same behaviour it was written against. The tests that DO assert on the memo
+/// call the real function with a cache they can inspect.
+fn resolve_secret_refs(
+    input: &str,
+    providers: &[&dyn SecretProvider],
+    backend: Option<&dyn SecretBackend>,
+    config_dir: &Path,
+) -> Result<String> {
+    super::resolve_secret_refs(input, providers, backend, config_dir, &SecretCache::new())
+}
+
 #[test]
 fn parse_secret_reference_cases() {
     let cases: &[(&str, Option<(&str, &str)>)] = &[
@@ -99,6 +113,97 @@ impl SecretBackend for MockBackend {
     fn edit_file(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+}
+
+/// A backend that counts decryptions, so a test can assert on SPAWNS rather
+/// than on the value that came back.
+struct CountingBackend {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl SecretBackend for CountingBackend {
+    fn name(&self) -> &str {
+        "mock"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn encrypt_file(&self, _path: &Path) -> Result<()> {
+        Ok(())
+    }
+    fn decrypt_file(&self, _path: &Path) -> Result<SecretString> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(SecretString::from("decrypted-value".to_string()))
+    }
+    fn edit_file(&self, _path: &Path) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn one_reference_decrypts_once_across_every_occurrence_of_one_run() {
+    // A reference repeated inside one template, and repeated across the run's
+    // other templates, is ONE value: the run's cache is what makes both true.
+    let dir = tempfile::tempdir().unwrap();
+    let secret_file = dir.path().join("secret.enc.yaml");
+    std::fs::write(&secret_file, "encrypted data").unwrap();
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let backend = CountingBackend {
+        calls: std::sync::Arc::clone(&calls),
+    };
+    let cache = SecretCache::new();
+
+    let first = super::resolve_secret_refs(
+        "a=${secret:secret.enc.yaml}\nb=${secret:secret.enc.yaml}",
+        &[],
+        Some(&backend),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
+    let second = super::resolve_secret_refs(
+        "c=${secret:secret.enc.yaml}",
+        &[],
+        Some(&backend),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
+
+    assert_eq!(first, "a=decrypted-value\nb=decrypted-value");
+    assert_eq!(second, "c=decrypted-value");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "three occurrences of one reference must cost one decryption"
+    );
+}
+
+#[test]
+fn a_second_run_decrypts_for_itself() {
+    // The cache belongs to the run that owns it, so a rotated secret is picked
+    // up by the next one instead of being answered out of the last one's memory.
+    let dir = tempfile::tempdir().unwrap();
+    let secret_file = dir.path().join("secret.enc.yaml");
+    std::fs::write(&secret_file, "encrypted data").unwrap();
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let backend = CountingBackend {
+        calls: std::sync::Arc::clone(&calls),
+    };
+
+    for _ in 0..2 {
+        super::resolve_secret_refs(
+            "a=${secret:secret.enc.yaml}",
+            &[],
+            Some(&backend),
+            dir.path(),
+            &SecretCache::new(),
+        )
+        .unwrap();
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -911,6 +1016,7 @@ fn sops_command_sets_age_key_env() {
 }
 
 #[test]
+#[serial_test::serial]
 fn sops_command_without_age_key_has_no_env() {
     let backend = SopsBackend::new(None);
     let cmd = backend.sops_command();
@@ -1018,7 +1124,7 @@ fn age_backend_recipient_extracts_from_key_content() {
 
 #[test]
 fn one_password_provider_resolve_builds_op_ref() {
-    // We can't actually run `op`, but we can verify the provider builds
+    // `op` cannot actually be run, but this verifies the provider builds
     // the right command structure by checking what would be constructed.
     // The resolve method adds op:// prefix if missing.
     let provider = OnePasswordProvider;
@@ -1583,7 +1689,7 @@ mod sops_shim {
         // shell to dump env vars. Easier path: build the command directly
         // and inspect what env it set.
         //
-        // Since `sops_command()` is `pub(super)`, we can call it from this
+        // Since `sops_command()` is `pub(super)`, it can be called from this
         // tests module directly and inspect get_envs().
         let backend = SopsBackend::new(Some(PathBuf::from("/keys/age-key.txt")));
         let cmd = backend.sops_command();

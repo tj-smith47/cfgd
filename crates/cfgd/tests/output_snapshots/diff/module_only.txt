@@ -1,13 +1,11 @@
-Diff
-  Module  diff-mod
+Diff: diff-mod
+  Config  <CONFIG_DIR>/cfgd.yaml
 
-Phase: Files
+Files
   module:diff-mod
-    ⊙ <CONFIG_DIR>/mod-out/conf (new file)
-module content
-  ⚠ File drift detected
+    ◉ <CONFIG_DIR>/mod-out/conf (new file)
+    module content
 
-Phase: Packages
-  ✓ No package drift
+⚠ Drift detected — 1 file (packages clean)
 
-⚠ Drift detected
+→ Run `cfgd apply --module diff-mod` to reconcile

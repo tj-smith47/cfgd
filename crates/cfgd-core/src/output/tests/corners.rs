@@ -68,6 +68,18 @@ golden_doc!(corners, empty_plain_section_shows_none, |p, cap| {
     let _s = p.section("EmptyPlain");
 });
 
+// 8b. An empty NESTED section settles under its parent's heading, and the
+// parent does not also report itself empty — the placeholder is a child line,
+// so the parent's still-pending header has to land above it.
+golden_doc!(
+    corners,
+    empty_nested_section_settles_under_its_parent,
+    |p, cap| {
+        let outer = p.section("Outer");
+        let _inner = outer.section("Inner");
+    }
+);
+
 // 9. Section_if_nonempty skips when empty (in buffered Doc)
 golden_doc!(corners, section_if_nonempty_skips_empty, |p, cap| {
     let doc = Doc::new()

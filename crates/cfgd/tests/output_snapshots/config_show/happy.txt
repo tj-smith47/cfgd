@@ -3,9 +3,13 @@ Configuration
   Profile  base
 
 Origins
-  Primary: Git — git@example.com:owner/primary.git
+  Primary
+    Url     git@example.com:owner/primary.git
+    Type    Git
     Branch  main
-  Secondary: Server — https://cfgd.example.com
+  Secondary
+    Url     https://cfgd.example.com
+    Type    Server
     Branch  stable
 
 Sources
@@ -17,14 +21,14 @@ Module Registries
   internal  git@example.com:org/internal-modules.git
 
 Module Security
-  Require signatures  yes
+  Require Signatures  yes
 
 Daemon
   Enabled  yes
   Reconcile
     Interval    5m
-    On change   yes
-    Auto apply  no
+    On Change   yes
+    Auto Apply  no
   Sync
     Interval  1h
 

@@ -3,7 +3,7 @@ Configuration
 Daemon
   Reconcile
     Interval    5m
-    On change   yes
-    Auto apply  yes
+    On Change   yes
+    Auto Apply  yes
   Sync
     Interval  10m

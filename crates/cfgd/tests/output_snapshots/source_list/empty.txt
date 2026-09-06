@@ -1,2 +1,2 @@
-Config Sources
-⊙ No sources configured
+Sources
+◉ No sources configured

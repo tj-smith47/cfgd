@@ -31,7 +31,9 @@
 //! [`NotFound`]: ExitCode::NotFound
 //! [`ApplyFailed`]: ExitCode::ApplyFailed
 
-use crate::errors::{BackupError, CfgdError, ConfigError, ModuleError, SourceError};
+use crate::errors::{
+    BackupError, CfgdError, ConfigError, ModuleError, SkillError, SourceError, StateError,
+};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,17 +81,35 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         // not ConfigInvalid (4). These arms precede the `Config(_)` catch-all so
         // ProfileNotFound is routed here rather than collapsing to ConfigInvalid.
         CfgdError::Config(ConfigError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        // `config get/set/unset <key>` and the `alias show/delete <name>` commands
+        // that delegate into it — a dotted path naming a key that isn't in the
+        // document is the same scriptable "you asked for a thing that is not
+        // there" condition as a missing profile or module.
+        CfgdError::Config(ConfigError::KeyNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Module(ModuleError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Module(ModuleError::OfferedButMissing { .. }) => ExitCode::NotFound,
         CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        // `cfgd skill install/remove/update --provider <name>` naming a
+        // provider the registry doesn't carry is the same scriptable "you
+        // asked for a thing that is not there" condition as an unknown
+        // module or profile.
+        CfgdError::Skill(SkillError::UnknownProvider { .. }) => ExitCode::NotFound,
         CfgdError::Backup(BackupError::UnknownName { .. }) => ExitCode::NotFound,
         // A restore that names a snapshot the unit does not have — or a unit
         // that has none at all — is the same scriptable "you asked for a thing
         // that is not there" condition as an unknown backup name.
         CfgdError::Backup(BackupError::SnapshotNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Backup(BackupError::NoSnapshots { .. }) => ExitCode::NotFound,
+        // A rollback naming a unit whose source has no copy beside it is the
+        // same condition one step further out: the artifact the verb exists to
+        // put back is not there.
+        CfgdError::Backup(BackupError::NoRollbackCopy { .. }) => ExitCode::NotFound,
+        // `cfgd rollback <id>` naming an apply-log row that does not exist is
+        // the same "you asked for a thing that is not there" condition as an
+        // unknown backup name or snapshot.
+        CfgdError::State(StateError::ApplyNotFound { .. }) => ExitCode::NotFound,
         // A source-delivered module carrying disallowed scripts is a policy
         // violation in the resolved config, not a missing resource — it maps to
         // ConfigInvalid (4), matching how composition constraint violations are
@@ -161,6 +181,23 @@ mod tests {
     #[test]
     fn profile_not_found_maps_to_not_found() {
         let err = CfgdError::Config(ConfigError::ProfileNotFound { name: "dev".into() });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn config_key_not_found_maps_to_not_found() {
+        let err = CfgdError::Config(ConfigError::KeyNotFound {
+            key: "theme.nope".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn skill_unknown_provider_maps_to_not_found() {
+        let err = CfgdError::Skill(SkillError::UnknownProvider {
+            name: "no-such-provider".into(),
+            valid: vec!["claude-code".into()],
+        });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }
 

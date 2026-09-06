@@ -36,11 +36,11 @@ pub use daemon::{
     ReconcilePatch, ReconcilePatchKind,
 };
 pub use image_lock::{ImageLockEntry, ImagesLockfile};
-pub use modeline::{SchemaDocKind, schema_modeline, with_schema_modeline};
+pub use modeline::{SchemaDocKind, docs_url, schema_modeline, with_schema_modeline};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
-    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,
-    validate_module_file_entries,
+    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptCommand, ScriptEntry, ScriptShell,
+    parse_module, validate_module_file_entries,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub(crate) use parse::validate_api_version;
@@ -61,8 +61,9 @@ pub use profile_spec::{
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{
-    ALL_MANAGER_NAMES, LOCAL_LAYER, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer,
-    ResolvedProfile, desired_packages_for, desired_packages_for_spec, merge_layers,
+    ALL_MANAGER_NAMES, DEFAULT_PACKAGE_NOUN, EntryOwners, LOCAL_LAYER, LayerPolicy, MergedProfile,
+    PACKAGE_SCHEMA_PATHS, PackageClaim, PackageSchemaPath, ProfileLayer, ResolvedProfile,
+    desired_packages_for, desired_packages_for_spec, merge_layers, package_schema_path,
     resolve_profile,
 };
 pub use root::{

@@ -182,8 +182,9 @@ fn fetch_latest_release_from(
     let body = github_get(
         &url,
         printer,
-        "Checking for latest release...",
+        "Checking for latest release",
         "Checked latest release",
+        "Failed to fetch release information",
     )?;
     parse_release_json(&body)
 }
@@ -201,8 +202,9 @@ fn fetch_newest_release_from(
     let body = github_get(
         &url,
         printer,
-        "Checking for newest release (incl. prereleases)...",
+        "Checking for newest release (incl. prereleases)",
         "Checked newest release",
+        "Failed to fetch release information",
     )?;
 
     let json: serde_json::Value =
@@ -250,16 +252,39 @@ fn fetch_release_for_channel(
 
 /// Issue the GitHub GET with the upgrade agent + headers, surfacing the spinner
 /// when a printer is supplied, and return the response body. `start_label` is the
-/// in-flight spinner text; `finish_label` is the completion text — both reflect
-/// the release channel being queried so the wording stays accurate.
+/// in-flight spinner text; `finish_label` is the completion text; `fail_label` is
+/// the failure text — all three reflect the release channel being queried so the
+/// wording stays accurate for every caller (a hardcoded failure label was correct
+/// for the two callers that existed, but would silently mislabel a third).
 fn github_get(
     url: &str,
     printer: Option<&Printer>,
     start_label: &str,
     finish_label: &str,
+    fail_label: &str,
 ) -> Result<String> {
     let spinner = printer.map(|p| p.spinner(start_label.to_string()));
+    match github_get_inner(url) {
+        Ok(body) => {
+            if let Some(s) = spinner {
+                let _ = s.finish_ok(finish_label.to_string());
+            }
+            Ok(body)
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail(fail_label.to_string())
+                    .detail(crate::output::collapse_to_subject_line(&e));
+            }
+            Err(e)
+        }
+    }
+}
 
+/// The fallible half of [`github_get`]: one `Result` the caller matches once
+/// to settle the spinner, instead of an early `?` abandoning it mid-request.
+fn github_get_inner(url: &str) -> Result<String> {
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let mut response = agent
         .get(url)
@@ -277,10 +302,6 @@ fn github_get(
             .map_err(|e| UpgradeError::ApiError {
                 message: format!("failed to read response body: {}", e),
             })?;
-
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(finish_label.to_string());
-    }
 
     Ok(body)
 }
@@ -464,7 +485,8 @@ fn verify_cosign_bundle(
             });
         }
         if let Some(p) = printer {
-            p.status_simple(Role::Warn, "no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
+            p.status(Role::Warn, "No cosign bundle attached to release")
+                .detail("falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
         }
         return Ok(VerificationMode::Sha256Only);
     };
@@ -476,7 +498,11 @@ fn verify_cosign_bundle(
             });
         }
         if let Some(p) = printer {
-            p.status_simple(Role::Warn, "cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
+            p.status(
+                Role::Warn,
+                "Signature bundle found, but the cosign CLI is not installed",
+            )
+                .detail("install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
         }
         return Ok(VerificationMode::Sha256Only);
     }
@@ -494,7 +520,7 @@ fn verify_cosign_bundle(
         None
     };
 
-    let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
+    let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature"));
     let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, cert_path.as_deref());
     match &outcome {
         Ok(()) => {
@@ -511,7 +537,7 @@ fn verify_cosign_bundle(
         }
     }
     outcome.map(|()| {
-        tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
+        tracing::debug!(asset = %bundle_asset.name, "cosign signature verified");
         if require_cosign {
             VerificationMode::StrictCosignRequired
         } else {
@@ -598,37 +624,27 @@ fn download_to_file(
     const MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
     let mut reader = response.into_body().into_reader().take(MAX_DOWNLOAD_SIZE);
 
-    // Use progress bar if we know the size, spinner otherwise
+    // Use progress bar when the size is known, spinner otherwise
     match (printer, content_length) {
         (Some(p), Some(total)) => {
-            let pb = p.progress_bar(total, url);
-            let mut buf = [0u8; 8192];
-            let mut downloaded: u64 = 0;
-            loop {
-                let n = reader
-                    .read(&mut buf)
-                    .map_err(|e| UpgradeError::DownloadFailed {
-                        message: format!("stream to disk: {}", e),
-                    })?;
-                if n == 0 {
-                    break;
-                }
-                std::io::Write::write_all(&mut tmp, &buf[..n]).map_err(|e| {
-                    UpgradeError::DownloadFailed {
-                        message: format!("stream to disk: {}", e),
-                    }
-                })?;
-                downloaded += n as u64;
-                pb.set_position(downloaded);
-            }
-            pb.finish();
+            download_with_progress_bar(p, url, total, &mut reader, &mut tmp)?;
         }
         (Some(p), None) => {
-            let spinner = p.spinner(format!("Downloading {url}..."));
-            std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
-                message: format!("stream to disk: {}", e),
-            })?;
-            let _ = spinner.finish_ok(format!("Downloaded {url}"));
+            let spinner = p.spinner(format!("Downloading {url}"));
+            match std::io::copy(&mut reader, &mut tmp) {
+                Ok(_) => {
+                    let _ = spinner.finish_ok(format!("Downloaded {url}"));
+                }
+                Err(e) => {
+                    let err = UpgradeError::DownloadFailed {
+                        message: format!("stream to disk: {}", e),
+                    };
+                    let _ = spinner
+                        .finish_fail(format!("Failed to download {url}"))
+                        .detail(crate::output::collapse_to_subject_line(&err));
+                    return Err(err);
+                }
+            }
         }
         _ => {
             std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
@@ -642,6 +658,60 @@ fn download_to_file(
             message: format!("rename to {}: {}", dest.posix(), e.error),
         })?;
 
+    Ok(())
+}
+
+/// `download_to_file`'s bounded-size (progress-bar) arm, extracted so its own
+/// two `?`s (a read error, a write error) match into ONE `Result` here rather
+/// than abandoning `pb` to `Drop` mid-download. A `ProgressBar` has no
+/// `finish_fail` (unlike `Spinner`), so the failure arm settles the bar
+/// silently via `finish()` and then emits the failure detail as its own
+/// `Role::Fail` status on the printer, at the same ambient depth `pb` was
+/// built at — the equivalent of a spinner's `finish_fail(...).detail(e)`.
+fn download_with_progress_bar(
+    p: &Printer,
+    url: &str,
+    total: u64,
+    reader: &mut dyn Read,
+    tmp: &mut tempfile::NamedTempFile,
+) -> std::result::Result<(), UpgradeError> {
+    let pb = p.progress_bar(total, url);
+    let result = stream_chunks_to_file(reader, tmp, &pb);
+    pb.finish();
+    if let Err(e) = &result {
+        p.status(Role::Fail, format!("Failed to download {url}"))
+            .detail(crate::output::collapse_to_subject_line(e));
+    }
+    result
+}
+
+/// The fallible half of [`download_with_progress_bar`]: one `Result` the
+/// caller matches once to settle the progress bar, instead of the two early
+/// `?`s (a read error, a write error) that used to abandon `pb` to `Drop`
+/// mid-download. Matches the inner-fn shape used at every other LEAK site
+/// fixed in this diff (e.g. `oci::pull::pull_module_inner`).
+fn stream_chunks_to_file(
+    reader: &mut dyn Read,
+    tmp: &mut tempfile::NamedTempFile,
+    pb: &crate::output::ProgressBar<'_>,
+) -> std::result::Result<(), UpgradeError> {
+    let mut buf = [0u8; 8192];
+    let mut downloaded: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| UpgradeError::DownloadFailed {
+                message: format!("stream to disk: {}", e),
+            })?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(tmp, &buf[..n]).map_err(|e| UpgradeError::DownloadFailed {
+            message: format!("stream to disk: {}", e),
+        })?;
+        downloaded += n as u64;
+        pb.set_position(downloaded);
+    }
     Ok(())
 }
 
@@ -765,7 +835,7 @@ pub(crate) fn download_and_install_to(
                 message: format!("read checksums: {}", e),
             })?;
 
-        let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
+        let verify_spinner = printer.map(|p| p.spinner("Verifying checksum"));
         let verify_result = verify_archive_checksum(&archive_path, &checksums_content, &asset.name);
         match &verify_result {
             Ok(()) => {
@@ -797,14 +867,26 @@ pub(crate) fn download_and_install_to(
         message: format!("create extract dir: {}", e),
     })?;
 
-    let extract_spinner = printer.map(|p| p.spinner("Extracting archive..."));
+    let extract_spinner = printer.map(|p| p.spinner("Extracting archive"));
     #[cfg(unix)]
-    extract_tarball(&archive_path, &extract_dir)?;
+    let extract_result = extract_tarball(&archive_path, &extract_dir);
     #[cfg(windows)]
-    extract_zip(&archive_path, &extract_dir)?;
-    if let Some(s) = extract_spinner {
-        let _ = s.finish_ok("Extracted archive");
+    let extract_result = extract_zip(&archive_path, &extract_dir);
+    match &extract_result {
+        Ok(()) => {
+            if let Some(s) = extract_spinner {
+                let _ = s.finish_ok("Extracted archive");
+            }
+        }
+        Err(e) => {
+            if let Some(s) = extract_spinner {
+                let _ = s
+                    .finish_fail("Failed to extract archive")
+                    .detail(crate::output::collapse_to_subject_line(e));
+            }
+        }
     }
+    extract_result?;
 
     // Find the cfgd binary in the extracted contents
     #[cfg(unix)]
@@ -843,7 +925,7 @@ pub(crate) fn download_and_install_to(
 #[derive(Debug, Clone)]
 pub struct AppliedUpdate {
     pub report: InstallReport,
-    pub daemon_restarted: bool,
+    pub daemon_terminated: bool,
     /// Outcome of the user-scope skill ride-along run as part of this apply.
     pub skill_refresh: RideAlongOutcome,
 }
@@ -858,7 +940,7 @@ pub struct AppliedUpdate {
 /// (so each keeps its distinct no-asset error/presentation) and supply only
 /// their own success/failure surface around the returned [`AppliedUpdate`].
 ///
-/// `cfg` carries the effective [`UpdateConfig`] so the **ride-along** skill
+/// `cfg` carries the effective [`crate::config::UpdateConfig`] so the **ride-along** skill
 /// refresh (rule 2 in `dedup`'s module docs) runs here, in the single apply
 /// owner: every apply site inherits it, making a separate skill prompt after a
 /// binary upgrade unrepresentable. The refresh touches **user-scope skills
@@ -881,11 +963,27 @@ pub fn install_release(
     // applied upgrade (no second prompt). Gated by the effective skills policy;
     // project scope is never touched. Best-effort — a refresh failure must not
     // unwind a binary upgrade that already succeeded.
+    // Narrated because the tail runs after the download's own progress bar has
+    // gone and before the caller emits anything: a skill refresh reads and
+    // rewrites files and a daemon restart waits on a process. Retired
+    // silently on every outcome — both call sites emit `upgraded_doc` the
+    // moment this returns, and a settled line here would sit above it saying
+    // the same thing twice.
+    let mut tail = printer.map(|p| p.spinner("Finalizing install"));
+    if let Some(s) = tail.as_mut() {
+        s.set_message("Refreshing skills");
+    }
     let skill_refresh = refresh_user_scope_skills(cfg, cfgd_version);
-    let daemon_restarted = restart_daemon_if_running();
+    if let Some(s) = tail.as_mut() {
+        s.set_message("Restarting daemon");
+    }
+    let daemon_terminated = terminate_daemon_if_running();
+    if let Some(s) = tail {
+        s.finish_silent();
+    }
     Ok(AppliedUpdate {
         report,
-        daemon_restarted,
+        daemon_terminated,
         skill_refresh,
     })
 }
@@ -920,8 +1018,8 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
 }
 
 /// Replace `target` with `source` using the Windows rename-dance.
-/// Windows cannot overwrite a running executable, so we rename the current
-/// binary to `.exe.old`, copy the new one into place, and clean up `.old`
+/// Windows cannot overwrite a running executable, so the current binary is
+/// renamed to `.exe.old`, the new one copied into place, and `.old` cleaned up
 /// on next startup via `cleanup_old_binary`.
 #[cfg(windows)]
 fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), UpgradeError> {
@@ -1003,9 +1101,17 @@ fn extract_zip(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeEr
     Ok(())
 }
 
-/// Check if the daemon is running and restart it.
-/// Returns true if the daemon was restarted, false if it wasn't running.
-pub fn restart_daemon_if_running() -> bool {
+/// Terminate a running daemon so it comes back on the new binary.
+///
+/// Named for what it DOES rather than for what usually follows: cfgd kills the
+/// process and nothing more. A daemon under systemd/launchd/SCM is restarted by
+/// its service manager; one started by hand stays down until the user starts it
+/// again, and every surface reporting this — the `-o json` `daemonTerminated`
+/// field, the human upgrade line, the auto-update notification — says
+/// "terminated" for that reason.
+///
+/// Returns true if a running daemon was terminated, false if none was running.
+pub fn terminate_daemon_if_running() -> bool {
     // No CLI runtime override available in the self-upgrade path; env/default.
     let status = match crate::daemon::query_daemon_status(None, crate::Scope::User) {
         Ok(Some(s)) => s,
@@ -1015,7 +1121,7 @@ pub fn restart_daemon_if_running() -> bool {
     // Daemon is running — terminate so the service manager restarts it
     // with the new binary.
     crate::terminate_process(status.pid);
-    tracing::info!("terminated daemon (pid {})", status.pid);
+    tracing::debug!("terminated daemon (pid {})", status.pid);
     true
 }
 

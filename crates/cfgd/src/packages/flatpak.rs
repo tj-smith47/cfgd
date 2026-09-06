@@ -4,14 +4,15 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks,
-    run_pkg_cmd, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, parse_version_field, partition_already_installed,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
+    tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct FlatpakManager;
@@ -36,21 +37,30 @@ impl PackageManager for FlatpakManager {
         "flatpak"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("update")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(flatpak_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         flatpak_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
         // The client lands on the system PATH, so the plan creates no directory.
         #[cfg(target_os = "linux")]
         {
             // `None` rather than a hopeful name when no system manager can run
             // it: the method a plan carries is binding at execution.
-            detect_system_method().map(BootstrapPlan::new)
+            detect_system_method(delivered).map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = delivered;
             None
         }
     }
@@ -64,18 +74,34 @@ impl PackageManager for FlatpakManager {
     }
 
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd(
+        // A listing read tolerates a nonzero exit (an empty install has
+        // nothing to say about) rather than erroring — the same treatment
+        // every other manager's read side gets.
+        let output = run_pkg_query(
             "flatpak",
             flatpak_cmd().args(["list", "--app", "--columns=application"]),
-            "list",
         )?;
         Ok(parse_flatpak_app_list(&String::from_utf8_lossy(
             &output.stdout,
         )))
     }
 
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        let output = run_pkg_query(
+            "flatpak",
+            flatpak_cmd().args(["list", "--app", "--columns=application,version"]),
+        )?;
+        Ok(parse_flatpak_app_list_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        for pkg in packages {
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        for pkg in &fresh {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
                 cx,
@@ -85,6 +111,13 @@ impl PackageManager for FlatpakManager {
                 "install",
             )?;
         }
+        // `flatpak install` no-ops on a ref already held; raising it takes
+        // `flatpak update`.
+        upgrade_each(cx, "flatpak", &held, "flatpak update -y", |pkg| {
+            let mut cmd = flatpak_cmd();
+            cmd.args(["update", "-y", pkg]);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -121,13 +154,10 @@ impl PackageManager for FlatpakManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // flatpak remote-info flathub <app-id> → parse "Version:" field
-        let output = flatpak_cmd()
-            .args(["remote-info", "flathub", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "flatpak".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "flatpak",
+            flatpak_cmd().args(["remote-info", "flathub", package]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -147,9 +177,40 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Parse `flatpak list --app --columns=application,version` stdout into
+/// `(application-id, version)` pairs. Columns are tab-separated; a runtime
+/// with no version reported (an empty second column, which `flatpak list`
+/// prints for some system runtimes) falls to
+/// [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION).
+pub(super) fn parse_flatpak_app_list_versions(
+    stdout: &str,
+) -> Vec<cfgd_core::providers::PackageInfo> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.splitn(2, '\t');
+            let name = cols.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let version = cols
+                .next()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
+                .to_string();
+            Some(cfgd_core::providers::PackageInfo {
+                name: name.to_string(),
+                version,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 
@@ -269,6 +330,35 @@ mod tests {
         assert!(parse_flatpak_app_list("").is_empty());
     }
 
+    // --- parse_flatpak_app_list_versions ---
+
+    #[test]
+    fn parse_flatpak_app_list_versions_real_world() {
+        let stdout = "org.mozilla.firefox\t124.0.1\norg.signal.Signal\t7.15.0\n";
+        let pkgs = parse_flatpak_app_list_versions(stdout);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "org.mozilla.firefox");
+        assert_eq!(pkgs[0].version, "124.0.1");
+        assert_eq!(pkgs[1].name, "org.signal.Signal");
+        assert_eq!(pkgs[1].version, "7.15.0");
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_versions_empty_version_column_is_unknown() {
+        let stdout = "org.freedesktop.Platform\t\n";
+        let pkgs = parse_flatpak_app_list_versions(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].version,
+            cfgd_core::providers::UNKNOWN_PACKAGE_VERSION
+        );
+    }
+
+    #[test]
+    fn parse_flatpak_app_list_versions_empty_input_yields_empty_set() {
+        assert!(parse_flatpak_app_list_versions("").is_empty());
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_FLATPAK_BIN ToolShim.
     // ---------------------------------------------------------------------
@@ -295,10 +385,44 @@ mod tests {
                     &cx,
                 )
                 .expect("Ok");
-            assert_eq!(s.invocation_count(), 2);
+            // 1 `list` (partitioning held vs fresh) + 2 `install`.
+            assert_eq!(s.invocation_count(), 3);
             let argv = s.argv_log();
             assert!(argv.contains("install -y org.mozilla.firefox"));
             assert!(argv.contains("install -y org.signal.Signal"));
+        }
+
+        #[test]
+        #[serial]
+        fn flatpak_install_raises_a_held_ref_via_flatpak_update_not_install() {
+            // The listing already carries `org.mozilla.firefox`, so `install`
+            // partitions it into `held` and raises it through
+            // `flatpak update -y org.mozilla.firefox` instead of re-running
+            // `flatpak install -y org.mozilla.firefox`, which would no-op;
+            // the unheld ref still installs.
+            let s = ToolShim::install(SHIM_ENV, 0, "org.mozilla.firefox\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            FlatpakManager
+                .install(
+                    &["org.mozilla.firefox".into(), "org.signal.Signal".into()],
+                    &cx,
+                )
+                .expect("Ok");
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("update -y org.mozilla.firefox"),
+                "held ref must be raised via `flatpak update -y`: {argv}"
+            );
+            assert!(
+                argv.contains("install -y org.signal.Signal"),
+                "unheld ref must still install: {argv}"
+            );
+            assert!(
+                !argv.contains("install -y org.mozilla.firefox"),
+                "held ref must not be re-run through `flatpak install`: {argv}"
+            );
         }
 
         #[test]
@@ -345,6 +469,22 @@ mod tests {
             let pkgs = FlatpakManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("org.mozilla.firefox"));
+        }
+
+        #[test]
+        #[serial]
+        fn flatpak_installed_packages_nonzero_exit_is_empty_not_error() {
+            // A listing read tolerates a nonzero exit (`run_pkg_query`, not
+            // `run_pkg_cmd`) the same way scoop's and apk's do — a manager
+            // reporting nothing installed must not abort the whole apply.
+            let _s = ToolShim::install(SHIM_ENV, 1, "", "no apps installed\n");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = FlatpakManager
+                .installed_packages(&cx)
+                .expect("nonzero exit must be Ok(empty), not Err");
+            assert!(pkgs.is_empty());
         }
 
         #[test]

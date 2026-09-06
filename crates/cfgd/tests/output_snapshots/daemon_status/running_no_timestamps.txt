@@ -1,10 +1,6 @@
 Daemon Status
-✓ Daemon is running
+  PID          1
+  Uptime       1s
+  Drift Count  0
 
-PID          1
-Uptime       1s
-Drift count  0
-
-Sources
-  Name  Status  Drift  Last Sync
-  ──────────────────────────────
+✓ Daemon running

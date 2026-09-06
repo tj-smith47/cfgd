@@ -9,10 +9,22 @@
 #[cfg(feature = "test-helpers")]
 mod baseline;
 #[cfg(feature = "test-helpers")]
+mod color_gate;
+#[cfg(feature = "test-helpers")]
+mod command_type_span;
+#[cfg(feature = "test-helpers")]
 mod corners;
+#[cfg(feature = "test-helpers")]
+mod cursor_safe_slots;
 mod fences;
 #[cfg(feature = "test-helpers")]
+mod hyperlinks;
+#[cfg(feature = "test-helpers")]
 mod indent;
+#[cfg(feature = "test-helpers")]
+mod kv_nested;
+#[cfg(feature = "test-helpers")]
+mod kv_role;
 #[cfg(feature = "test-helpers")]
 mod regression;
 #[cfg(feature = "test-helpers")]
@@ -54,7 +66,7 @@ macro_rules! golden_at {
             let ($p, buf) = $crate::output::Printer::for_test_at($verbosity);
             $body
             $p.flush();
-            let raw = buf.lock().unwrap().clone();
+            let raw = $crate::test_helpers::captured_text(&buf);
             let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))
@@ -89,7 +101,7 @@ macro_rules! golden_themed {
             );
             $body
             $p.flush();
-            let raw = buf.lock().unwrap().clone();
+            let raw = $crate::test_helpers::captured_text(&buf);
             let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))

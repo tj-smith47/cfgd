@@ -1,0 +1,3 @@
+✗ Backup 'docs' has no copy to roll back to
+
+→ A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts; see `cfgd backup list docs` for its snapshots

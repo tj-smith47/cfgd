@@ -32,32 +32,39 @@ pub(super) fn shell_var_indicates_fish(shell: Option<&str>) -> bool {
 pub(super) fn generate_env_file_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path: Option<&super::env_engine::FoldedPath>,
+    origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
-    if !path_dirs.is_empty() {
+    if let Some(path) = path {
         // Ahead of the user's own exports so a `spec.env` value may reference a
         // binary that only exists on the bootstrapped manager's PATH.
-        let joined = path_dirs
-            .iter()
-            .map(|d| crate::escape_double_quoted(d))
-            .collect::<Vec<_>>()
-            .join(":");
-        lines.push(format!("export PATH=\"{joined}:$PATH\""));
+        lines.push(format!(
+            "export PATH=\"{}\"{}",
+            path.value(crate::escape_double_quoted, "$PATH", ":"),
+            path.comment
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
+        // `PATH` is written once, by the fold above, whichever producers fed it.
+        if ev.name == "PATH" {
+            continue;
+        }
         lines.push(format!(
-            "export {}={}",
+            "export {}={}{}",
             ev.name,
-            crate::posix_double_quoted(&crate::expand_env_value_tilde(&ev.value))
+            crate::posix_double_quoted(&crate::expand_env_value_tilde(&ev.value)),
+            origins.env_comment(&ev.name)
         ));
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
@@ -65,9 +72,10 @@ pub(super) fn generate_env_file_content(
         // part of the alias and runs when the user invokes it, instead of
         // running once while the login shell is still sourcing this file.
         lines.push(format!(
-            "alias {}={}",
+            "alias {}={}{}",
             alias.name,
-            crate::posix_double_quoted(&alias.command)
+            crate::posix_double_quoted(&alias.command),
+            origins.alias_comment(&alias.name)
         ));
     }
     lines.push(String::new()); // trailing newline
@@ -79,61 +87,55 @@ pub(super) fn generate_env_file_content(
 pub(super) fn generate_fish_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path: Option<&super::env_engine::FoldedPath>,
+    origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
-    if !path_dirs.is_empty() {
-        // Trailing bare `$PATH` splices fish's existing list variable after the
-        // new entries; single quotes suppress fish expansion of each entry.
-        let parts = path_dirs
-            .iter()
-            .map(|d| crate::fish_single_quoted(d))
-            .collect::<Vec<_>>()
-            .join(" ");
-        lines.push(format!("set -gx PATH {parts} $PATH"));
+    if let Some(path) = path {
+        // Fish uses a space-separated list for PATH, not colon-separated, and
+        // a bare `$PATH` splices its existing list variable in place; single
+        // quotes suppress fish expansion of each entry, which is why the fold
+        // spelled every directory literally.
+        lines.push(format!(
+            "set -gx PATH {}{}",
+            path.value(crate::fish_single_quoted, "$PATH", " "),
+            path.comment
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
+        // `PATH` is written once, by the fold above, whichever producers fed it.
         if ev.name == "PATH" {
-            // Fish uses a space-separated list for PATH, not colon-separated.
-            // Split the RAW value on the `:` separator before tilde expansion:
-            // on Windows `~` expands to a drive-prefixed path (`C:/Users/...`),
-            // and splitting post-expansion would shatter that drive colon into a
-            // bogus extra PATH entry. Each segment is then expanded and
-            // single-quoted to suppress fish expansion.
-            let parts: Vec<String> = ev
-                .value
-                .split(':')
-                .map(crate::expand_env_value_tilde)
-                .map(|p| crate::fish_single_quoted(&p))
-                .collect();
-            lines.push(format!("set -gx PATH {}", parts.join(" ")));
-        } else {
-            // Expand a leading/`:`-prefixed `~` to home before single-quoting:
-            // fish single quotes suppress tilde expansion, so a literal `~` would
-            // break the path. (`$VAR` in a fish single-quoted value is a separate
-            // gap.)
-            let value = crate::expand_env_value_tilde(&ev.value);
-            // Single-quote to prevent fish command substitution via ()
-            lines.push(format!(
-                "set -gx {} {}",
-                ev.name,
-                crate::fish_single_quoted(&value)
-            ));
+            continue;
         }
+        // Expand a leading/`:`-prefixed `~` to home before single-quoting:
+        // fish single quotes suppress tilde expansion, so a literal `~` would
+        // break the path. (`$VAR` in a fish single-quoted value is a separate
+        // gap.)
+        let value = crate::expand_env_value_tilde(&ev.value);
+        // Single-quote to prevent fish command substitution via ()
+        lines.push(format!(
+            "set -gx {} {}{}",
+            ev.name,
+            crate::fish_single_quoted(&value),
+            origins.env_comment(&ev.name)
+        ));
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
         lines.push(format!(
-            "abbr -a {} {}",
+            "abbr -a {} {}{}",
             alias.name,
-            crate::fish_single_quoted(&alias.command)
+            crate::fish_single_quoted(&alias.command),
+            origins.alias_comment(&alias.name)
         ));
     }
     lines.push(String::new());
@@ -145,22 +147,28 @@ pub(super) fn generate_fish_env_content(
 pub(super) fn generate_powershell_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path: Option<&super::env_engine::FoldedPath>,
+    origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
-    if !path_dirs.is_empty() {
-        // Double-quoted so `$env:PATH` interpolates; `;` is the Windows PATH
-        // separator. Backtick is PowerShell's escape character inside "".
-        let joined = path_dirs
-            .iter()
-            .map(|d| crate::escape_powershell_double_quoted(d))
-            .collect::<Vec<_>>()
-            .join(";");
-        lines.push(format!("$env:PATH = \"{joined};$env:PATH\""));
+    if let Some(path) = path {
+        // Double-quoted so `$env:PATH` and `$HOME` interpolate; `;` is the
+        // Windows PATH separator. Backtick is PowerShell's escape character
+        // inside "".
+        lines.push(format!(
+            "$env:PATH = \"{}\"{}",
+            path.value(crate::escape_powershell_double_quoted, "$env:PATH", ";"),
+            path.comment
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
+            continue;
+        }
+        // `PATH` is written once, by the fold above, whichever producers fed it.
+        if ev.name == "PATH" {
             continue;
         }
         // Expand a leading/`:`-prefixed `~` to home before quoting (PowerShell
@@ -170,30 +178,34 @@ pub(super) fn generate_powershell_env_content(
             // Value references other env vars — double-quote so those
             // references still resolve, with subexpressions neutralized.
             lines.push(format!(
-                "$env:{} = {}",
+                "$env:{} = {}{}",
                 ev.name,
-                crate::powershell_double_quoted(&value)
+                crate::powershell_double_quoted(&value),
+                origins.env_comment(&ev.name)
             ));
         } else {
             // Single-quote prevents all PS interpolation
             lines.push(format!(
-                "$env:{} = {}",
+                "$env:{} = {}{}",
                 ev.name,
-                crate::powershell_single_quoted(&value)
+                crate::powershell_single_quoted(&value),
+                origins.env_comment(&ev.name)
             ));
         }
     }
     for alias in aliases {
         if crate::validate_alias_name(&alias.name).is_err() {
+            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
         }
         if alias.command.split_whitespace().count() == 1 {
             // Simple alias — use Set-Alias
             lines.push(format!(
-                "Set-Alias -Name {} -Value {}",
+                "Set-Alias -Name {} -Value {}{}",
                 alias.name,
-                crate::powershell_single_quoted(&alias.command)
+                crate::powershell_single_quoted(&alias.command),
+                origins.alias_comment(&alias.name)
             ));
         } else {
             // Complex alias — a function wrapper. The command is carried as a
@@ -202,14 +214,173 @@ pub(super) fn generate_powershell_env_content(
             // function early and everything after it runs while the profile is
             // still loading.
             lines.push(format!(
-                "function {} {{ & ([scriptblock]::Create({})) @args }}",
+                "function {} {{ & ([scriptblock]::Create({})) @args }}{}",
                 alias.name,
-                crate::powershell_single_quoted(&format!("{} @args", alias.command))
+                crate::powershell_single_quoted(&format!("{} @args", alias.command)),
+                origins.alias_comment(&alias.name)
             ));
         }
     }
     lines.push(String::new()); // trailing newline
     lines.join("\n")
+}
+
+/// The one line a single env var renders as in cfgd's PRIMARY managed env
+/// file for `platform` — bash/zsh syntax on Unix, PowerShell on Windows, the
+/// dialect of the first `EnvTarget::ManagedFile` `env_targets` always
+/// produces when there is anything to write. Built by calling the same
+/// generator that writes the real file with a one-item slice, so a verify
+/// pass can attribute a content mismatch to the declared item that caused it
+/// without re-deriving that dialect's quoting rules. `None` when the name
+/// fails the generator's own safety check, matching what a real write
+/// silently skips.
+///
+/// `path` is the file's folded `PATH` assignment, which the caller must supply
+/// for `PATH` itself: that one variable's line is written by the fold and not
+/// by the declaration loop, so rendering it without the fold would produce a
+/// line the real file never holds — or, for a declaration alone, no line at
+/// all.
+pub(super) fn primary_env_var_line(
+    ev: &crate::config::EnvVar,
+    platform: super::env_engine::EnvPlatform,
+    origins: &super::env_engine::EnvOrigins,
+    path: Option<&super::env_engine::FoldedPath>,
+) -> Option<String> {
+    let one = std::slice::from_ref(ev);
+    let path = if ev.name == "PATH" { path } else { None };
+    let generated = if platform == super::env_engine::EnvPlatform::Windows {
+        generate_powershell_env_content(one, &[], path, origins)
+    } else {
+        generate_env_file_content(one, &[], path, origins)
+    };
+    generated
+        .lines()
+        .nth(1)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+/// The alias counterpart of `primary_env_var_line`.
+pub(super) fn primary_alias_line(
+    alias: &crate::config::ShellAlias,
+    platform: super::env_engine::EnvPlatform,
+    origins: &super::env_engine::EnvOrigins,
+) -> Option<String> {
+    let one = std::slice::from_ref(alias);
+    let generated = if platform == super::env_engine::EnvPlatform::Windows {
+        generate_powershell_env_content(&[], one, None, origins)
+    } else {
+        generate_env_file_content(&[], one, None, origins)
+    };
+    generated
+        .lines()
+        .nth(1)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+/// The shared derivation behind the `*_line_prefix` helpers below: the common
+/// prefix of two renders of one entry whose values differ at their FIRST
+/// character, which is exactly the rendered line up to where the value
+/// starts. A trailing quote is stripped because PowerShell picks its quote
+/// per value (`'` normally, `"` for a `$env:`-referencing one), so the
+/// quote-free prefix claims a line rendered under either. `None` when either
+/// render refused the name, or when nothing stable precedes the value.
+fn stable_line_prefix(a: Option<String>, b: Option<String>) -> Option<String> {
+    let (a, b) = (a?, b?);
+    let mut n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while n > 0 && !a.is_char_boundary(n) {
+        n -= 1;
+    }
+    let prefix = a[..n]
+        .strip_suffix(|c| c == '\'' || c == '"')
+        .unwrap_or(&a[..n]);
+    (!prefix.is_empty()).then(|| prefix.to_string())
+}
+
+/// The dialect-rendered prefix of the line env var `name` renders as in the
+/// primary managed file, up to (not including) its value — `export FOO=` /
+/// `$env:FOO = `. Built by rendering the real generator twice with sentinel
+/// values rather than restating its format string, so the two cannot drift.
+/// A deployed line starting with this prefix is accounted for by the CURRENT
+/// declaration of `name` (a value change, not a deletion).
+pub(super) fn env_var_line_prefix(
+    name: &str,
+    platform: super::env_engine::EnvPlatform,
+) -> Option<String> {
+    // `PATH` has ONE line however many producers fed it, so it has one prefix
+    // too — the fold's, not a declaration's.
+    if name == "PATH" {
+        return path_dirs_line_prefix(platform);
+    }
+    let line = |value: &str| {
+        primary_env_var_line(
+            &crate::config::EnvVar {
+                name: name.to_string(),
+                value: value.to_string(),
+                platforms: vec![],
+            },
+            platform,
+            // A prefix ends where the two sentinel values first differ, which
+            // is before any trailing provenance comment either render carries.
+            &Default::default(),
+            None,
+        )
+    };
+    stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
+}
+
+/// The alias counterpart of [`env_var_line_prefix`]. Plural because
+/// PowerShell renders a one-word command as `Set-Alias` and a multi-word one
+/// as a function wrapper — two line shapes for one declared name, both of
+/// which must claim a deployed line however the OLD value was shaped.
+pub(super) fn alias_line_prefixes(
+    name: &str,
+    platform: super::env_engine::EnvPlatform,
+) -> Vec<String> {
+    let line = |command: &str| {
+        primary_alias_line(
+            &crate::config::ShellAlias {
+                name: name.to_string(),
+                command: command.to_string(),
+                platforms: vec![],
+            },
+            platform,
+            &Default::default(),
+        )
+    };
+    let mut prefixes: Vec<String> = [
+        ("0cfgdsentinel", "1cfgdsentinel"),
+        ("0cfgd sentinel", "1cfgd sentinel"),
+    ]
+    .into_iter()
+    .filter_map(|(a, b)| stable_line_prefix(line(a), line(b)))
+    .collect();
+    prefixes.dedup();
+    prefixes
+}
+
+/// The prefix of the generator's own PATH scaffolding line (each dialect's
+/// own assignment syntax), so a PATH line rendered from a PAST run's bootstrapped
+/// directories is claimed as cfgd's own scaffolding rather than read as some
+/// layer's deleted entry.
+pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) -> Option<String> {
+    let line = |dir: &str| {
+        // Nothing is named: the prefix ends where the two sentinel DIRS first
+        // differ, which is before any trailing provenance comment.
+        let fold = super::env_engine::FoldedPath::literal([dir.to_string()]);
+        let content = if platform == super::env_engine::EnvPlatform::Windows {
+            generate_powershell_env_content(&[], &[], Some(&fold), &Default::default())
+        } else {
+            generate_env_file_content(&[], &[], Some(&fold), &Default::default())
+        };
+        content
+            .lines()
+            .nth(1)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+    };
+    stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
 }
 
 /// Read a cfgd-generated env file for comparison against the content about to
@@ -228,6 +399,7 @@ pub(super) fn read_managed_baseline(path: &std::path::Path) -> Option<String> {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Some(text),
             Err(_) => {
+                // tracing-ok: the file cfgd itself wrote is damaged; the regeneration below is the recovery and prints nothing
                 tracing::warn!(
                     path = %path.posix(),
                     "cfgd-generated env file is not valid UTF-8; regenerating it",
@@ -237,6 +409,7 @@ pub(super) fn read_managed_baseline(path: &std::path::Path) -> Option<String> {
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
+            // tracing-ok: same, for an unreadable baseline
             tracing::warn!(
                 path = %path.posix(),
                 error = %e,
@@ -543,12 +716,14 @@ pub(super) fn strip_shell_quotes(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::env_engine::{FoldedPath, ManagerPathDir};
     use crate::config::{EnvVar, ShellAlias};
 
     fn env_var(value: &str) -> Vec<EnvVar> {
         vec![EnvVar {
             name: "V".to_string(),
             value: value.to_string(),
+            platforms: vec![],
         }]
     }
 
@@ -556,6 +731,7 @@ mod tests {
         vec![ShellAlias {
             name: "q".to_string(),
             command: command.to_string(),
+            platforms: vec![],
         }]
     }
 
@@ -713,13 +889,23 @@ mod tests {
     fn bash_env_and_alias_lines_quote_every_hostile_value() {
         for case in BASH {
             assert_line(
-                &super::generate_env_file_content(&env_var(case.value), &[], &[]),
+                &super::generate_env_file_content(
+                    &env_var(case.value),
+                    &[],
+                    None,
+                    &Default::default(),
+                ),
                 case.env_line,
                 case.value,
                 "bash",
             );
             assert_line(
-                &super::generate_env_file_content(&[], &alias(case.value), &[]),
+                &super::generate_env_file_content(
+                    &[],
+                    &alias(case.value),
+                    None,
+                    &Default::default(),
+                ),
                 case.alias_line,
                 case.value,
                 "bash",
@@ -731,13 +917,23 @@ mod tests {
     fn fish_env_and_alias_lines_quote_every_hostile_value() {
         for case in FISH {
             assert_line(
-                &super::generate_fish_env_content(&env_var(case.value), &[], &[]),
+                &super::generate_fish_env_content(
+                    &env_var(case.value),
+                    &[],
+                    None,
+                    &Default::default(),
+                ),
                 case.env_line,
                 case.value,
                 "fish",
             );
             assert_line(
-                &super::generate_fish_env_content(&[], &alias(case.value), &[]),
+                &super::generate_fish_env_content(
+                    &[],
+                    &alias(case.value),
+                    None,
+                    &Default::default(),
+                ),
                 case.alias_line,
                 case.value,
                 "fish",
@@ -749,13 +945,23 @@ mod tests {
     fn powershell_env_and_alias_lines_quote_every_hostile_value() {
         for case in POWERSHELL {
             assert_line(
-                &super::generate_powershell_env_content(&env_var(case.value), &[], &[]),
+                &super::generate_powershell_env_content(
+                    &env_var(case.value),
+                    &[],
+                    None,
+                    &Default::default(),
+                ),
                 case.env_line,
                 case.value,
                 "powershell",
             );
             assert_line(
-                &super::generate_powershell_env_content(&[], &alias(case.value), &[]),
+                &super::generate_powershell_env_content(
+                    &[],
+                    &alias(case.value),
+                    None,
+                    &Default::default(),
+                ),
                 case.alias_line,
                 case.value,
                 "powershell",
@@ -771,8 +977,18 @@ mod tests {
         let env = vec![EnvVar {
             name: "PATH".to_string(),
             value: "a\\:b".to_string(),
+            platforms: vec![],
         }];
-        let content = super::generate_fish_env_content(&env, &[], &[]);
+        let fold = super::super::env_engine::fold_path_line(
+            &env,
+            &[],
+            &Default::default(),
+            std::path::Path::new("/home/tj"),
+            EnvPlatform::Linux,
+            None,
+        );
+        let content =
+            super::generate_fish_env_content(&env, &[], fold.as_ref(), &Default::default());
         assert!(
             content.contains("set -gx PATH 'a\\\\' 'b'"),
             "trailing backslash escaped out of its quotes: {content}"
@@ -781,7 +997,12 @@ mod tests {
 
     #[test]
     fn fish_bootstrapped_path_dirs_escape_a_trailing_backslash() {
-        let content = super::generate_fish_env_content(&[], &[], &["/opt/a\\".to_string()]);
+        let content = super::generate_fish_env_content(
+            &[],
+            &[],
+            Some(&FoldedPath::derived(&[ManagerPathDir::unowned("/opt/a\\")])),
+            &Default::default(),
+        );
         assert!(
             content.contains("set -gx PATH '/opt/a\\\\' $PATH"),
             "trailing backslash escaped out of its quotes: {content}"
@@ -795,8 +1016,9 @@ mod tests {
         let env = vec![EnvVar {
             name: "V".to_string(),
             value: "$env:PATH;$(Write-Output pwned)".to_string(),
+            platforms: vec![],
         }];
-        let content = super::generate_powershell_env_content(&env, &[], &[]);
+        let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
         assert!(
             content.contains("$env:V = \"$env:PATH;`$(Write-Output pwned)\""),
             "subexpression survived: {content}"
@@ -808,7 +1030,10 @@ mod tests {
         let content = super::generate_powershell_env_content(
             &[],
             &[],
-            &["C:/a$(Write-Output x)".to_string()],
+            Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
+                "C:/a$(Write-Output x)",
+            )])),
+            &Default::default(),
         );
         assert!(
             content.contains("$env:PATH = \"C:/a`$(Write-Output x);$env:PATH\""),
@@ -821,7 +1046,8 @@ mod tests {
     #[test]
     fn powershell_function_alias_cannot_close_its_own_body() {
         let aliases = alias("Write-Output benign }; Write-Output pwned; #");
-        let content = super::generate_powershell_env_content(&[], &aliases, &[]);
+        let content =
+            super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
         assert!(
             content.contains(
                 "function q { & ([scriptblock]::Create('Write-Output benign }; \
@@ -838,7 +1064,8 @@ mod tests {
     #[test]
     fn powershell_function_alias_doubles_a_single_quote_in_the_command() {
         let aliases = alias("Write-Output 'hi there'");
-        let content = super::generate_powershell_env_content(&[], &aliases, &[]);
+        let content =
+            super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
         assert!(
             content.contains(
                 "function q { & ([scriptblock]::Create('Write-Output ''hi there'' @args')) @args }"
@@ -855,8 +1082,9 @@ mod tests {
         let env = vec![EnvVar {
             name: "V".to_string(),
             value: "/opt/bin:$PATH:$(id)".to_string(),
+            platforms: vec![],
         }];
-        let content = super::generate_env_file_content(&env, &[], &[]);
+        let content = super::generate_env_file_content(&env, &[], None, &Default::default());
         assert!(
             content.contains("export V=\"/opt/bin:$PATH:\\$(id)\""),
             "unexpected quoting: {content}"
@@ -871,11 +1099,209 @@ mod tests {
         let content = super::generate_env_file_content(
             &[],
             &[],
-            &["/opt/$(id)/bin".to_string(), "/opt/a\"b/bin".to_string()],
+            Some(&FoldedPath::derived(&[
+                ManagerPathDir::unowned("/opt/$(id)/bin"),
+                ManagerPathDir::unowned("/opt/a\"b/bin"),
+            ])),
+            &Default::default(),
         );
         assert!(
             content.contains("export PATH=\"/opt/\\$(id)/bin:/opt/a\\\"b/bin:$PATH\""),
             "unexpected quoting: {content}"
         );
+    }
+
+    use super::super::env_engine::EnvPlatform;
+
+    #[test]
+    fn stable_line_prefix_stops_at_the_value_and_strips_its_quote() {
+        assert_eq!(
+            super::stable_line_prefix(
+                Some("export A=\"0x\"".to_string()),
+                Some("export A=\"1x\"".to_string())
+            )
+            .as_deref(),
+            Some("export A=")
+        );
+        assert_eq!(super::stable_line_prefix(None, Some("x".to_string())), None);
+        // Lines differing at their first character leave nothing stable to
+        // claim by, and an empty prefix would claim everything.
+        assert_eq!(
+            super::stable_line_prefix(Some("axx".to_string()), Some("bxx".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn env_var_line_prefix_prefixes_the_real_rendered_line_in_both_dialects() {
+        // `$env:OTHER;x` is the value that flips PowerShell to double quotes:
+        // only a quote-stripped prefix claims lines rendered under either.
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let prefix = super::env_var_line_prefix("EDITOR", platform).unwrap();
+            assert!(
+                prefix.contains("EDITOR") && !prefix.contains("cfgd"),
+                "prefix must carry the name and never a sentinel: {prefix:?}"
+            );
+            for value in ["nvim", "a\"b$(x)", "$env:OTHER;x"] {
+                let line = super::primary_env_var_line(
+                    &EnvVar {
+                        name: "EDITOR".to_string(),
+                        value: value.to_string(),
+                        platforms: vec![],
+                    },
+                    platform,
+                    &Default::default(),
+                    None,
+                )
+                .unwrap();
+                assert!(
+                    line.starts_with(&prefix),
+                    "{prefix:?} must prefix {line:?} ({platform:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_line_prefixes_cover_every_rendered_alias_shape() {
+        // `git` renders as Set-Alias on Windows, `git status --short` as a
+        // function wrapper: one declared name, two line shapes, both claimed.
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let prefixes = super::alias_line_prefixes("g", platform);
+            assert!(!prefixes.is_empty(), "no prefixes for {platform:?}");
+            for prefix in &prefixes {
+                assert!(
+                    prefix.contains('g') && !prefix.contains("cfgd"),
+                    "prefix must carry the name and never a sentinel: {prefix:?}"
+                );
+            }
+            for command in ["git", "git status --short"] {
+                let line = super::primary_alias_line(
+                    &ShellAlias {
+                        name: "g".to_string(),
+                        command: command.to_string(),
+                        platforms: vec![],
+                    },
+                    platform,
+                    &Default::default(),
+                )
+                .unwrap();
+                assert!(
+                    prefixes.iter().any(|p| line.starts_with(p.as_str())),
+                    "no prefix in {prefixes:?} claims {line:?} ({platform:?})"
+                );
+            }
+        }
+    }
+
+    /// Every dialect that has a trailing-comment grammar names the managers
+    /// whose bootstrapped directories the PATH line carries — once each, in
+    /// directory order. `environment.d` and the launchd plist have no such
+    /// grammar and are deliberately absent.
+    #[test]
+    fn every_dialect_names_the_managers_on_its_bootstrapped_path_line() {
+        let dirs = [
+            ManagerPathDir::new("brew", "/opt/homebrew/bin"),
+            ManagerPathDir::new("brew", "/opt/homebrew/sbin"),
+            ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
+        ];
+        for content in [
+            super::generate_env_file_content(
+                &[],
+                &[],
+                Some(&FoldedPath::derived(&dirs)),
+                &Default::default(),
+            ),
+            super::generate_fish_env_content(
+                &[],
+                &[],
+                Some(&FoldedPath::derived(&dirs)),
+                &Default::default(),
+            ),
+            super::generate_powershell_env_content(
+                &[],
+                &[],
+                Some(&FoldedPath::derived(&dirs)),
+                &Default::default(),
+            ),
+        ] {
+            let path_line = content.lines().nth(1).expect("a PATH line is rendered");
+            assert!(
+                path_line.ends_with(" # manager:brew,cargo"),
+                "the PATH line names each manager once, in dir order: {path_line}"
+            );
+        }
+    }
+
+    /// The prefix that claims a past run's PATH line is derived from a sentinel
+    /// render, and the comment is the line's TAIL — so a real line carrying one
+    /// must still start with it, or a converged machine reads its own PATH line
+    /// as a stranger's deleted entry.
+    #[test]
+    fn path_dirs_line_prefix_still_claims_a_line_that_names_its_manager() {
+        for (platform, dir) in [
+            (EnvPlatform::Linux, "/opt/homebrew/bin"),
+            (EnvPlatform::Windows, "C:/tools/bin"),
+        ] {
+            let dirs = [ManagerPathDir::new("brew", dir)];
+            let content = if platform == EnvPlatform::Windows {
+                super::generate_powershell_env_content(
+                    &[],
+                    &[],
+                    Some(&FoldedPath::derived(&dirs)),
+                    &Default::default(),
+                )
+            } else {
+                super::generate_env_file_content(
+                    &[],
+                    &[],
+                    Some(&FoldedPath::derived(&dirs)),
+                    &Default::default(),
+                )
+            };
+            let path_line = content.lines().nth(1).unwrap();
+            let prefix = super::path_dirs_line_prefix(platform).unwrap();
+            assert!(
+                path_line.contains(" # manager:brew"),
+                "the fixture must actually carry a comment: {path_line}"
+            );
+            assert!(
+                path_line.starts_with(&prefix),
+                "{prefix:?} must still claim {path_line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_dirs_line_prefix_prefixes_the_generated_path_line() {
+        let unix = super::generate_env_file_content(
+            &[],
+            &[],
+            Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
+                "/opt/homebrew/bin",
+            )])),
+            &Default::default(),
+        );
+        let prefix = super::path_dirs_line_prefix(EnvPlatform::Linux).unwrap();
+        assert!(
+            unix.lines().nth(1).unwrap().starts_with(&prefix),
+            "{prefix:?} must prefix the unix PATH line: {unix}"
+        );
+        assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
+
+        let ps = super::generate_powershell_env_content(
+            &[],
+            &[],
+            Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
+                "C:/tools/bin",
+            )])),
+            &Default::default(),
+        );
+        let prefix = super::path_dirs_line_prefix(EnvPlatform::Windows).unwrap();
+        assert!(
+            ps.lines().nth(1).unwrap().starts_with(&prefix),
+            "{prefix:?} must prefix the PowerShell PATH line: {ps}"
+        );
+        assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
     }
 }

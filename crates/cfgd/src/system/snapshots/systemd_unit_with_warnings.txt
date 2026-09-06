@@ -1,8 +1,11 @@
 Phase: System
   profile:snapshot
     ✓ set systemdUnits.cfgd-snap-warn.service.unit-file: missing → present
-      ⊙ Installing unit file: <TMPDIR>/test.service → /etc/systemd/system/cfgd-snap-warn.service
-      ⚠ Failed to read unit file: <os error>
-      ⊙ systemctl enable cfgd-snap-warn.service
 
 ⚠ systemd units applied with warnings
+
+Caveats
+  profile:snapshot
+    ⚠ Failed to read unit file: <os error>
+    ◉ Installing unit file: <TMPDIR>/test.service → /etc/systemd/system/cfgd-snap-warn.service
+    ◉ systemctl enable cfgd-snap-warn.service

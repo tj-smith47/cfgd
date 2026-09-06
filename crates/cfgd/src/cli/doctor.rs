@@ -1,6 +1,7 @@
 use super::*;
 use crate::cli::output_types::DoctorConfigState;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
+use cfgd_core::providers::PackageManagerExt;
 
 pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
@@ -17,7 +18,11 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
 pub(crate) fn run_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<bool> {
-    let (output, extras) = collect_doctor_output(cli, printer)?;
+    // One spinner across every probe, renamed per group: doctor shells out to
+    // git, sops and each package manager before it prints anything at all.
+    let (output, extras) = printer.narrate("Probing: config", |sp| {
+        collect_doctor_output(cli, printer, sp)
+    })?;
     let passed = all_passed(&output);
     printer.emit(build_doctor_doc(&output, &extras));
     Ok(passed)
@@ -59,12 +64,41 @@ pub struct DoctorConfigSource {
     pub cached_path: Option<String>,
 }
 
+/// Whether `manager` reports `resolved_name` installed.
+///
+/// The answer comes from the context's memo, so `doctor` asks each manager once
+/// for the whole module walk rather than once per declared package. The name is
+/// matched through `package_identity`, exactly as the drift walk in `cli::diff`
+/// does: a case-insensitive manager lists `wget` while the module declares
+/// `Wget`, and a raw comparison reads an installed package as missing. Without
+/// a state store there is no context, and every package reads not-installed —
+/// unchanged from before the memo.
+fn package_is_installed(
+    cx: Option<&cfgd_core::providers::PackageContext<'_>>,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    manager: &str,
+    resolved_name: &str,
+) -> bool {
+    let Some(cx) = cx else {
+        return false;
+    };
+    mgr_map
+        .get(manager)
+        .and_then(|m| {
+            let installed = cx.installed_for(*m).ok()?;
+            Some(installed.contains(&m.package_identity(resolved_name)))
+        })
+        .unwrap_or(false)
+}
+
 /// Gather every doctor check into the stable JSON payload + display-only extras.
 /// The lib call to `modules::load_all_modules` takes a `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
+    sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
+    let ctx = RunContext::new(cli, printer);
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
             Ok(mut cfg) => {
@@ -110,13 +144,14 @@ fn collect_doctor_output(
                 path: cli.config.display().to_string(),
                 name: None,
                 profile: None,
-                error: Some("not found".into()),
+                error: Some(cfgd_core::Absence::NotFound.to_string()),
                 state,
             },
             None,
         )
     };
 
+    sp.set_message("Probing: tools");
     let git_available = cfgd_core::command_available("git");
 
     let config_dir = config_dir(cli);
@@ -128,39 +163,36 @@ fn collect_doctor_output(
 
     let health = secrets::check_secrets_health(&config_dir, age_key_override.map(|p| p.as_path()));
 
-    let resolved_packages = if let Some(ref cfg) = loaded_cfg {
+    // Resolved ONCE and read by both the package report below and the module
+    // list further down: `doctor` asked the same question twice, and a profile
+    // resolution walks the inheritance chain off disk each time.
+    let doctor_profile = loaded_cfg.as_ref().and_then(|cfg| {
         let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
-        if let Some(pn) = profile_name
-            && let Ok(mut resolved) = config::resolve_profile(pn, &profiles_dir)
-        {
-            if let Err(e) =
-                packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)
-            {
-                // Manifest resolution failed (missing referenced file, unreadable
-                // dir, parse error). Surface so the user knows the package report
-                // below is computed from a partial set.
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "doctor: manifest resolution failed: {e} — package report may be incomplete"
-                    ),
-                );
-            }
-            Some(resolved.merged.packages)
-        } else {
-            None
+        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref())?;
+        config::resolve_profile(profile_name, &profiles_dir).ok()
+    });
+
+    let resolved_packages = doctor_profile.as_ref().map(|resolved| {
+        let mut packages = resolved.merged.packages.clone();
+        if let Err(e) = ctx.resolve_manifest_packages(&mut packages) {
+            // Manifest resolution failed (missing referenced file, unreadable
+            // dir, parse error). Surface so the user knows the package report
+            // below is computed from a partial set.
+            printer
+                .status(Role::Warn, "Manifest resolution failed")
+                .qualifier(cfgd_core::output::collapse_to_subject_line(&e))
+                .detail("package report may be incomplete");
         }
-    } else {
-        None
-    };
+        packages
+    });
 
     let registry = if let Some(ref pkgs) = resolved_packages {
         build_registry_with_profile(pkgs)
     } else {
         build_registry()
     };
-    let all_managers = &registry.package_managers;
+    sp.set_message("Probing: package managers");
+    let all_managers = registry.package_managers();
 
     let declared_managers: Vec<String> = if let Some(ref pkgs) = resolved_packages {
         let mut declared = Vec::new();
@@ -202,13 +234,15 @@ fn collect_doctor_output(
                 declared.push(custom.name.clone());
             }
             if custom.name.contains('.') {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run — rename it to be asked about them",
-                        custom.name
-                    ),
-                );
+                printer
+                    .status(
+                        Role::Warn,
+                        format!(
+                            "Custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run",
+                            custom.name
+                        ),
+                    )
+                    .detail("rename it to be asked about them");
             }
         }
         declared
@@ -246,31 +280,32 @@ fn collect_doctor_output(
         }
     }
 
-    let module_list: Vec<String> = if let Some(ref cfg) = loaded_cfg {
-        let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
-        profile_name
-            .and_then(|pn| config::resolve_profile(pn, &profiles_dir).ok())
-            .map(|r| r.merged.modules)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let module_list: Vec<String> = doctor_profile
+        .as_ref()
+        .map(|r| r.merged.modules.clone())
+        .unwrap_or_default();
 
     let cache_base = module_cache_dir(cli).unwrap_or_default();
+    sp.set_message("Probing: modules");
     let all_modules =
         modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
 
     // Per-module package detail: resolve each declared package against the
     // platform's manager and query installed_packages to know whether the
-    // declared state is realized. The "modules-only" registry mirrors what
-    // `cfgd apply` would use for the install path.
-    let modules_registry = build_registry();
-    let mgr_map = managers_map(&modules_registry);
-    let platform = Platform::detect();
-    let doctor_state = open_state_store(cli.state_dir.as_deref(), cli.scope()).ok();
-    let doctor_cx = doctor_state
-        .as_ref()
+    // declared state is realized.
+    //
+    // Deliberately the config-FREE registry, and the one place in the run that
+    // wants a second one: the package report above builds a config-aware
+    // registry from the resolved profile, which registers the profile's
+    // `packages.custom` managers. A MODULE cannot reach those — it resolves
+    // against the managers it declares — so resolving the module report through
+    // the profile's registry would report a module package as resolvable by a
+    // manager the module cannot use.
+    let modules_registry = ctx.base_registry();
+    let mgr_map = modules_registry.manager_map();
+    let platform = Platform::current();
+    let doctor_cx = ctx
+        .state_opt()
         .map(|state| cfgd_core::providers::PackageContext::new(printer, state));
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
@@ -282,17 +317,31 @@ fn collect_doctor_output(
                     .packages
                     .iter()
                     .map(|entry| {
-                        match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
-                            Ok(Some(resolved)) => {
-                                let installed = doctor_cx
-                                    .as_ref()
-                                    .and_then(|cx| {
-                                        mgr_map
-                                            .get(&resolved.manager)
-                                            .and_then(|m| m.installed_packages(cx).ok())
-                                    })
-                                    .map(|pkgs| pkgs.contains(&resolved.resolved_name))
-                                    .unwrap_or(false);
+                        match modules::resolve_package(
+                            entry,
+                            mod_name,
+                            platform,
+                            &mgr_map,
+                            doctor_cx.as_ref(),
+                        ) {
+                            Ok(Some(mut resolved)) => {
+                                // Doctor prints the version per package, so it
+                                // is one of the surfaces that asks for one.
+                                modules::fill_available_versions(
+                                    std::slice::from_mut(&mut resolved),
+                                    &mgr_map,
+                                );
+                                // One enumeration per manager for the whole
+                                // walk: `doctor` asks about every package of
+                                // every module, and the memo behind the
+                                // context is what keeps that one question per
+                                // manager instead of one per entry.
+                                let installed = package_is_installed(
+                                    doctor_cx.as_ref(),
+                                    &mgr_map,
+                                    &resolved.manager,
+                                    &resolved.resolved_name,
+                                );
                                 DoctorModulePackageCheck {
                                     name: entry.name.clone(),
                                     resolved_name: resolved.resolved_name,
@@ -334,7 +383,7 @@ fn collect_doctor_output(
                 DoctorModuleCheck {
                     name: mod_name.clone(),
                     valid: false,
-                    error: Some("module not found".into()),
+                    error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
                     packages: Vec::new(),
                 }
             }
@@ -352,8 +401,12 @@ fn collect_doctor_output(
 
     // Probe the store THIS run's `--state-dir`/`--scope` would open, not the
     // per-user default — a `--scope system` doctor reporting the user store
-    // accessible would be diagnosing a store the run never uses.
-    let state_store = match super::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    // accessible would be diagnosing a store the run never uses. Asked through
+    // the run's context, which opens that exact store and does NOT memoize a
+    // failure, so a refused open is still re-attempted and still reported here
+    // rather than being answered from a cached error.
+    sp.set_message("Probing: state store");
+    let state_store = match ctx.state() {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,
@@ -364,6 +417,7 @@ fn collect_doctor_output(
         },
     };
 
+    sp.set_message("Probing: profiles");
     let profiles_dir_path = profiles_dir(cli);
     // One ambiguity-tolerant walk feeds both the System count and the
     // per-profile layout checks, so the two can never disagree on what counts
@@ -477,13 +531,11 @@ fn collect_doctor_output(
 /// Build the doctor `Doc` from a collected payload + display-only extras. Used
 /// by the live command and by snapshot tests under
 /// `tests/output_snapshots/doctor/`.
+// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its detail
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
-    // Config emits at top-level (Status then KVs) rather than nested in a
-    // section because a section's pending_statuses buffer flushes Status
-    // lines after KVs, inverting the intended order.
-    doc = build_config_top(doc, &output.config);
+    doc = doc.section("Config", |s| build_config_section(s, &output.config));
     doc = doc.section("Tools", |s| build_tools_section(s, output.git));
     doc = doc.section("Secrets", |s| build_secrets_section(s, &output.secrets));
     doc = doc.section_if_nonempty(
@@ -493,26 +545,35 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     );
     doc = doc.section_if_nonempty("Modules", &output.modules, build_modules_section);
     doc = doc.section_if_nonempty("Profiles", &output.profiles, build_profiles_section);
-    doc = doc.section("System", |s| build_system_section(s, extras));
+    // `Installation`, never `System`: `diff` and `status` reserve a `System`
+    // section for system-configurator drift, and these rows check none of it —
+    // they are cfgd's own state store, profiles directory and update behaviour
+    // on this machine. `Environment` is spoken for too; it reads as the `spec.env`
+    // surface, which doctor equally does not check.
+    doc = doc.section("Installation", |s| build_installation_section(s, extras));
     doc = doc.section_if_nonempty(
-        "Config Sources",
+        super::source::list::SOURCES_SECTION,
         &extras.config_sources,
         build_sources_section,
     );
 
     if all_passed(output) {
-        doc = doc.status(Role::Ok, "All checks passed");
+        doc = doc.status(Role::Ok, "Passed every check");
     } else {
-        doc = doc.status(Role::Fail, "Some checks failed — see above");
+        doc = doc.status_with(Role::Fail, "Some checks failed", |f| f.detail("see above"));
     }
 
     doc.with_data(output)
 }
 
-fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
+// no-next-step: the row's detail names the file to fix
+fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBuilder {
     match cfg.state {
         DoctorConfigState::Valid => {
-            let mut doc = doc.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+            // name-row-ok: an inventory row naming what was checked
+            let mut s = s.status_with(Role::Ok, "Config file", |f| {
+                f.qualifier(format!("{} (valid)", cfg.path))
+            });
             let mut pairs: Vec<(String, String)> = Vec::new();
             if let Some(name) = cfg.name.as_deref() {
                 pairs.push(("Name".into(), name.into()));
@@ -521,58 +582,69 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
                 "Profile".into(),
                 cfg.profile.as_deref().unwrap_or("(none)").into(),
             ));
-            doc = doc.kv_block(pairs);
-            doc
+            // facts-block-ok: the block closes this arm's section; the rows
+            // below are the match's other arms, not rows after it
+            s = s.kv_block(pairs);
+            s
         }
-        DoctorConfigState::MissingAtDefault => doc.status_with(
-            Role::Warn,
-            format!("Config file: {} — not found", cfg.path),
-            |sf| sf.detail("run 'cfgd init' to create one"),
-        ),
-        DoctorConfigState::MissingAtExplicit => doc.status_with(
-            Role::Fail,
-            format!("Config file: {} — not found", cfg.path),
-            |sf| sf.detail("the given --config/--config-dir/CFGD_CONFIG path does not exist"),
-        ),
-        DoctorConfigState::Invalid => doc.status(
-            Role::Fail,
-            format!(
-                "Config file: {} — {}",
-                cfg.path,
-                cfg.error.as_deref().unwrap_or("invalid")
-            ),
-        ),
+        DoctorConfigState::MissingAtDefault => s.status_with(Role::Warn, "Config file", |sf| {
+            sf.qualifier(cfg.path.clone()).detail(format!(
+                "{}; run `cfgd init` to create one",
+                cfgd_core::Absence::NotFound
+            ))
+        }),
+        DoctorConfigState::MissingAtExplicit => s.status_with(Role::Fail, "Config file", |sf| {
+            sf.qualifier(cfg.path.clone()).detail(format!(
+                "{}; the given --config/--config-dir/CFGD_CONFIG path does not exist",
+                cfgd_core::Absence::NotFound
+            ))
+        }),
+        DoctorConfigState::Invalid => s.status_with(Role::Fail, "Config file", |f| {
+            f.qualifier(cfg.path.clone())
+                .detail(cfg.error.as_deref().unwrap_or("invalid").to_string())
+        }),
     }
 }
 
+// no-next-step: the row's detail names the install to run
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
-        s.status(Role::Ok, "git: found")
+        // name-row-ok: the row names the executable, not an outcome
+        s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
-        s.status(Role::Fail, "git: not found — install git to use cfgd")
+        // name-row-ok: the row names the executable, not an outcome
+        s.status_with(Role::Fail, "git", |f| {
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
+                .detail("install git to use cfgd")
+        })
     }
 }
 
 fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
     s = if secrets.sops_available {
         let version_str = secrets.sops_version.as_deref().unwrap_or("unknown version");
-        s.status(Role::Ok, format!("sops: found ({})", version_str))
+        // name-row-ok: the row names the executable, not an outcome
+        s.status_with(Role::Ok, "sops", |f| {
+            f.qualifier(format!("found ({})", version_str))
+        })
     } else {
-        s.status(
-            Role::Warn,
-            "sops: not found — required for secrets (https://github.com/getsops/sops#install)",
-        )
+        // name-row-ok: the row names the executable, not an outcome
+        s.status_with(Role::Warn, "sops", |f| {
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
+                .detail("required for secrets (https://github.com/getsops/sops#install)")
+        })
     };
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
-        (true, Some(path)) => s.status(Role::Ok, format!("age key: {}", path)),
-        (false, Some(path)) => s.status(
-            Role::Warn,
-            format!(
-                "age key: not found at {} — run 'cfgd init' to generate",
-                path
-            ),
-        ),
+        // name-row-ok: the row names the key file, not an outcome
+        (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
+        // name-row-ok: the row names the key file, not an outcome
+        (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
+            f.qualifier(path.to_string()).detail(format!(
+                "{}; run `cfgd init` to generate",
+                cfgd_core::Absence::NotFound
+            ))
+        }),
         _ => s,
     };
 
@@ -580,63 +652,67 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         secrets.sops_config_exists,
         secrets.sops_config_path.as_deref(),
     ) {
-        (true, Some(path)) => s.status(Role::Ok, format!(".sops.yaml: {}", path)),
-        (true, None) => s.status(Role::Ok, ".sops.yaml: present"),
-        (false, _) => s.status(
-            Role::Warn,
-            ".sops.yaml: not found — will be generated on 'cfgd init'",
-        ),
+        (true, Some(path)) => {
+            // name-row-ok: an inventory row naming what was checked
+            s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier(path.to_string()))
+        }
+        // name-row-ok: an inventory row naming what was checked
+        (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
+        (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
+                .detail("will be generated on `cfgd init`")
+        }),
     };
 
     for provider in &secrets.providers {
         s = if provider.available {
-            s.status(Role::Ok, format!("provider {}: available", provider.name))
+            // name-row-ok: an inventory row naming the provider
+            s.status_with(Role::Ok, format!("Provider {}", provider.name), |f| {
+                f.qualifier("available")
+            })
         } else {
-            s.status(
-                Role::Info,
-                format!("provider {}: not installed (optional)", provider.name),
-            )
+            s.status_with(Role::Info, format!("Provider {}", provider.name), |f| {
+                f.qualifier(format!("{} (optional)", cfgd_core::Absence::NotInstalled))
+            })
         };
     }
     s
 }
 
+// no-next-step: the row's detail names what the manager reported
 fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) -> SectionBuilder {
     managers.iter().fold(s, |s, m| {
         if m.declared {
             if m.available {
-                s.status(
-                    Role::Ok,
-                    format!("{}: available (declared in config)", m.name),
-                )
+                s.status_with(Role::Ok, m.name.clone(), |sf| {
+                    sf.qualifier("available (declared in config)")
+                })
             } else if m.can_bootstrap {
                 let detail = match m.bootstrap_method.as_deref() {
                     Some(method) => format!("can auto-bootstrap via {}", method),
                     None => "can auto-bootstrap".into(),
                 };
-                s.status_with(Role::Warn, format!("{}: not found", m.name), |sf| {
-                    sf.detail(detail)
+                s.status_with(Role::Warn, m.name.clone(), |sf| {
+                    sf.qualifier(cfgd_core::Absence::NotFound.as_str())
+                        .detail(detail)
                 })
             } else {
-                s.status(
-                    Role::Fail,
-                    format!(
-                        "{}: not found — declared in config but not available",
-                        m.name
-                    ),
-                )
+                s.status_with(Role::Fail, m.name.clone(), |sf| {
+                    sf.qualifier(cfgd_core::Absence::NotFound.as_str())
+                        .detail("declared in config but not available")
+                })
             }
         } else if m.available {
-            s.status(
-                Role::Info,
-                format!("{}: available (not used in config)", m.name),
-            )
+            s.status_with(Role::Info, m.name.clone(), |sf| {
+                sf.qualifier("available (not used in config)")
+            })
         } else {
             s
         }
     })
 }
 
+// no-next-step: the row's detail names what the module resolution reported
 fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> SectionBuilder {
     modules.iter().fold(s, |s, m| {
         if !m.valid {
@@ -652,11 +728,13 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
     })
 }
 
+// no-next-step: the row's detail names the migrate command for a legacy profile
 fn build_profiles_section(
     s: SectionBuilder,
     profiles: &[DoctorProfileLayoutCheck],
 ) -> SectionBuilder {
     if profiles.iter().all(|p| !p.legacy && p.error.is_none()) {
+        // verdict-row-ok: a layout verdict, not an act cfgd performed
         return s.status(Role::Ok, "All profiles use the canonical bundle layout");
     }
     profiles.iter().fold(s, |s, p| {
@@ -665,19 +743,18 @@ fn build_profiles_section(
             // them errors), unlike the supported legacy form — Fail, not Warn.
             s.status(Role::Fail, cfgd_core::output::collapse_to_subject_line(err))
         } else if p.legacy {
-            s.status(
-                Role::Warn,
-                format!(
-                    "profile '{}' uses the legacy flat layout — run 'cfgd profile migrate {}'",
-                    p.name, p.name
-                ),
-            )
+            // name-row-ok: the row names the profile, not an outcome
+            s.status_with(Role::Warn, format!("profile '{}'", p.name), |sf| {
+                sf.qualifier("uses the legacy flat layout")
+                    .detail(format!("run `cfgd profile migrate {}`", p.name))
+            })
         } else {
             s.status(Role::Ok, p.name.clone())
         }
     })
 }
 
+// no-next-step: the row's detail names what the package query reported
 fn build_module_package_status(
     sub: SectionBuilder,
     pkg: &DoctorModulePackageCheck,
@@ -704,16 +781,20 @@ fn build_module_package_status(
     } else {
         sub.status_with(Role::Fail, pkg.name.clone(), |sf| {
             sf.detail(format!(
-                "not installed ({} {})",
-                pkg.manager, pkg.resolved_name
+                "{} ({} {})",
+                cfgd_core::Absence::NotInstalled,
+                pkg.manager,
+                pkg.resolved_name
             ))
         })
     }
 }
 
-fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
+// no-next-step: the row's detail names the directory cfgd could not use
+fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
     if let Some(ss) = extras.state_store.as_ref() {
         s = if ss.accessible {
+            // name-row-ok: an inventory row naming what was checked
             s.status(Role::Ok, "State store: accessible")
         } else {
             let detail = ss.message.clone().unwrap_or_else(|| "unavailable".into());
@@ -724,34 +805,27 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
     }
     if let Some(pd) = extras.profiles_dir.as_ref() {
         s = if let Some(err) = pd.error.as_deref() {
-            s.status(
-                Role::Fail,
-                format!(
-                    "Profiles directory: {} — {}",
-                    pd.path,
-                    cfgd_core::output::collapse_to_subject_line(err)
-                ),
-            )
+            s.status_with(Role::Fail, "Profiles directory", |sf| {
+                sf.qualifier(pd.path.clone())
+                    .detail(cfgd_core::output::collapse_to_subject_line(err))
+            })
         } else if pd.exists {
-            s.status(
-                Role::Ok,
-                format!(
-                    "Profiles directory: {} ({} profiles)",
-                    pd.path, pd.profile_count
-                ),
-            )
+            // name-row-ok: an inventory row naming what was checked
+            s.status_with(Role::Ok, "Profiles directory", |sf| {
+                sf.qualifier(format!("{} ({} profiles)", pd.path, pd.profile_count))
+            })
         } else {
-            s.status(
+            s.status_with(
                 Role::Warn,
-                format!("Profiles directory not found: {}", pd.path),
+                format!("Profiles directory {}", cfgd_core::Absence::NotFound),
+                |sf| sf.qualifier(pd.path.clone()),
             )
         };
     }
     if let Some(var) = extras.update_optout {
-        s = s.status(
-            Role::Info,
-            format!("Automatic update check: suppressed by {var}"),
-        );
+        s = s.status_with(Role::Info, "Automatic update check", |sf| {
+            sf.qualifier(format!("suppressed by {var}"))
+        });
     }
     s
 }
@@ -760,11 +834,12 @@ fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> S
     sources
         .iter()
         .fold(s, |s, source| match source.cached_path.as_deref() {
-            Some(path) => s.status(Role::Ok, format!("{}: cached at {}", source.name, path)),
-            None => s.status(
-                Role::Warn,
-                format!("{}: not cached (run 'cfgd source update')", source.name),
-            ),
+            Some(path) => s.status_with(Role::Ok, source.name.clone(), |f| {
+                f.qualifier(format!("cached at {}", path))
+            }),
+            None => s.status_with(Role::Warn, source.name.clone(), |f| {
+                f.qualifier("not cached (run `cfgd source update`)")
+            }),
         })
 }
 
@@ -789,10 +864,91 @@ fn all_passed(output: &DoctorOutput) -> bool {
 /// A config missing at the DEFAULT path is a fresh-machine state (rendered as
 /// a Warn), not a failure. A config missing at an explicitly-given path, or a
 /// present-but-unparseable one, fails the verdict. Mirrors the classification
-/// in `build_config_top`.
+/// in `build_config_section`.
 fn config_ok(cfg: &DoctorConfigCheck) -> bool {
     matches!(
         cfg.state,
         DoctorConfigState::Valid | DoctorConfigState::MissingAtDefault
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mgr_map<'a>(
+        managers: &'a [&'a dyn cfgd_core::providers::PackageManager],
+    ) -> std::collections::HashMap<String, &'a dyn cfgd_core::providers::PackageManager> {
+        managers
+            .iter()
+            .map(|m| (m.name().to_string(), *m))
+            .collect()
+    }
+
+    // `cfgd diff` reports a chocolatey-declared `Wget` as installed because it
+    // matches through `package_identity`; `doctor` compared the raw declared
+    // name and reported the same package missing.
+    #[test]
+    fn a_case_insensitive_managers_package_reads_installed_in_doctor() {
+        let choco = cfgd_core::test_helpers::MockPackageManager::new("chocolatey")
+            .case_insensitive()
+            .with_installed(&["wget"]);
+        let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&choco];
+        let map = mgr_map(&managers);
+
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        assert!(
+            package_is_installed(Some(&cx), &map, "chocolatey", "Wget"),
+            "a declared `Wget` must match the listed `wget`"
+        );
+        assert!(
+            !package_is_installed(Some(&cx), &map, "chocolatey", "ripgrep"),
+            "a genuinely absent package must still read not installed"
+        );
+    }
+
+    #[test]
+    fn every_package_reads_not_installed_without_a_state_store() {
+        let apt = cfgd_core::test_helpers::MockPackageManager::new("apt").with_installed(&["curl"]);
+        let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&apt];
+        assert!(!package_is_installed(
+            None,
+            &mgr_map(&managers),
+            "apt",
+            "curl"
+        ));
+    }
+
+    // One question per manager for the whole module walk, however many packages
+    // the modules declare under it.
+    #[test]
+    fn doctor_asks_each_manager_once_for_the_whole_walk() {
+        // The count is a memo-hit claim, so the memo's age ceiling is pinned out
+        // of reach — unpinned it rests on the 30s wall clock. No serialization:
+        // nothing in this crate's test binary pins the ceiling to zero, and a
+        // longer ceiling can only let another test's entries live longer.
+        let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+            let apt = cfgd_core::test_helpers::MockPackageManager::new("apt")
+                .with_installed(&["curl", "jq"]);
+            let counter = apt.enumeration_counter();
+            let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&apt];
+            let map = mgr_map(&managers);
+
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+            let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+            for name in ["curl", "jq", "ripgrep", "fd"] {
+                package_is_installed(Some(&cx), &map, "apt", name);
+            }
+
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        assert_eq!(enumerations, 1);
+    }
 }

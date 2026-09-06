@@ -1,4 +1,5 @@
 use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::PackageManagerExt;
 
 use super::*;
 
@@ -297,6 +298,32 @@ fn pkg_manager_install_uses_dash_y() {
     let mgr = pkg_manager();
     assert_eq!(mgr.install_cmd, &["pkg", "install", "-y"]);
     assert_eq!(mgr.uninstall_cmd, &["pkg", "remove", "-y"]);
+}
+
+/// Every family's `raise_verb` must be a token of the very command it claims
+/// to name — a verb the family's own `upgrade_cmd`/`install_cmd` no longer
+/// carries would render junk the moment a surface displays it.
+#[test]
+fn every_simple_family_names_its_raise_verb_from_its_own_command() {
+    for mgr in [
+        apt_manager(),
+        dnf_manager(),
+        yum_manager(),
+        apk_manager(),
+        pacman_manager(),
+        zypper_manager(),
+        pkg_manager(),
+    ] {
+        let cmd = mgr.upgrade_cmd.unwrap_or(mgr.install_cmd);
+        let verb = mgr
+            .upgrade_verb()
+            .expect("every SimpleManager family raises a held package");
+        assert!(
+            cmd.contains(&verb),
+            "{}: raise_verb {verb:?} is not a token of its own command {cmd:?}",
+            mgr.name()
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -638,6 +665,35 @@ mod seam_tests {
 
     #[test]
     #[serial]
+    fn apk_install_raises_a_held_package_via_apk_upgrade_not_add() {
+        // The listing already carries `curl`, so `install` partitions it
+        // into `held` and raises it through `apk upgrade curl` instead of
+        // re-running `apk add curl`, which would no-op; `wget` is unheld
+        // and still installs via `apk add`.
+        let shim = ToolShim::install(APK_BIN_ENV, 0, "curl-7.88.1-r1\n", "");
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+        apk_manager()
+            .install(&["curl".into(), "wget".into()], &cx)
+            .unwrap();
+        let log = shim.argv_log();
+        assert!(
+            log.contains("upgrade curl"),
+            "held package must be raised via `apk upgrade`: {log}"
+        );
+        assert!(
+            log.contains("add wget"),
+            "unheld package must still install via `apk add`: {log}"
+        );
+        assert!(
+            !log.contains("add curl"),
+            "held package must not be re-run through `apk add`: {log}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn pacman_install_passes_noconfirm_through_shim() {
         let shim = ToolShim::install(PACMAN_BIN_ENV, 0, "", "");
         let printer = test_printer();
@@ -738,5 +794,40 @@ mod seam_tests {
         // dnf_aliases maps `fd` → `fd-find` (same upstream-vs-distro split as apt).
         let aliases = dnf_manager().package_aliases("fd").unwrap();
         assert_eq!(aliases, vec!["fd-find".to_string()]);
+    }
+
+    /// The `pkg` comparator memo caches only `Ok`: a transient spawn
+    /// failure must not poison the pair for the manager instance's
+    /// lifetime — the next ask for the same `(available, floor)` pair must
+    /// actually spawn `pkg` again, not replay a stale `Err`.
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_checked_does_not_memoize_a_spawn_failure() {
+        let mgr = pkg_manager();
+        {
+            // No shim installed: the env var names a binary that cannot be
+            // found, so the spawn itself fails.
+            let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+                PKG_BIN_ENV,
+                "/nonexistent/cfgd-test-pkg-bin-does-not-exist",
+            );
+            let first = mgr.version_meets_minimum_checked("1.0", "1.0");
+            assert!(
+                first.is_err(),
+                "a nonexistent pkg binary must fail to spawn: {first:?}"
+            );
+        }
+
+        let shim = ToolShim::install(PKG_BIN_ENV, 0, ">\n", "");
+        let second = mgr.version_meets_minimum_checked("1.0", "1.0");
+        assert_eq!(
+            second,
+            Ok(true),
+            "a memoized spawn failure would still answer Err here: {second:?}"
+        );
+        assert!(
+            !shim.argv_log().is_empty(),
+            "the second ask must actually spawn pkg again, not read a cached failure"
+        );
     }
 }

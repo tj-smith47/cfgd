@@ -17,7 +17,7 @@ pub fn cmd_source_create(
             "cfgd-source.yaml",
             "already_exists",
             format!(
-                "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
+                "cfgd-source.yaml already exists at {} — use `cfgd source edit` to modify it",
                 source_path.posix()
             ),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&source_path) }),
@@ -60,7 +60,7 @@ pub fn cmd_source_create(
     };
 
     let profile_names = scan_profile_names(&dir.join("profiles"), printer)?;
-    let module_names = scan_module_names(&dir.join("modules"), printer)?;
+    let module_names = scan_module_names(&cfgd_core::declared_modules_dir(dir), printer)?;
 
     // Build profiles YAML block
     let profiles_yaml = if profile_names.is_empty() {
@@ -142,7 +142,10 @@ pub fn cmd_source_create(
         );
     }
     doc = doc
-        .hint("Edit the file to configure policy tiers and platform-profiles")
+        .hint(format!(
+            "Edit the manifest to configure policy tiers and platform-profiles, then run `cfgd source validate {}`",
+            cfgd_core::to_posix_string(&source_path)
+        ))
         .with_data(serde_json::json!({
             "name": source_name,
             "path": cfgd_core::to_posix_string(&source_path),

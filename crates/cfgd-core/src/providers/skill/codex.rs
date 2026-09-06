@@ -50,7 +50,7 @@ impl SkillProvider for CodexProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill> {
         // The skill payload rides in the managed section, not `contents`: the
         // default `install` splices `managed_section` into the existing file and
         // ignores `contents` when a section is present, so leaving `contents`
@@ -62,7 +62,7 @@ impl SkillProvider for CodexProvider {
             contents: String::new(),
             managed_section: Some(ManagedSection::for_kind(
                 model.kind,
-                render_skill_body(model),
+                render_skill_body(model, scope),
             )),
         })
     }
@@ -77,7 +77,7 @@ mod tests {
     fn codex_renders_managed_section_with_delimiters() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = CodexProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("AGENTS.md"));
         let section = r.managed_section.expect("codex uses a managed section");
@@ -90,7 +90,7 @@ mod tests {
     fn contents_is_empty_and_payload_rides_in_the_block() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = CodexProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         // `contents` is empty by design (default `install` ignores it for a
         // managed-section provider); the on-disk bytes come from the spliced

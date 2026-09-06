@@ -30,7 +30,7 @@ fn sentinel_path(dir: &Path) -> std::path::PathBuf {
 }
 
 /// A profile whose `preApply` script writes a readiness sentinel and then
-/// sleeps, so the apply is reliably in-flight when we deliver the signal, plus
+/// sleeps, so the apply is reliably in-flight when the signal is delivered, plus
 /// a managed file action whose target must NOT be written once the abort takes
 /// effect.
 ///

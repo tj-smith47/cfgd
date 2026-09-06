@@ -12,7 +12,7 @@
 //!   gets included in the buffered Doc and Anthropic chooses non-deterministic
 //!   IDs and timing.
 //!
-//!   What we DO snapshot is the deterministic `--scan-only` branch which
+//!   What this DOES snapshot is the deterministic `--scan-only` branch which
 //!   walks the home directory looking for dotfiles + shell config and
 //!   emits a buffered Doc with stable key names (`toolsScanned`,
 //!   `settingsCaptured`, `dotfileEntries`, …). The home dir is a tempdir
@@ -57,7 +57,10 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         quiet: true,
         output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -65,7 +68,9 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         scope_arg: cfgd::cli::ScopeArg::User,
         command: Some(cfgd::cli::Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }

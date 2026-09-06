@@ -142,7 +142,6 @@ mod tests {
 
     use super::super::{Printer, Verbosity};
     use super::LaneOutput;
-    use crate::output::strip_ansi;
 
     /// A printer whose sink is a buffer and whose live region, colour, and
     /// stdin-tty are all pinned OFF — the state a redirected run is in —
@@ -163,7 +162,7 @@ mod tests {
         lane.push_line("==> Pouring");
         let body = lane.finish();
         assert_eq!(body, vec!["==> Downloading", "==> Pouring"]);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.is_empty(),
             "a lane must reach the sink only through the coordinator: {out:?}"
@@ -216,7 +215,7 @@ mod tests {
         // one string, so a whole-string count of exactly one is the
         // not-garbled property — and the two-digit index keeps line 1 from
         // matching inside line 10.
-        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let out = crate::test_helpers::captured_text(&buf);
         // Not vacuous: a lane that fell back to capturing would put nothing in
         // the stream at all, and every count below would still be 1.
         assert!(

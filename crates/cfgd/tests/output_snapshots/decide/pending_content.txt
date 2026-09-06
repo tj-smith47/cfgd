@@ -1,0 +1,10 @@
+Pending Decisions (5 items)
+  source:team-config
+    ◉ Recommended env.EDITOR          — EDITOR=vim
+    ◉ Recommended packages.brew.curl  — brew install curl — installed 7.1, source wants ^8
+    ◉ Required files./home/u/.bashrc  — 3 lines, mode 0644
+    ◉ Recommended system.shellAliases — {"gs":"git status"}
+    ◉ Optional env.GONE
+  → Answer each pending decision:
+    $ cfgd decide [accept|reject] <resource>
+    $ cfgd decide accept --all

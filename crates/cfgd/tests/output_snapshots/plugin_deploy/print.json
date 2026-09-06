@@ -1,0 +1,13 @@
+{
+  "applied": false,
+  "files": [
+    "<DIR>/pod.yaml"
+  ],
+  "manifest": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: myapp\nspec:\n  containers:\n  - name: app\n    image: registry.example.com/base:v1\n  volumes:\n  - name: app\n    image:\n      reference: registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd\n",
+  "rewrites": [
+    {
+      "pinned": "registry.example.com/myapp/server@sha256:3a7b9c4d0000000000000000000000000000000000000000000000000000abcd",
+      "reference": "registry.example.com/myapp/server:abc123"
+    }
+  ]
+}

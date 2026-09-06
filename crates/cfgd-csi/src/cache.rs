@@ -78,7 +78,7 @@ impl Cache {
         }
 
         // Atomic move — if another thread already placed the entry, discard ours.
-        // On rename failure, we can't blindly `Ok(entry_dir)` — that's only
+        // On rename failure, `Ok(entry_dir)` can't be returned blindly — that's only
         // correct when the failure was "lost the race" (another thread/process
         // completed the pull and placed a valid entry). Any other rename error
         // (destination permission issue, parent removed, dest on a different
@@ -547,6 +547,78 @@ mod tests {
         assert!(
             atime_after > 1000,
             "access time should be updated after get()"
+        );
+    }
+
+    /// A module's `bin/` scripts are executed from the published volume, so the
+    /// exec bit has to survive the whole path: packed into the layer, extracted
+    /// into the cache's temp dir, and moved into the cache entry the node
+    /// publishes. `get_or_pull` is the link that owns the last two.
+    #[cfg(unix)]
+    #[test]
+    fn cache_get_or_pull_keeps_the_exec_bit_of_a_pulled_module() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("module.yaml"), "name: exec-mod\n").unwrap();
+        std::fs::create_dir(src.path().join("bin")).unwrap();
+        let script = src.path().join("bin/run.sh");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let layer = cfgd_core::oci::create_tar_gz(src.path()).unwrap();
+        let layer_digest = cfgd_core::sha256_digest(&layer);
+
+        let mut server = mockito::Server::new();
+        let registry = server
+            .url()
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        server
+            .mock("GET", "/v2/test/execmod/manifests/v1")
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST,
+                    "config": {
+                        "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                        "digest": "sha256:0",
+                        "size": 0,
+                    },
+                    "layers": [{
+                        "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                        "digest": layer_digest,
+                        "size": layer.len(),
+                    }],
+                })
+                .to_string(),
+            )
+            .create();
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/execmod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer)
+            .create();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 10 * 1024 * 1024);
+        let entry = cache
+            .get_or_pull("execmod", "1.0.0", &format!("{registry}/test/execmod:v1"))
+            .expect("pull must succeed against the mock registry");
+
+        let mode = std::fs::metadata(entry.join("bin/run.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "a cached module's script must still be executable where the node publishes it"
         );
     }
 

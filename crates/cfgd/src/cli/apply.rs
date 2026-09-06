@@ -139,7 +139,7 @@ pub fn cmd_apply(
 /// a signal abort to its conventional exit code.
 ///
 /// Non-apply terminal paths (dry-run, aborted-confirmation, nothing-to-do)
-/// report [`ApplyStatus::Success`] with no abort code — they did not run
+/// report [`cfgd_core::state::ApplyStatus::Success`] with no abort code — they did not run
 /// actions, so they never warrant a failure exit. Keeping the exit decision in
 /// `cmd_apply` lets in-process tests capture the rendered failure shape without
 /// `process::exit` aborting the harness.
@@ -182,50 +182,65 @@ pub fn run_apply(
     let yes = args.yes;
     let skip = &args.skip;
     let only = &args.only;
-    let module_filter = args.module.as_deref();
+    let module_filter: &[String] = &args.module;
+    let with_profile = args.with_profile;
+
+    // `--with-profile` opts a `--module` run INTO composing with the full
+    // profile; with no module named, there is nothing for it to compose
+    // with — reject rather than silently behaving like a plain `cfgd apply`.
+    if with_profile && module_filter.is_empty() {
+        anyhow::bail!(
+            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
+        );
+    }
 
     let config_dir = config_dir(cli);
 
-    // When --module is set, try loading profile but fall back to empty if none
-    // configured. The header these rows belong to is rendered once the plan is
-    // final — it states the phase and action counts — so the profile label is
-    // carried down rather than printed here. A module-only run resolved no
-    // profile, so it carries none and the header omits the row.
+    // `--module` without `--with-profile` isolates unconditionally — a
+    // profile is never even resolved, so a profile that DOES resolve can no
+    // longer leak into an isolated run. The header these rows belong to is
+    // rendered once the plan is final — it states the phase and action
+    // counts — so the profile label is carried down rather than printed
+    // here. An isolated run resolved no profile, so it carries none and the
+    // header omits the row.
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
+        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
+
+    let ctx = RunContext::new(cli, printer);
 
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a
     // NoConfig exit would leave an orphan state directory behind.
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-
-    let mut registry = build_registry_with_config(Some(&cfg));
-    registry.set_system_config_dir(&config_dir);
+    let state = ctx.state()?;
 
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
-    let desired = resolve_desired_state(
-        cli,
+    let mut desired = resolve_desired_state(
+        &ctx,
         &cfg,
         &resolved,
         module_filter,
+        with_profile,
         printer,
         true,
         composition::ConstraintMode::Enforce,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    // Built from the same config and composed packages this path would have
+    // used, custom managers included.
+    let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
+    let composed_sources = desired.sources;
     let source_commits = desired.source_commits;
-    let resolved_modules = desired.modules;
+    let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
+    registry.set_system_config_dir(&config_dir);
+    let module_cache = module_cache_dir(cli)?;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
-
-    // Extend registry with custom package managers from config
-    registry.package_managers.extend(packages::custom_managers(
-        &effective_resolved.merged.packages.custom,
-    ));
+    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -235,8 +250,10 @@ pub fn run_apply(
     let phase_filter: Option<PhaseFilter> =
         resolve_phase_filter(args.phase.clone(), &registry, printer)?;
 
-    // If --module is set, skip profile-level packages/files
-    let module_only = module_filter.is_some();
+    // Isolated (--module without --with-profile): skip profile-level
+    // packages/files — everything else profile-owned is already zeroed by
+    // `resolve_desired_state`'s isolation (`effective_resolved`).
+    let module_only = !module_filter.is_empty() && !with_profile;
 
     // Declarative prune (and the post-apply tracking-table GC below) reconcile
     // removals, which is only safe on a FULL, unscoped run: it needs the
@@ -248,8 +265,15 @@ pub fn run_apply(
         phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
     let prune_eligible = !module_only && !scope_restricted;
 
-    // In dry-run mode we don't need secret providers wired up — just plan files for display.
-    // In apply mode we wire up the full file manager with secret providers.
+    // Declared here rather than inside the planning block below because the
+    // tracking-table GC further down diffs against the same installed state:
+    // both run before a single action executes, so one enumeration per manager
+    // answers both. Anything the apply itself installs or removes retires the
+    // memo, so nothing downstream of an action can read a stale set.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+
+    // Dry-run mode needs no secret providers wired up — just plan files for display.
+    // Apply mode wires up the full file manager with secret providers.
     let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
         (
             Vec::new(),
@@ -258,59 +282,67 @@ pub fn run_apply(
             cfgd_core::reconciler::ActualPackages::default(),
         )
     } else {
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let cfgd_installed = if prune_eligible {
-            cfgd_installed_packages(&state)?
-        } else {
-            std::collections::HashSet::new()
-        };
-        // Profile-scoped: module packages are added separately by
-        // `reconciler.plan` as `Action::Module`, so this planner must stay
-        // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
-        let (pkg, actual) = packages::plan_packages_observed(
-            &effective_resolved.merged,
-            &[],
-            &all_managers,
-            &cfgd_installed,
-            &pkg_cx,
-        )?;
+        printer.narrate("Planning", |sp| -> anyhow::Result<_> {
+            sp.set_message("Planning Packages");
+            let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+                .package_managers()
+                .iter()
+                .map(|m| m.as_ref())
+                .collect();
+            let cfgd_installed = if prune_eligible {
+                cfgd_installed_packages(state)?
+            } else {
+                std::collections::HashSet::new()
+            };
+            // Profile-scoped: module packages are added separately by
+            // `reconciler.plan` as `Action::Module`, so this planner must stay
+            // profile-only to avoid double-handling them.
+            let (pkg, actual) = packages::plan_packages_observed(
+                &effective_resolved.merged,
+                &[],
+                &all_managers,
+                &cfgd_installed,
+                &pkg_cx,
+            )?;
 
-        let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
-        fm.set_global_strategy(cfg.spec.file_strategy);
-        if !source_env.is_empty() {
-            fm.set_source_env(&source_env);
-        }
+            sp.set_message("Planning Files");
+            let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
+            fm.set_global_strategy(cfg.spec.file_strategy);
+            if !source_env.is_empty() {
+                fm.set_source_env(&source_env);
+            }
 
-        if !dry_run {
-            let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
-            fm.set_secret_providers(
-                Some(secrets::build_secret_backend(
-                    &backend_name,
-                    age_key_path,
-                    Some(&config_dir),
-                )),
-                secrets::build_secret_providers(),
-            );
-        }
+            if !dry_run {
+                let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
+                fm.set_secret_providers(
+                    Some(secrets::build_secret_backend(
+                        &backend_name,
+                        age_key_path,
+                        Some(&config_dir),
+                    )),
+                    secrets::build_secret_providers(),
+                );
+            }
 
-        let fa = fm.plan(&effective_resolved.merged)?;
+            let fa = fm.plan(&effective_resolved.merged)?;
 
-        if dry_run {
-            // Keep fm around for diff display but don't register it
-            (pkg, fa, Some(fm), actual)
-        } else {
-            // Register the file manager so the reconciler delegates through the trait
-            registry.file_manager = Some(Box::new(fm));
-            (pkg, fa, None, actual)
-        }
+            Ok(if dry_run {
+                // Keep fm around for diff display but don't register it
+                (pkg, fa, Some(fm), actual)
+            } else {
+                // Register the file manager so the reconciler delegates through the trait
+                registry.file_manager = Some(Box::new(fm));
+                (pkg, fa, None, actual)
+            })
+        })?
     };
 
-    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+    // An isolate names its own modules on the command line, so its row renders
+    // only what the resolution ADDED to them.
+    let header_modules = match module_only {
+        true => cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
+        false => cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+    };
 
     // A resource awaiting (or declined by) a source decision is not this run's
     // to touch, in any mode: the confirm prompt, `--yes` and `--dry-run` all
@@ -351,43 +383,84 @@ pub fn run_apply(
     // fallback knows no subscription list, and a foreign config naming someone
     // else's store does not write rows into it.
     let (withheld, review) = plan_ops::withheld_for_run(
-        &state,
+        &ctx,
+        state,
         &cfg,
-        &effective_resolved,
-        &config_dir,
+        plan_ops::DesiredOwnership {
+            resolved: &effective_resolved,
+            entry_owners: &reconciler::merged_entry_owners(&effective_resolved, &resolved_modules),
+        },
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,
     )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
-    let reconciler = Reconciler::new(&registry, &state)
-        .withholding_env_surface(exclusions.withholds_env_surface());
-    let mut plan = reconciler.plan(
-        &effective_resolved,
-        file_actions,
-        pkg_actions,
-        resolved_modules.clone(),
-        reconcile_context,
-    )?;
-    reconciler::withhold_from_plan(&mut plan, &exclusions);
+    let reconciler = Reconciler::new(&registry, state)
+        .with_config_dir(&config_dir)
+        .withholding_env_surface(exclusions.withholds_env_surface())
+        .withholding_rows(&exclusions)
+        .diffing_installed(&pkg_cx)
+        // What the recorded apply says this run was scoped to. An isolated
+        // module run resolved no profile, so it names the modules instead of
+        // inheriting the placeholder `active_profile_name` falls back to; a run
+        // whose profile is genuinely underivable records nothing at all, and
+        // every reader omits the row rather than printing a stand-in.
+        .recording_scope(if module_only {
+            module_filter
+                .iter()
+                .map(|m| reconciler::Owner::module(m).token())
+                .collect::<Vec<_>>()
+                .join(reconciler::Owner::TOKEN_SEPARATOR)
+        } else {
+            profile_label.clone().unwrap_or_default()
+        });
+    let mut plan = printer.narrate("Planning", |sp| {
+        // Apply's plan preview reads `brew install neovim (0.10.2)`, and the
+        // same string is the persisted action description and the module's
+        // recorded packages hash — priced survivor-gated (a package the
+        // machine already holds is elided and never queried), and under this
+        // bar so the wait is narrated, not dead air.
+        sp.set_message("Resolving package versions");
+        reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
+        reconciler.plan_observed(
+            &effective_resolved,
+            file_actions,
+            pkg_actions,
+            resolved_modules.clone(),
+            reconcile_context,
+            &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
+        )
+    })?;
+    // Snapshot BEFORE `withhold_from_plan` and every filter below prunes the
+    // plan: a module is converged only when the RECONCILER found nothing to
+    // do, never when a filter emptied a plan that still held real work.
+    let plan_was_converged = plan.is_empty();
+    // The discard is deliberate: the CLI runs no complement-resolve over
+    // recorded drift, so the carrier's ids have no reader here.
+    let _ = reconciler::withhold_from_plan(&mut plan, &exclusions, &registry);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // outcome distinguishes "in sync" from "a filter excluded pending work".
     let filter_active =
         phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
-    let module_miss = module_filter
-        .filter(|_| resolved_modules.is_empty())
-        .map(str::to_string);
-    let scope = ScopeReport::capture(&plan, filter_active, module_miss);
+    let mut scope = ScopeReport::capture(&plan, filter_active);
 
-    // Apply --skip / --only filters
-    filter_plan(
+    // Apply --skip / --only filters. `known_module_names` reads the module
+    // tree and lockfile ONCE, only when a filter is actually active — a
+    // filter-less run (the common case) never pays that I/O.
+    let known_modules = if skip.is_empty() && only.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        known_module_names(&config_dir)
+    };
+    scope.filter_miss = filter_plan(
         &mut plan,
         skip,
         only,
         phase_filter.as_ref(),
         printer,
         &registry,
+        &known_modules,
     );
 
     // Strip script phases when --skip-scripts is set
@@ -406,12 +479,17 @@ pub fn run_apply(
     // The rows every path below prints above its own body. Built once so a dry
     // run, an executing run and a no-work run cannot describe the same
     // invocation differently.
+    let profile_inherits = effective_resolved.inherits_chain();
     let run_ctx = |title| reconciler::RunContext {
         title,
         config_path: Some(cli.config.as_path()),
         profile: profile_label.as_deref(),
-        modules: &module_names,
+        sources: &composed_sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
+        subject: None,
+        unit_source: None,
     };
 
     if dry_run {
@@ -426,6 +504,14 @@ pub fn run_apply(
             printer,
             &PlanPreviewArgs {
                 context: &args.context,
+                preview: crate::cli::PreviewScope {
+                    module: &args.module,
+                    with_profile: args.with_profile,
+                    phase: args.phase.as_ref(),
+                    only: &args.only,
+                    skip: &args.skip,
+                    skip_scripts: args.skip_scripts,
+                },
                 phase_filter: phase_filter.as_ref(),
                 dry_run_fm: dry_run_fm.as_ref(),
                 scope: &scope,
@@ -437,7 +523,7 @@ pub fn run_apply(
         // (read-only — execute nothing here). Same gating + query as the apply
         // path so the preview matches the action.
         if prune_eligible {
-            preview_orphaned_custom_packages(&state, &registry, printer);
+            preview_orphaned_custom_packages(state, &registry, printer);
         }
         return Ok(ApplyOutcome::success());
     }
@@ -446,15 +532,24 @@ pub fn run_apply(
 
     // Handle unmanaged file targets: a target that already holds a file cfgd
     // never wrote is settled by `--on-conflict` before anything is applied.
-    handle_unmanaged_file_targets(
+    // The copies themselves are deferred to the actions that displace their
+    // targets, so `backed up to …` rides as a DETAIL on the row of the write it
+    // protects rather than standing as a line of its own above the run's header.
+    let reconciler = reconciler.backing_up(handle_unmanaged_file_targets(
         &mut plan,
         &config_dir,
-        &state,
+        &module_cache,
+        state,
         printer,
         yes,
         args.on_conflict,
-        registry.default_file_strategy,
-    )?;
+        &cfgd_core::effective::effective_file_strategies(
+            &effective_resolved.merged,
+            &resolved_modules,
+            &config_dir,
+            registry.default_file_strategy,
+        ),
+    )?);
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
     // no-op early-return: a row whose package vanished (partial-uninstall
@@ -462,23 +557,26 @@ pub fn run_apply(
     // be reached after the `has_actions` gate. Best-effort.
     if prune_eligible {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
+            .package_managers()
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        gc_stale_package_tracking(&state, &all_managers, printer);
-        gc_orphaned_custom_packages(&state, &registry, printer);
+        gc_stale_package_tracking(state, &all_managers, &pkg_cx);
+        gc_orphaned_custom_packages(state, &registry, printer);
     }
 
-    // Check if filtered plan has actions
-    let has_actions = if let Some(ref pf) = phase_filter {
-        plan.phases.iter().any(|p| {
-            p.owned_actions()
-                .any(|(owner, a)| reconciler::action_matches_phase_filter(&p.name, owner, a, pf))
-        })
-    } else {
-        !plan.is_empty()
-    };
+    // Whether this run's tree will DRAW anything, asked through the one
+    // in-scope walk both trees render from — scoped exactly as the run is. A
+    // module skipped whole is not work: the header's `Modules` row states it
+    // and no phase block holds it, so a plan carrying nothing else takes the
+    // no-work path instead of closing on `0 actions succeeded`. A pre-skipped
+    // action still counts here: its row is drawn, and says why it cannot run.
+    let has_actions = !reconciler::in_scope_tree(
+        &plan,
+        phase_filter.as_ref(),
+        reconciler::PhaseCoverage::Rendered,
+    )
+    .is_empty();
 
     // A schedule-less backup runs on every apply regardless of reconciler
     // diff, so a converged machine (the common case once a fleet is settled)
@@ -508,7 +606,7 @@ pub fn run_apply(
         .with_filter(phase_filter.as_ref())
         .with_withheld(&withheld)
         .decisions_answerable(owns_the_store)
-        .with_pending_backups(&backup_units, &state);
+        .with_pending_backups(&backup_units, state);
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);
@@ -518,9 +616,33 @@ pub fn run_apply(
         // fleet settles) could never mint the rows its own plan keeps naming.
         // No confirm gate exists on this path: nothing destructive follows.
         if store_writes {
-            reconciler::mint_decisions(&state, &review);
+            reconciler::mint_decisions(state, &review);
+            // A module whose packages the machine already holds contributes no
+            // action, so `Reconciler::apply` — the only writer of
+            // `module_state` — never runs for it. Recorded here or the module
+            // reads "not applied" forever on a machine where it is converged,
+            // and its `packages_hash` keeps describing a set that has moved.
+            // Gated on `plan_was_converged`, the pre-filter snapshot, not on
+            // `plan.is_empty()` here: by this point `--skip`/`--only`/
+            // `--skip-scripts`/a withheld decision may have pruned a plan
+            // that held real work, and "installed" is a claim about all of a
+            // module's packages, not about what a filter happened to spare.
+            if plan_was_converged
+                && let Err(e) = reconciler.record_converged_modules(&resolved_modules)
+            {
+                tracing::warn!(error = %e, "failed to record converged module state");
+            }
+            refresh_link_deployed_hashes(&reconciler, &effective_resolved, &resolved_modules);
         }
-        report_plan_verdict(printer, 0, Some(&scope));
+        report_plan_verdict(
+            printer,
+            0,
+            Some(&scope),
+            withheld.pending.len(),
+            // The zero-action arms word themselves; nothing here is scoped
+            // into a next step.
+            &crate::cli::PreviewScope::unscoped(),
+        );
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }
@@ -558,7 +680,8 @@ pub fn run_apply(
     // `cfgd decide` can answer them without waiting for a daemon tick. A
     // declined run skips this — refusing the apply refuses its writes.
     if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
-        reconciler::mint_decisions(&state, &review);
+        reconciler::mint_decisions(state, &review);
+        refresh_link_deployed_hashes(&reconciler, &effective_resolved, &resolved_modules);
     }
     let (result, backup_reports) = match disposition {
         reconciler::RunDisposition::Applied { result, backups } => (result, backups),
@@ -594,7 +717,7 @@ pub fn run_apply(
         }));
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
-        print_shell_env_reminder(&result, printer);
+        print_caveats(&result, printer);
         return Ok(ApplyOutcome {
             status: result.status,
             aborted_code: Some(code),
@@ -602,7 +725,7 @@ pub fn run_apply(
     }
 
     let mut status = result.status.clone();
-    print_shell_env_reminder(&result, printer);
+    print_caveats(&result, printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -657,7 +780,9 @@ pub fn run_apply(
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
         succeeded: result.succeeded(),
+        skipped: result.skipped(),
         failed: result.failed(),
+        not_attempted: result.not_attempted().len(),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its
@@ -707,6 +832,10 @@ fn register_abort_handlers(abort: &cfgd_core::AbortFlag) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::low_level;
 
+    // The live region's cursor-restore hook chains beside these handlers and
+    // would otherwise emulate the default disposition on the first delivery,
+    // killing the apply the cooperative flag exists to let finish cleanly.
+    cfgd_core::output::claim_termination_signals();
     // 128 + signum, the POSIX shell convention for signal-terminated processes.
     for (sig, code) in [(SIGINT, 130usize), (SIGTERM, 143usize)] {
         let flag = abort.raw();
@@ -738,13 +867,43 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
     tracing::debug!("cooperative apply abort handler not available on this platform");
 }
 
+/// Re-record the content hash of every link-deployed file whose recorded value
+/// has gone stale — an edit made THROUGH a symlink is the source changing,
+/// which is never drift, so no action ever revisits the row. Best-effort and
+/// silent: a failure is logged, never propagated, because a bookkeeping
+/// correction must not fail an apply that otherwise succeeded.
+///
+/// The ONE post-apply seam every verb that records managed resources settles
+/// through: `apply` (both its converged and its applied arms), `init --apply`
+/// and `module create --apply`; the daemon's applying tick reaches the core
+/// seam directly, holding its file manager apart from the registry. An apply
+/// writes every row with no hash, so a verb that skipped
+/// this left NULLs for the daemon's first tick to backfill — and report as
+/// deployed files having changed upstream on a machine nobody had touched.
+/// `every_plan_running_verb_settles_its_link_deployed_hashes` walks the
+/// population.
+///
+/// The file manager is read off the reconciler's own registry, and is absent
+/// for a `--module` run, which still refreshes its modules' aggregate rows.
+pub(in crate::cli) fn refresh_link_deployed_hashes(
+    reconciler: &cfgd_core::reconciler::Reconciler<'_>,
+    resolved: &cfgd_core::config::ResolvedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
+) {
+    if let Err(e) =
+        reconciler.refresh_link_deployed_hashes(reconciler.file_manager(), resolved, modules)
+    {
+        tracing::warn!(error = %e, "failed to refresh recorded file hashes");
+    }
+}
+
 /// Remove package-tracking rows whose package is no longer installed (stale
 /// after a partial-uninstall failure or an out-of-band removal). Best-effort:
 /// any failure is logged, never propagated, so it can't fail an apply.
 fn gc_stale_package_tracking(
     state: &cfgd_core::state::StateStore,
     managers: &[&dyn cfgd_core::providers::PackageManager],
-    printer: &cfgd_core::output::Printer,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) {
     let tracked = match cfgd_installed_packages(state) {
         Ok(t) => t,
@@ -753,11 +912,10 @@ fn gc_stale_package_tracking(
             return;
         }
     };
-    let cx = cfgd_core::providers::PackageContext::new(printer, state);
-    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, &cx) {
+    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
-                let rid = format!("{mgr}/{id}");
+                let rid = cfgd_core::state::package_resource_id(&mgr, &id);
                 if let Err(e) = state.remove_managed_resource("package", &rid) {
                     tracing::warn!(resource = %rid, error = %e, "failed to GC stale package tracking row");
                 }
@@ -789,7 +947,7 @@ fn gc_orphaned_custom_packages(
     }
     let cx = cfgd_core::providers::PackageContext::new(printer, state);
     for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
-        let rid = format!("{mgr}/{pkg}");
+        let rid = cfgd_core::state::package_resource_id(&mgr, &pkg);
         if let Err(e) = state.remove_managed_resource("package", &rid) {
             tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");
         }
@@ -821,13 +979,14 @@ pub(in crate::cli) fn preview_orphaned_custom_packages(
                     orphan.manager, orphan.package
                 ),
             ),
-            None => printer.status_simple(
-                Role::Warn,
-                format!(
-                    "orphaned {}/{} — no persisted uninstall; manual removal needed",
-                    orphan.manager, orphan.package
-                ),
-            ),
+            None => {
+                printer
+                    .status(
+                        Role::Warn,
+                        format!("Orphaned {}/{}", orphan.manager, orphan.package),
+                    )
+                    .detail("no persisted uninstall; manual removal needed");
+            }
         }
     }
 }
@@ -841,7 +1000,7 @@ pub fn build_apply_doc(output: &ApplyOutput) -> Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::{Printer, Verbosity, strip_ansi};
+    use cfgd_core::output::{Printer, Verbosity};
 
     #[test]
     fn preview_orphaned_custom_packages_pins_both_contract_strings_and_executes_nothing() {
@@ -871,14 +1030,14 @@ mod tests {
         // Registry contains only built-in managers, so cargo is "known" but
         // widgetmgr / legacymgr are not — exactly the orphan condition.
         let mut registry = cfgd_core::providers::ProviderRegistry::new();
-        registry.package_managers = crate::packages::all_package_managers();
+        registry.set_package_managers(crate::packages::all_package_managers());
 
         // Normal verbosity: Accent/Warn status lines are suppressed under Quiet
         // (the default for `for_test`).
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         preview_orphaned_custom_packages(&state, &registry, &printer);
         drop(printer);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
             out.contains("would uninstall orphaned widgetmgr/widget via persisted script"),
@@ -886,7 +1045,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "orphaned legacymgr/legacypkg — no persisted uninstall; manual removal needed"
+                "Orphaned legacymgr/legacypkg — no persisted uninstall; manual removal needed"
             ),
             "no-persisted-script preview line missing, got: {out}"
         );

@@ -1,0 +1,358 @@
+<!-- cfgd:skill:module -->
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
+
+# Author a high-quality cfgd Module
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>; if it is older than <CFGD_MIN_VERSION>, warn that its field list may be incomplete and say so in the summary.
+1. **Enumerate every field.** Run `cfgd explain module -o json` once. The payload is the complete field list step 3 walks: every field, nested ones under `children`, each with `type`, `description` and `required`; its `location` is the path the finished file goes to. `cfgd explain module.<field>` (no `-o`) prints one field's docs readably.
+2. **Research THIS subject before choosing values.** Check the subject's own docs, the package managers that ship it (for a tool), and community conventions. On the target machine, `<tool> --version` and the manager's own query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what you verified, and where, in the field's WHY comment; where you could not confirm a claim, say so there and in your reply.
+3. **Decide include or omit for EVERY field from step 1, and write the WHY as a comment beside each included one.** Omit a field the subject does not use or whose value would equal the default; note a non-obvious omission in a comment too.
+4. **Draft.** Declare every dependency the subject needs at run time, transitive ones included. Set a version floor only where a feature needs it, and say which. Gate platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` / `unless` / `creates` where the kind offers them, or a command that is itself idempotent), give it a `timeout`, and set `continueOnError: true` only where a failure must not abort the apply. Never write a credential into a value; a secret belongs in the profile's `spec.secrets`. No placeholders, no stub comments.
+5. **Validate:** `cfgd module validate <file>` (`-` reads stdin; add `-o json` for a parseable report). A non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is valid`.
+6. **Self-critique.** For each field in the step-1 list, name the evidence behind its value or its omission; a field you cannot account for goes back to step 2.
+
+## Worked exemplar (the quality bar)
+
+The before fails `cfgd module validate` (kebab-case `min-version` and `post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` where `~` belongs, declares a partial toolchain (gcc, node, python3, go) and none of the rest its plugin set needs (make, unzip, git, npm, python3-venv, pipx, pynvim, cargo, stylua, a clipboard provider), runs its bootstrap as one unguarded, untimed command, and explains nothing. The after declares every transitive dependency beside the plugin that needs it, floors versions only where a feature requires one, gates Linux-only packages, splits the bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice.
+
+Before (box-checking):
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor configuration
+spec:
+  packages:
+  - name: neovim
+    min-version: '0.10'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt
+  - name: ripgrep
+  - name: fd
+    aliases:
+      apt: fd-find
+  - name: node
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: go
+    prefer:
+    - brew
+    - apt
+  - name: curl
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  files:
+  - source: files/init.lua
+    target: /root/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: /root/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: /root/.config/nvim/stylua.toml
+  - source: files/lua
+    target: /root/.config/nvim/lua
+  - source: files/after
+    target: /root/.config/nvim/after
+  env:
+  - name: EDITOR
+    value: nvim
+  aliases:
+  - name: v
+    command: nvim
+  scripts:
+    post-apply:
+    - nvim --headless '+Lazy! sync' '+MasonToolsInstallSync' +qa
+```
+
+After (thorough):
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor — LazyVim-style plugin set with Mason-managed LSP, treesitter, copilot, sops.
+
+spec:
+  packages:
+  # --- Editor ---------------------------------------------------------------
+  - name: neovim
+    minVersion: '0.11'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt                         # Ubuntu LTS apt nvim is too old for our plugin set
+
+  # --- Native build toolchain ---------------------------------------------
+  # LuaSnip (jsregexp), telescope-fzf-native, CopilotChat (tiktoken),
+  # nvim-treesitter parser compilation all shell out to `make` + a C compiler.
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  - name: make
+    platforms:
+    - linux
+  - name: unzip                   # Mason unpacks language-server archives with unzip
+  - name: git                     # lazy.nvim cloning, fugitive, gitsigns, diffview
+  - name: curl
+
+  # --- CLI helpers used directly by plugins -------------------------------
+  - name: ripgrep                 # telescope live_grep, todo-comments
+  - name: fd                      # telescope find_files
+    # apt ships fd as `fdfind` (no symlink); brew + cargo install the binary
+    # as `fd` directly. Prefer those so telescope can find it without a manual
+    # alias on the user's PATH.
+    prefer:
+    - brew
+    - cargo
+    - apt
+    aliases:
+      apt: fd-find
+      cargo: fd-find
+  - name: zoxide                  # telescope-zoxide
+    prefer:
+    - brew
+    - cargo
+    - apt
+
+  # --- Linux desktop providers --------------------------------------------
+  # X11 / Wayland clipboard providers. Harmless on headless boxes; nvim's
+  # OSC52 fallback (configured in lua/config/options.lua under $SSH_TTY)
+  # covers SSH-only setups like Termius.
+  - name: xclip
+    platforms:
+    - linux
+  - name: wl-clipboard
+    platforms:
+    - linux
+  - name: xdg-utils               # url-open's `gx` → xdg-open
+    platforms:
+    - linux
+
+  # --- Node toolchain -----------------------------------------------------
+  # copilot.vim needs node ≥18. markdown-preview prefers yarn but falls back
+  # to npm. Mason pulls dozens of JS-based language servers via npm.
+  - name: node
+    minVersion: '18'
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: npm                     # apt's nodejs package doesn't always include npm
+    platforms:
+    - linux
+  - name: yarn
+    prefer:
+    - npm
+    - brew
+  # Node provider for nvim — needed by remote/JS plugins. Without it,
+  # :checkhealth reports "Missing 'neovim' npm package". Same canonical
+  # `neovim` name as the editor entry above; cfgd's resolver treats per-manager
+  # entries independently.
+  - name: neovim
+    prefer:
+    - npm
+
+  # --- Python toolchain ---------------------------------------------------
+  # Mason installs many python-based linters/formatters via pip. dap-python
+  # needs a real venv. pynvim is the python provider (vim.python3_host_prog).
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: python3-venv            # pipx + debugpy + dap-python require venv
+    aliases:
+      dnf: python3-virtualenv
+    platforms:
+    - linux
+  - name: pipx
+    prefer:
+    - brew
+    - apt
+  - name: pynvim                  # vim.python3 provider for nvim
+    prefer:
+    - pipx
+
+  # --- Go toolchain -------------------------------------------------------
+  # go.nvim's :GoInstallBinaries calls `go install` for dlv, gotests, iferr,
+  # fillstruct, gomodifytags. Mason also installs gopls/gofumpt/golines via go.
+  - name: go
+    minVersion: '1.25'
+    prefer:
+    - brew
+    - apt
+
+  # --- Rust toolchain -----------------------------------------------------
+  # stylua is a Rust binary; cargo provides a reliable fallback when brew isn't
+  # available on the host.
+  - name: cargo
+    aliases:
+      brew: rust
+      apt: rustc
+  - name: stylua                  # Lua formatter used by conform.nvim
+    prefer:
+    - cargo
+    - brew
+
+  # --- Secrets ------------------------------------------------------------
+  - name: sops                    # sops.nvim + nvim-sops
+    prefer:
+    - brew
+    - apt
+  - name: age                     # sops age backend
+    prefer:
+    - brew
+    - apt
+
+  files:
+  - source: files/init.lua
+    target: ~/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: ~/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: ~/.config/nvim/stylua.toml
+  - source: files/lua
+    target: ~/.config/nvim/lua
+  - source: files/after
+    target: ~/.config/nvim/after
+
+  env:
+  - name: EDITOR
+    value: nvim
+  - name: VISUAL
+    value: nvim
+  - name: PATH
+    value: $HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH
+
+  aliases:
+  - name: v
+    command: nvim
+  - name: vim
+    command: nvim
+  - name: vi
+    command: nvim
+
+  scripts:
+    # First-run bootstrap. An unguarded script runs on every apply, so each
+    # step's command is written to tolerate a re-run.
+    # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
+    # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
+    # toolchains are already on PATH — no per-step export needed.
+    postApply:
+    - run: |
+        if command -v pipx >/dev/null 2>&1; then
+          pipx install --force pynvim 2>&1 | tail -5 || true
+        fi
+      timeout: 120s
+      continueOnError: true
+    - run: |
+        nvim --headless "+Lazy! restore" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+TSUpdateSync" +qa
+      timeout: 600s
+    - run: |
+        nvim --headless "+MasonToolsInstallSync" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+GoInstallBinaries" +qa
+      timeout: 300s
+      continueOnError: true
+    # markdown-preview.nvim's `build` function is gated on `#ui > 0`, so headless
+    # installs skip the node-app install. Do it directly from the lazy plugin dir.
+    - run: |
+        mp="$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app"
+        if [ -d "$mp" ]; then
+          cd "$mp"
+          if command -v yarn >/dev/null 2>&1; then
+            yarn install --frozen-lockfile
+          else
+            npm install --no-audit --no-fund
+          fi
+        fi
+      timeout: 180s
+      continueOnError: true
+```
+
+## Ground-truth examples
+
+Validated resources of this kind, shown for shape and depth. A value like `you@example.com` is the example's placeholder; your draft carries the real one.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: clift
+  description: clift framework for building custom CLIs with go-task
+
+spec:
+  packages:
+    # go-task is the runner clift shells out to. Homebrew ships it under the
+    # name `go-task`, and the upstream installer covers every distro that does
+    # not package it at all, so the two together reach any host.
+    - name: go-task
+      prefer: [brew, script]
+      aliases:
+        brew: go-task
+      script: |
+        sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+
+    # jq and yq parse the JSON and YAML task manifests clift generates; gum
+    # draws the prompts its interactive commands use.
+    - name: jq
+
+    - name: yq
+
+    - name: gum
+
+  files:
+    # Cloned rather than copied: clift is upstream source, not a dotfile, and
+    # tracking the repo is how a `cfgd apply` picks up new task definitions.
+    - source: https://github.com/tj-smith47/clift.git
+      target: ~/.local/share/clift
+
+  env:
+    # clift resolves its task library relative to this, so it must agree with
+    # the file target above.
+    - name: CLIFT_DIR
+      value: ~/.local/share/clift
+
+  scripts:
+    postApply:
+      # Marker the uninstall path looks for. `creates` makes a second apply a
+      # no-op instead of re-touching the file on every reconcile.
+      - run: touch ~/.local/share/clift/.cfgd-managed
+        timeout: 10s
+        creates: ~/.local/share/clift/.cfgd-managed
+```
+
+
+<!-- /cfgd:skill:module -->

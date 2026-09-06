@@ -21,7 +21,7 @@
 //!   - `init/apply_then_next_steps.txt` — bridge anchor: a streaming portion
 //!     (the real `ApplyRun` header + preview tree `apply_plan` emits for a
 //!     non-empty plan) followed by a buffered Doc carrying a real
-//!     `section("Next Steps", |s| s.bullet(...))` payload. Asserts the
+//!     `section("Next Steps", |s| s.kv_block(...))` payload. Asserts the
 //!     one-blank-line bridge rule programmatically.
 //!
 //! Goldens live under `tests/output_snapshots/init/`. Regenerate with:
@@ -70,6 +70,95 @@ fn init_happy_human() {
     let normalized =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "init/happy.txt", &normalized);
+}
+
+/// The `--from` path names its destination ONCE: the clone row is the verdict,
+/// and the `Initialized at` row a scaffold closes on would restate it one line
+/// down. The source repo is a local checkout so the clone is a real `git
+/// clone` with no network.
+#[test]
+fn init_from_a_local_repo_names_the_destination_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("upstream");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: upstream\nspec: {}\n",
+    )
+    .unwrap();
+    let repo = git2::Repository::init(&source).unwrap();
+    {
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("cfgd.yaml")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        // A fixed signature time, because the clone row now names the commit
+        // it landed on: `Signature::now` would mint a different id every run
+        // and the golden would be unpinnable.
+        let sig = git2::Signature::new(
+            "cfgd test",
+            "test@cfgd.local",
+            &git2::Time::new(1_700_000_000, 0),
+        )
+        .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    let target = tmp.path().join("from-cfg");
+    let target_str = target.to_string_lossy().into_owned();
+    let source_str = source.to_string_lossy().into_owned();
+    let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: Some(&source_str),
+        branch: &branch,
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_init(&printer, &args).unwrap();
+    drop(printer);
+
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(&target, "<TARGET_DIR>"), (&source, "<SOURCE_DIR>")],
+    );
+    // A local clone is asked for at full depth: `--depth` on a local path
+    // makes git stream `warning: --depth is ignored in local clones` under
+    // the clone row, a line cfgd cannot word and a reader cannot act on.
+    assert!(
+        !normalized.lines().any(|l| l.contains("warning:")),
+        "a local-path clone must not provoke a git warning:\n{normalized}"
+    );
+    // cfgd's own rows name the destination once, on the clone row; git's
+    // `Cloning into '…'…` passthrough under it is git's line, not a second
+    // cfgd row.
+    let cfgd_rows = normalized
+        .lines()
+        .filter(|l| !l.contains("Cloning into"))
+        .filter(|l| l.contains("<TARGET_DIR>"))
+        .count();
+    assert_eq!(
+        cfgd_rows, 1,
+        "the destination is named once, on the clone row:\n{normalized}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "init/from_local_repo.txt",
+        &normalized
+    );
 }
 
 #[test]
@@ -185,12 +274,12 @@ fn init_with_apply_renders_apply_status_streaming() {
     let target = tmp.path().join("bridge-cfg");
     let target_str = target.to_string_lossy().into_owned();
 
-    // We let scaffold create cfgd.yaml + .gitignore + .github workflow, but
-    // need profiles/default.yaml to exist BEFORE --apply-profile runs. The
-    // scaffold step creates the profiles/ directory, so we drop the profile
-    // file in after `cmd_init` finishes scaffolding but before apply…
+    // Scaffold creates cfgd.yaml + .gitignore + .github workflow, but
+    // profiles/default.yaml needs to exist BEFORE --apply-profile runs. The
+    // scaffold step creates the profiles/ directory, so the profile
+    // file is dropped in after `cmd_init` finishes scaffolding but before apply…
     // except cmd_init runs scaffold-then-apply atomically inside a single
-    // call. So we pre-create the profiles dir + profile file, then let
+    // call. So this pre-creates the profiles dir + profile file, then lets
     // scaffold's create_dir_all be a no-op for that subdir.
     std::fs::create_dir_all(target.join("profiles")).unwrap();
     std::fs::write(
@@ -237,6 +326,97 @@ fn init_with_apply_renders_apply_status_streaming() {
 }
 
 #[test]
+#[serial_test::serial]
+fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
+    // `cfgd init --theme <preset> --apply-module <m>` re-themes mid-run:
+    // `cmd_init` closes its "Initialize cfgd" section (arming blank-pending
+    // on the printer it was called with) and then calls `printer.rethemed`,
+    // which swaps in a printer whose renderer had never heard of that close.
+    // Before `Renderer::with_bars_continued` / `RenderState::continued_from`,
+    // the fresh renderer defaulted `leading: true` and dropped the blank
+    // line the closed section owed — "Apply" rendered directly under
+    // "Initialized at …" whenever `--theme` was passed.
+    //
+    // Module-only (`apply_profile: None`), not profile-based like the sibling
+    // test above: the profile branch prints "Set active profile: …" on the
+    // rethemed printer BEFORE the Apply header, and that status line's own
+    // group-close re-arms blank-pending independently — masking this exact
+    // bug. `cfgd init --theme dracula --apply-module nvim --yes` (the README
+    // demo's actual command) takes the module-only branch, which has no such
+    // status line between the retheme and "Apply", so it is the one shape
+    // that actually exercises the gap this test guards.
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp.path());
+    // Redirect the apply-step state store off the shared default DB so this
+    // test doesn't contend with other --apply tests under parallel runs.
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    // SAFETY: serialized via #[serial].
+    unsafe {
+        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+    }
+    let target = tmp.path().join("themed-cfg");
+    let target_str = target.to_string_lossy().into_owned();
+
+    // A module with no packages/files plans zero actions, hitting the same
+    // "Nothing to do" early return the sibling test relies on — the fix is
+    // about header placement, not about executing real package work.
+    let module_dir = target.join("modules").join("empty-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: empty-mod\n  description: regression fixture\nspec: {}\n",
+    )
+    .unwrap();
+
+    let apply_modules = vec!["empty-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("themed-cfg"),
+        apply: false,
+        // `false`, not the sibling test's `true`: `RunTitle::as_str()` renders
+        // "Plan" under `--dry-run` and "Apply" otherwise, and the real demo
+        // command this guards (`cfgd init --theme dracula --apply-module
+        // nvim --yes`) never passes `--dry-run` — this has to see the actual
+        // "Apply" heading the fix targets, not its preview sibling.
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: Some("dracula"),
+        apply_profile: None,
+        apply_modules: &apply_modules,
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, cap) = Printer::for_test_doc();
+    let result = cmd_init(&printer, &args);
+    drop(printer);
+    // SAFETY: serialized via #[serial].
+    unsafe {
+        std::env::remove_var("CFGD_STATE_DIR");
+    }
+    result.unwrap();
+
+    let human = strip_ansi(&cap.human());
+    let lines: Vec<&str> = human.lines().collect();
+    let apply_line = lines
+        .iter()
+        .position(|&l| l == "Apply")
+        .expect("the re-themed printer's apply section renders an \"Apply\" heading");
+    assert_eq!(
+        lines.get(apply_line.wrapping_sub(1)),
+        Some(&""),
+        "expected a blank line directly above the re-themed printer's \"Apply\" heading, got:\n{human}"
+    );
+}
+
+#[test]
 fn init_apply_then_next_steps_bridge_invariant() {
     // Bridge anchor: cmd_init's apply branch deliberately suppresses the
     // "Next steps" buffered section (the apply path already produced its
@@ -250,7 +430,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // — the real `ApplyRun` header and preview of a preview-only run, not a
     // hand-written imitation of them —
     // and then emitting a buffered Doc carrying a real
-    // `section("Next Steps", |s| s.bullet(...))` payload. The snapshot pins
+    // `section("Next Steps", |s| s.kv_block(...))` payload. The snapshot pins
     // the rendered output and the assertions below confirm the bridge
     // invariant: exactly one blank line between the last streaming line and
     // the first buffered line.
@@ -279,14 +459,18 @@ fn init_apply_then_next_steps_bridge_invariant() {
         )],
         warnings: Vec::new(),
     };
-    let modules: Vec<String> = Vec::new();
+    let modules: Vec<cfgd_core::output::HeaderModule> = Vec::new();
     let run = ApplyRun::new(
         RunContext {
             title: cfgd_core::reconciler::RunTitle::Plan,
             config_path: Some(config_path.as_path()),
             profile: Some("default"),
+            sources: &[],
             modules: &modules,
+            profile_inherits: &[],
             trigger: None,
+            subject: None,
+            unit_source: None,
         },
         &plan,
     )
@@ -301,13 +485,15 @@ fn init_apply_then_next_steps_bridge_invariant() {
         ),
     );
 
-    // Buffered portion — a real section with bullets, matching the shape
-    // cmd_init emits when `should_apply == false` (the "Next steps"
+    // Buffered portion — a real section with a command_list, matching the
+    // shape cmd_init emits when `should_apply == false` (the "Next steps"
     // section in cmd_init.rs).
     let doc = Doc::new().section("Next Steps", |s| {
-        s.bullet("cfgd apply           — apply configuration")
-            .bullet("cfgd status         — view configured state")
-            .bullet("cfgd daemon install — start background sync")
+        s.command_list([
+            ("cfgd apply", "apply configuration"),
+            ("cfgd status", "view configured state"),
+            ("cfgd daemon install", "start background sync"),
+        ])
     });
     printer.emit(doc);
     drop(printer);
@@ -350,7 +536,7 @@ fn init_apply_lock_honors_state_dir_override() {
     std::fs::create_dir_all(&home).unwrap();
     let _home_guard = cfgd_core::test_helpers::EnvVarGuard::set("HOME", home.to_str().unwrap());
     // The override must win over CFGD_STATE_DIR too; leave it unset so the only
-    // way the lock reaches `state_dir` is via the flag chain we are testing.
+    // way the lock reaches `state_dir` is via the flag chain under test.
     let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
 
     let state_dir = tmp.path().join("explicit-state");

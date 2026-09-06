@@ -266,7 +266,7 @@ impl EnvironmentConfigurator {
 
     /// Write the system LaunchDaemon plist that publishes env vars system-wide via
     /// `launchctl setenv` at load (root launchd, system domain). Path-parameterized inner
-    /// ([`write_launchd_plist_to`]) so tests target a temp path, never the real
+    /// (`write_launchd_plist_to`) so tests target a temp path, never the real
     /// `/Library/LaunchDaemons` — mirrors the Linux `write_etc_environment_to` pattern.
     fn macos_write_launchd_plist(managed: &BTreeMap<String, String>) -> Result<()> {
         Self::write_launchd_plist_to(&Self::macos_plist_path(), managed)
@@ -431,7 +431,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 Self::windows_set_var(key, value, cx);
             }
             cx.report(
-                Role::Ok,
+                Role::Info,
                 format!(
                     "Set {} user environment variable{plural} via setx",
                     managed.len()
@@ -442,10 +442,10 @@ impl SystemConfigurator for EnvironmentConfigurator {
             match Self::macos_write_env_sh(&managed) {
                 Ok(()) => {
                     cx.report(
-                        Role::Ok,
+                        Role::Info,
                         format!("Updated {}", Self::macos_env_sh_path().posix()),
                     );
-                    cx.report(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
+                    cx.next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
                 }
                 Err(e) => {
                     cx.report(
@@ -462,7 +462,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
             match Self::macos_write_launchd_plist(&managed) {
                 Ok(()) => {
                     cx.report(
-                        Role::Ok,
+                        Role::Info,
                         format!("Updated {}", Self::macos_plist_path().posix()),
                     );
                 }
@@ -483,7 +483,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // Linux: /etc/environment
             match Self::linux_write_etc_environment(&managed) {
                 Ok(()) => {
-                    cx.report(Role::Ok, format!("Updated {}", LINUX_ETC_ENVIRONMENT));
+                    cx.report(Role::Info, format!("Updated {}", LINUX_ETC_ENVIRONMENT));
                 }
                 Err(e) => {
                     cx.report(
@@ -499,7 +499,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // Linux: /etc/profile.d/cfgd-env.sh
             match Self::linux_write_profile_d(&managed) {
                 Ok(()) => {
-                    cx.report(Role::Ok, format!("Updated {}", LINUX_PROFILE_D));
+                    cx.report(Role::Info, format!("Updated {}", LINUX_PROFILE_D));
                 }
                 Err(e) => {
                     cx.report(

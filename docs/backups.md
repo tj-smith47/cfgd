@@ -2,7 +2,7 @@
 
 `spec.backups[]` declares snapshots of a file or directory that cfgd takes on your behalf,
 retaining the newest N and pruning the rest. It is the "keep a copy of my app's data before I
-touch it" surface — distinct from the automatic pre-overwrite `file_backups` that power
+touch it" surface, distinct from the automatic pre-overwrite `file_backups` that power
 `cfgd rollback` (see [File Safety](safety.md#file-backups)).
 
 | | `spec.backups[]` (this document) | Pre-overwrite backups |
@@ -12,6 +12,10 @@ touch it" surface — distinct from the automatic pre-overwrite `file_backups` t
 | Stored | on the filesystem, under `destination` | inline in the state DB |
 | Retained | newest `retention` per backup | last 10 applies |
 | Restored by | `cfgd backup restore` | `cfgd rollback` |
+
+![declare, snapshot, tamper, restore](../demo/cfgd-backup.gif)
+A snapshot taken with `cfgd backup run`, a file broken from outside cfgd, and `cfgd backup
+restore` putting it back.
 
 ## Quick Start
 
@@ -42,37 +46,39 @@ reconciler's file/package/module phases (skipped in `--dry-run`, shown in the pl
 instead). A scheduled backup runs on its own timer in the [daemon](#daemon-scheduling), or on
 demand via `cfgd backup run`.
 
-Each schedule-less backup runs independently during apply — a unit that fails to complete (source
+Each schedule-less backup runs independently during apply. A unit that fails to complete (source
 missing, a hook errored, or a state-store write failure) is reported as a `✗`/`Warn` status and
 counted against the exit code, but does **not** abort the remaining backups or the rest of apply.
 A failed or unclean unit downgrades the apply's overall status from `success` to `partial`, which
-exits nonzero (`ExitCode::ApplyFailed`, code `7`) the same way a failed reconciler action would —
-see [Exit Codes](cli-reference.md#exit-codes).
+exits nonzero (code `7`) the same way a failed reconciler action would; see
+[Exit Codes](cli-reference.md#exit-codes).
 
-A backup run is a run like any other: a `Backup` header, a `Backups` phase with one
-`backup:<name>` group per unit, and a rollup. Each unit's group carries one line per `preBackup` /
-`postBackup` hook and one for the snapshot itself, so the rollup's counts are the lines on screen.
+A backup run is a run like any other: a `Backup` header, one `backup:<name>` group per unit, and a
+rollup. The groups sit directly under the header (the run has no other phase to tell them apart
+from; inside `cfgd apply` the same groups render under a `Backups` phase beside `Packages` and
+`Files`). Each unit's group carries one line per `preBackup` / `postBackup` hook and one for the
+snapshot itself, so the rollup's counts are the lines on screen.
 
 ```console
 $ cfgd backup run
 Backup
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Actions  4 planned
 
-Backups
-  backup:notes-db
-    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
-      0|0|0
-    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
-      ok
-    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
-    ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
-  backup:journal
-    ✓ snapshot journal.20260813T061306Z                                                  — 24 B
+backup:notes-db
+  ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    0|0|0
+  ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+  ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ok
+  ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+  ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
+backup:journal
+  ✓ snapshot journal.20260813T061306Z                                                  — 24 B
 
-✓ Backup complete — 4 actions succeeded (0.2s)
+✓ Backup complete — 4 actions succeeded (0.2s wall)
 
 $ cfgd backup run missing-name
 ✗ Backup 'missing-name' not found
@@ -82,10 +88,10 @@ $ cfgd backup run missing-name
 $ cfgd backup list
 Backups
 
-Name      Source                         Schedule   Retention  Last Run                        Next Run
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db  -          7          success @ 2026-08-13T06:13:06Z  -
-journal   ~/Documents/journal            0 3 * * *  3          success @ 2026-08-13T06:13:06Z  2026-08-14T03:00:00Z
+Name      Source                         Schedule   Retention  Snapshots  Status   Last Run  Next Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          7          1          Success  4h ago    -
+journal   ~/Documents/journal            0 3 * * *  3          1          Success  4h ago    in 11h
 
 $ cfgd --output json backup run notes-db
 [
@@ -103,67 +109,80 @@ $ cfgd --output json backup run missing-name
   "hint": "valid backups: notes-db, journal",
   "name": "missing-name"
 }
+
+$ cfgd backup rollback
+Rollback Copies
+Name      Copy                                       Created  Size  
+────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db.cfgd-backup  6h ago   8.0 KB
 ```
 
-`cfgd backup run [name]` runs every declared backup when `name` is omitted, or just the named one.
+`cfgd backup run [name]` runs every declared backup when `name` is omitted, or the named one.
 An unknown name is a typed error (exit code `6`, see [Exit Codes](cli-reference.md#exit-codes))
-that lists every valid name — in human mode as a `→` hint line below the failure, in `-o json`
-as the payload's `hint` field — and a run whose snapshot did not complete cleanly — see
-[Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
-detect it without parsing output.
+that lists every valid name: in human mode as a `→` hint line below the failure, in `-o json`
+as the payload's `hint` field. A run whose snapshot did not complete cleanly (see
+[Run Semantics](#run-semantics)) also exits nonzero, so a script can detect it without
+parsing output.
 
-`cfgd backup list [name]` (alias `ls`) shows every declared backup — or just the named one — its
-last recorded run, and when the daemon's timer will next fire it (`nextRunAt` in `-o json`); every
-backup command honors the global `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template`
-consumers.
+`cfgd backup list [name]` (alias `ls`) shows every declared backup (or the named one), how
+many snapshots it currently holds (`snapshots` in `-o json`), its last recorded run, and when the
+daemon's timer will next fire it (`nextRunAt` in `-o json`). Every backup command honors the global
+`-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers. The Snapshots column reads
+`-` when the state store could not be opened, the same degradation the Status and Last Run
+columns take: an unknown count is not a count of zero.
 
-`cfgd backup list <name> --snapshots` switches the view from the backup to its snapshots — what
-[`cfgd backup restore`](#restoring) can put back:
+`Status` and `Last Run` are two columns, the way `source list` splits them: the verdict is
+tinted by what it says, and the age beside it answers how stale the unit is. `Next Run`
+counts forward the same way (`in 11h`, `due now`). All three read as relative time on
+purpose — `-o json` keeps the exact instants in `lastRunAt` and `nextRunAt`.
+
+The count is the unit's own snapshots only. The safety copy [`cfgd backup restore`](#restoring)
+takes of what it overwrites is a sidecar beside the source, not a snapshot in the destination, so
+it is not in this count, not in `--snapshots`, not subject to `retention`, and never the unit's
+Last Run: restore a unit at noon and an hourly schedule still fires on the last real run's clock.
+
+`cfgd backup list <name> --snapshots` switches the view from the backup to its snapshots, the
+ones [`cfgd backup restore`](#restoring) can put back:
 
 ```console
 $ cfgd backup list notes-db --snapshots
 Snapshots: notes-db
 
-Snapshot                   Created               Size
-───────────────────────────────────────────────────────
-notes.db.20260813T061322Z  2026-08-13T06:13:22Z  8.0 KB
-notes.db.20260813T061321Z  2026-08-13T06:13:21Z  8.0 KB
-notes.db.20260813T061306Z  2026-08-13T06:13:06Z  8.0 KB
+Snapshot                   Created  Size
+────────────────────────────────────────
+notes.db.20260813T061321Z  4h ago   8.0 KB
+notes.db.20260813T061306Z  4h ago   8.0 KB
 
 $ cfgd --output json backup list notes-db --snapshots
 [
   {
-    "created": "2026-08-13T06:13:22Z",
-    "name": "notes.db.20260813T061322Z",
+    "created": "2026-08-13T06:13:21Z",
+    "name": "notes.db.20260813T061321Z",
     "sizeBytes": 8192
   }
 ]
 ```
 
 `name` is the snapshot's path **relative to the backup's `destination`**, so a nested
-`namePattern` lists `daily/notes.db.20260813T061322Z` — the exact string `restore --at` accepts.
-`created` is the ISO 8601 UTC time the run that wrote it finished, on the same scale as
-`backup list`'s Last Run column — not a `namePattern`-style stamp, so it lines up with every other
-time cfgd prints. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B` scale
-`cfgd upgrade` prints; `-o json` reports raw bytes in `sizeBytes` and leaves formatting to you.
-Human column headers are title-case (`Snapshot`, `Created`, `Size`), matching every other cfgd
-table.
+`namePattern` lists `daily/notes.db.20260813T061322Z`: the exact string `restore --at` accepts.
+`Created` is the age of the run that wrote it, on the same scale as `backup list`'s Last Run
+column; `-o json`'s `created` keeps the ISO 8601 UTC instant. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B`
+scale `cfgd upgrade` prints; `-o json` reports raw bytes in `sizeBytes` and leaves formatting
+to you.
 
 The list comes from the recorded runs, not a directory glob, so it agrees with what
 [retention](#retention) prunes. Two records never appear: one whose path is not inside the
-backup's current `destination` (the same gate pruning uses — a stale or foreign row can never be
-offered as a restore source), and one whose payload is no longer on disk. A snapshot you could
-not restore is not listed as one.
+backup's current `destination` (the same gate pruning uses), and one whose payload is no
+longer on disk. A snapshot you could not restore is not listed as one.
 
 `--snapshots` requires a backup name; a bare `cfgd backup list --snapshots` is a usage error.
 
-**Next Run** is computed the same way the daemon seeds its timer — from the unit's `schedule` and
-its last recorded `finished_at` (see [`schedule`](#schedule)) — so the listed time is the one the
-timer will actually use, not a second opinion. It renders as an ISO 8601 UTC stamp on the same
-scale as Last Run. A schedule-less unit shows `-` (`nextRunAt` omitted from the JSON payload): it
-runs during `cfgd apply`, on no clock of its own. An overdue interval unit shows a time at or
-before now — the daemon fires it as soon as it comes back. Reading it does not require a running
-daemon; without one, it is what the timer *would* be armed to.
+**Next Run** is computed the same way the daemon seeds its timer, from the unit's `schedule` and
+its last recorded `finished_at` (see [`schedule`](#schedule)), so the listed time is the one the
+timer will actually use. A schedule-less unit shows `-` (`nextRunAt` omitted from the JSON
+payload): it runs during `cfgd apply`, on no clock of its own. An overdue interval unit shows a
+time at or before now; the daemon fires it as soon as it comes back. Reading it does not require
+a running daemon; without one, it is what the timer *would* be armed to.
 
 ## Field Reference
 
@@ -182,7 +201,7 @@ A file or a directory. A leading `~` expands to the home directory.
 A source that does not exist is a failed run, not a silent no-op.
 
 The source's filename is what the default `namePattern` interpolates as `{filename}`, so a legal
-Unix filename containing `:` (`~/notes:2026.md`) renders a snapshot name cfgd refuses — `:` is a
+Unix filename containing `:` (`~/notes:2026.md`) renders a snapshot name cfgd refuses: `:` is a
 drive and data-stream separator on Windows, and snapshot names must be valid on every platform.
 cfgd does not rewrite the character; give the backup an explicit `namePattern` that leaves
 `{filename}` out:
@@ -195,7 +214,7 @@ cfgd does not rewrite the character; give the backup an explicit `namePattern` t
 
 ### `destination`
 
-Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` — see
+Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`; see
 [configuration.md](configuration.md#file-locations) for where the state dir lands on each
 platform. Set it explicitly to put snapshots on another disk:
 
@@ -212,7 +231,7 @@ Snapshot payloads never go into the state database, and there is no size cap.
 each snapshot part of the next one, without end, so cfgd rejects it before copying anything:
 
 ```yaml
-# rejected — every snapshot would be copied into the following snapshot
+# rejected: every snapshot would be copied into the following snapshot
 - name: photos
   source: ~/Pictures
   destination: ~/Pictures/backups
@@ -225,7 +244,7 @@ The check resolves symlinks on both sides, so a destination that only *looks* se
 too:
 
 ```yaml
-# also rejected — ~/link is a symlink to ~/Pictures, so the destination is
+# also rejected: ~/link is a symlink to ~/Pictures, so the destination is
 # physically inside the source even though the two paths share no prefix
 - name: photos
   source: ~/Pictures
@@ -235,12 +254,12 @@ too:
 ### Permissions
 
 On Unix, snapshots carry the source's modes: file modes come across with the copy, and each copied
-directory is set to the mode of the directory it came from — a `0700` tree does not land as a
+directory is set to the mode of the directory it came from, so a `0700` tree does not land as a
 `0755` one. Windows has no mode bits; a snapshot there inherits the destination's ACL.
 
 The **default** destination (`<state_dir>/backups/<name>/`) is additionally set to `0700`, because
 cfgd owns it and it may hold a copy of something like `~/.ssh`. An **explicit** `destination:` is
-your directory and keeps whatever permissions you gave it — set them yourself if the source is
+your directory and keeps whatever permissions you gave it; set them yourself if the source is
 sensitive.
 
 ### `namePattern`
@@ -269,54 +288,49 @@ holds other snapshots.
 Pruning removes intermediate directories a nested pattern created once they hold nothing else.
 
 Two runs that render the same name (a pattern with no `{timestamp}`, or two runs inside one
-second — `{timestamp}` resolves to the second) take **distinct** names: cfgd appends `-1`, `-2`, …
-until the path is free.
+second) take **distinct** names: cfgd appends `-1`, `-2`, and so on until the path is free.
 
 ```console
 $ cfgd backup list journal --snapshots
 Snapshots: journal
 
-Snapshot                    Created               Size
-──────────────────────────────────────────────────────
-journal.20260813T061710Z-1  2026-08-13T06:17:10Z  24 B
-journal.20260813T061710Z    2026-08-13T06:17:10Z  24 B
-journal.20260813T061547Z    2026-08-13T06:15:47Z  24 B
+Snapshot                    Created  Size
+─────────────────────────────────────────
+journal.20260813T061710Z-1  4h ago   24 B
+journal.20260813T061710Z    4h ago   24 B
+journal.20260813T061547Z    4h ago   24 B
 ```
 
-Nothing is overwritten, because each recorded run must own exactly one payload: two rows pointing
-at one file would list the same snapshot twice, and the first of them to fall out of `retention`
-would delete the payload the other still claims. Both count against `retention` normally.
+Nothing is overwritten: each recorded run owns exactly one payload, and both count against
+`retention` normally.
 
 ### `retention`
 
-How many snapshots to keep, defaulting to 10 and required to be at least 1. Pruning walks the
-recorded runs — not a filename glob — and deletes both the artifact on disk and its record.
+How many snapshots to keep. Default 10, minimum 1.
 
-Retention is counted **per outcome**: the newest `retention` runs that produced a snapshot are
-kept, and independently the newest `retention` that did not. A run of failures therefore never
-deletes a good snapshot, and a permanently broken backup cannot grow the run table without bound.
-
-Pruning deletes nothing that is not demonstrably inside the current `destination`. A record naming
-a path anywhere else — you changed `destination:` between runs, another profile declares a backup
-with the same `name`, or the state database was edited — is dropped from the history with a warning
-and its path is left untouched for you to deal with. Retention slots are not consumed by such
-records either, so a stale one cannot evict a snapshot you asked to keep.
+| Rule | Behavior |
+|---|---|
+| What pruning walks | the recorded runs, not a filename glob; deletes both the artifact on disk and its record |
+| Counted per outcome | the newest `retention` runs that produced a snapshot are kept, and independently the newest `retention` that did not; a run of failures never deletes a good snapshot |
+| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is dropped from history with a warning; the path itself is left untouched, and the record consumes no retention slot |
 
 ### `schedule`
 
-A duration (`6h`, `30m`, `1d`) or a cron expression, 5-field (`0 3 * * *`) or 6-field with leading
-seconds (`30 0 3 * * *`). Omitted means the backup runs on every apply.
+Setting `schedule` hands the backup to the [daemon's timers](#daemon-scheduling) and takes it
+out of apply.
 
-Setting it hands the backup to the [daemon's timers](#daemon-scheduling) and takes it out of
-apply. A cron expression is read in the machine's **local** timezone, the same as a crontab entry:
-`0 3 * * *` is 3am where the machine sits, not 3am UTC.
+| Form | Example | Meaning |
+|---|---|---|
+| Duration | `6h`, `30m`, `1d` | a plain period between runs, measured from the last recorded run; no wall-clock alignment |
+| Cron, 5-field | `0 3 * * *` | machine-**local** timezone, same as a crontab entry: 3am where the machine sits, not 3am UTC |
+| Cron, 6-field | `30 0 3 * * *` | leading seconds field |
+| Omitted | | the backup runs on every `cfgd apply` |
 
-A duration is a plain period between runs, with no alignment to the wall clock — use cron when the
-run has to land at a particular time of day. The period is measured from the unit's **last recorded
-run**, not from the daemon's start, so it survives restarts: a `schedule: 1d` backup on a laptop
-rebooted every morning still fires once a day, and a unit whose period elapsed while the machine
-was off runs shortly after the daemon comes back. With no recorded run yet, the first fire is one
-full period out.
+A duration is measured from the unit's **last recorded run**, not from the daemon's start, so it
+survives restarts: a `schedule: 1d` backup on a laptop rebooted every morning still fires once a
+day, and a unit whose period elapsed while the machine was off runs shortly after the daemon
+comes back. With no recorded run yet, the first fire is one full period out. Use cron when the
+run has to land at a particular time of day.
 
 ```yaml
 backups:
@@ -333,7 +347,7 @@ backups:
 
 ### `preBackup` / `postBackup`
 
-Hooks in the same shape as [`spec.scripts`](lifecycle-scripts.md) entries — `run`, `shell`,
+Hooks in the same shape as [`spec.scripts`](lifecycle-scripts.md) entries: `run`, `shell`,
 `timeout`, `workdir`, `onlyIf`, `unless`, `creates`, `continueOnError` all apply. Relative script
 paths resolve against the config directory, and hooks see the usual metadata:
 
@@ -345,8 +359,8 @@ paths resolve against the config directory, and hooks see the usual metadata:
 | `CFGD_PHASE` | `preBackup` or `postBackup` |
 | `CFGD_OPERATION` | `backup` or `restore` |
 
-One hook list serves both directions. `CFGD_PHASE` names the list, not the direction — a
-`preBackup` hook runs before a snapshot AND before a [restore](#restoring) — so a hook that has to
+One hook list serves both directions. `CFGD_PHASE` names the list, not the direction (a
+`preBackup` hook runs before a snapshot AND before a [restore](#restoring)), so a hook that has to
 quiesce for one and drop-and-recreate for the other branches on `CFGD_OPERATION`:
 
 ```yaml
@@ -381,17 +395,15 @@ record the run  ──►  prune to `retention`
 Three rules follow from that ordering:
 
 1. **A `preBackup` failure skips the snapshot.** The hook exists to make the source consistent
-   (stop the service, flush the buffer); if it failed, the source is not in the state you asked
-   for, so copying it would produce a snapshot you cannot trust. The run is recorded as failed with
-   no artifact.
-2. **`postBackup` always runs** — after a good copy, after a failed copy, and after a failed
+   (stop the service, flush the buffer); if it failed, copying would produce a snapshot you
+   cannot trust. The run is recorded as failed with no artifact.
+2. **`postBackup` always runs**: after a good copy, after a failed copy, and after a failed
    `preBackup`. It is normally the counterpart that restarts whatever `preBackup` stopped, and a
-   `preBackup` list that failed halfway (service already down, flush failed) is precisely when
-   skipping it would leave the machine stopped with nothing to bring it back.
+   `preBackup` list that failed halfway is precisely when skipping it would leave the machine
+   stopped with nothing to bring it back.
 3. **A `postBackup` failure after a good copy leaves the run successful, with the failure
-   recorded.** The snapshot is complete and restorable, so it stays retention-eligible; marking the
-   run failed would strand a valid artifact that pruning could never reclaim. The failure is still
-   surfaced — the run is not *clean*, and the command reporting it says so.
+   recorded.** The snapshot is complete and restorable, so it stays retention-eligible. The
+   failure is still surfaced: the run is not *clean*, and the command reporting it says so.
 
 Every failure in a run reaches the record: a `preBackup`, copy, and `postBackup` failure in the
 same run are joined with `; ` in the run's error.
@@ -402,13 +414,12 @@ directory published with a single rename. The destination directory is fsynced a
 Unix, so a completed snapshot survives a power loss. An interrupted run never leaves a half-written
 snapshot under a name a restore would trust.
 
-Every run — success or failure — is recorded in the `backup_runs` table of the state database with
+Every run, success or failure, is recorded in the `backup_runs` table of the state database with
 its source, destination, size, status, error, and start/finish timestamps.
 
 **One run at a time per backup, enforced.** Each run takes an exclusive lock on its own unit
-(`<state-dir>/locks/backup-<name>.lock`) for the whole run, hooks included. Two runs of one unit
-would otherwise share a staging directory and prune against the same history, and the loser's
-cleanup would land inside the winner's half-copied tree — a torn snapshot recorded as a success.
+(`<state-dir>/locks/backup-<name>.lock`) for the whole run, hooks included; two interleaved runs
+of one unit could otherwise record a torn snapshot as a success.
 
 The lock is per unit, not global: different backups still run at the same time. It is held by
 *every* surface with no opt-out, so a `cfgd backup run` you type while the daemon's timer for that
@@ -416,148 +427,106 @@ same unit is firing is refused rather than interleaved:
 
 ```console
 $ cfgd backup run notes-db
-Backup
-  Config   /home/me/.config/cfgd/cfgd.yaml
+Backup: notes-db
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
+  Source   ~/.local/share/notes/notes.db
   Actions  3 planned
 
-Backups
-  backup:notes-db
-    — snapshot                           — already running (pid 3349308)
+backup:notes-db
+  — snapshot                           — already running (pid 3349308)
 
-— Backup did not run — 3 actions not attempted (0.0s)
+— Backup did not run — 3 actions not attempted (<0.1s wall)
 $ echo $?
 1
 ```
 
-The skip is one line in the unit's own group — the heading already names the unit, so the line
-names only what did not happen. Nothing it planned ran, so all three items are `not attempted`
-rather than failed — and the rollup says the run *did not run* rather than claiming it completed,
-because a `✓` above a nonzero exit code leaves the two things on screen that report the outcome
-contradicting each other.
+Nothing the unit planned ran, so its items are `not attempted` rather than failed, and the
+rollup says the run *did not run* rather than claiming it completed.
 
-Every surface renders the collision the same way — a **skip**, because the unit *is* being backed
-up, just not by the caller. Only the exit code differs: `cfgd backup run` exits `1` (you asked for a
-run and did not get one), while `cfgd apply` and the daemon's timer carry on unaffected. Under
-`-o json` the unit appears in the payload with `"status": "skipped"`, and that payload stays a
-single JSON document — the nonzero exit carries the failure, not a second error object.
+Every surface renders the collision as a **skip**, because the unit *is* being backed up, only
+not by the caller. The exit code differs: `cfgd backup run` exits `1` (you asked for a run and
+did not get one), while `cfgd apply` and the daemon's timer carry on unaffected. Under `-o json`
+the unit appears in the payload with `"status": "skipped"`; the nonzero exit carries the
+failure, not a second error object.
 
 ## Daemon scheduling
 
 A backup with a `schedule` gets a timer in the [daemon](daemon.md) alongside the reconcile and sync
 tasks. Nothing else changes: the timer dispatches the same engine `cfgd backup run` does, so a
 scheduled run writes the same `backup_runs` row, runs the same hooks, and prunes to the same
-`retention`. Only `CFGD_CONTEXT` differs — it is `reconcile` for a daemon-driven run and `apply`
+`retention`. Only `CFGD_CONTEXT` differs: `reconcile` for a daemon-driven run, `apply`
 for a CLI-driven one.
 
 ```console
 $ cfgd daemon
-Daemon
-⊙ Starting cfgd daemon...
-✓ Health: /home/me/.cache/cfgd/runtime/cfgd.sock
-✓ Intervals: reconcile=300s, backups=2 scheduled
-⊙ Daemon running — press Ctrl+C to stop
- INFO scheduled backup tick backup=notes-db
+09:00:00  INFO daemon: starting cfgd 0.9.0
+09:00:00  INFO daemon: health endpoint at /home/me/.cache/cfgd/runtime/cfgd.sock
+09:00:00  INFO daemon: running — reconcile every 300s, 2 scheduled backups
+→ Press Ctrl+C to stop
 
 Backup
-  Config   /home/me/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  workstation
+  Modules  notes, shell
   Trigger  schedule
   Actions  3 planned
 
-Backups
-  backup:notes-db
-    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
-      0|0|0
-    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
-    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
-      ok
-    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
-    ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
+backup:notes-db
+  ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+    0|0|0
+  ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+  ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+    ok
+  ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+  ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
 
-✓ Backup complete — 3 actions succeeded (0.2s)
- INFO scheduled backup completed backup=notes-db
+✓ Backup complete — 3 actions succeeded (0.2s wall)
+09:05:01  INFO daemon: scheduled backup notes-db completed
 ```
 
-A scheduled fire renders the same group a hand-run does — one shared renderer, so the journal a
-background run leaves behind is what you would have seen on the terminal. Each unit also gets one
-`tracing` line naming its own outcome (`completed`, `completed with errors`, or
-`skipped: the unit is already running elsewhere` **with the holder**), taken from that unit's own
-result rather than from a read-back of the store, which would report the previous run's row for a
-unit that was skipped here.
+A scheduled fire renders the same group a hand-run does, so the journal a background run leaves
+behind is what you would have seen on the terminal. Each unit also gets one `tracing` line naming
+its own outcome: `completed`, `completed with errors`, or
+`skipped — already running under <holder>`.
 
 Timer behaviour:
 
 - **Only scheduled backups get timers.** A schedule-less entry belongs to `cfgd apply` and is never
   installed as a timer.
-- **The set reloads on `SIGHUP`** — see [Live config reload](daemon.md#live-config-reload-sighup).
-  Added, removed, and rescheduled units are picked up without a restart, and a unit whose schedule
-  did not change keeps its pending deadline, so reloading does not restart the clock on a daily
-  backup.
-
-  ```console
-  $ kill -HUP "$(cfgd daemon status -o json | jq .pid)"
-  # in the daemon's output:
-  Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart
-
-  ✓ Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled
-  ```
-
-  The swap is all-or-nothing. A reload that cannot fully resolve the config — a profile saved
-  mid-edit, a source cache being rewritten — keeps the schedules that are already running and
-  retries on its own, so one `SIGHUP` over a transient error can never retire a working timer set:
-
-  ```console
-  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedules, retrying automatically
-  ```
+- **The set reloads on `SIGHUP`.** Added, removed, and rescheduled units are picked up without a
+  restart, and a unit whose schedule did not change keeps its pending deadline, so reloading does
+  not restart the clock on a daily backup. The swap is all-or-nothing: a reload that cannot fully
+  resolve the config keeps the schedules already running and retries on its own. See
+  [Live config reload](daemon.md#live-config-reload-sighup) for the reload messages.
 - **A degraded start is visible and temporary.** If sources cannot be composed at startup, the
-  daemon installs the locally-declared backups rather than none, says so in the banner, holds their
-  first fire back until it has re-resolved, and keeps retrying:
+  daemon installs the locally-declared backups rather than none, says so in the banner, holds
+  their first fire back until it has re-resolved, and keeps retrying. If the profile itself will
+  not resolve, no timers are installed, and the banner names that cause instead:
 
   ```console
   ✓ Intervals: reconcile=300s, backups=2 scheduled (source composition unavailable)
-  ```
-
-  If the profile itself will not resolve there are no timers to install at all — but the retry is
-  armed just the same, and the banner names that cause rather than blaming the sources:
-
-  ```console
   ✓ Intervals: reconcile=300s, backups=0 scheduled (profile unresolved)
   ```
 
-  Either way the daemon recovers on its own, with no restart and no manual `SIGHUP`:
+  Either way the daemon recovers on its own, with no restart and no manual `SIGHUP`, and reports
+  the recovery. A partial recovery (the profile parses again but sources are still unavailable)
+  keeps the qualifier rather than reporting an all-clear:
 
   ```console
   ✓ Backup schedules restored: 3 scheduled
-  ```
-
-  A profile that heals into zero declared backups is not a restoration of anything, so it gets its
-  own line rather than the odd-looking `restored: 0 scheduled`:
-
-  ```console
-  ✓ Backup schedule resolved: no units configured
-  ```
-
-  A recovery that is only *partial* — the profile parses again but sources are still unavailable —
-  says so on the same line rather than reporting an all-clear, because the retry is still armed and
-  a unit a source overrides would back up to its **local** destination once the first-fire deferral
-  expires:
-
-  ```console
   ⚠ Backup schedules restored: 3 scheduled (source composition unavailable)
   ```
-
-  The `SIGHUP` completion line carries the same qualifier when a reload adopts a partial set.
-- **A unit never overlaps itself.** The daemon's loop runs one tick at a time and waits for a run to
-  finish, so a unit's next fire is not even evaluated while its own run is in flight. Fires that
-  elapse during a long run are **skipped**, not queued: cfgd logs how many were passed over and arms
-  the next one from now. A backup that consistently takes longer than its own schedule therefore
-  runs back-to-back rather than piling up.
+- **A unit never overlaps itself.** A unit's next fire is not evaluated while its own run is in
+  flight. Fires that elapse during a long run are **skipped**, not queued: cfgd logs how many were
+  passed over and arms the next one from now, so a backup that consistently outruns its own
+  schedule runs back-to-back rather than piling up.
 - **A failed run does not stop the timer.** The failure is recorded like any other, reported on the
   daemon's output, and the unit is re-armed for its next fire.
-- **Shutdown is not held hostage by a hook.** `SIGTERM` / Ctrl-C reaches an in-flight `preBackup` or
-  `postBackup` hook, so a `systemctl stop cfgd` during a backup does not wait out the hook's own
-  timeout.
+- **Shutdown is not held hostage by a hook.** `SIGTERM` / Ctrl-C reaches an in-flight `preBackup`
+  or `postBackup` hook, so a `systemctl stop cfgd` during a backup does not wait out the hook's
+  own timeout.
 
 ## Restoring
 
@@ -567,23 +536,32 @@ overwrite:
 
 ```
 ? Restore 'notes-db' from snapshot notes.db.20260813T061322Z into
-  /home/me/.local/share/notes/notes.db? (y/N)
+  ~/.local/share/notes/notes.db? (y/N)
 ```
 
 `--yes` answers it up front, which is the form that fits in a script:
 
 ```console
 $ cfgd backup restore notes-db --yes
-Restore Backup
+Restore: notes-db
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Modules  notes, shell
+  Source   ~/.local/share/notes/notes.db
+  Actions  1 planned
+
 ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
   0|0|0
 ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
 ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
   ok
 ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
-✓ backup:notes-db restored from notes.db.20260813T061333Z — into /home/me/.local/share/notes/notes.db
 
-→ previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
+backup:notes-db
+  ✓ restore ~/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
+  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
+
+✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
 
 ```bash
@@ -594,10 +572,10 @@ cfgd backup restore notes-db --to /tmp/inspect --yes          # somewhere else, 
 ```
 
 `--to` redirects where the snapshot lands. A path outside the backup's source leaves the live
-source untouched and takes no safety backup; a path at or inside the source is a restore-to-source
+source untouched and takes no safety copy; a path at or inside the source is a restore-to-source
 in all but spelling, and behaves like one.
 
-`--at` matches the full snapshot name first, then any snapshot name **containing** the value —
+`--at` matches the full snapshot name first, then any snapshot name **containing** the value,
 which is what lets a bare timestamp reach `notes.db.20260730T120000Z` without you knowing the
 unit's `namePattern`. A value matching more than one snapshot is refused rather than resolved to
 the newest match: a restore overwrites live data, so an ambiguous selection is never guessed at.
@@ -605,7 +583,7 @@ An unknown value lists every available snapshot and exits `6`, the same treatmen
 backup name gets.
 
 **Confirmation is required.** `--yes` (or `CFGD_YES=1`) skips the prompt. Where cfgd *cannot*
-prompt — piped stdin, a CI runner, or `-o json` — a restore without `--yes` is an **error**, not a
+prompt (piped stdin, a CI runner, or `-o json`), a restore without `--yes` is an **error**, not a
 silent "aborted": you asked for a restore and did not get one.
 
 ### What a restore does
@@ -615,14 +593,14 @@ acquire the unit's lock, re-resolve the selected snapshot under it
       │
       ▼
 stage the selected snapshot into a temp dir beside the target
-      │                                  (before the safety backup — see below)
+      │
       ▼
 preBackup hooks                          (CFGD_OPERATION=restore)
       │
-      ├──fail──►  safety backup + overlay SKIPPED  ──┐
+      ├──fail──►  safety copy + overlay SKIPPED──────┐
       │ ok                                           │
       ▼                                              │
-safety backup of the CURRENT target      (skipped when the target is not the source,
+safety copy of the CURRENT target        (skipped when the target is not the source,
       │                                   or the source is gone; no hooks of its own)
       ▼                                              │
 overlay the staged snapshot onto the target          │
@@ -638,40 +616,42 @@ staging removed      ← on every path, success or failure
   only in the target are **left alone**, so a restore never deletes a *name* the snapshot does not
   contain. Use `--to` and copy by hand if you want an exact mirror.
 - **A name the snapshot owns is taken back, whatever occupies it.** If the snapshot holds a file at
-  a name the target now holds as a directory (or a symlink), that directory is **removed** — with
-  everything under it — and replaced by the snapshot's file. It is inside the restore target, so
-  the safety backup captured it and the [safety snapshot](#what-a-restore-does) is the recovery.
+  a name the target now holds as a directory (or a symlink), that directory is **removed**, with
+  everything under it, and replaced by the snapshot's file. It is inside the restore target, so
+  the safety copy captured it and is the recovery.
   The kind check in [What a restore refuses](#what-a-restore-refuses) guards the **top-level**
   target only; nested kind swaps are resolved in the snapshot's favour rather than refused, because
   a restore that stops halfway through a tree is worse than one that completes.
 - **File modes come across** on Unix, the same way the backup carried them in. Snapshots hold no
   symlinks by construction (the writer skips them), so a link living in the target at a name the
   snapshot does **not** own survives untouched. A link sitting at a name the snapshot **does** own
-  is **removed and replaced** by the snapshot's own file or directory — never written through.
+  is **removed and replaced** by the snapshot's own file or directory, never written through.
   Following it would truncate a file, or populate a whole tree, outside the restore target and
-  outside what the safety backup captured.
+  outside what the safety copy captured.
 - **The overlay is not atomic as a whole.** Each file is replaced atomically (temp file + rename),
   but a directory restore interrupted halfway leaves the target part old and part new. The safety
-  backup is what recovers it; a single-file backup has no such window.
-- **The safety backup is an ordinary run.** It writes a normal `backup_runs` row and
-  **participates in normal retention** — so it counts against `retention` and can evict an older
-  snapshot. Its path is reported as `safetySnapshot` in `-o json` and as the `→` line in human
-  output. If it fails to produce a snapshot, the restore is **abandoned**: cfgd will not overwrite
+  copy is what recovers it; a single-file backup has no such window.
+- **The safety copy is a sidecar, not a snapshot.** It is the same `<path>.cfgd-backup` copy cfgd
+  leaves beside any file it displaces (see [Safety](safety.md)): written beside the **source**, never
+  into the unit's `destination`, so it is not in `backup list`'s count, not in `--snapshots`, not
+  subject to `retention`, and not a `backup_runs` row. `backup list` never reports it as the unit's
+  **Last Run**, and the daemon never re-anchors **Next Run** on it, so restoring a unit does not push
+  its schedule out. Its path is reported as `safetyCopy` in `-o json` and as the `→` line in human
+  output, worded the way an adoption row words the same copy: `Previous contents backed up to
+  <path>`, or `Previous contents already backed up at <path>` when a sidecar already holding exactly
+  the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A sidecar
+  holding different bytes is kept and the new copy lands at a stamped `<path>.cfgd-backup.<stamp>`
+  name instead, so an older copy is never overwritten. If the copy cannot be written, the restore is **abandoned**: cfgd will not overwrite
   data whose current contents were not captured.
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a
   path inside it, overwrites exactly what a plain restore would, so it still takes one. Only a
-  target genuinely outside the source — or a source that does not exist yet — skips it.
-- **Staging comes first for a reason.** The safety backup prunes to `retention`, and the snapshot
-  being restored can be the one it evicts. Staging the payload beforehand makes the restore immune
-  to that. The safety backup also renders the same `namePattern` — and when a restore runs inside
-  the same second as the snapshot it selects, that renders the same *name*; cfgd appends `-1`,
-  `-2`, … so both snapshots survive under distinct names (see [`namePattern`](#namepattern)).
+  target genuinely outside the source (or a source that does not exist yet) skips it.
 - **The unit's `preBackup` / `postBackup` hooks run exactly once**, wrapped around the whole
-  restore including the safety backup. The safety backup does not open a second envelope of its
+  restore including the safety copy. The safety copy does not open a second envelope of its
   own: the unit declares one hook list, and running it twice around a source the restore has
   already quiesced breaks any hook that is not idempotent. Hooks see
   `CFGD_OPERATION=restore` to tell the two directions apart.
-- **A `preBackup` failure skips the safety backup and the overlay**, exactly as it skips the
+- **A `preBackup` failure skips the safety copy and the overlay**, exactly as it skips the
   snapshot during a run: the hook exists to quiesce the target, and neither snapshotting nor
   overwriting it after the hook failed is trustworthy. `postBackup` still runs.
 - **One at a time.** A restore takes the same per-unit lock a run does, so it can never interleave
@@ -684,15 +664,78 @@ staging removed      ← on every path, success or failure
 | a target inside the backup's `destination` | restoring there would overwrite the snapshot store |
 | a **top-level** snapshot/target kind mismatch (file over directory, or the reverse) | publishing a file over a directory would delete the whole directory on the way to the rename. Nested names inside a directory overlay are replaced instead of refused — see above |
 | a snapshot that vanished since it was listed | a concurrent prune, or a hand-deleted destination — re-checked *after* the lock is taken, so the window a confirmation prompt opens is covered |
-| a failed safety backup | the current contents were not captured |
+| a failed safety copy | the current contents were not captured |
 
 **Restores are not recorded.** The `backup_runs` table is the ledger retention walks, and a
-restore produces no artifact for it to prune. The safety backup it takes *is* recorded, as an
-ordinary run. `cfgd rollback` covers cfgd's own file writes and is unrelated to this table.
+restore produces no artifact for it to prune; the safety copy it takes is a sidecar beside the
+source, outside the ledger too — the primary sidecar (the first displacement, never pruned) plus
+at most one stamped copy (the newest displacement) survive, and the newest is what
+[`cfgd backup rollback`](#rolling-back-a-restore) puts back, never `spec.backups[].retention`.
+`cfgd rollback` covers cfgd's own file writes and is unrelated to both.
+
+### Rolling back a restore
+
+Every time cfgd displaces a file it copies the current contents aside first, as the
+`<path>.cfgd-backup` sidecar beside them — a restore leaves one before it overlays, and so does
+`cfgd apply` when it adopts a file it did not write. `cfgd backup rollback` puts that copy back,
+which is how a restore of the wrong snapshot is undone:
+
+```console
+$ cfgd backup rollback notes-db --yes
+Rollback: notes-db
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Modules  notes, shell
+  Source   ~/.local/share/notes/notes.db
+  Actions  1 planned
+
+backup:notes-db
+  ✓ rollback ~/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
+  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
+
+✓ Rollback complete — 1 action succeeded (0.2s wall)
+
+→ Run `cfgd backup run notes-db` to take a snapshot of what was just put back
+```
+
+With no name it lists what it could put back and leaves the machine alone:
+
+```bash
+cfgd backup rollback                     # what has a copy beside it
+cfgd backup rollback notes-db            # put notes-db's copy back (asks first)
+cfgd backup rollback notes-db --yes      # ...without the prompt
+cfgd --output json backup rollback       # the same listing, as an array
+```
+
+The rollback runs through the same envelope a restore does: the unit's lock, its one
+`preBackup` / `postBackup` hook list (with `CFGD_OPERATION=rollback`), the same confirmation, and
+the same safety copy. The contents the rollback displaces are copied aside as their own sidecar
+first — regular files, directory structure and symlinks alike — so work written after the restore
+is never lost and the rollback is itself reversible: rolling back twice returns the source to
+where it started. A rollback whose safety copy fails is refused before anything is written, the
+same row of [What a restore refuses](#what-a-restore-refuses) that governs a restore.
+
+**The primary sidecar plus at most one stamped copy are retained per source.** The primary
+`<source>.cfgd-backup` — the first displacement, from before cfgd ever touched the source — is
+never pruned. When a later displacement writes a new stamped copy, the older stamped sidecars for
+that path are pruned, so at most one stamped copy survives alongside the primary and a rollback
+always undoes the *most recent* displacement. Only names cfgd itself would have written are
+pruned; anything else beside the source is left alone — and the same rule decides what a rollback
+will put back, so a file cfgd never wrote is never published over your live source either.
+
+A unit with no copy beside its source is refused, exit `6`, pointed at the read-only surfaces
+instead of the restore that would create one:
+
+```console
+$ cfgd backup rollback notes-db
+✗ Backup 'notes-db' has no copy to roll back to
+
+→ A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts; see `cfgd backup list notes-db` for its snapshots
+```
 
 ### Restoring by hand
 
-A snapshot is an ordinary file or directory, so nothing stops you from doing it yourself — which
+A snapshot is an ordinary file or directory, so nothing stops you from doing it yourself. That
 is the right call when you want mirror semantics (`rsync --delete`) rather than an overlay:
 
 ```bash
@@ -707,14 +750,22 @@ rsync -a --delete ~/.local/state/cfgd/backups/journal/journal.20260813T061306Z/ 
 
 - A missed **cron** occurrence is skipped, not caught up: a daemon that was stopped over a `0 3 * * *`
   fire takes the next 3am, not the one it slept through. (Interval schedules do resume from the last
-  recorded run — see [`schedule`](#schedule).)
-- Snapshots are full copies — no incremental, deduplicating, or compressed modes.
-- Symlinks inside a directory source are skipped rather than recreated. On restore, a symlink
-  occupying a name the snapshot owns is replaced by the snapshot's own entry.
-- A directory restore is not atomic as a whole — see [What a restore does](#what-a-restore-does).
+  recorded run; see [`schedule`](#schedule).)
+- Snapshots are full copies: no incremental, deduplicating, or compressed modes.
+- Symlinks inside a directory source are skipped rather than recreated **in a snapshot**. On
+  restore, a symlink occupying a name the snapshot owns is replaced by the snapshot's own entry.
+  The `.cfgd-backup` sidecar is the other way round: it recreates them, because it is the copy
+  [`cfgd backup rollback`](#rolling-back-a-restore) puts back and a link it dropped is one the
+  overlay could never replace. A host that will not create symbolic links at all — Windows
+  without Developer Mode or an elevated shell, where even a `mklink /J` junction reads back as a
+  link — refuses the sidecar rather than dropping the entry, naming the link inside the source
+  and how to grant the privilege.
+- Neither a directory restore nor a directory rollback is atomic as a whole; see
+  [What a restore does](#what-a-restore-does). A rollback interrupted partway leaves a mixed tree,
+  and the complete pre-rollback contents are in the sidecar its own row names — run the verb again.
 - Concurrent runs of one backup are refused, not queued: the second caller is told who holds the
   unit (see above).
-- `cfgd backup restore` overlays; it never deletes a name the snapshot does not contain — but it
+- `cfgd backup restore` overlays; it never deletes a name the snapshot does not contain, but it
   does replace one it *does* contain, even when the target now holds a directory there. Restore
   with `--to` and mirror by hand when you need the target to match the snapshot exactly.
 - `spec.backups[]` is available on the YAML/TOML profile path only; CRD parity is not implemented.

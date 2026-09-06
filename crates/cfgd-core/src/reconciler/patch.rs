@@ -179,7 +179,7 @@ impl PatchBinding {
         Ok(Self::module(config_dir, profile_name, context, module))
     }
 
-    /// Borrow the binding as an execution context for [`compute_patched`] /
+    /// Borrow the binding as an execution context for `compute_patched` /
     /// [`evaluate_patch`].
     pub fn context(&self) -> PatchContext<'_> {
         PatchContext::new(&self.script_dir).with_env(&self.env)
@@ -218,7 +218,7 @@ pub fn patch_failure_detail(error: &crate::errors::CfgdError) -> String {
 /// Read `target` and compute what `spec` would make of it.
 ///
 /// A missing target reads as empty content (`ensure` then creates a minimal
-/// document, `script` receives empty stdin), matching [`compute_patched`]'s
+/// document, `script` receives empty stdin), matching `compute_patched`'s
 /// contract. Any other read failure — a directory, a permission error, non-UTF-8
 /// bytes — is surfaced rather than silently treated as empty, because writing
 /// the merge result would then destroy content cfgd could not read.
@@ -977,13 +977,13 @@ fn ini_scalar(value: &serde_yaml::Value, target: &Path, key: &str) -> Result<Str
         serde_yaml::Value::Sequence(_) => Err(shape_error(
             target,
             PatchFormat::Ini,
-            format!("'{key}' is a list — INI supports section → key → scalar only"),
+            format!("'{key}' is a list — INI supports section, key, scalar nesting only"),
         )
         .into()),
         serde_yaml::Value::Mapping(_) => Err(shape_error(
             target,
             PatchFormat::Ini,
-            format!("'{key}' is nested — INI supports section → key → scalar only"),
+            format!("'{key}' is nested — INI supports section, key, scalar nesting only"),
         )
         .into()),
     }

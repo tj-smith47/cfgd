@@ -2,7 +2,7 @@
 //!
 //! Cases:
 //!   - `profile_delete/happy.{txt,json}` — `--yes` path against a real
-//!     tempdir profile: file removed, `Role::Ok "Deleted profile '<name>'"`
+//!     tempdir profile: file removed, `Role::Ok "Deleted"`
 //!     emitted.
 //!   - `profile_delete/cancelled.{txt,json}` — queued `Confirm(false)`
 //!     takes the early-return arm; the cancelled Doc carries
@@ -53,7 +53,7 @@ fn profile_delete_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    // Delete the inheritor first so we don't trip the active-profile refusal
+    // Delete the inheritor first to avoid tripping the active-profile refusal
     // (the fixture's active profile is `default`, so `work` is safely deletable).
     cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
     drop(printer);

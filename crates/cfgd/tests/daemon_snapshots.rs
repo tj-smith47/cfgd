@@ -8,8 +8,8 @@
 //!     server from a snapshot test is intractable; the Doc seam covers the
 //!     running-shape branch deterministically.
 //!   - `daemon_status/running_no_timestamps.txt` — hand-rolled; covers the
-//!     `last_reconcile=None && last_sync=None && update_available=None`
-//!     branch.
+//!     `last_reconcile=None && last_sync=None && update_available=None &&
+//!     reconcile_interval_secs=None && sync_interval_secs=None` branch.
 //!   - `daemon_status/running_with_update.txt` — hand-rolled; covers the
 //!     update-available banner.
 //!   - `daemon_install/installed_{linux,macos,windows}.{txt,json}` — hand-rolled
@@ -29,9 +29,10 @@
 //! snapshots from this integration test. The reconcile loop is a
 //! never-returning happy path from the CLI boundary; the Windows service
 //! entry point is a background process with no user-facing emit. The
-//! foreground loop's own output surface (startup banner, drift events,
-//! shutdown) is snapshotted lib-side at
-//! `crates/cfgd-core/src/daemon/snapshots/`.
+//! foreground loop has no golden at all: it reports through the journal, and
+//! `the_reconcile_loop_reports_through_the_journal_and_never_the_printer`
+//! (`crates/cfgd-core/src/daemon/tests.rs`) holds both halves of that — a
+//! silent printer and the run's account in the log.
 //!
 //! Goldens live under `tests/output_snapshots/daemon_{status,install,uninstall}/`.
 //! Regenerate with:
@@ -59,24 +60,40 @@ fn sample_status_basic() -> DaemonStatusResponse {
         last_reconcile: Some("2026-05-12T10:00:00Z".to_string()),
         last_sync: Some("2026-05-12T09:55:00Z".to_string()),
         drift_count: 7,
+        // Stored tokens, from the constants: `syncing` is a spelling nothing
+        // writes into this field, so a row seeded with it pinned only what an
+        // unrecognised token renders as.
         sources: vec![
             SourceStatus {
                 name: "local".to_string(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
-                status: "active".to_string(),
+                drift_count: None,
+                status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
+                last_commit: None,
             },
             SourceStatus {
                 name: "team".to_string(),
                 last_sync: Some("2026-05-12T09:00:00Z".to_string()),
-                last_reconcile: None,
-                drift_count: 7,
-                status: "syncing".to_string(),
+                drift_count: None,
+                status: cfgd_core::state::SOURCE_STATUS_ERROR.to_string(),
+                last_commit: None,
             },
         ],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: Some(300),
+        sync_interval_secs: Some(900),
+        config_path: Some("/home/u/.config/cfgd/cfgd.yaml".to_string()),
+        profile: Some("work".to_string()),
+        profile_inherits: vec![],
+        modules: ["base", "dev-tools"]
+            .into_iter()
+            .map(|name| cfgd_core::output::HeaderModule {
+                dep_pulled: false,
+                name: name.to_string(),
+                platform_skip_reason: None,
+            })
+            .collect(),
     }
 }
 
@@ -97,10 +114,54 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
+        config_path: None,
+        profile: None,
+        profile_inherits: vec![],
+        modules: vec![],
     }
 }
 
+/// The declared catalog the daemon's live rows are merged over. Without it the
+/// shared `Sources` table can only render `-` in the columns the daemon never
+/// reports (origin, priority, commit, signing), which is a fact about the
+/// fixture rather than about the render.
+fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
+    vec![
+        cfgd::cli::output_types::SourceListEntry {
+            name: "local".to_string(),
+            url: Some("/etc/cfgd/local".to_string()),
+            priority: Some(50),
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: Some(false),
+            last_commit: None,
+            drift_count: None,
+        },
+        cfgd::cli::output_types::SourceListEntry {
+            name: "team".to_string(),
+            url: Some("https://github.com/team/config".to_string()),
+            priority: Some(100),
+            version: Some("3.1.0".to_string()),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
+            last_fetched: Some("2026-05-12T09:00:00Z".to_string()),
+            signed: Some(true),
+            require_signed_commits: Some(true),
+            last_commit: Some("abc1234567890def".to_string()),
+            drift_count: None,
+        },
+    ]
+}
+
 // --- cfgd daemon status ----------------------------------------------------
+
+/// The instant every daemon-status render in this suite ages its stamps
+/// against, so a captured age is a fact about the fixture rather than about
+/// the day the suite ran.
+const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
 
 #[test]
 fn daemon_status_not_running_human() {
@@ -127,7 +188,13 @@ fn daemon_status_not_running_json() {
 fn daemon_status_running_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/running.txt");
 }
@@ -136,7 +203,13 @@ fn daemon_status_running_human() {
 fn daemon_status_running_json() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["pid"], 4242);
@@ -148,7 +221,13 @@ fn daemon_status_running_json() {
 fn daemon_status_running_no_timestamps_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_no_timestamps();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &[],
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -160,7 +239,13 @@ fn daemon_status_running_no_timestamps_human() {
 fn daemon_status_running_with_update_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_with_update();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &[],
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -203,7 +288,10 @@ fn install_payload_windows() -> DaemonInstallOutput {
 #[test]
 fn daemon_install_installed_linux_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_linux()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_linux(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -214,7 +302,10 @@ fn daemon_install_installed_linux_human() {
 #[test]
 fn daemon_install_installed_linux_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_linux()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_linux(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "linux");
@@ -228,7 +319,10 @@ fn daemon_install_installed_linux_json() {
 #[test]
 fn daemon_install_installed_macos_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_macos()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_macos(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -239,7 +333,10 @@ fn daemon_install_installed_macos_human() {
 #[test]
 fn daemon_install_installed_macos_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_macos()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_macos(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "macos");
@@ -253,7 +350,10 @@ fn daemon_install_installed_macos_json() {
 #[test]
 fn daemon_install_installed_windows_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_windows()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_windows(),
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -264,7 +364,10 @@ fn daemon_install_installed_windows_human() {
 #[test]
 fn daemon_install_installed_windows_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_install_doc(&install_payload_windows()));
+    printer.emit(build_daemon_install_doc(
+        &install_payload_windows(),
+        printer.arrow(),
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "windows");

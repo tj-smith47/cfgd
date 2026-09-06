@@ -7,6 +7,8 @@
 //! `name`, `extras`) that used to be emitted at each call site — without the
 //! call site emitting anything itself.
 
+use cfgd_core::output::HintCommands;
+
 /// Structured metadata attached to a CLI error so the central renderer
 /// (`render_cli_error` in `main.rs`) can emit exactly one consistent payload
 /// under `-o json|yaml|...` and exactly one human `✗` line — never both,
@@ -14,14 +16,17 @@
 ///
 /// `hints` are remediation lines rendered in human mode only (matching the
 /// `.hint(...)` calls the old call sites attached to their error `Doc`);
-/// they never appear in the structured payload.
+/// they never appear in the structured payload. A hint whose payload is a
+/// colon-introduced command carries it as [`HintCommands::commands`] rather
+/// than inside the sentence, and renders as the same `$` block every other
+/// surface's hints do.
 #[derive(Debug, Clone)]
 pub struct CliErrorMeta {
     pub error_kind: String,
     pub name: String,
     pub message: String,
     pub extras: serde_json::Value,
-    pub hints: Vec<String>,
+    pub hints: Vec<HintCommands>,
     /// Verbatim, copy-pasteable lines (e.g. a YAML snippet) replayed AFTER the
     /// hints in human mode only. Rendered as a tight code block — no `→` glyph,
     /// no blank lines between rows — so a multi-line remediation snippet stays
@@ -42,7 +47,7 @@ fn meta(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> CliErrorMeta {
     meta_full(name, error_kind, message, extras, hints, Vec::new())
 }
@@ -52,7 +57,7 @@ fn meta_full(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
     code_block: Vec<String>,
 ) -> CliErrorMeta {
     CliErrorMeta {
@@ -84,7 +89,7 @@ pub fn cli_error_with_hints(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> anyhow::Error {
     anyhow::Error::new(meta(name, error_kind, message, extras, hints))
 }
@@ -109,7 +114,7 @@ pub fn cli_error_ctx_with_hints(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
 ) -> anyhow::Error {
     source.context(meta(name, error_kind, message, extras, hints))
 }
@@ -124,7 +129,7 @@ pub fn cli_error_ctx_with_hints_and_block(
     error_kind: impl Into<String>,
     message: impl Into<String>,
     extras: serde_json::Value,
-    hints: Vec<String>,
+    hints: Vec<HintCommands>,
     code_block: Vec<String>,
 ) -> anyhow::Error {
     source.context(meta_full(
@@ -211,11 +216,20 @@ pub fn render_cli_error(
         }
         None => {
             // A plain `?`-propagated error with no attached meta. Synthesize a payload
-            // so structured consumers are never left silent on failure.
+            // so structured consumers are never left silent on failure. `downcast_ref`
+            // walks the same causal chain `exit_code_for_anyhow` already does, so a
+            // typed CfgdError anywhere in the chain (the common case — most `?`-only
+            // sites propagate one) names its own domain instead of the tautological
+            // literal "error"; a genuinely opaque `anyhow!(...)` with no CfgdError in
+            // its chain falls back to "internal".
             let message = cfgd_core::output::collapse_to_subject_line(err);
+            let kind = err
+                .downcast_ref::<cfgd_core::errors::CfgdError>()
+                .map(cfgd_core::errors::CfgdError::kind)
+                .unwrap_or("internal");
             cfgd_core::output::error_doc(
                 "",
-                "error",
+                kind,
                 message.clone(),
                 serde_json::json!({ "message": message }),
             )
@@ -225,7 +239,7 @@ pub fn render_cli_error(
     let code = exit_code_for_anyhow(err);
     // The hint goes to the same stream (stderr) as the error above.
     if code == cfgd_core::exit::ExitCode::NoConfig {
-        printer.hint("run `cfgd init` to create a config, or pass --config <path>");
+        printer.hint("Run `cfgd init` to create a config, or pass --config <path>");
     }
     code
 }
@@ -262,13 +276,18 @@ mod tests {
             "not_found",
             "Module 'nope' not found",
             serde_json::json!({ "available": ["a", "b"] }),
-            vec!["Available modules: a, b".to_string()],
+            vec!["Available modules: a, b".into()],
         );
         let meta = err
             .downcast_ref::<CliErrorMeta>()
             .expect("CliErrorMeta resolves from the carrier");
         assert_eq!(meta.error_kind, "not_found");
-        assert_eq!(meta.hints, vec!["Available modules: a, b".to_string()]);
+        assert_eq!(
+            meta.hints,
+            vec![cfgd_core::output::HintCommands::from(
+                "Available modules: a, b"
+            )]
+        );
     }
 
     #[test]
@@ -319,11 +338,72 @@ mod tests {
         let code = render_cli_error(&printer, &err);
         printer.flush();
         assert_eq!(code, cfgd_core::exit::ExitCode::NoConfig);
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("cfgd init"),
             "expected remediation naming `cfgd init`, got: {out:?}"
         );
+    }
+
+    #[test]
+    fn render_cli_error_names_a_real_kind_for_a_bare_propagated_cfgd_error() {
+        // A plain `?`-propagated CfgdError (no CliErrorMeta attached, the
+        // common case for most call sites) must report its own domain, not
+        // the tautological literal "error" the untyped fallback used to emit.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err: anyhow::Error =
+            cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+                name: "acme".into(),
+            })
+            .into();
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(
+            json["error"], "source",
+            "kind must name the CfgdError variant"
+        );
+        assert!(
+            json.get("name").is_none(),
+            "an unnamed failure must omit the name field entirely: {json:?}"
+        );
+    }
+
+    #[test]
+    fn render_cli_error_falls_back_to_internal_for_a_genuinely_opaque_error() {
+        // No CfgdError anywhere in the chain — the one case with no real
+        // domain to report.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err = anyhow::anyhow!("a raw opaque failure with no typed source");
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(json["error"], "internal");
+        assert!(json.get("name").is_none());
+    }
+
+    #[test]
+    fn render_cli_error_keeps_the_name_when_a_handler_supplied_one() {
+        // A handler-supplied name (via CliErrorMeta) is real data, not the
+        // absence this fix targets, and must still round-trip.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err = cli_error(
+            "mymod",
+            "already_exists",
+            "Module 'mymod' already exists",
+            serde_json::json!({}),
+        );
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(json["error"], "already_exists");
+        assert_eq!(json["name"], "mymod");
     }
 
     #[test]
@@ -364,7 +444,7 @@ mod tests {
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
             out.matches('✗').count(),
             1,
@@ -385,11 +465,11 @@ mod tests {
             "not_found",
             "Module 'nope' not found",
             serde_json::json!({ "available": ["a", "b"] }),
-            vec!["Available modules: a, b".to_string()],
+            vec!["Available modules: a, b".into()],
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(out.matches('✗').count(), 1, "one ✗ line, got: {out:?}");
         assert!(
             out.contains("Available modules: a, b"),
@@ -409,11 +489,11 @@ mod tests {
             "already_exists",
             "Module 'mymod' already exists",
             serde_json::json!({ "path": "/tmp/mymod" }),
-            vec!["a hint".to_string()],
+            vec!["a hint".into()],
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains('✗'),
             "no human ✗ line in structured mode: {out:?}"
@@ -437,14 +517,14 @@ mod tests {
         let err = anyhow::anyhow!("some opaque failure");
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.trim().is_empty(),
             "structured failure must not be silent"
         );
         let v: serde_json::Value =
             serde_json::from_str(out.trim()).expect("buffer is exactly one JSON value");
-        assert_eq!(v["error"], "error");
+        assert_eq!(v["error"], "internal");
         assert_eq!(v["message"], "some opaque failure");
     }
 

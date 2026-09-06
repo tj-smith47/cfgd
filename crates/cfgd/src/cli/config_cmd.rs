@@ -1,12 +1,9 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::yes_no;
 
 // --- Config CRUD ---
-
-fn yes_no(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
-}
 
 pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
@@ -20,18 +17,23 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     doc = doc.section_if_nonempty("Origins", &cfg.spec.origin, |s, origins| {
         origins.iter().enumerate().fold(s, |s, (i, origin)| {
             let label = if i == 0 { "Primary" } else { "Secondary" };
-            s.subsection(
-                format!("{}: {:?} — {}", label, origin.origin_type, origin.url),
-                |sub| sub.kv("Branch", &origin.branch),
-            )
+            s.subsection(label, |sub| {
+                sub.kv("Url", &origin.url)
+                    .kv("Type", format!("{:?}", origin.origin_type))
+                    .kv("Branch", &origin.branch)
+            })
         })
     });
 
-    doc = doc.section_if_nonempty("Sources", &cfg.spec.sources, |s, sources| {
-        sources
-            .iter()
-            .fold(s, |s, src| s.kv(&src.name, &src.origin.url))
-    });
+    doc = doc.section_if_nonempty(
+        super::source::list::SOURCES_SECTION,
+        &cfg.spec.sources,
+        |s, sources| {
+            sources
+                .iter()
+                .fold(s, |s, src| s.kv(&src.name, &src.origin.url))
+        },
+    );
 
     if let Some(ref mods) = cfg.spec.modules {
         doc = doc.section_if_nonempty("Module Registries", &mods.registries, |s, regs| {
@@ -40,19 +42,19 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
 
         if let Some(ref sec) = mods.security {
             doc = doc.section("Module Security", |s| {
-                s.kv("Require signatures", yes_no(sec.require_signatures))
+                s.kv("Require Signatures", yes_no(Some(sec.require_signatures)))
             });
         }
     }
 
     if let Some(ref daemon) = cfg.spec.daemon {
         doc = doc.section("Daemon", |s| {
-            let mut s = s.kv("Enabled", yes_no(daemon.enabled));
+            let mut s = s.kv("Enabled", yes_no(Some(daemon.enabled)));
             if let Some(ref reconcile) = daemon.reconcile {
                 s = s.subsection("Reconcile", |sub| {
                     sub.kv("Interval", &reconcile.interval)
-                        .kv("On change", yes_no(reconcile.on_change))
-                        .kv("Auto apply", yes_no(reconcile.auto_apply))
+                        .kv("On Change", yes_no(Some(reconcile.on_change)))
+                        .kv("Auto Apply", yes_no(Some(reconcile.auto_apply)))
                 });
             }
             if let Some(ref sync) = daemon.sync {
@@ -118,6 +120,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             }
             Err(e) => {
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!(
                         "Invalid configuration: {}",
@@ -135,6 +138,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if valid {
         printer.emit(
             Doc::new()
+                // verdict-row-ok: a validation verdict, not an act cfgd performed
                 .status(Role::Ok, "Configuration is valid")
                 .with_data(serde_json::json!({
                     "path": cfgd_core::to_posix_string(config_path),
@@ -178,8 +182,19 @@ pub(super) fn walk_yaml_path<'a>(
                 let key = serde_yaml::Value::String((*segment).to_string());
                 current = map.get(&key).ok_or_else(|| {
                     let partial = segments[..=i].join(".");
-                    anyhow::anyhow!("key '{}' not found in config", partial)
+                    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
+                    ))
                 })?;
+            }
+            // `daemon:` with nothing beneath it parses as Null and means the
+            // section is absent, so a key asked for under it is not found —
+            // only a genuine scalar is "not a mapping".
+            serde_yaml::Value::Null => {
+                let partial = segments[..=i].join(".");
+                return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
+                )));
             }
             _ => {
                 let partial = segments[..i].join(".");
@@ -202,23 +217,28 @@ pub(super) fn walk_yaml_path_mut<'a>(
         anyhow::bail!("invalid key path '{}': contains empty segment", path);
     }
 
+    // A bare `spec:` is the same "nothing here yet" as a Null section below it.
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
     let mut current = value;
     // Walk to the parent of the final segment, creating intermediate maps
-    for segment in &segments[..segments.len() - 1] {
+    for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
         let key = serde_yaml::Value::String((*segment).to_string());
-        if !current.as_mapping().is_some_and(|m| m.contains_key(&key)) {
-            // Create intermediate mapping
-            let map = current
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?;
+        let map = current.as_mapping_mut().ok_or_else(|| {
+            let partial = segments[..i].join(".");
+            anyhow::anyhow!("'{}' is not a mapping", partial)
+        })?;
+        // An absent key and a `daemon:` holding nothing (Null, which is also
+        // how a serialized `None` section reads back) both mean there is no
+        // section here yet, so both get a fresh mapping to descend into.
+        if matches!(map.get(&key), None | Some(serde_yaml::Value::Null)) {
             map.insert(
                 key.clone(),
                 serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
             );
         }
-        current = current
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?
+        current = map
             .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
     }
@@ -404,7 +424,11 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
                 Ok(())
             }
-            None => anyhow::bail!("key '{}' not found in config", key),
+            None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound {
+                    key: key.to_string(),
+                },
+            ))),
         }
     });
 
@@ -464,14 +488,17 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 /// Remediation hint for a `target_not_writable` mutate failure naming the config
 /// directory, or none for other failure kinds. Centralized so `config set` and
 /// `config unset` attach the identical chmod guidance.
-fn writability_hint(kind: &str, config_path: &Path) -> Vec<String> {
+fn writability_hint(kind: &str, config_path: &Path) -> Vec<cfgd_core::output::HintCommands> {
     if kind == "target_not_writable"
         && let Some(parent) = config_path.parent()
     {
-        return vec![format!(
-            "check directory permissions: chmod u+w {}",
-            cfgd_core::to_posix_string(parent)
-        )];
+        return vec![
+            format!(
+                "check directory permissions: chmod u+w {}",
+                cfgd_core::to_posix_string(parent)
+            )
+            .into(),
+        ];
     }
     Vec::new()
 }
@@ -493,7 +520,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -579,7 +609,7 @@ spec:
             .expect("CliErrorMeta carrier");
         assert_eq!(meta.error_kind, "target_not_writable");
         assert!(
-            meta.hints.iter().any(|h| h.contains("chmod u+w")),
+            meta.hints.iter().any(|h| h.text.contains("chmod u+w")),
             "expected a chmod remediation hint, got: {:?}",
             meta.hints
         );
@@ -728,7 +758,7 @@ spec:
 
         cmd_config_show(&cli, &printer).unwrap();
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
@@ -789,6 +819,27 @@ spec:
         assert!(
             err.to_string().contains("'missing' not found"),
             "expected key-not-found error, got: {err}"
+        );
+
+        // A missing config key is the same scriptable "named thing not there"
+        // condition as a missing profile/module — it must carry the typed
+        // ConfigError::KeyNotFound so the exit code resolves to NotFound (6),
+        // not the generic ExitCode::Error (1) a bare anyhow error collapses to.
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("a missing config key must carry the typed ConfigError::KeyNotFound");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { .. }
+                )
+            ),
+            "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
         );
     }
 
@@ -966,6 +1017,23 @@ spec:
             err.to_string().contains("'missingKey' not found"),
             "expected key-not-found error, got: {err}"
         );
+
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("a missing config key must carry the typed ConfigError::KeyNotFound");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { .. }
+                )
+            ),
+            "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
+        );
     }
 
     // --- coverage: mapping/null rendering and parse-error paths ---
@@ -1041,7 +1109,7 @@ spec:
     // Target 2: cmd_config_show with a broken YAML file yields parse_failed.
     // `config show` uses `load_config` (the typed serde path), so a valid-YAML
     // but schema-violating file hits a different code path than cmd_config_get.
-    // We use the same syntactically-invalid YAML to ensure the serde_yaml layer
+    // This uses the same syntactically-invalid YAML to ensure the serde_yaml layer
     // rejects it before schema validation is even reached.
     #[test]
     fn cmd_config_show_broken_yaml_yields_parse_failed_error_kind() {
@@ -1062,17 +1130,78 @@ spec:
         );
     }
 
-    // Target 3: walk_yaml_path_mut errors with "cannot traverse into non-mapping"
-    // when an intermediate segment resolves to a scalar.
+    // Target 3: walk_yaml_path_mut names the segment that resolved to a scalar,
+    // the same spelling the read walk uses.
     // `a: 1` → attempting `a.b.c` finds `a` = scalar 1, not a mapping.
     #[test]
     fn walk_yaml_path_mut_non_mapping_intermediate_errs() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "a.b.c").unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("cannot traverse into non-mapping"),
-            "expected 'cannot traverse into non-mapping', got: {msg:?}"
+        assert_eq!(msg, "'a' is not a mapping");
+    }
+
+    // `daemon: null` is how a serialized `None` section reads back (and how a
+    // hand-written bare `daemon:` parses); it is the section being absent, not
+    // a scalar standing in the way, so the walk descends through it exactly as
+    // it does through a missing key.
+    #[test]
+    fn walk_yaml_path_mut_descends_through_a_null_section() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("daemon: null\n").unwrap();
+        {
+            let (parent, leaf) =
+                walk_yaml_path_mut(&mut yaml, "daemon.reconcile.autoApply").unwrap();
+            assert_eq!(leaf, "autoApply");
+            parent.insert("autoApply".into(), serde_yaml::Value::Bool(true));
+        }
+        assert_eq!(
+            yaml["daemon"]["reconcile"]["autoApply"],
+            serde_yaml::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn walk_yaml_path_mut_null_root_becomes_a_mapping() {
+        let mut yaml = serde_yaml::Value::Null;
+        let (parent, leaf) = walk_yaml_path_mut(&mut yaml, "a.b").unwrap();
+        assert_eq!(leaf, "b");
+        assert!(parent.is_empty());
+    }
+
+    #[test]
+    fn walk_yaml_path_null_section_reads_as_key_not_found() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: null\n").unwrap();
+        let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
+        match err.downcast_ref::<cfgd_core::errors::CfgdError>() {
+            Some(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound { key },
+            )) => assert_eq!(key, "daemon.reconcile"),
+            other => panic!("expected KeyNotFound, got {other:?}"),
+        }
+    }
+
+    // The command-level shape of the bug: a config `cfgd init --from` rewrote
+    // carried `daemon: null`, and `cfgd config set daemon.reconcile.autoApply
+    // true` refused to traverse it.
+    #[test]
+    fn cmd_config_set_writes_through_a_null_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  daemon: null\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+        let printer = test_printer();
+
+        cmd_config_set(&cli, &printer, "daemon.reconcile.autoApply", "true").unwrap();
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["spec"]["daemon"]["reconcile"]["autoApply"],
+            serde_yaml::Value::Bool(true)
         );
     }
 

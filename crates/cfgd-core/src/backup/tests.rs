@@ -1417,6 +1417,7 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
             std::time::Instant::now() < deadline,
             "the first run's preBackup hook never started"
         );
+        // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
@@ -1767,7 +1768,7 @@ fn restore_of_a_file_source_replaces_the_file() {
 }
 
 #[test]
-fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
+fn restore_to_redirects_the_target_and_skips_the_safety_copy() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -1782,7 +1783,7 @@ fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
 
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
     assert!(
-        outcome.safety_snapshot.is_none(),
+        outcome.safety_copy.is_none(),
         "--to leaves the live source untouched, so there is nothing to protect"
     );
     assert_eq!(
@@ -1797,12 +1798,12 @@ fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
     assert_eq!(
         h.store.backup_runs("db").expect("history").len(),
         before,
-        "no safety backup means no extra run record"
+        "no safety copy means no extra run record"
     );
 }
 
 #[test]
-fn restore_to_source_takes_a_safety_backup_first() {
+fn restore_to_source_takes_a_safety_copy_first() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -1812,81 +1813,182 @@ fn restore_to_source_takes_a_safety_backup_first() {
 
     let outcome = h.restore(&s, None, None).expect("restore");
     let safety = outcome
-        .safety_snapshot
-        .as_deref()
-        .expect("restoring over the live source must capture it first");
+        .safety_copy
+        .expect("restoring over the live source must capture it first")
+        .path;
     assert_eq!(
-        std::fs::read_to_string(Path::new(safety)).expect("safety snapshot"),
+        std::fs::read_to_string(&safety).expect("safety copy"),
         "live",
-        "the safety backup holds what the restore overwrote"
+        "the safety copy holds what the restore overwrote"
     );
     assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
 }
 
 #[test]
-fn restore_records_no_run_of_its_own_beyond_the_safety_backup() {
+fn restore_records_no_run_and_keeps_its_safety_copy_out_of_the_snapshots() {
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+    let before = snapshots(&snapshot_dir(&h, "db"));
+    std::fs::write(&source, "live").expect("live edit");
+
+    let outcome = h.restore(&s, None, None).expect("restore");
+    let runs = h.store.backup_runs("db").expect("history");
+    assert_eq!(
+        runs.len(),
+        1,
+        "the original run's row is the only row — a restore records nothing"
+    );
+    assert_eq!(
+        snapshots(&snapshot_dir(&h, "db")),
+        before,
+        "the safety copy must not appear among the unit's snapshots"
+    );
+    // The copy is the sidecar cfgd leaves beside anything it displaces, so it
+    // sits beside the source under the one suffix every such copy carries.
+    let safety = outcome
+        .safety_copy
+        .expect("restoring over the live source captures it");
+    assert!(
+        !safety.reused,
+        "the first displacement of these bytes writes the copy"
+    );
+    let safety = safety.path;
+    assert_eq!(
+        crate::to_posix_string(&safety),
+        crate::to_posix_string(crate::reconciler::cfgd_backup_path(&source, "")),
+        "the safety copy lands beside the source as its .cfgd-backup sidecar"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&safety).expect("safety payload"),
+        "live"
+    );
+    assert_eq!(
+        list_snapshots(
+            &BackupUnit::new(&s, &h.config_dir(), "workstation", &h.state_dir()),
+            &h.store
+        )
+        .expect("snapshots")
+        .len(),
+        1,
+        "the restorable list is the unit's own snapshots, never the safety copy"
+    );
+}
+
+#[test]
+fn a_second_restore_keeps_the_first_safety_copy() {
+    // The sidecar's reservation: the primary `.cfgd-backup` keeps the oldest
+    // contents, and a later, different original is stamped beside it rather
+    // than written over it — the same guarantee an adoption gives.
+    let h = Harness::new();
+    let source = h.root.join("data.db");
+    std::fs::write(&source, "v1").expect("source");
+    let s = spec("db", &source);
+    h.run(&s);
+    std::fs::write(&source, "first live").expect("live edit");
+    let first = h
+        .restore(&s, None, None)
+        .expect("restore")
+        .safety_copy
+        .expect("safety copy")
+        .path;
+    std::fs::write(&source, "second live").expect("live edit");
+    let second = h
+        .restore(&s, None, None)
+        .expect("restore")
+        .safety_copy
+        .expect("safety copy")
+        .path;
+
+    assert_ne!(first, second, "a different original must take a new name");
+    assert_eq!(
+        std::fs::read_to_string(&first).expect("first copy"),
+        "first live"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&second).expect("second copy"),
+        "second live"
+    );
+    assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
+}
+
+/// A restore over bytes an earlier displacement already preserved reuses that
+/// sidecar, and the line reporting the copy says so. `Previous contents saved
+/// to …` had been composed by the restore itself, so a second restore of an
+/// unchanged target claimed a write it never made; the sentence is
+/// `SidecarOutcome::detail`'s, the same one an adoption row carries.
+#[test]
+fn a_restore_over_bytes_already_preserved_reads_already_backed_up_at() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
     let s = spec("db", &source);
     h.run(&s);
 
-    h.restore(&s, None, None).expect("restore");
-    let runs = h.store.backup_runs("db").expect("history");
-    assert_eq!(
-        runs.len(),
-        2,
-        "one row for the original run, one for the safety backup — a restore records nothing"
-    );
-}
-
-#[test]
-fn the_safety_backup_never_replaces_the_snapshot_being_restored() {
-    // A `namePattern` with no `{timestamp}` makes EVERY run render one name, so
-    // the safety backup renders exactly the name of the snapshot being
-    // restored — the worst case the collision suffix exists for.
-    let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, "v1").expect("source");
-    let mut s = spec("db", &source);
-    s.name_pattern = "latest".to_string();
-    h.run(&s);
     std::fs::write(&source, "live").expect("live edit");
-
-    let outcome = h.restore(&s, None, None).expect("restore");
-    assert!(outcome.restored, "outcome: {outcome:?}");
-    assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
-    assert_eq!(
-        std::fs::read_to_string(snapshot_dir(&h, "db").join("latest")).expect("snapshot"),
-        "v1",
-        "the restored snapshot must still be on disk under its own name"
-    );
-    let safety = outcome.safety_snapshot.clone().expect("safety snapshot");
+    let first = h.restore(&s, None, None).expect("restore");
+    let first_copy = first.safety_copy.clone().expect("safety copy");
     assert!(
-        safety.ends_with("latest-1"),
-        "the safety backup must take a free name, got: {safety}"
+        !first_copy.reused,
+        "the first copy of these bytes is written"
     );
-    assert_eq!(
-        std::fs::read_to_string(&safety).expect("safety payload"),
-        "live",
-        "the safety snapshot must hold what the restore overwrote"
+
+    std::fs::write(&source, "live").expect("the same live edit again");
+    let second = h.restore(&s, None, None).expect("restore");
+    let second_copy = second.safety_copy.clone().expect("safety copy");
+    assert!(
+        second_copy.reused,
+        "a sidecar already holding these bytes is reused, not rewritten"
+    );
+    assert_eq!(second_copy.path, first_copy.path);
+
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    report_restore(&printer, &first);
+    report_restore(&printer, &second);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let hints: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("Previous contents"))
+        .collect();
+    assert_eq!(hints.len(), 2, "one hint per restore, got:\n{out}");
+    assert!(
+        hints[0].contains(&format!("Previous contents {}", first_copy.detail()))
+            && hints[0].contains("backed up to"),
+        "the written copy reads as written, got: {}",
+        hints[0]
+    );
+    assert!(
+        hints[1].contains(&format!("Previous contents {}", second_copy.detail()))
+            && hints[1].contains("already backed up at"),
+        "the reused copy must not claim a write, got: {}",
+        hints[1]
     );
 }
 
-#[test]
-fn restore_aborts_when_the_safety_backup_produces_nothing() {
-    let h = Harness::new();
-    let source = h.root.join("data.db");
+/// A source whose name leaves no room for the `.cfgd-backup` suffix inside the
+/// filesystem's 255-byte component limit: the backup itself renders under a
+/// `{timestamp}`-only pattern and succeeds, and the sidecar write fails with
+/// ENAMETOOLONG on every platform and under every privilege — root included,
+/// which is what rules out a permissions-based fixture.
+fn unsidecarable_spec(h: &Harness) -> (PathBuf, BackupSpec) {
+    let source = h.root.join("n".repeat(250));
     std::fs::write(&source, "v1").expect("source");
     let mut s = spec("db", &source);
+    s.name_pattern = "{timestamp}".to_string();
+    (source, s)
+}
+
+#[test]
+fn restore_aborts_when_the_safety_copy_cannot_be_written() {
+    let h = Harness::new();
+    let (source, mut s) = unsidecarable_spec(&h);
     h.run(&s);
     std::fs::write(&source, "live").expect("live edit");
 
-    // An unusable `namePattern` makes the safety snapshot fail to write any
-    // artifact — and a restore that cannot capture what it is about to destroy
-    // must not run. The already-recorded snapshot is still selectable, because
-    // selection reads rows rather than re-rendering the pattern.
-    s.name_pattern = "../escape".to_string();
+    // A restore that cannot capture what it is about to destroy must not run.
     let post_tally = h.root.join("post-tally");
     s.post_backup = vec![append_hook(&post_tally)];
     let err = h
@@ -1898,8 +2000,8 @@ fn restore_aborts_when_the_safety_backup_produces_nothing() {
         "the abort still has to restart whatever preBackup stopped"
     );
     assert!(
-        format!("{err}").contains("safety backup"),
-        "expected the safety-backup refusal, got: {err}"
+        format!("{err}").contains("safety copy"),
+        "expected the safety-copy refusal, got: {err}"
     );
     assert_eq!(
         std::fs::read_to_string(&source).expect("source"),
@@ -1915,23 +2017,20 @@ fn restore_aborts_when_the_safety_backup_produces_nothing() {
 #[test]
 fn restore_abort_carries_a_post_hook_failure_in_the_returned_error() {
     let h = Harness::new();
-    let source = h.root.join("data.db");
-    std::fs::write(&source, "v1").expect("source");
-    let mut s = spec("db", &source);
+    let (source, mut s) = unsidecarable_spec(&h);
     h.run(&s);
     std::fs::write(&source, "live").expect("live edit");
 
     // Same fatal abort as above, but the postBackup hook ALSO fails on the
     // way out. Both failures must reach the returned error itself — a stderr
     // status line never reaches a `-o json` consumer.
-    s.name_pattern = "../escape".to_string();
     s.post_backup = vec![hook("exit 9")];
     let err = h
         .restore(&s, None, None)
         .expect_err("an uncaptured source must not be overwritten");
     let rendered = format!("{err}");
     assert!(
-        rendered.contains("safety backup"),
+        rendered.contains("safety copy"),
         "the abort must stay the primary condition, got: {rendered}"
     );
     assert!(
@@ -1946,7 +2045,7 @@ fn restore_abort_carries_a_post_hook_failure_in_the_returned_error() {
 }
 
 #[test]
-fn restore_of_a_missing_source_skips_the_safety_backup() {
+fn restore_of_a_missing_source_skips_the_safety_copy() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -1958,7 +2057,7 @@ fn restore_of_a_missing_source_skips_the_safety_backup() {
     let outcome = h.restore(&s, None, None).expect("bare-metal restore");
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
     assert!(
-        outcome.safety_snapshot.is_none(),
+        outcome.safety_copy.is_none(),
         "there is nothing to protect when the source is gone"
     );
     assert_eq!(
@@ -2042,8 +2141,8 @@ fn restore_skips_the_overlay_when_prebackup_fails_but_still_runs_postbackup() {
     h.run(&s);
     std::fs::write(source.join("a.txt"), "live").expect("live edit");
 
-    // `--to` keeps the safety backup out of the way, so this exercises the
-    // RESTORE's own hook envelope rather than the safety backup's.
+    // `--to` keeps the safety copy out of the way, so this exercises the
+    // RESTORE's own hook envelope rather than the safety copy's.
     let mut hooked = spec("db", &source);
     let post = h.root.join("post.marker");
     hooked.pre_backup = vec![hook("exit 4")];
@@ -2175,7 +2274,7 @@ fn restore_replaces_a_symlink_at_a_name_the_snapshot_owns() {
 
     // The name the snapshot owns is replaced in the live target by a link
     // pointing OUTSIDE it — the shape that turns a plain `fs::copy` into a
-    // write the safety backup never captured.
+    // write the safety copy never captured.
     let outsider = h.root.join("outside.txt");
     std::fs::write(&outsider, "do not touch").expect("outsider");
     std::fs::remove_file(source.join("a.txt")).expect("clear a.txt");
@@ -2232,7 +2331,7 @@ fn restore_replaces_a_symlinked_directory_at_a_name_the_snapshot_owns() {
 }
 
 #[test]
-fn restore_to_the_source_itself_still_takes_a_safety_backup() {
+fn restore_to_the_source_itself_still_takes_a_safety_copy() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -2246,7 +2345,7 @@ fn restore_to_the_source_itself_still_takes_a_safety_backup() {
     let outcome = h
         .restore(&s, None, Some(&source))
         .expect("restore to the source");
-    let safety = outcome.safety_snapshot.expect("safety snapshot");
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
         std::fs::read_to_string(&safety).expect("safety payload"),
         "live"
@@ -2255,7 +2354,7 @@ fn restore_to_the_source_itself_still_takes_a_safety_backup() {
 }
 
 #[test]
-fn restore_to_a_path_inside_the_source_still_takes_a_safety_backup() {
+fn restore_to_a_path_inside_the_source_still_takes_a_safety_copy() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -2268,9 +2367,9 @@ fn restore_to_a_path_inside_the_source_still_takes_a_safety_backup() {
     let outcome = h
         .restore(&s, None, Some(&inside))
         .expect("restore inside the source");
-    let safety = outcome.safety_snapshot.expect("safety snapshot");
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
-        std::fs::read_to_string(PathBuf::from(&safety).join("a.txt")).expect("safety payload"),
+        std::fs::read_to_string(safety.join("a.txt")).expect("safety payload"),
         "live",
         "a target inside the source overwrites the source's own data"
     );
@@ -2358,7 +2457,7 @@ fn backup_hooks_see_the_backup_operation() {
 }
 
 #[test]
-fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
+fn restore_runs_each_hook_list_exactly_once_around_the_safety_copy() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -2372,18 +2471,18 @@ fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
 
     let outcome = h.restore(&s, None, None).expect("restore");
     assert!(
-        outcome.safety_snapshot.is_some(),
-        "this restore must take a safety backup for the count to mean anything"
+        outcome.safety_copy.is_some(),
+        "this restore must take a safety copy for the count to mean anything"
     );
     assert_eq!(
         (hook_runs(&pre_tally), hook_runs(&post_tally)),
         (1, 1),
-        "the safety snapshot must run inside the restore's hook envelope, not open its own"
+        "the safety copy must run inside the restore's hook envelope, not open its own"
     );
 }
 
 #[test]
-fn a_failed_prebackup_skips_the_safety_backup_as_well_as_the_overlay() {
+fn a_failed_prebackup_skips_the_safety_copy_as_well_as_the_overlay() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -2397,7 +2496,7 @@ fn a_failed_prebackup_skips_the_safety_backup_as_well_as_the_overlay() {
 
     assert!(!outcome.restored);
     assert!(
-        outcome.safety_snapshot.is_none(),
+        outcome.safety_copy.is_none(),
         "a source the hook could not quiesce must not be snapshotted either"
     );
     assert_eq!(
@@ -2495,9 +2594,9 @@ fn restore_replaces_a_directory_sitting_at_a_name_the_snapshot_holds_a_file_at()
         "the snapshot's file must take the name back"
     );
 
-    // The subtree it displaced is inside the target, so the safety snapshot
+    // The subtree it displaced is inside the target, so the safety copy
     // holds it — which is what makes the delete recoverable rather than lossy.
-    let safety = PathBuf::from(outcome.safety_snapshot.expect("safety snapshot"));
+    let safety = outcome.safety_copy.expect("safety copy").path;
     assert_eq!(
         std::fs::read_to_string(safety.join("a.txt/inner/x")).expect("safety payload"),
         "swapped"
@@ -2554,7 +2653,7 @@ fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
 /// The icons a SETTLED item line can start with. `◐` is deliberately absent:
 /// a running script's window is one live line that its outcome replaces on a
 /// terminal, and counting it would double every hook.
-const STATUS_ICONS: [char; 4] = ['✓', '⚠', '✗', '—'];
+const STATUS_ICONS: [char; 4] = ['✓', '⚠', '✗', '∅'];
 
 /// Drive `specs` through the run skeleton — header, `Backups` pseudo-phase,
 /// rollup — and return the human render with its exit status.
@@ -2571,8 +2670,12 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
             title: crate::reconciler::RunTitle::Backup,
             config_path: None,
             profile: Some("workstation"),
+            sources: &[],
             modules: &[],
+            profile_inherits: &[],
             trigger: None,
+            subject: None,
+            unit_source: None,
         };
         let (status, _reports) = crate::reconciler::ApplyRun::backups(ctx, &units, &h.store)
             .execute_backups(&printer)
@@ -2580,26 +2683,60 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
         status
     });
     drop(printer);
-    let human = crate::output::strip_ansi(&buf.lock().expect("capture").clone());
+    let human = crate::test_helpers::captured_text(&buf);
     (human, status)
 }
 
-/// The item lines the `Backups` pseudo-phase emitted: everything between its
-/// heading and the rollup that carries a status icon, group headings excluded.
+/// The item lines the run's backups body emitted: everything between the
+/// header and the rollup that carries a status icon, group headings excluded.
 fn rendered_item_lines(human: &str) -> Vec<String> {
     human
         .lines()
-        .skip_while(|line| line.trim() != "Backups")
+        // The header ends at the run's first blank line.
+        .skip_while(|line| !line.trim().is_empty())
         .skip(1)
-        // The rollup begins at the first unindented line: every item lives
-        // under an owner group and is indented, and only the phase heading
-        // above (skipped) shares column 0 with the rollup. Terminating on the
-        // word `action` instead read a rollup line that names no count —
-        // the partial run's leading verdict — as an item of the phase.
-        .take_while(|line| line.trim().is_empty() || line.starts_with(char::is_whitespace))
+        // A plan-less run prints no phase row, so its owner groups share
+        // column 0 with the rollup; every item lives under one and is
+        // indented. The rollup is the first unindented line that is not an
+        // owner heading. Terminating on the word `action` instead read a
+        // rollup line that names no count — the partial run's leading
+        // verdict — as an item of the phase.
+        .take_while(|line| {
+            line.trim().is_empty()
+                || line.starts_with(char::is_whitespace)
+                || line.starts_with("backup:")
+        })
         .map(|line| line.trim().to_string())
         .filter(|line| line.starts_with(STATUS_ICONS))
         .collect()
+}
+
+/// A run whose only phase is the backups pseudo-phase prints no phase row:
+/// `Backup` / `Phase: Backups` / `backup:db` was one word three times down
+/// three indents. The owner group sits at the run's own depth, where
+/// `backup restore` already put it.
+#[test]
+fn a_backup_run_prints_no_phase_row_for_its_only_phase() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let s = spec("db", &source);
+    let (human, _) = render_backup_run(&h, &[&s]);
+    assert!(
+        !human
+            .lines()
+            .any(|line| line.trim_start().starts_with("Phase:")),
+        "a plan-less run has no phase to tell apart:\n{human}"
+    );
+    assert!(
+        human.lines().any(|line| line == "backup:db"),
+        "the owner group heads the body at column 0:\n{human}"
+    );
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("  ✓ snapshot data.db.")),
+        "the snapshot row sits one level under its owner:\n{human}"
+    );
 }
 
 #[test]
@@ -2669,7 +2806,7 @@ fn backup_pre_hook_failure_reports_the_shortfall() {
         "the failed hook and the snapshot it cost: {human}"
     );
     assert!(
-        human.contains("⊙ 1 action not attempted"),
+        human.contains("◉ 1 action not attempted"),
         "the hook the abort never reached must be counted: {human}"
     );
     assert!(
@@ -2680,9 +2817,9 @@ fn backup_pre_hook_failure_reports_the_shortfall() {
 
 #[test]
 fn backup_tally_counts_the_lines_it_rendered() {
-    // §6.4's arithmetic: three succeeded items and one failed across two units
-    // — a `postBackup` failure still leaves an artifact, so its snapshot line
-    // counts as a success.
+    // Three succeeded items and one failed across two units — a `postBackup`
+    // failure still leaves an artifact, so its snapshot line counts as a
+    // success.
     let h = Harness::new();
     let clean_source = h.seed_file("data.db", b"payload");
     let warned_source = h.seed_file("secrets.env", b"secret");
@@ -2751,7 +2888,7 @@ fn a_busy_unit_renders_inside_its_group_and_moves_no_exit_code() {
     let lines = rendered_item_lines(&human);
     assert_eq!(lines.len(), 1, "a refused unit renders one line: {human}");
     assert!(
-        lines[0].starts_with("— snapshot"),
+        lines[0].starts_with("∅ snapshot"),
         "a refused unit is a skip, and the group heading already named it: {:?}",
         lines[0]
     );
@@ -2842,4 +2979,376 @@ fn a_store_failure_counts_only_the_lines_it_rendered() {
         "both planned items reached a line, so nothing was skipped: {human}"
     );
     assert_eq!(status, crate::state::ApplyStatus::Partial);
+}
+
+/// The three-way split and the detail slot both mutating verbs settle through.
+/// Fails on a fourth outcome worded in only one of them.
+#[test]
+fn a_completed_outcome_settles_as_one_of_three_roles() {
+    assert_eq!(outcome_role(true, true), Role::Ok);
+    assert_eq!(
+        outcome_role(false, true),
+        Role::Warn,
+        "the artifact landed; the hooks are what still need attention"
+    );
+    assert_eq!(
+        outcome_role(false, false),
+        Role::Fail,
+        "nothing was produced"
+    );
+}
+
+#[test]
+fn the_error_leads_the_detail_slot_and_the_size_joins_it() {
+    assert_eq!(
+        outcome_detail(Some("hook failed\nline two"), Some("1.0 KB".to_string())),
+        Some("hook failed — line two (1.0 KB)".to_string())
+    );
+    assert_eq!(
+        outcome_detail(Some("hook failed"), None),
+        Some("hook failed".to_string())
+    );
+    assert_eq!(
+        outcome_detail(None, Some("1.0 KB".to_string())),
+        Some("1.0 KB".to_string())
+    );
+    assert_eq!(
+        outcome_detail(None, None),
+        None,
+        "a row with nothing to qualify it renders bare"
+    );
+}
+
+/// The restore row spells its target the way every other row spells a path
+/// under the home directory: folded to `~`, with a sibling directory whose
+/// name merely STARTS with the home left alone.
+#[test]
+fn a_restore_subject_folds_the_home_directory() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    assert_eq!(
+        super::restore_subject("/home/tj/notes", "notes-20260512T143025Z"),
+        "restore ~/notes from notes-20260512T143025Z"
+    );
+    assert_eq!(
+        crate::fold_home_in_text("write /home/tjx/.cfgd.env"),
+        "write /home/tjx/.cfgd.env"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `backup rollback`
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    /// Put the unit's retained pre-restore sidecar back over its source, the
+    /// way the CLI does.
+    fn rollback(&self, spec: &BackupSpec) -> Result<rollback::RollbackOutcome> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            rollback::rollback_backup(&unit, &self.printer)
+        })
+    }
+
+    /// The copy `rollback` would put back, without putting it back.
+    fn rollback_copy(&self, spec: &BackupSpec) -> Option<rollback::RollbackCopy> {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            rollback::rollback_copy(&unit)
+        })
+    }
+}
+
+/// The whole point of the verb: a restore overwrote the live source, and the
+/// bytes it displaced come back.
+#[test]
+fn a_rollback_puts_the_pre_restore_contents_back_over_the_source() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    std::fs::write(&source, b"what the operator wrote later").expect("edit source");
+    let restored = h.restore(&s, None, None).expect("restore runs");
+    assert!(restored.is_clean(), "{restored:?}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"snapshot era");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"what the operator wrote later",
+        "the sidecar the restore left is what a rollback puts back"
+    );
+}
+
+/// A directory unit rolls back the whole tree the sidecar holds.
+#[test]
+fn a_rollback_puts_a_directory_units_pre_restore_contents_back() {
+    let h = Harness::new();
+    let source = h.root.join("journal");
+    std::fs::create_dir_all(&source).expect("source dir");
+    std::fs::write(source.join("a.md"), b"snapshot era").expect("write");
+    let s = spec("journal", &source);
+    h.run(&s);
+
+    std::fs::write(source.join("a.md"), b"edited later").expect("write");
+    std::fs::write(source.join("b.md"), b"added later").expect("write");
+    h.restore(&s, None, None).expect("restore runs");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"snapshot era");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"edited later");
+    assert_eq!(std::fs::read(source.join("b.md")).unwrap(), b"added later");
+}
+
+/// One retained pre-restore copy per unit: the sidecar a later displacement
+/// writes prunes the stamped one it replaces, and the primary — the content
+/// that predates cfgd, which `profile update` and module removal restore from
+/// — is never touched.
+#[test]
+fn a_later_safety_copy_prunes_the_stamped_one_it_replaces() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"the original");
+    let primary = h.root.join("notes.txt.cfgd-backup");
+    std::fs::write(&primary, b"the original").expect("seed the pre-cfgd sidecar");
+
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    for bytes in [
+        b"second".as_slice(),
+        b"third".as_slice(),
+        b"fourth".as_slice(),
+    ] {
+        std::fs::write(&source, bytes).expect("edit source");
+        h.restore(&s, None, None).expect("restore runs");
+    }
+
+    let sidecars = snapshots(&h.root)
+        .into_iter()
+        .filter(|n| n.starts_with("notes.txt.cfgd-backup"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sidecars.len(),
+        2,
+        "the primary plus exactly one stamped copy survive: {sidecars:?}"
+    );
+    assert_eq!(
+        std::fs::read(&primary).unwrap(),
+        b"the original",
+        "the pre-cfgd sidecar is never pruned"
+    );
+    assert_eq!(
+        h.rollback_copy(&s).expect("a copy to roll back").path,
+        h.root.join(
+            sidecars
+                .iter()
+                .find(|n| *n != "notes.txt.cfgd-backup")
+                .unwrap()
+        ),
+        "the newest sidecar is what a rollback would put back"
+    );
+}
+
+/// A unit nothing ever displaced has nothing to put back, and says so with the
+/// verb that would produce one.
+#[test]
+fn a_rollback_with_no_copy_beside_the_source_is_refused() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"untouched");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    let err = h.rollback(&s).expect_err("nothing to roll back");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Backup(BackupError::NoRollbackCopy { .. })
+        ),
+        "expected a typed no-copy refusal, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"untouched",
+        "a refused rollback touches nothing"
+    );
+}
+
+/// The unit's one hook list wraps a rollback exactly as it wraps a run and a
+/// restore, and `$CFGD_OPERATION` is what tells the three apart.
+#[test]
+fn a_rollback_runs_the_units_hooks_with_the_rollback_operation() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let pre = h.root.join("pre.txt");
+    let post = h.root.join("post.txt");
+    let mut s = spec("docs", &source);
+    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
+    s.post_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &post)];
+
+    h.run(&s);
+    std::fs::write(&source, b"later").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+    h.rollback(&s).expect("rollback runs");
+
+    assert_eq!(marker_contents(&pre), "rollback");
+    assert_eq!(marker_contents(&post), "rollback");
+}
+
+/// A rollback is itself reversible: the contents it displaces — work made after
+/// the restore, which no snapshot and no sidecar would otherwise hold — are
+/// copied aside through the same sidecar writer before the copy goes back.
+#[test]
+fn a_rollback_copies_the_contents_it_displaces_aside_so_it_can_be_undone() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+
+    std::fs::write(&source, b"pre-restore").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+    std::fs::write(&source, b"written after the restore").expect("the operator's own work");
+
+    let outcome = h.rollback(&s).expect("rollback runs");
+    assert!(outcome.is_clean(), "{outcome:?}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"pre-restore");
+
+    let safety = outcome.safety_copy.expect("a rollback takes a safety copy");
+    assert_eq!(
+        std::fs::read(&safety.path).unwrap(),
+        b"written after the restore",
+        "the bytes the rollback displaced are in the copy it left"
+    );
+    assert_eq!(
+        h.rollback_copy(&s).expect("a copy to roll back").path,
+        safety.path,
+        "and that copy is what a second rollback would put back"
+    );
+}
+
+/// A `preBackup` failure stops the rollback before any byte moves, and the
+/// `postBackup` counterpart still runs — the same envelope a restore holds.
+#[test]
+fn a_rollback_whose_pre_backup_hook_failed_writes_nothing() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"snapshot era");
+    let s = spec("docs", &source);
+    h.run(&s);
+    std::fs::write(&source, b"live").expect("edit source");
+    h.restore(&s, None, None).expect("restore runs");
+
+    let post = h.root.join("post.marker");
+    let mut hooked = spec("docs", &source);
+    hooked.pre_backup = vec![hook("exit 4")];
+    hooked.post_backup = vec![touch_hook(&post)];
+
+    let outcome = h
+        .rollback(&hooked)
+        .expect("a hook failure is reported through the outcome, not as Err");
+    assert!(
+        !outcome.restored,
+        "a failed preBackup must skip the overlay"
+    );
+    assert!(!outcome.is_clean());
+    assert!(
+        outcome.error.unwrap_or_default().contains("preBackup"),
+        "the hook failure must reach the outcome"
+    );
+    assert!(
+        outcome.safety_copy.is_none(),
+        "no safety copy is taken for a write that never happens"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"snapshot era",
+        "the source is whatever the restore left"
+    );
+    assert!(post.exists(), "postBackup runs on every path");
+    assert!(staging_leftovers(&h.root).is_empty());
+}
+
+/// The sidecar is a reversibility guarantee, so it carries the links inside a
+/// directory source — and the whole round trip does, or the source lands as
+/// neither generation: an overlay cannot replace a link the copy never held.
+#[cfg(unix)]
+#[test]
+fn a_symlink_inside_a_directory_unit_survives_a_rollback_and_its_undo() {
+    let h = Harness::new();
+    let source = h.root.join("journal");
+    std::fs::create_dir_all(&source).expect("source dir");
+    std::fs::write(source.join("a.md"), b"snapshot era").expect("write");
+    let s = spec("journal", &source);
+    h.run(&s);
+
+    std::fs::write(source.join("a.md"), b"edited later").expect("write");
+    crate::create_symlink(std::path::Path::new("a.md"), &source.join("latest.md"))
+        .expect("the operator's own link");
+    h.restore(&s, None, None).expect("restore runs");
+
+    let link = source.join("latest.md");
+    let first = h.rollback(&s).expect("rollback runs");
+    assert_eq!(std::fs::read(source.join("a.md")).unwrap(), b"edited later");
+    let aside = first
+        .safety_copy
+        .expect("a rollback takes a safety copy")
+        .path;
+    assert_eq!(
+        std::fs::read_link(aside.join("latest.md")).expect("the copy carries the link"),
+        std::path::Path::new("a.md"),
+        "the target string is copied verbatim, never followed"
+    );
+
+    // Removed so the undo has to PUT IT BACK: an overlay adds and replaces but
+    // never deletes, so a link left standing would survive either way and prove
+    // nothing about what the copy held.
+    std::fs::remove_file(&link).expect("drop the link");
+    h.rollback(&s).expect("the undo runs");
+    assert_eq!(
+        std::fs::read_link(&link).expect("the undo recreates it from the copy"),
+        std::path::Path::new("a.md"),
+    );
+}
+
+/// A file cfgd did not write is a file cfgd will not publish. The pruner
+/// protects `<source>.cfgd-backup.mine` from deletion; the read side must
+/// refuse it for the same reason, however new its mtime.
+#[test]
+fn a_hand_written_neighbour_is_never_the_copy_a_rollback_puts_back() {
+    let h = Harness::new();
+    let source = h.seed_file("notes.txt", b"live");
+    let s = spec("docs", &source);
+    h.run(&s);
+    h.restore(&s, None, None).expect("restore runs");
+
+    let mine = h.root.join("notes.txt.cfgd-backup.mine");
+    std::fs::write(&mine, b"somebody else's file").expect("hand-written neighbour");
+
+    let copy = h
+        .rollback_copy(&s)
+        .expect("the real sidecar is still found");
+    assert_ne!(copy.path, mine, "a name cfgd never minted is not a sidecar");
+    h.rollback(&s).expect("rollback runs");
+    assert_ne!(
+        std::fs::read(&source).unwrap(),
+        b"somebody else's file",
+        "and its contents never reach the live source"
+    );
+}
+
+/// The row a rollback settles on is an action row: a lowercase verb head, the
+/// target it writes, and the copy it wrote from.
+#[test]
+fn a_rollback_subject_folds_the_home_directory() {
+    let home = PathBuf::from("/home/tj");
+    let _home = crate::with_test_home_guard(&home);
+    assert_eq!(
+        super::rollback_subject("/home/tj/notes", "notes.cfgd-backup"),
+        "rollback ~/notes from notes.cfgd-backup"
+    );
 }

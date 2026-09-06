@@ -1,0 +1,6 @@
+Update source:missing-team
+✗ Update failed — git error: 'file:///nonexistent/path/that/does/not/exist.git' is a local path or file:// URL, which is not allowed as a source origin (pass a git URL, e.g. https://github.com/acme/config.git)
+
+→ Retry with `cfgd source update missing-team` once the cause above is resolved
+
+✗ 1 source failed to update

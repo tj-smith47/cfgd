@@ -1,9 +1,8 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use super::{Renderer, Writer};
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Verbosity};
+use crate::output::{Role, Verbosity, cursor_safe};
 
 /// A Status emission deferred until section close so subjects can be right-
 /// padded to a common column. Buffered per section frame.
@@ -11,13 +10,14 @@ pub(crate) struct BufferedStatus {
     pub role: Role,
     pub subject: String,
     pub detail: Option<String>,
-    pub duration: Option<Duration>,
+    pub duration: Option<super::status::Elapsed>,
     pub target: Option<PathBuf>,
     /// The depth at which the line should ultimately render (matches the
     /// section's child depth at the time the status was emitted).
     pub depth: usize,
     pub subject_style: Option<ThemedStyle>,
     pub detail_style: Option<ThemedStyle>,
+    pub verdict: Option<String>,
 }
 
 impl BufferedStatus {
@@ -27,6 +27,7 @@ impl BufferedStatus {
             self.detail.as_deref(),
             self.duration,
             self.target.as_deref(),
+            self.verdict.as_deref(),
         )
     }
 }
@@ -38,6 +39,10 @@ pub(crate) struct SectionFrame {
     /// `name` through `theme.header`; `Some` is a header the caller composed
     /// from more than one theme slot (an owner token).
     pub styled_name: Option<String>,
+    /// A muted trailing annotation the header line carries after the name
+    /// (`(checked 3m ago)`) — the renderer owns the parentheses and the coat,
+    /// composed at header emit so it takes the same theme the name does.
+    pub annotation: Option<String>,
     pub keep_when_empty: bool,
     pub empty_state: Option<String>,
     /// True when the parent section's depth + this section's contents have
@@ -45,7 +50,7 @@ pub(crate) struct SectionFrame {
     pub children_emitted: bool,
     /// The depth at which this section's header should sit (parent depth).
     pub header_depth: usize,
-    /// True if the header has been written. We defer header emit until the first
+    /// True if the header has been written. Header emit is deferred until the first
     /// child renders so that collapsed sections leave no trace.
     pub header_emitted: bool,
     /// Statuses awaiting flush at section close. Buffering lets us right-pad
@@ -56,29 +61,44 @@ pub(crate) struct SectionFrame {
     /// of buffering to close. A live stream cannot wait for a close to learn
     /// its own width, so the width is computed before the run and handed in.
     pub live_column: Option<usize>,
+    /// The key column every kv block written directly inside this section pads
+    /// to, and the depth it was measured at. A section that prints its header
+    /// facts, does its work, then prints the result rendered two key columns
+    /// one under the other — the second block measured only itself, so a
+    /// shorter key sat left of the rows above it. The width is remembered
+    /// rather than computed at close for the same reason `live_column` is:
+    /// the rows in between are already on the terminal.
+    pub kv_key_col: Option<(usize, usize)>,
 }
 
 impl Renderer {
     /// Open a section: pushes a frame, increments indent. Header is NOT emitted
     /// yet — first child emit triggers it.
     pub(crate) fn render_section_open(&self, name: &str, keep_when_empty: bool) {
-        self.render_section_open_styled(name, None, keep_when_empty);
+        self.render_section_open_styled(name, None, None, keep_when_empty);
     }
 
     /// Open a section whose header line is `styled_name` rather than `name`
     /// painted with `theme.header`. `name` remains the plain form the
-    /// colour-disabled and structured paths render.
+    /// colour-disabled and structured paths render. `annotation` is the muted
+    /// trailing fact [`header_line`] appends after either form.
     pub(crate) fn render_section_open_styled(
         &self,
         name: &str,
         styled_name: Option<String>,
+        annotation: Option<String>,
         keep_when_empty: bool,
     ) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let header_depth = s.depth();
         s.section_stack.push(SectionFrame {
-            name: name.into(),
+            // A section can be headed by a name a module or a remote source
+            // supplied. `styled_name` carries its own fold from the composer
+            // that painted it, because folding a styled string here would eat
+            // the renderer's own SGR.
+            name: cursor_safe(name),
             styled_name,
+            annotation: annotation.as_deref().map(cursor_safe),
             keep_when_empty,
             empty_state: None,
             children_emitted: false,
@@ -86,6 +106,7 @@ impl Renderer {
             header_emitted: false,
             pending_statuses: Vec::new(),
             live_column: None,
+            kv_key_col: None,
         });
         s.indent_depth += 1;
     }
@@ -120,32 +141,85 @@ impl Renderer {
             if e.verbosity == Verbosity::Quiet {
                 return;
             }
-            for (styled, depth) in headers {
-                e.push_line(depth, &styled);
-            }
+            e.push_deferred_headers(&headers);
         });
     }
 
     /// Mark the innermost open section live: its statuses render as they
-    /// arrive, padded to `width`.
+    /// arrive, padded to `width` — or to the report's own column when one has
+    /// been claimed, so a report's action rows share one column across every
+    /// phase rather than one per phase.
     pub(crate) fn render_section_live_column(&self, width: usize) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let width = s.report_column.unwrap_or(width);
+        // The same preference `report_column_or` answers a caller with, held
+        // in one lock rather than two.
         if let Some(top) = s.section_stack.last_mut() {
             top.live_column = Some(width);
         }
+    }
+
+    /// The column a live group at this moment pads to: the claimed report
+    /// column when there is one, else the caller's own — the preference
+    /// [`Renderer::render_section_live_column`] applies, answered to a caller
+    /// that repaints rows itself and must pad them as the commit will.
+    pub(crate) fn report_column_or(&self, width: usize) -> usize {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_column.unwrap_or(width)
+    }
+
+    /// Claim the report-wide alignment column, answering whether this call is
+    /// the one that claimed it.
+    ///
+    /// The OUTERMOST claim wins: an apply claims a column measured over its
+    /// plan AND its backup labels, and the preview nested inside it — which
+    /// can see only the plan — must not narrow what the run already settled.
+    pub(crate) fn claim_report_column(&self, width: usize, budget: Option<usize>) -> bool {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.report_column.is_some() {
+            return false;
+        }
+        s.report_column = Some(width);
+        s.report_subject_budget = budget;
+        true
+    }
+
+    /// The subject budget the held claim settled, if a claim is held and
+    /// settled one.
+    pub(crate) fn report_subject_budget(&self) -> Option<usize> {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_subject_budget
+    }
+
+    /// Release a claim made by [`Renderer::claim_report_column`].
+    pub(crate) fn release_report_column(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.report_column = None;
+        s.report_subject_budget = None;
     }
 
     /// Set the empty_state placeholder for the topmost open section.
     pub(crate) fn render_section_empty_state(&self, text: &str) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(top) = s.section_stack.last_mut() {
-            top.empty_state = Some(text.into());
+            top.empty_state = Some(cursor_safe(text));
         }
     }
 
     /// Close the topmost section: pop frame, decrement indent. May emit
     /// the header (if first deferred + non-empty) and/or an `(none)` placeholder.
     pub(crate) fn render_section_close(&self, w: &dyn Writer) {
+        // Rows and statuses buffered inside this section belong to it. Drained
+        // after the pop they render outside the frame, above the section's own
+        // header, and leave the section reporting itself empty. The statuses
+        // are the frame's own `pending_statuses`, so the frame popped below is
+        // already empty of them. A section that leaves no trace is the one
+        // close that must not drain — see `section_collapses_to_nothing`.
+        self.emit_with(w, |e| {
+            if !e.section_collapses_to_nothing() {
+                e.drain_buffers();
+            }
+        });
         let frame = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             s.indent_depth -= 1;
@@ -154,11 +228,6 @@ impl Renderer {
         let Some(frame) = frame else {
             return;
         };
-
-        // Flush any buffered statuses BEFORE deciding blank-pending. Subject
-        // right-pad is computed across the buffered set so trailing content
-        // aligns in a column.
-        self.flush_pending_statuses(w, &frame.pending_statuses);
 
         // Only TOP-LEVEL sections (header_depth == 0) mark blank-pending on
         // close. Subsection close must NOT produce a blank between siblings —
@@ -180,6 +249,15 @@ impl Renderer {
                 }
                 // Plain `section`: emit header + empty_state placeholder. A
                 // header already committed at open time is not written twice.
+                //
+                // The placeholder IS a child line, so every still-pending
+                // ANCESTOR header has to land above it — the frame is already
+                // popped, so the stack holds exactly those. Without this an
+                // empty nested section printed its own header first and its
+                // parent's afterwards, and the parent then reported itself
+                // empty too (`Profiles` beneath its own `profile:x` row, each
+                // saying `(none)`).
+                self.flush_pending_section_headers(w);
                 if !frame.header_emitted {
                     self.emit_section_header_now(w, &frame);
                 }
@@ -211,24 +289,47 @@ impl Renderer {
         let styled = header_line(&self.theme, frame);
         self.write_line(w, frame.header_depth, &styled);
     }
+}
 
-    /// Drain a section's buffered statuses, padding subjects of those that
-    /// carry trailing content (detail|duration|target) to the max subject
+impl super::Emitting<'_> {
+    /// Drain every open section's buffered statuses, padding subjects of those
+    /// that carry trailing content (detail|duration|target) to the max subject
     /// width across that subset. Statuses without trailing content render
     /// as-is (no padding). Width is measured with `console::measure_text_width`
     /// so multi-byte glyphs in subjects count as one column each.
-    pub(crate) fn flush_pending_statuses(&self, w: &dyn Writer, statuses: &[BufferedStatus]) {
-        if statuses.is_empty() {
+    ///
+    /// Called by every emission that writes lines, not only by section close:
+    /// a status held back for alignment must still render BEFORE whatever was
+    /// emitted after it (a diff, a bullet, a nested section's header), or the
+    /// screen reports an order the caller never asked for.
+    ///
+    /// Only the innermost frame ever accumulates statuses, so an outer frame's
+    /// were all buffered before the inner frame existed — which is why walking
+    /// the stack outer-to-inner IS emission order. The width is whatever the
+    /// set holds at this moment; a later status opens a new alignment group.
+    pub(crate) fn drain_pending_statuses(&mut self) {
+        let pending: Vec<BufferedStatus> = self
+            .state
+            .section_stack
+            .iter_mut()
+            .flat_map(|f| std::mem::take(&mut f.pending_statuses))
+            .collect();
+        if pending.is_empty() {
             return;
         }
-        let max_subject_width = statuses
+        let max_subject_width = pending
             .iter()
             .filter(|s| s.has_trailing())
             .map(|s| console::measure_text_width(&s.subject))
             .max()
             .unwrap_or(0);
-        for s in statuses {
-            let fields = super::StatusFields {
+        // One decision for the set, taken at the deepest row's budget and
+        // against the widest row's trailing content: either every row pads to
+        // this column or no row is padded at all. Judged per row — off each
+        // line's own detail length — the same three rows landed at three
+        // different detail columns.
+        fn fields_of<'s>(s: &'s BufferedStatus) -> super::StatusFields<'s> {
+            super::StatusFields {
                 role: s.role,
                 subject: &s.subject,
                 detail: s.detail.as_deref(),
@@ -236,25 +337,32 @@ impl Renderer {
                 target: s.target.as_deref(),
                 subject_style: s.subject_style.clone(),
                 detail_style: s.detail_style.clone(),
-            };
-            // Per line, not once for the set: capping the shared column by the
-            // tightest line in it would drop every line's alignment because
-            // one of them carries a long detail.
-            let column = self.affordable_column(w, s.depth, &fields, max_subject_width);
+                verdict: s.verdict.as_deref(),
+            }
+        }
+        let column = super::status::group_column(
+            self.wrap_cols,
+            pending.iter().map(|s| s.depth).max().unwrap_or(0),
+            max_subject_width,
+            super::status::group_trailing_allowance(
+                self.theme,
+                pending.iter().filter(|s| s.has_trailing()).map(fields_of),
+            ),
+        );
+        for s in &pending {
+            let fields = fields_of(s);
             let padded = super::status::pad_subject(&s.subject, column, s.has_trailing());
-            self.render_status_immediate(
-                w,
+            self.emit_status_line(
                 s.depth,
                 &super::StatusFields {
                     subject: padded.as_deref().unwrap_or(&s.subject),
                     ..fields
                 },
+                column,
             );
         }
     }
-}
 
-impl super::Emitting<'_> {
     /// Collect any not-yet-emitted section headers, walking the stack
     /// outer-to-inner. Idempotent in output (repeat calls produce no further
     /// header lines), and always marks every frame in the stack as having
@@ -275,19 +383,78 @@ impl super::Emitting<'_> {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        for (styled, depth) in headers {
-            self.push_line(depth, &styled);
+        self.push_deferred_headers(&headers);
+    }
+
+    /// Write collected header lines with the deferred buffers emptied at the
+    /// one point among them where the buffered content belongs.
+    ///
+    /// Rows were written at their anchor's depth, which is what says whether a
+    /// header stands above or below them: a section shallower than the anchor
+    /// was already open when the rows were written, so its header comes first,
+    /// while one at or deeper than the anchor opened afterwards and the rows
+    /// belong above it. `headers` is collected outer-to-inner, so the depths
+    /// ascend and the split is a partition point. Pushing every header through
+    /// the draining [`super::Emitting::push_line`] instead puts ALL buffered
+    /// rows above ALL headers — including the header of the very section the
+    /// rows were written inside.
+    pub(crate) fn push_deferred_headers(&mut self, headers: &[(String, usize)]) {
+        // Nothing to place the buffers around. Draining anyway would empty a
+        // section's pending statuses on every later flush, so each one would
+        // render alone and pad to its own width instead of the section's.
+        if headers.is_empty() {
+            return;
         }
+        // Held statuses need no split: a status is buffered only after the
+        // headers open at that moment were flushed, so a header still deferred
+        // here belongs to a section that opened AFTER the status.
+        self.drain_pending_statuses();
+        let rows_written_at = match self.state.kv_anchor {
+            Some(a) if !self.state.kv_buffer.is_empty() => a.depth,
+            _ => usize::MAX,
+        };
+        let split = headers.partition_point(|(_, depth)| *depth < rows_written_at);
+        for (styled, depth) in &headers[..split] {
+            self.push_line_undrained(*depth, styled, None, None);
+        }
+        self.drain_kv_buffer();
+        for (styled, depth) in &headers[split..] {
+            self.push_line_undrained(*depth, styled, None, None);
+        }
+    }
+
+    /// Whether the innermost open section is about to close leaving no trace.
+    ///
+    /// Such a close must NOT drain: nothing visible separates what was emitted
+    /// before the section from what follows it, so a drain here splits one
+    /// alignment group in two over a section that renders nothing.
+    pub(crate) fn section_collapses_to_nothing(&self) -> bool {
+        self.state.kv_buffer.is_empty()
+            && self.state.section_stack.last().is_some_and(|f| {
+                !f.keep_when_empty && !f.children_emitted && f.pending_statuses.is_empty()
+            })
     }
 }
 
 /// The body of a section's header line: the caller's pre-styled token when it
-/// supplied one, otherwise the name painted with `theme.header`.
+/// supplied one, otherwise the name painted with `theme.header` at the top
+/// level or `theme.secondary` when nested — a section opened while another
+/// is already open (`header_depth > 0`, the same signal that already governs
+/// whether the section's close leaves a blank line behind it) is a
+/// subsection regardless of whether the caller reached it through
+/// `Doc::subsection` or by nesting `SectionGuard::section` calls by hand, and
+/// reads visually apart from the section that owns it rather than repeating
+/// its exact heading style one indent level deeper.
 pub(crate) fn header_line(theme: &crate::output::Theme, frame: &SectionFrame) -> String {
-    frame
-        .styled_name
-        .clone()
-        .unwrap_or_else(|| theme.header.apply_to(&frame.name).to_string())
+    let name = match &frame.styled_name {
+        Some(styled) => styled.clone(),
+        None if frame.header_depth == 0 => theme.header.apply_to(&frame.name).to_string(),
+        None => theme.secondary.apply_to(&frame.name).to_string(),
+    };
+    match &frame.annotation {
+        Some(annotation) => format!("{name}{}", theme.muted.apply_to(format!(" ({annotation})"))),
+        None => name,
+    }
 }
 
 #[cfg(test)]
@@ -309,7 +476,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Empty", /*keep_when_empty=*/ false);
         r.render_section_close(&sink);
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -317,7 +484,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Files", /*keep_when_empty=*/ true);
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("Files"));
         assert!(s.contains("(none)"));
     }
@@ -331,9 +498,7 @@ mod tests {
         r.render_section_open("Phase: Packages", /*keep_when_empty=*/ true);
         r.render_section_commit_header(&sink);
         assert!(
-            buf.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains("Phase: Packages"),
+            crate::test_helpers::captured_text(&buf).contains("Phase: Packages"),
             "the header is on screen before the section has a child"
         );
         r.render_section_close(&sink);
@@ -346,7 +511,7 @@ mod tests {
         r.render_section_commit_header(&sink);
         r.render_section_commit_header(&sink);
         r.render_section_close(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        let out = crate::test_helpers::captured_text(&buf);
         assert_eq!(out.matches("Phase: Packages").count(), 1, "got: {out}");
     }
 
@@ -359,7 +524,7 @@ mod tests {
         r.render_section_open("Files", true);
         r.render_section_commit_header(&sink);
         r.render_section_close(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("(none)"), "got: {out}");
     }
 
@@ -371,7 +536,7 @@ mod tests {
         r.render_section_open("Phase: Packages", true);
         r.render_section_open("profile:work", true);
         r.render_section_commit_header(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let phase = out.find("Phase: Packages");
         let group = out.find("profile:work");
         assert!(
@@ -388,7 +553,7 @@ mod tests {
         r.render_section_open("Files", true);
         r.render_section_empty_state("No files yet");
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("No files yet"));
         assert!(!s.contains("(none)"));
     }
@@ -402,7 +567,7 @@ mod tests {
     fn section_close_pads_only_buffered_subjects_with_trailing_content() {
         use std::time::Duration;
 
-        use crate::output::{Printer, Role, strip_ansi};
+        use crate::output::{Printer, Role};
 
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
@@ -415,7 +580,7 @@ mod tests {
                 .duration(Duration::from_millis(400));
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
 
         // Width is the widest TRAILING subject (ripgrep, 7). One bare subject
         // is longer than that and one is shorter, so the assertions below fail
@@ -450,6 +615,125 @@ mod tests {
         );
     }
 
+    /// Holding statuses back for column alignment is a layout decision, never
+    /// a licence to reorder the screen: a status emitted before a diff has to
+    /// render above it. Raw blocks are the shape that proved this — they push
+    /// straight into the line collector instead of going through `push_line` —
+    /// but the claim is about emission order, so the section is closed by a
+    /// second status that must still land last.
+    #[test]
+    fn a_status_renders_above_the_raw_block_emitted_after_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Files");
+            let _ = s.status(Role::Ok, "before-the-diff").detail("planned");
+            s.diff("alpha\n", "omega\n");
+            let _ = s.status(Role::Ok, "after-the-diff").detail("applied");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(
+            at("before-the-diff") < at("-alpha"),
+            "the status emitted before the diff must render above it: {out:?}"
+        );
+        assert!(
+            at("+omega") < at("after-the-diff"),
+            "the status emitted after the diff must render below it: {out:?}"
+        );
+    }
+
+    /// The same claim for the other buffered surface: a kv block written after
+    /// a status must not overtake it at section close.
+    #[test]
+    fn a_status_renders_above_the_kv_rows_emitted_after_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Files");
+            let _ = s.status(Role::Ok, "first-status");
+            s.kv("source", "module:nvim");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(
+            at("first-status") < at("source"),
+            "the status must render above the kv row written after it: {out:?}"
+        );
+    }
+
+    /// The kv side of the same defect: rows written INSIDE a section whose
+    /// header is still deferred belong under that header, not above it. The
+    /// header flush pushes through the draining `push_line`, so without the
+    /// anchor-depth split every buffered row overtakes every header — the
+    /// section's own included.
+    #[test]
+    fn a_nested_section_header_renders_above_the_rows_written_inside_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let outer = p.section("Outer");
+            let inner = outer.section("Inner");
+            inner.kv("source", "module:nvim");
+            let _ = inner.status(Role::Ok, "applied").detail("ok");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(at("Outer") < at("Inner"), "got: {out:?}");
+        assert!(
+            at("Inner") < at("source"),
+            "rows written inside a section must render under its header: {out:?}"
+        );
+        assert!(
+            at("source") < at("applied"),
+            "the status emitted after the rows must render below them: {out:?}"
+        );
+    }
+
+    /// A section that leaves no trace separates nothing, so it must not split
+    /// the alignment group either: the two statuses either side of it pad to
+    /// one shared column.
+    #[test]
+    fn an_empty_collapsed_section_keeps_one_alignment_group() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Packages");
+            let _ = s.status(Role::Ok, "fd").detail("installed");
+            drop(s.section_or_collapse("Nothing"));
+            let _ = s.status(Role::Ok, "ripgrep").detail("installed");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        assert!(
+            out.contains("  ✓ fd      — installed\n"),
+            "the shorter subject must pad to the width of the one after the \
+             collapsed section: {out:?}"
+        );
+        assert!(out.contains("  ✓ ripgrep — installed\n"), "got: {out:?}");
+        assert!(!out.contains("Nothing"), "got: {out:?}");
+    }
+
     #[test]
     fn section_with_children_emits_header_then_indents() {
         let (r, sink, buf) = capture();
@@ -458,7 +742,7 @@ mod tests {
         // Simulate a child line at depth 1.
         r.write_line(&sink, 1, "- foo.txt");
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         // Header carries bold SGR; strip ANSI before shape assertions.
         let plain = crate::output::strip_ansi(&s);
         assert!(plain.starts_with("Files\n"), "got: {plain:?}");
@@ -473,7 +757,7 @@ mod tests {
         // section is known to have content. A phase heading that lost that
         // guarantee would let a live-region status window paint above a
         // heading that hasn't reached the sink yet.
-        use crate::output::{PhaseLabel, Printer, Role, strip_ansi};
+        use crate::output::{PhaseLabel, Printer, Role};
 
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
@@ -481,7 +765,7 @@ mod tests {
             let _ = s.status(Role::Ok, "ripgrep").detail("installed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
 
         let heading = out
             .find("Phase: Packages")
@@ -493,5 +777,180 @@ mod tests {
             heading < action,
             "the phase heading must render before any action inside it: {out:?}"
         );
+    }
+
+    /// A section nested inside another open section (a subsection, whether
+    /// reached through `Doc::subsection` or by nesting `SectionGuard::section`
+    /// calls) paints `theme.secondary`, not `theme.header` — the two must read
+    /// apart from each other, or a reader cannot tell a subsection's heading
+    /// from the section that owns it.
+    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
+    // rendered line is compared against a slot render taken separately —
+    // a concurrent env mutation between the two splits the comparison.
+    #[test]
+    #[serial_test::serial]
+    fn nested_section_header_uses_secondary_not_header() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula");
+        let colored = theme.clone().with_colors(true);
+        let expected_secondary = colored.secondary.clone().apply_to("Child").to_string();
+        let header_styled = colored.header.apply_to("Child").to_string();
+        assert_ne!(
+            expected_secondary, header_styled,
+            "the fixture theme must actually distinguish the two slots, or this test proves nothing"
+        );
+
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(colored, Verbosity::Normal);
+        r.render_section_open("Parent", false);
+        r.render_section_open("Child", false);
+        r.flush_pending_section_headers(&sink);
+        r.write_line(&sink, 2, "leaf");
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+
+        // raw-capture-ok: asserting the exact styled runs reach the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&expected_secondary),
+            "the nested section's header must be theme.secondary: {raw:?}"
+        );
+        assert!(
+            !raw.contains(&header_styled),
+            "the nested section's header must not fall back to theme.header: {raw:?}"
+        );
+    }
+
+    /// The top-level section (`header_depth == 0`) keeps `theme.header`
+    /// regardless of how many subsections it later opens — the depth check
+    /// reads the SECTION's own `header_depth`, not some global "has a
+    /// subsection already opened" flag.
+    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
+    // rendered line is compared against a slot render taken separately —
+    // a concurrent env mutation between the two splits the comparison.
+    #[test]
+    #[serial_test::serial]
+    fn top_level_section_header_stays_theme_header_even_after_a_subsection_closes() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula");
+        let colored = theme.clone().with_colors(true);
+        let expected_header = colored.header.apply_to("Parent").to_string();
+
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(colored, Verbosity::Normal);
+        r.render_section_open("Parent", false);
+        r.render_section_open("Child", false);
+        r.flush_pending_section_headers(&sink);
+        r.write_line(&sink, 2, "leaf");
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+
+        // raw-capture-ok: asserting the exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&expected_header),
+            "the top-level section's header must stay theme.header: {raw:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod alignment_group_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::super::{NarrowSink, Renderer, StatusFields, StringSink};
+    use crate::output::{Role, Theme, Verbosity};
+
+    /// The three `cfgd:env` rows an apply settles under `Phase: Prerequisites`
+    /// — the set the broken column was measured on, one long subject with a
+    /// short detail between two short subjects with long details.
+    const ROWS: &[(Role, &str, &str)] = &[
+        (Role::Ok, "write /home/tj/.cfgd.env", "4 vars, 3 aliases"),
+        (
+            Role::Ok,
+            "write /home/tj/.config/environment.d/cfgd.conf",
+            "4 vars",
+        ),
+        (
+            Role::Skipped,
+            "publish 4 vars to the live session",
+            "no session manager",
+        ),
+    ];
+
+    fn render_group(cols: usize) -> String {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), cols);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_section_open("Phase: Prerequisites", true);
+        r.render_section_open("cfgd:env", true);
+        for (role, subject, detail) in ROWS {
+            r.render_status(
+                &sink,
+                2,
+                &StatusFields {
+                    role: *role,
+                    subject,
+                    detail: Some(detail),
+                    duration: None,
+                    target: None,
+                    subject_style: None,
+                    detail_style: None,
+                    verdict: None,
+                },
+            );
+        }
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+        crate::test_helpers::captured_text(&buf)
+    }
+
+    /// Alignment is a property of the SET: every padded row of one group pads
+    /// to ONE detail column, and a row left unpadded is one already past it.
+    /// Capped per row — off each line's own detail length — these three rows
+    /// settled at three different columns, and the widest of them was the one
+    /// left out; dropped to 0 when one row could not afford the column, the
+    /// two rows that could were left ragged beside it.
+    #[test]
+    fn every_padded_row_of_one_group_shares_a_detail_column() {
+        for cols in [40usize, 50, 55, 60, 65, 70, 80, 100, 200] {
+            let out = render_group(cols);
+            // A row's FIRST physical line: a wrapped continuation carries no
+            // glyph, and the glue it holds is its own subject's, not a column.
+            let heads: Vec<&str> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| l.starts_with('✓') || l.starts_with('∅'))
+                .filter(|l| l.contains(" — "))
+                .collect();
+            let glue_at: Vec<(usize, bool)> = heads
+                .iter()
+                .filter_map(|l| l.find(" — ").map(|byte| &l[..byte]))
+                // A padded subject is the only way a glue lands behind whitespace.
+                .map(|before| (console::measure_text_width(before), before.ends_with(' ')))
+                .collect();
+            let padded: Vec<usize> = glue_at
+                .iter()
+                .filter(|(_, p)| *p)
+                .map(|(x, _)| *x)
+                .collect();
+            let shared = padded.windows(2).all(|w| w[0] == w[1]);
+            assert!(
+                shared,
+                "at {cols} columns the padded rows settled at {padded:?} — one column \
+                 for every padded row:\n{out}"
+            );
+            if let Some(column) = padded.first() {
+                assert!(
+                    glue_at.iter().all(|(x, p)| *p || x >= column),
+                    "at {cols} columns a row left unpadded is one already past the \
+                     column {column}: {glue_at:?}\n{out}"
+                );
+            }
+        }
     }
 }

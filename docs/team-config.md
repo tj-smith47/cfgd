@@ -2,9 +2,7 @@
 
 How a platform engineer distributes and enforces team configuration across developer machines using [Crossplane](https://www.crossplane.io/). Builds on the [cfgd-operator](operator.md) CRDs. For the complete field-by-field reference, see the [TeamConfig spec reference](spec/teamconfig.md).
 
-[Crossplane](https://docs.crossplane.io/latest/) is a Kubernetes framework for defining custom composite resources. In cfgd's case, a platform engineer defines a single TeamConfig resource listing team members, and Crossplane's composition function automatically generates one MachineConfig CRD per team member — no manual YAML per developer.
-
-> **Status**: Crossplane composition function implemented and tested (18 tests passing). XRD and Composition manifests committed. Not yet validated in a live Crossplane cluster.
+[Crossplane](https://docs.crossplane.io/latest/) is a Kubernetes framework for defining custom composite resources. In cfgd's case, a platform engineer defines a single TeamConfig resource listing team members, and Crossplane's composition function generates one MachineConfig CRD per team member: no manual YAML per developer.
 
 ## How It Works
 
@@ -65,8 +63,10 @@ A platform engineer creates a TeamConfig. Crossplane generates one MachineConfig
 - `function-cfgd` composition function installed:
   ```sh
   # Install from the published Crossplane package
-  crossplane xpkg install function ghcr.io/tj-smith47/function-cfgd:v0.1.0
+  crossplane xpkg install function ghcr.io/tj-smith47/function-cfgd:v0.9.0
   ```
+  The tag is the cfgd release the function ships with; check the one you run with
+  `cfgd --version`.
 
 ## TeamConfig XRD
 
@@ -96,6 +96,29 @@ spec:
                 type: string
               profile:
                 type: string
+              source:
+                type: object
+                properties:
+                  url:
+                    type: string
+                  branch:
+                    type: string
+                required: [url]
+              modules:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    sourceRef:
+                      type: object
+                      properties:
+                        url:
+                          type: string
+                        ref:
+                          type: string
+                  required: [name]
               policy:
                 type: object
                 properties:
@@ -146,7 +169,8 @@ spec:
   profile: backend-dev
   policy:
     required:
-      packages: [git-secrets, pre-commit]
+      packages:
+        brew: [git-secrets, pre-commit]
     requiredModules: [corp-vpn, corp-certs]
     recommendedModules: [approved-editor]
   members:
@@ -183,13 +207,13 @@ Go module using `function-sdk-go`. For each TeamConfig, the function:
 
 1. Reads `spec.members[]` from the observed TeamConfig XR
 2. Reads `spec.policy` (required/recommended/locked tiers)
-3. For each member, generates a **MachineConfig** CRD:
-   - `metadata.name` derived from `member.username`
-   - `spec.hostname` from member (or empty, filled on first checkin)
-   - `spec.profile` from member override or team default
-   - `spec.packages`, `spec.files`, `spec.systemSettings` from policy tiers
-   - `spec.moduleRefs` from `requiredModules` and `recommendedModules`
-4. Generates **ConfigPolicy** CRDs from the team policy spec
+3. For each member, generates a **MachineConfig**:
+   - `metadata.generateName: <team>-<username>-`, labeled `cfgd.io/team` and `cfgd.io/username`
+   - `spec.hostname` from the member, or the placeholder `pending-<username>` until the device checks in and reports its real hostname
+   - `spec.profile` from the member override or the team default; a member with neither is an error
+   - `spec.packages`, `spec.files`, `spec.systemSettings` collected from all policy tiers (locked wins dedup, then required, then recommended)
+   - `spec.moduleRefs` from `spec.modules` plus `requiredModules` and `recommendedModules`; only `requiredModules` entries get `required: true`
+4. Generates one **ConfigPolicy** per policy tier (`required`, `locked`) that has enforceable content
 5. Returns all desired resources via `response.SetDesiredComposedResources`
 
 Packaged as a [Crossplane function package](https://docs.crossplane.io/latest/concepts/composition-functions/) via `crossplane xpkg build` and pushed to `ghcr.io`.
@@ -198,12 +222,15 @@ Packaged as a [Crossplane function package](https://docs.crossplane.io/latest/co
 
 For the backend-team example above, `function-cfgd` produces:
 
-**3 MachineConfigs** (one per member):
+**3 MachineConfigs** (one per member; jdoe's shown):
 ```yaml
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
-  name: backend-team-jdoe
+  generateName: backend-jdoe-
+  labels:
+    cfgd.io/team: backend
+    cfgd.io/username: jdoe
 spec:
   hostname: jdoe-macbook
   profile: backend-dev
@@ -212,21 +239,27 @@ spec:
       required: true
     - name: corp-certs
       required: true
+    - name: approved-editor
+      required: false
   packages:
     - name: git-secrets
     - name: pre-commit
 ```
 
-**1 ConfigPolicy**:
+asmith and bjones declared no `hostname`, so their MachineConfigs carry the placeholders `pending-asmith` and `pending-bjones` until their devices check in.
+
+**1 ConfigPolicy** (the `required` tier; the `locked` tier is empty here, so none is generated for it):
 ```yaml
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
-  name: backend-team-policy
+  generateName: backend-required-
+  labels:
+    cfgd.io/team: backend
+    cfgd.io/tier: required
 spec:
   requiredModules:
     - name: corp-vpn
-      required: true
     - name: corp-certs
   packages:
     - name: git-secrets
@@ -246,9 +279,9 @@ A developer can be a member of multiple TeamConfigs. Each generates a MachineCon
 
 ```
 Engineer's machine:
-  ├── acme-base (priority 400)     — company-wide baseline
-  ├── acme-backend (priority 500)  — backend team tools
-  └── security (priority 800)      — security team hardening
+  ├── acme-base (priority 400)     company-wide baseline
+  ├── acme-backend (priority 500)  backend team tools
+  └── security (priority 800)      security team hardening
 ```
 
 ## Namespace-per-Team Model

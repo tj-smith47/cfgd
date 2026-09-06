@@ -14,6 +14,14 @@ pub struct ModuleListEntry {
     pub active: bool,
     pub source: String,
     pub status: String,
+    /// Whether any check covers this module — a machine-wide scan on record,
+    /// or a scoped one that stamped this module. `module list` runs no check
+    /// of its own, so an uncovered row states the record's own fact
+    /// (`Installed`) rather than a `Synced` nothing earned. Display only: the
+    /// `status` token beside it is the untouched wire value a `-o json`
+    /// consumer reads.
+    #[serde(skip)]
+    pub checked: bool,
     pub packages: usize,
     pub files: usize,
     pub depends: usize,
@@ -93,7 +101,7 @@ pub(super) fn load_module_document(
     config_dir: &Path,
     module_name: &str,
 ) -> Result<(config::ModuleDocument, PathBuf), ModuleLoadError> {
-    let module_dir = config_dir.join("modules").join(module_name);
+    let module_dir = cfgd_core::declared_modules_dir(config_dir).join(module_name);
     let module_yaml = module_dir.join("module.yaml");
     if !module_yaml.exists() {
         return Err(ModuleLoadError::NotFound(format!(
@@ -133,11 +141,14 @@ pub(super) fn profiles_using_module(
 
 /// Parse helm-style `--set` overrides and apply them to a ModuleDocument.
 /// Supported paths:
-///   package.<name>.minVersion=<value>
-///   package.<name>.prefer=<a>,<b>,<c>
-///   package.<name>.alias.<manager>=<alias>
-///   package.<name>.platforms=<a>,<b>
-///   package.<name>.script=<value>
+///
+/// ```text
+/// package.<name>.minVersion=<value>
+/// package.<name>.prefer=<a>,<b>,<c>
+/// package.<name>.alias.<manager>=<alias>
+/// package.<name>.platforms=<a>,<b>
+/// package.<name>.script=<value>
+/// ```
 pub(super) fn apply_module_sets(
     sets: &[String],
     doc: &mut config::ModuleDocument,

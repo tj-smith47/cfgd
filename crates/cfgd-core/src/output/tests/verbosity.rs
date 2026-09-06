@@ -124,7 +124,7 @@ fn accent_and_secondary_suppressed_at_quiet() {
     p.status_simple(Role::Secondary, "secondary line");
     p.status_simple(Role::Fail, "fail line");
     p.flush();
-    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let raw = crate::test_helpers::captured_text(&buf);
     let out = crate::output::strip_ansi(&raw);
     assert!(
         !out.contains("accent line"),

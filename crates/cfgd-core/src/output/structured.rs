@@ -17,6 +17,22 @@ use super::OutputFormat;
 use super::doc::Doc;
 use super::renderer::Writer;
 use crate::PathDisplayExt;
+use crate::output::cursor_safe;
+
+/// Write one human diagnostic to the stderr sink, folded through
+/// [`cursor_safe`].
+///
+/// Every message that reaches this channel quotes something cfgd did not
+/// author — a remote's clone failure echoed by `error_doc`, a template the
+/// user typed, tera's own report of a render that touched remote data — and
+/// it reaches the terminal without passing the renderer, which is where every
+/// other display slot is folded. A `\r` in a git error would otherwise repaint
+/// the line describing the failure. The payload beside it is untouched: this
+/// is the human half of the channel, never the `-o` data half, which goes to
+/// `sink_stdout` byte-exact.
+fn write_diagnostic(sink_stderr: &dyn Writer, msg: &str) {
+    sink_stderr.write_line(&cursor_safe(msg));
+}
 
 /// Validate that a jsonpath expression is structurally well-formed without
 /// applying it to any data. Returns `Err(message)` for malformed input so the
@@ -317,6 +333,28 @@ pub(crate) fn emit_structured(
     format: &OutputFormat,
     list_envelope: bool,
 ) -> bool {
+    // A selector format (`name`/`jsonpath=`/`template=`/`template-file=`)
+    // projects the doc through the reader's SUCCESS-shaped selector, and an
+    // error doc's shape (`error`/`message`/`name`) almost never satisfies
+    // one written for `.items[].foo` — unlike `json`/`yaml`, which dump the
+    // whole payload regardless of selector, a miss here prints nothing to
+    // stdout and (with no fix) nothing anywhere else either, leaving only
+    // the exit code to say a failure happened. Echo the failure to stderr
+    // up front, unconditionally of what the selector itself resolves to,
+    // so a `-o jsonpath=`/`template=` selector that matches nothing on an
+    // error path still surfaces why the command failed.
+    if doc.is_error
+        && matches!(
+            format,
+            OutputFormat::Name
+                | OutputFormat::Jsonpath(_)
+                | OutputFormat::Template(_)
+                | OutputFormat::TemplateFile(_)
+        )
+        && let Some(msg) = doc.error_message()
+    {
+        write_diagnostic(sink_stderr, msg);
+    }
     match format {
         OutputFormat::Table | OutputFormat::Wide => false,
         OutputFormat::Json => {
@@ -370,11 +408,14 @@ pub(crate) fn emit_structured(
             match std::fs::read_to_string(&path) {
                 Ok(tmpl) => render_template_to(sink_stdout, sink_stderr, output_error, doc, &tmpl),
                 Err(e) => {
-                    sink_stderr.write_line(&format!(
-                        "failed to read template file '{}': {}",
-                        path.posix(),
-                        clean_io_reason(&e)
-                    ));
+                    write_diagnostic(
+                        sink_stderr,
+                        &format!(
+                            "failed to read template file '{}': {}",
+                            path.posix(),
+                            clean_io_reason(&e)
+                        ),
+                    );
                     output_error.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
@@ -399,12 +440,12 @@ fn render_template_to(
     let mut tera = tera::Tera::default();
     let tmpl_name = "__inline__";
     if let Err(e) = tera.add_raw_template(tmpl_name, template) {
-        sink_stderr.write_line(&format!("invalid template: {e}"));
+        write_diagnostic(sink_stderr, &format!("invalid template: {e}"));
         output_error.store(true, std::sync::atomic::Ordering::Relaxed);
         return;
     }
     let fail = |msg: String| {
-        sink_stderr.write_line(&msg);
+        write_diagnostic(sink_stderr, &msg);
         output_error.store(true, std::sync::atomic::Ordering::Relaxed);
     };
     match v {
@@ -442,7 +483,7 @@ mod tests {
     }
 
     fn take(buf: &Arc<Mutex<String>>) -> String {
-        buf.lock().unwrap().clone()
+        crate::test_helpers::captured_text(buf)
     }
 
     /// Drive `emit_structured` with a discarded stderr sink and a fresh error
@@ -919,6 +960,135 @@ mod tests {
         let (handled, _) = emit(&sink, &doc, &OutputFormat::Jsonpath("{.name}".into()));
         assert!(handled);
         assert_eq!(take(&buf), "x\n");
+    }
+
+    /// A `-o jsonpath=`/`template=`/`name` selector applies the reader's
+    /// SUCCESS-shaped selector to an error doc's `error`/
+    /// `message`/`name` shape, and a miss used to print NOTHING anywhere
+    /// (unlike `json`/`yaml`, which dump the whole payload regardless of
+    /// selector). Four formats, one fixture, one assertion shape each: the
+    /// error message always lands on stderr, whatever stdout's selector
+    /// resolves to.
+    #[test]
+    fn emit_structured_jsonpath_on_an_error_doc_echoes_the_message_to_stderr_even_on_a_miss() {
+        let (stdout_buf, sink) = capture();
+        let doc =
+            crate::output::error_doc("acme", "not_found", "acme not found", serde_json::json!({}));
+        let (handled, _output_error, stderr) = emit_with_stderr(
+            &sink,
+            &doc,
+            &OutputFormat::Jsonpath("{.noSuchField}".into()),
+        );
+        assert!(handled);
+        assert_eq!(
+            take(&stdout_buf),
+            "\n",
+            "the selector itself still resolves empty"
+        );
+        assert_eq!(
+            stderr, "acme not found\n",
+            "the failure must still be visible on stderr despite the selector missing"
+        );
+    }
+
+    #[test]
+    fn emit_structured_name_on_an_unnamed_error_doc_echoes_the_message_to_stderr() {
+        let (stdout_buf, sink) = capture();
+        // `error_doc` omits the `name` field entirely when the caller has none
+        // (render_cli_error's untyped fallback) — `-o name` genuinely has
+        // nothing to print rather than the empty-string field that used to
+        // make it print a spurious blank line.
+        let doc = crate::output::error_doc("", "error", "boom", serde_json::json!({}));
+        let (handled, _output_error, stderr) = emit_with_stderr(&sink, &doc, &OutputFormat::Name);
+        assert!(handled);
+        assert_eq!(take(&stdout_buf), "");
+        assert_eq!(stderr, "boom\n");
+    }
+
+    #[test]
+    fn emit_structured_template_on_an_error_doc_echoes_the_message_to_stderr() {
+        let (stdout_buf, sink) = capture();
+        let doc = crate::output::error_doc("x", "error", "template boom", serde_json::json!({}));
+        // A literal template — no context lookup, so it neither errors nor
+        // happens to surface any of the error doc's own fields — proves the
+        // stderr echo fires independently of what the selector itself does.
+        let (handled, _output_error, stderr) =
+            emit_with_stderr(&sink, &doc, &OutputFormat::Template("selected".into()));
+        assert!(handled);
+        assert_eq!(take(&stdout_buf), "selected\n");
+        assert_eq!(stderr, "template boom\n");
+    }
+
+    /// Read the stderr buffer WITHOUT stripping, so an escape that survived
+    /// the fold is visible to the assertion rather than removed by the read.
+    fn raw(buf: &Arc<Mutex<String>>) -> String {
+        // raw-capture-ok: a stripping read would delete the very escapes the assertion looks for
+        buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Drive `emit_structured` and hand back the RAW stderr bytes.
+    fn emit_raw_stderr(doc: &Doc, fmt: &OutputFormat) -> String {
+        let (_stdout_buf, stdout) = capture();
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let stderr = StringSink(stderr_buf.clone());
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        emit_structured(&stdout, &stderr, &flag, doc, fmt, false);
+        raw(&stderr_buf)
+    }
+
+    /// The stderr echo reaches the terminal without passing the renderer, so
+    /// it is folded here or nowhere. `cli_error` puts a remote's own failure
+    /// text in that slot, so `cfgd module add <url> -o name` would otherwise
+    /// let the remote repaint the line describing its failure.
+    #[test]
+    fn emit_structured_folds_the_stderr_echo_of_a_hostile_error_message() {
+        let message = "clone failed: \r\x1b[2Keverything is fine";
+        let doc = crate::output::error_doc("acme", "clone_failed", message, serde_json::json!({}));
+        let stderr = emit_raw_stderr(&doc, &OutputFormat::Name);
+        assert_eq!(
+            stderr, "clone failed: \\x0deverything is fine\n",
+            "the echo must neither move the cursor nor erase its own line"
+        );
+        assert_eq!(
+            doc.error_message(),
+            Some(message),
+            "the fold is display-only — the doc a payload is built from stays byte-exact"
+        );
+    }
+
+    /// The same channel's other messages, which quote a value the reader
+    /// typed on the command line.
+    #[test]
+    fn emit_structured_folds_the_template_file_read_diagnostic() {
+        let doc = doc_with(serde_json::json!({"name": "x"}));
+        let stderr = emit_raw_stderr(
+            &doc,
+            &OutputFormat::TemplateFile("/no/such\r\x1b[2K/template".into()),
+        );
+        assert!(
+            stderr.contains("\\x0d") && !stderr.contains('\r') && !stderr.contains('\u{1b}'),
+            "the quoted path must be shown, not obeyed: {stderr:?}"
+        );
+    }
+
+    /// The stderr echo is gated on `Doc::is_error` — a normal success doc
+    /// under a jsonpath selector that happens to miss must NOT gain a
+    /// mystery stderr line it never had before.
+    #[test]
+    fn emit_structured_jsonpath_on_a_success_doc_never_writes_to_stderr() {
+        let (buf, sink) = capture();
+        let doc = doc_with(serde_json::json!({"name": "x"}));
+        let (handled, _output_error, stderr) = emit_with_stderr(
+            &sink,
+            &doc,
+            &OutputFormat::Jsonpath("{.noSuchField}".into()),
+        );
+        assert!(handled);
+        assert_eq!(take(&buf), "\n");
+        assert_eq!(
+            stderr, "",
+            "a success doc's selector miss must stay silent on stderr"
+        );
     }
 
     #[test]

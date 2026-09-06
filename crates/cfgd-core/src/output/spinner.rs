@@ -4,10 +4,14 @@
 //! return a `StatusBuilder` so the caller can chain `.detail` / `.duration`
 //! / `.target` before the Status commits on Drop.
 //!
-//! A `Spinner` dropped without an explicit finish emits a `Status(Info)` so
-//! the spinner doesn't disappear silently — abandonment leaves a record. The
-//! one exception is a spinner whose bar it BORROWED from a
-//! [`super::live_row::LiveRow`]: that line has an owner who will settle or
+//! A `Spinner` dropped without an explicit finish settles as a `Role::Skipped`
+//! Status, its label suffixed `(interrupted)`, so the spinner doesn't
+//! disappear silently. Drop cannot know whether the abandoned work succeeded
+//! or failed — `Skipped` is the one role that is honestly neither `✓` nor
+//! `✗`, and its muted `—` glyph is distinct from the animated running frame
+//! too. `ProgressBar` settles the same way (see its own doc). The one
+//! exception is a spinner whose bar it BORROWED from a
+//! `super::live_row::LiveRow`: that line has an owner who will settle or
 //! retire it, so an abandoned one leaves it alone rather than clearing it and
 //! recording a second line for the action the row is about to describe.
 use std::io::IsTerminal;
@@ -17,9 +21,9 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
-use super::Role;
-use super::renderer::{LiveBarGuard, Renderer, Writer, wrap};
+use super::renderer::{LiveBarGuard, Renderer, Writer, indent_prefix, wrap};
 use super::status_builder::StatusBuilder;
+use super::{Role, Theme};
 
 pub(crate) fn stderr_is_terminal() -> bool {
     std::io::stderr().is_terminal()
@@ -44,9 +48,115 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
     // not this string contains them.
     let width = wrap::available_width(sink, depth);
     match message.split_once('\n') {
-        Some((head, rest)) => format!("{}\n{}", wrap::clamp(head, width), rest),
-        None => wrap::clamp(message, width),
+        Some((head, rest)) => format!("{}\n{}", wrap::clamp_at_token(head, width), rest),
+        None => wrap::clamp_at_token(message, width),
     }
+}
+
+/// Compose an in-flight subject for a spinner, progress bar, or output
+/// window. Every constructor and `set_message` across this module (plus
+/// `LiveRow::window` and `Printer::output_window_at`) funnels its caller's
+/// text through this instead of a bare `.into()`.
+///
+/// **It does not edit the subject.** "A running subject is a bare present
+/// participle, no trailing ellipsis" is a rule about what a call site WRITES,
+/// and it is enforced where the literal is written
+/// (`no_in_flight_label_carries_a_trailing_ellipsis`), not by stripping the
+/// last character of whatever arrives here. Stripping could not tell a
+/// caller's decoration from a marker the renderer itself produced:
+/// [`super::condense_script_label`] appends `…` to say THE SCRIPT HAS MORE
+/// LINES, and the strip ate it — so a `postApply` hook ran under
+/// `postApply: if command -v pipx >/dev/null 2>&1; then`, a shell fragment
+/// ending on a dangling `then` that reads as a mangled script, and the settled
+/// row that replaced it a second later put the marker back. One action, two
+/// spellings, exactly what [`crate::reconciler::action_display_subject`]
+/// exists to prevent.
+///
+/// It IS where a live-bar label meets [`super::cursor_safe`], for the same
+/// reason every permanent status subject does and because the label carries
+/// the same text: a module's own `run:` body, a registry URL, an OCI
+/// reference, a source name.
+///
+/// The label's own COAT goes on last, after the fold, for the ordering
+/// [`super::cursor_safe`] forbids reversing — see [`paint_in_flight_label`]. Every
+/// consumer that turns a live label back into a PERMANENT line runs it through
+/// `finalize_subject`, whose fold strips that coat again, so a settled line
+/// renders the same bytes it always did.
+pub(super) fn compose_in_flight_subject(theme: &Theme, text: impl Into<String>) -> String {
+    let text = super::cursor_safe(&text.into());
+    paint_in_flight_label(theme, text.trim_end())
+}
+
+/// A live label's renderer-owned styling: the text in `theme.info` — the slot
+/// the animated frame beside it is already painted with, so the running line
+/// reads as one thing — with a `kind:name` owner token handed to
+/// [`super::OwnerLabel`]'s three slots instead of that single coat.
+fn paint_in_flight_label(theme: &Theme, body: &str) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+    let (_, style) = super::renderer::role_glyph(theme, Role::Info);
+    let Some((head, owner, tail)) = split_owner_token(body) else {
+        return style.apply_to(body).to_string();
+    };
+    let mut out = String::new();
+    if !head.is_empty() {
+        out.push_str(&style.apply_to(head).to_string());
+        out.push(' ');
+    }
+    out.push_str(&owner.styled(theme));
+    if !tail.is_empty() {
+        out.push(' ');
+        out.push_str(&style.apply_to(tail).to_string());
+    }
+    out
+}
+
+/// The `kind:name` owner token of a live label, with the words either side of
+/// it: `Cloning source:acme (libgit2)` splits into
+/// `("Cloning", source:acme, "(libgit2)")`.
+///
+/// The scan walks words from the END rather than reading only the last one,
+/// because a producer routinely appends a detail after the token it names
+/// (`(libgit2)`, `— cached`); with only the last word inspected, every one of
+/// those labels lost the tint. The LAST owner-shaped word wins, so a label
+/// naming two owners tints the one its detail belongs to.
+///
+/// Shape-only and deliberately narrow, because this is a string a producer
+/// formatted rather than an [`super::OwnerLabel`] it built: the kind must be
+/// nothing but ASCII lowercase letters and the name must carry no separator of
+/// its own, so an OCI reference (`ghcr.io/acme/mod:1.0`), a URL
+/// (`https://host/x`) and a Windows path (`C:\x`) all stay plain text. A false
+/// positive costs two theme slots on a word that is not an owner; a false
+/// NEGATIVE costs nothing but the tint, so the predicate errs tight.
+fn split_owner_token(body: &str) -> Option<(&str, super::OwnerLabel, &str)> {
+    let mut scanned = body;
+    loop {
+        let (head, last) = match scanned.rsplit_once(char::is_whitespace) {
+            Some((head, last)) => (head.trim_end(), last),
+            None => ("", scanned),
+        };
+        if let Some(owner) = owner_token(last) {
+            return Some((head, owner, body[scanned.len()..].trim_start()));
+        }
+        if head.is_empty() {
+            return None;
+        }
+        scanned = head;
+    }
+}
+
+fn owner_token(word: &str) -> Option<super::OwnerLabel> {
+    // This reads an already-RENDERED word for a shape-only tinting heuristic
+    // (see the fn's own doc above), never a stored `kind:name` owner
+    // identity — `output::split_owner_token` is that reader, and folding
+    // this into it would make an arbitrary colon-bearing word (an OCI ref, a
+    // URL) a false owner match instead of plain text.
+    // owner-split-ok: shape-only heuristic parse of rendered text, not a read of a stored owner token
+    let (kind, name) = word.split_once(':')?;
+    let plain_kind = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
+    let plain_name = !name.is_empty() && !name.contains([':', '/', '\\']);
+    (plain_kind && plain_name).then(|| super::OwnerLabel::new(kind, name))
 }
 
 /// Indent a live bar by putting `depth`'s indent in its `{prefix}` field — the
@@ -59,13 +169,14 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// line sits in the same column its settled line will, rather than jumping into
 /// the tree the moment it stops moving.
 pub(super) fn set_bar_depth(bar: &IndProgressBar, depth: usize) {
-    bar.set_prefix("  ".repeat(depth));
+    bar.set_prefix(indent_prefix(depth));
 }
 
-/// Live spinner. Drop without `finish_*()` emits a `Status(Info)` with the
-/// spinner message at the active depth — leaves a record so the spinner
-/// doesn't disappear silently. A `borrowed` spinner is the exception and ends
-/// silently, because the line is not its to end (see the field's own doc).
+/// Live spinner. Drop without `finish_*()` settles a `Role::Skipped` Status
+/// (`"{label} (interrupted)"`) at the active depth — leaves a record so the
+/// spinner doesn't disappear silently, without claiming an outcome Drop
+/// cannot know. A `borrowed` spinner is the exception and ends silently,
+/// because the line is not its to end (see the field's own doc).
 pub struct Spinner<'p> {
     pub(crate) renderer: Arc<Renderer>,
     pub(crate) sink: Arc<dyn Writer>,
@@ -81,18 +192,34 @@ pub struct Spinner<'p> {
     /// longer than the spinner does. Two consequences, both from that one fact:
     /// the row's style carries the indent in a `{prefix}` field, so a message
     /// must not repeat it; and the spinner never ends the bar — not on
-    /// `Drop` either, which for an owned bar clears the line and leaves a
-    /// `Status(Info)` record. On a borrowed bar that would retire the row its
-    /// owner is still going to settle, and print a line for an action whose
-    /// outcome is about to be written by the row itself.
+    /// `Drop` either, which for an owned bar clears the line and leaves an
+    /// interrupted-`Skipped` record. On a borrowed bar that would retire the
+    /// row its owner is still going to settle, and print a line for an action
+    /// whose outcome is about to be written by the row itself.
     pub(crate) borrowed: bool,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
 impl<'p> Spinner<'p> {
-    pub fn set_message(&self, text: impl Into<String>) {
-        self.bar
-            .set_message(clamp_label(self.sink.as_ref(), &text.into(), self.depth));
+    /// `&mut self`: the clamped text also becomes `self.message`, the label
+    /// `Drop` settles with when the bar is abandoned mid-step. A caller that
+    /// narrates progress (`OutputWindow::repaint`) must have its latest
+    /// narration be what an early `?` leaves behind, not the spinner's
+    /// original opening label.
+    pub fn set_message(&mut self, text: impl Into<String>) {
+        self.set_composed_message(compose_in_flight_subject(&self.renderer.theme, text));
+    }
+
+    /// [`Self::set_message`] for text that is already folded and already
+    /// carries renderer-owned styling — an [`super::window::OutputWindow`]'s
+    /// repaint, which glues its (already folded) label to tail lines the
+    /// theme has painted muted. Running those back through the fold would eat
+    /// the renderer's own SGR, the one ordering [`super::cursor_safe`]
+    /// forbids.
+    pub(super) fn set_composed_message(&mut self, text: String) {
+        let clamped = clamp_label(self.sink.as_ref(), &text, self.depth);
+        self.bar.set_message(clamped.clone());
+        self.message = clamped;
     }
 
     pub fn finish_ok(self, final_text: impl Into<String>) -> StatusBuilder<'p> {
@@ -110,13 +237,14 @@ impl<'p> Spinner<'p> {
 
     /// Retire the bar without printing a status line of its own.
     ///
-    /// For a caller that collapses several concurrent spinners into one
-    /// combined status line elsewhere — each lane's own spinner must vanish
-    /// silently, or every lane would print its own line on top of the one
-    /// summary line describing all of them.
-    /// Suppresses `Drop`'s `Status(Info)`, the same way an explicit
-    /// `finish_*` does.
-    pub(crate) fn finish_silent(mut self) {
+    /// For a caller whose outcome line is written by someone else: several
+    /// concurrent spinners collapsed into one combined status line (each
+    /// lane's own spinner must vanish, or every lane prints on top of the one
+    /// summary describing all of them), or a narrated wait whose result is
+    /// rendered after it — a backup snapshot's row, a restore's status line.
+    /// Suppresses `Drop`'s `Role::Skipped` "(interrupted)" settle, the same
+    /// way an explicit `finish_*` does.
+    pub fn finish_silent(mut self) {
         self.bar.finish_and_clear();
         self.finished = true;
     }
@@ -173,7 +301,14 @@ impl Drop for Spinner<'_> {
             return;
         }
         self.bar.finish_and_clear();
-        // Emit an Info Status so the spinner leaves a record.
+        // Settle with a deliberate, neutral marker — Drop cannot know whether
+        // the work in flight succeeded or failed, so the honest record is
+        // neither `✓` nor `✗`. `Role::Skipped` already renders a muted,
+        // no-conclusion glyph (`—`) distinct from both settled roles and from
+        // the animated running frame; the "(interrupted)" suffix keeps it
+        // distinct from a deliberate, caller-chosen skip. Suppressed at
+        // `Verbosity::Quiet` exactly like the running spinner it replaces, so
+        // a Quiet run gains no new visible line.
         //
         // The `self.renderer.clone()` and `self.sink.clone()` Arc-clones
         // inside `StatusBuilder::new` (passed as arguments below) are
@@ -187,18 +322,27 @@ impl Drop for Spinner<'_> {
             self.renderer.clone(),
             self.sink.clone(),
             self.depth,
-            Role::Info,
-            msg,
+            Role::Skipped,
+            format!("{msg} (interrupted)"),
         );
         drop(sb);
     }
 }
 
-/// Bounded progress bar.
+/// Bounded progress bar. Drop parity with [`Spinner`]: abandoned without an
+/// explicit `finish()`, it settles a `Role::Skipped` Status
+/// (`"{label} (interrupted)"`) at the active depth instead of leaving its
+/// last paint on screen forever — a bar has no `Drop` at all before this,
+/// so a step that returned `?` between building the bar and calling
+/// `finish()` stranded whatever the bar last painted.
 pub struct ProgressBar<'p> {
+    pub(crate) renderer: Arc<Renderer>,
+    pub(crate) sink: Arc<dyn Writer>,
+    pub(crate) depth: usize,
     pub(crate) bar: IndProgressBar,
-    /// See `Spinner::_live`. `finish` consumes the wrapper, so the guard is
-    /// released exactly once with no `Drop` impl of its own.
+    pub(crate) message: String,
+    pub(crate) finished: bool,
+    /// See `Spinner::_live`.
     pub(crate) _live: Option<LiveBarGuard>,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
@@ -210,11 +354,38 @@ impl<'p> ProgressBar<'p> {
     pub fn set_position(&self, pos: u64) {
         self.bar.set_position(pos);
     }
-    pub fn set_message(&self, m: impl Into<String>) {
-        self.bar.set_message(m.into());
+    /// `&mut self`, mirroring [`Spinner::set_message`]: the clamped text also
+    /// becomes `self.message`, the label `Drop` settles with if the bar is
+    /// abandoned before `finish()`.
+    pub fn set_message(&mut self, m: impl Into<String>) {
+        let m = compose_in_flight_subject(&self.renderer.theme, m);
+        let clamped = clamp_label(self.sink.as_ref(), &m, self.depth);
+        self.bar.set_message(clamped.clone());
+        self.message = clamped;
     }
-    pub fn finish(self) {
+    pub fn finish(mut self) {
         self.bar.finish_and_clear();
+        self.finished = true;
+    }
+}
+
+impl Drop for ProgressBar<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.bar.finish_and_clear();
+        // See `Spinner::drop` for why `Role::Skipped` + "(interrupted)" is
+        // the honest settle for an outcome Drop cannot know.
+        let msg = std::mem::take(&mut self.message);
+        let sb = StatusBuilder::new(
+            self.renderer.clone(),
+            self.sink.clone(),
+            self.depth,
+            Role::Skipped,
+            format!("{msg} (interrupted)"),
+        );
+        drop(sb);
     }
 }
 
@@ -291,6 +462,10 @@ fn indented_template(body: &str) -> String {
     format!("{{prefix}}{body}")
 }
 
+/// The frames a spinner cycles through, unpainted. Named so a test asserting
+/// about what the region drew reads the same glyphs the renderer paints.
+pub(super) const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// The animated frames a spinner cycles, painted by the theme. Shared with
 /// [`super::live_row::LiveRow`], whose running state is the same animation on a
 /// line it owns for longer than one step.
@@ -298,13 +473,15 @@ fn indented_template(body: &str) -> String {
 /// `body` is the template WITHOUT its leading `{prefix}` — see
 /// [`indented_template`].
 pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
-    let frames_raw = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let styled: Vec<String> = frames_raw
+    let styled: Vec<String> = SPINNER_FRAMES
         .iter()
         .map(|f| renderer.theme.info.apply_to(f).to_string())
         .collect();
     let mut tick_refs: Vec<&str> = styled.iter().map(|s| s.as_str()).collect();
     tick_refs.push(" ");
+    // style-gate-ok: the template carries no style field — the frames are
+    // painted through the theme above, which already holds the decision, and
+    // every `body` a caller passes is a field-only literal.
     ProgressStyle::with_template(&indented_template(body))
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
         .tick_strings(&tick_refs)
@@ -313,12 +490,31 @@ pub(super) fn spinner_style(renderer: &Renderer, body: &str) -> ProgressStyle {
 /// The unanimated counterpart of [`spinner_style`], on the same indent
 /// contract: a settled row, and any bar whose line is a static one.
 pub(super) fn plain_style(body: &str) -> ProgressStyle {
+    // style-gate-ok: an unanimated template with no style field and nothing
+    // painted into it — every `body` a caller passes is a field-only literal.
     ProgressStyle::with_template(&indented_template(body))
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
 /// How often a spinner redraws its animation.
 pub(super) const SPINNER_TICK: Duration = Duration::from_millis(80);
+
+/// Start a bar's animation. **The LAST call of any spinner setup.**
+///
+/// A steady tick redraws from a background thread, so it animates whatever the
+/// bar holds at the instant it is enabled. The animated template is
+/// `{spinner} {msg}`, so a tick started before the message is in paints a lone
+/// glyph on an otherwise empty line — a status row that names no work. A bar's
+/// message goes in before its animation starts; the counterpart rule on the
+/// settle side is [`super::live_row::LiveRow::set_status`], which disables the
+/// tick before it repaints.
+pub(super) fn start_spinner_animation(bar: &IndProgressBar) {
+    debug_assert!(
+        !bar.message().is_empty(),
+        "a spinner's message goes in before its animation starts",
+    );
+    bar.enable_steady_tick(SPINNER_TICK);
+}
 
 /// Build a styled spinner ProgressBar attached to a MultiProgress.
 pub(crate) fn build_spinner(
@@ -332,7 +528,7 @@ pub(crate) fn build_spinner(
     pb.set_style(spinner_style(renderer, "{spinner} {msg}"));
     set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
-    pb.enable_steady_tick(SPINNER_TICK);
+    start_spinner_animation(&pb);
     (pb, live)
 }
 
@@ -345,26 +541,28 @@ pub(crate) fn build_progress_bar(
 ) -> (IndProgressBar, LiveBarGuard) {
     let pb = multi.add(IndProgressBar::new(total));
     let live = LiveBarGuard::acquire(renderer);
-    // indicatif resolves a `.cyan` template field against `console`'s own colour
-    // flags, which no longer track the printer's decision — nothing writes them.
-    // The template therefore has to carry that decision itself, or `--no-color`
-    // renders unstyled text beside a still-green bar. The spinner frames above
-    // need no such branch: they are styled through the theme, which already
-    // holds it.
+    // indicatif resolves a template's style fields against `console`'s own
+    // colour flags, which no longer track the printer's decision — nothing
+    // writes them. The template therefore has to carry that decision itself, or
+    // `--color never` renders unstyled text beside a still-green bar. A style
+    // token is an escape whatever it names, `dim` included, so the colourless
+    // template carries none at all: filled and empty are told apart by
+    // `progress_chars`, which both templates share, so the two bars draw the
+    // same glyphs and only the coloured one spends escapes on them. The spinner
+    // frames above need no such branch — they are styled through the theme,
+    // which already holds the decision.
     let template = if renderer.theme.colors() {
         "{spinner:.cyan} [{bar:30.cyan/dim}] {pos}/{len} {msg}"
     } else {
-        // The empty half keeps `dim` — that is an ATTRIBUTE, not a colour, and
-        // `NO_COLOR` governs colour only, so dropping it made a colourless bar
-        // lose the contrast between filled and unfilled that is the only thing
-        // left telling them apart. Empty fill colour before the `/` is what
-        // spends no colour on the filled half.
-        "{spinner} [{bar:30./dim}] {pos}/{len} {msg}"
+        "{spinner} [{bar:30}] {pos}/{len} {msg}"
     };
     pb.set_style(
+        // style-gate-ok: the only styled template cfgd builds, and the branch
+        // above is the colour decision — the colourless arm carries no style
+        // field, so indicatif resolves none.
         ProgressStyle::with_template(&indented_template(template))
             .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("━╸─"),
+            .progress_chars("█▓░"),
     );
     set_bar_depth(&pb, depth);
     pb.set_message(message.to_string());
@@ -378,7 +576,6 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::strip_ansi;
 
     fn renderer() -> Arc<Renderer> {
         Arc::new(Renderer::new(Theme::default(), Verbosity::Normal))
@@ -409,6 +606,221 @@ mod tests {
     }
 
     #[test]
+    fn a_truncation_ellipsis_survives_the_in_flight_compose() {
+        // Both arms of the marker: the body has further lines, and the first
+        // line is itself too long. Neither may be edited on its way to a
+        // running row — the marker is what says the script continues.
+        let more_lines = super::super::condense_script_label("echo one\necho two");
+        assert!(
+            more_lines.ends_with('…'),
+            "the fixture must actually be truncated: {more_lines}"
+        );
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), more_lines.clone()),
+            more_lines,
+            "a running row spells the action the same way the settled row will"
+        );
+        let over_length = super::super::condense_script_label(&"x".repeat(400));
+        assert!(over_length.ends_with('…'), "{over_length}");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), over_length.clone()),
+            over_length
+        );
+    }
+
+    /// The rule the strip used to enforce at runtime, stated as an equality: a
+    /// call site writes a bare participle, and whatever it writes is what
+    /// paints.
+    #[test]
+    fn compose_in_flight_subject_leaves_a_participle_untouched() {
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning"),
+            "Cloning"
+        );
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning  "),
+            "Cloning",
+            "trailing whitespace is still trimmed — it is layout, not content"
+        );
+    }
+
+    #[test]
+    fn compose_in_flight_subject_leaves_a_bare_participle_untouched() {
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning"),
+            "Cloning"
+        );
+    }
+
+    #[test]
+    fn compose_in_flight_subject_on_an_empty_label_yields_empty() {
+        // The one edit the composer still makes is trimming layout whitespace,
+        // so a label that is nothing but whitespace has no body to paint.
+        assert_eq!(compose_in_flight_subject(&Theme::default(), "   "), "");
+        assert_eq!(compose_in_flight_subject(&Theme::default(), ""), "");
+    }
+
+    /// The label takes `theme.info` — the slot the animated frame beside it is
+    /// already painted with, so the running line reads as one thing rather
+    /// than as a coloured glyph next to terminal-default text.
+    #[test]
+    #[serial_test::serial]
+    fn an_in_flight_label_is_painted_with_the_frames_own_slot() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning"),
+            theme.info.apply_to("Cloning").to_string()
+        );
+    }
+
+    /// A trailing `kind:name` goes to `OwnerLabel`'s three slots instead of
+    /// disappearing into the label's single coat — the same token the settled
+    /// section heading below it will render, in the same colours.
+    #[test]
+    #[serial_test::serial]
+    fn a_trailing_owner_token_is_painted_through_owner_label() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let owner = super::super::OwnerLabel::new("source", "acme");
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Fetching source:acme"),
+            format!(
+                "{} {}",
+                theme.info.apply_to("Fetching"),
+                owner.styled(&theme)
+            )
+        );
+        // A bare token with no verb ahead of it is the token alone, not a
+        // token behind an empty styled span.
+        assert_eq!(
+            compose_in_flight_subject(&theme, "module:nvim"),
+            super::super::OwnerLabel::new("module", "nvim").styled(&theme)
+        );
+    }
+
+    /// A detail after the token is what producers actually write, so the scan
+    /// walks words from the end instead of reading only the last one: the
+    /// token is still tinted and the detail keeps the label's own coat.
+    #[test]
+    #[serial_test::serial]
+    fn an_owner_token_followed_by_a_detail_is_still_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let owner = super::super::OwnerLabel::new("source", "acme");
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning source:acme (libgit2)"),
+            format!(
+                "{} {} {}",
+                theme.info.apply_to("Cloning"),
+                owner.styled(&theme),
+                theme.info.apply_to("(libgit2)")
+            )
+        );
+        // No verb ahead of the token, detail behind it.
+        assert_eq!(
+            compose_in_flight_subject(&theme, "source:acme (libgit2)"),
+            format!(
+                "{} {}",
+                owner.styled(&theme),
+                theme.info.apply_to("(libgit2)")
+            )
+        );
+    }
+
+    /// Two owner-shaped words in one label: the RIGHTMOST wins, because the
+    /// detail after a token belongs to the token it follows.
+    #[test]
+    #[serial_test::serial]
+    fn the_rightmost_owner_token_is_the_one_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "module:a source:b"),
+            format!(
+                "{} {}",
+                theme.info.apply_to("module:a"),
+                super::super::OwnerLabel::new("source", "b").styled(&theme)
+            )
+        );
+    }
+
+    /// The owner predicate is shape-only, so it has to be TIGHT: a URL, an OCI
+    /// reference and a colon that merely punctuates all stay one plain span.
+    /// Painting `ghcr.io/acme/mod` as an owner "kind" would claim a structure
+    /// the string does not have.
+    #[test]
+    #[serial_test::serial]
+    fn a_colon_that_is_not_an_owner_token_keeps_the_single_coat() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        for label in [
+            "Downloading https://example.com/cfgd.tar.gz",
+            "Pushing module to ghcr.io/acme/mod:1.0",
+            "Restoring daily: staging snapshot",
+            "Extracting archive",
+            // Windows paths. The uppercase drive letter is refused as a kind;
+            // a lowercase one is not, so the backslash in the name is the only
+            // thing standing between `c:\Users` and a painted owner token.
+            "Copying C:\\Users\\tj\\cfgd.yaml",
+            "Copying c:\\Users\\tj\\cfgd.yaml",
+            // A bare clock time: digits are not ASCII lowercase letters.
+            "Waiting until 12:30",
+        ] {
+            assert_eq!(
+                compose_in_flight_subject(&theme, label),
+                theme.info.apply_to(label).to_string(),
+                "{label:?} was split as an owner token"
+            );
+        }
+    }
+
+    /// The coat goes on AFTER the fold: painted first, `cursor_safe` would
+    /// strip it off the very label the theme is colouring.
+    #[test]
+    #[serial_test::serial]
+    fn an_in_flight_label_is_folded_before_it_is_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning\r\u{1b}[2Krepainted"),
+            theme.info.apply_to("Cloning\\x0drepainted").to_string()
+        );
+    }
+
+    /// What the REGION is left painting, read off the bar's own draws: the
+    /// composed label reaches indicatif intact, owner token and all. Colour is
+    /// off in every live capture, so this is also the proof that a themed
+    /// label spends nothing on a colourless stream — the plain bytes are the
+    /// ones a golden holds.
+    #[test]
+    fn the_composed_label_is_what_the_bar_paints() {
+        let (printer, buf) = super::super::Printer::for_test_with_live_bars();
+        let sp = printer.spinner("Fetching source:acme");
+        let painted = crate::test_helpers::captured_text(&buf);
+        assert!(
+            painted.contains("Fetching source:acme"),
+            "the bar is not painting the composed label: {painted:?}"
+        );
+        sp.finish_silent();
+    }
+
+    /// The end of the chain the seam above only pins one link of: a script
+    /// window really does paint the truncation marker, so the running row and
+    /// the row that replaces it spell one action one way.
+    #[test]
+    fn a_script_window_paints_the_truncation_marker_it_was_given() {
+        let (printer, buf) = super::super::Printer::for_test_with_live_bars();
+        let label = super::super::condense_script_label(
+            "if command -v pipx >/dev/null 2>&1; then\n  pipx upgrade-all\nfi",
+        );
+        assert!(label.ends_with('…'), "the fixture is truncated: {label}");
+        {
+            let _window = printer.output_window(&label);
+        }
+        let painted = crate::test_helpers::captured_text(&buf);
+        assert!(
+            painted.contains(&label),
+            "the running row must spell the action the settled row will: \
+             wanted {label:?} in {painted:?}"
+        );
+    }
+
+    #[test]
     fn finish_ok_emits_status_at_section_depth() {
         let r = renderer();
         let buf = Arc::new(Mutex::new(String::new()));
@@ -427,12 +839,18 @@ mod tests {
         };
         let _ = sp.finish_ok("done");
         // _ drops here → Status committed
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("  ✓ done"), "got: {out:?}");
     }
 
+    /// Deliberate design choice: an abandoned spinner settles `Role::Skipped`
+    /// (the muted `—` glyph) with an `(interrupted)` suffix — neither `✓` nor
+    /// `✗`, because Drop cannot know which the abandoned work was heading
+    /// toward, and visibly distinct from the running frame it replaces. Must
+    /// never be confused with an intentional `finish_skipped()` outcome, which
+    /// carries no suffix at all.
     #[test]
-    fn drop_without_finish_emits_info_record() {
+    fn drop_without_finish_settles_skipped_interrupted_not_ok_or_fail() {
         let r = renderer();
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = sink_for(&buf);
@@ -448,26 +866,203 @@ mod tests {
                 borrowed: false,
                 _phantom: std::marker::PhantomData,
             };
+            // Dropped here without finish_ok/finish_warn/finish_fail/finish_skipped.
         }
-        let out = strip_ansi(&buf.lock().unwrap());
-        // Info role has no icon; subject text appears.
-        assert!(out.contains("abandoned"), "got: {out:?}");
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("abandoned (interrupted)"),
+            "abandoned spinner must settle with a neutral, distinguishable marker: {out:?}"
+        );
+        assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
+        assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
+        assert!(
+            out.contains('∅'),
+            "Drop must settle with the muted Skipped glyph: {out:?}"
+        );
     }
 
-    /// A `--no-color` run must not draw a green bar beside unstyled text.
-    /// indicatif resolves a `.cyan` template field against `console`'s colour
-    /// flags, which no printer writes any more, so the only thing that can keep
-    /// the bar honest is the template carrying the printer's own decision.
+    /// The other half of Drop parity: a spinner that DID finish must not
+    /// print a second line when it goes out of scope — `finished` gates
+    /// Drop's own settle, and this is the test that would catch a regression
+    /// where the gate is dropped or inverted.
+    #[test]
+    fn finish_ok_then_drop_commits_exactly_once() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let sp = Spinner {
+            renderer: r.clone(),
+            sink: sink.clone(),
+            depth: 0,
+            bar: indicatif::ProgressBar::hidden(),
+            message: "doing work".into(),
+            finished: false,
+            _live: None,
+            borrowed: false,
+            _phantom: std::marker::PhantomData,
+        };
+        drop(sp.finish_ok("done"));
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out.matches("done").count(),
+            1,
+            "finish_ok settled line must appear exactly once: {out:?}"
+        );
+        assert!(
+            !out.contains("(interrupted)"),
+            "a spinner that finished must never also settle via Drop: {out:?}"
+        );
+    }
+
+    fn hidden_progress_bar(
+        r: &Arc<Renderer>,
+        sink: &Arc<dyn Writer>,
+        depth: usize,
+        message: &str,
+    ) -> ProgressBar<'static> {
+        ProgressBar {
+            renderer: r.clone(),
+            sink: sink.clone(),
+            depth,
+            bar: indicatif::ProgressBar::hidden(),
+            message: message.to_string(),
+            finished: false,
+            _live: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// `ProgressBar` Drop parity with `Spinner`: abandoned before `finish()`,
+    /// it settles the same neutral, distinguishable marker instead of leaving
+    /// its last paint on screen forever.
+    #[test]
+    fn progress_bar_drop_without_finish_settles_skipped_interrupted() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        {
+            let _pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+            // Dropped here without finish().
+        }
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("downloading (interrupted)"),
+            "abandoned progress bar must settle with a neutral marker: {out:?}"
+        );
+        assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
+        assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
+    }
+
+    /// The two tests above prove the settled STATUS LINE, but
+    /// both build their bar via `IndProgressBar::hidden()`, which can never
+    /// paint — so neither proves the doc's actual headline claim ("instead
+    /// of leaving its last paint on screen forever"). `for_test_live_terminal`
+    /// is the one surface that can: a real bar paints onto an emulated
+    /// screen, and what the screen is left holding after Drop is exactly
+    /// what a stranded paint would look like if the erase-before-record
+    /// ordering in `Drop` were wrong.
+    #[test]
+    fn progress_bar_drop_leaves_nothing_behind_on_the_live_screen() {
+        let (printer, screen) = super::super::Printer::for_test_live_terminal(24, 100);
+        {
+            let pb = printer.progress_bar(4, "downloading");
+            pb.set_position(2);
+            let painted = screen.contents();
+            assert!(
+                painted.contains("downloading"),
+                "the bar must actually be on screen before Drop is asserted \
+                 to have cleared it: {painted:?}"
+            );
+            // Dropped here without finish().
+        }
+        let held = screen.contents();
+        let lines: Vec<&str> = held.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "the bar's paint must be replaced by exactly one settled line, \
+             nothing left stranded above or below it: {held:?}"
+        );
+        assert!(
+            lines[0].contains("downloading (interrupted)"),
+            "the settled line must carry the neutral marker: {held:?}"
+        );
+        assert!(
+            lines[0].trim_start().starts_with('\u{2205}'),
+            "the settled line must carry the muted Skipped glyph, not a bar: {held:?}"
+        );
+        assert!(
+            !held.contains('[') && !held.contains(']'),
+            "no bar frame (the `[...]` fill) may remain on screen: {held:?}"
+        );
+    }
+
+    /// The finished half: a `ProgressBar` that called `finish()` must not
+    /// print a second line on Drop.
+    #[test]
+    fn progress_bar_finish_then_drop_commits_nothing_extra() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+        pb.finish();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("(interrupted)"),
+            "a progress bar that finished must never also settle via Drop: {out:?}"
+        );
+        assert!(
+            out.is_empty(),
+            "finish() prints no status line of its own and Drop must add none: {out:?}"
+        );
+    }
+
+    /// `ProgressBar::set_message` must clamp through the same `clamp_label`
+    /// path `Spinner::set_message` does — mirrors
+    /// `clamp_label_keeps_the_spinner_on_one_row` above, but through the live
+    /// method rather than calling the free function directly, so a future
+    /// change that stops routing `set_message` through `clamp_label` is
+    /// caught here even if the free function itself keeps working.
+    #[test]
+    fn progress_bar_set_message_clamps_like_spinners_does() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let mut pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+        let long = "applying/very/long/nested/module/file/path/segment/".repeat(20);
+        pb.set_message(long.clone());
+        assert!(
+            !pb.message.contains('\n'),
+            "clamped message must stay on one row: {:?}",
+            pb.message
+        );
+        assert!(
+            pb.message.len() < long.len(),
+            "message was not clamped: {:?}",
+            pb.message
+        );
+        assert!(
+            pb.message.ends_with('…'),
+            "clamp_label always truncates with an ellipsis: {:?}",
+            pb.message
+        );
+        pb.finish();
+    }
+
+    /// A `--color never` run must not draw a green bar beside unstyled text,
+    /// and must not draw a dim one either. indicatif resolves a template's
+    /// style fields against `console`'s colour flags, which no printer writes
+    /// any more, so the only thing that can keep the bar honest is the template
+    /// carrying the printer's own decision — and carrying it whole, because
+    /// `dim` reaches the terminal as `\x1b[2m` exactly like a colour does.
     ///
     /// Both draws happen with `console`'s flags ON, because that IS the
-    /// reported condition: `--no-color` on a colour terminal. indicatif
+    /// reported condition: `--color never` on a colour terminal. indicatif
     /// resolves the template field against those flags, so with them off the
     /// negative assertion would hold for the wrong reason and prove nothing.
     ///
-    /// The colourless bar is checked for COLOUR escapes, not for escapes: it
-    /// keeps `dim` on its unfilled half, which is an attribute, and `NO_COLOR`
-    /// governs colour only. Dropping the attribute too would leave a
-    /// colourless bar with nothing at all separating filled from unfilled.
+    /// Filled and empty stay distinguishable through `progress_chars`, which
+    /// both templates share, so the contrast survives with no escape spent.
     #[cfg(feature = "test-helpers")]
     #[test]
     #[serial_test::serial]
@@ -519,15 +1114,14 @@ mod tests {
         }
 
         let off = draw(false);
-        assert!(
-            !has_color_sgr(&off),
-            "a colourless printer drew colour: {off:?}"
-        );
         assert!(off.contains("2/4"), "bar did not draw at all: {off:?}");
         assert!(
-            off.contains("\u{1b}[2m"),
-            "the colourless bar dropped `dim`, so its unfilled half is \
-             indistinguishable from its filled half: {off:?}"
+            !off.contains('\u{1b}'),
+            "a colourless printer wrote an escape: {off:?}"
+        );
+        assert!(
+            off.contains('█') && off.contains('░'),
+            "the colourless bar lost the glyph contrast that replaces `dim`: {off:?}"
         );
 
         let on = draw(true);
@@ -565,10 +1159,20 @@ mod tests {
         let (printer, screen) = super::super::Printer::for_test_live_terminal(24, 100);
         let section = printer.section("Packages");
         let sp = section.spinner("brew install fd");
+        // `sp`'s steady tick (see `SPINNER_TICK`) redraws from a background
+        // thread; left running, its redraw can interleave with this thread's
+        // own draws below and corrupt the emulated terminal's cursor-move/clear
+        // sequences — which is what left the screen blank in CI, not a slow
+        // paint. `disable_steady_tick` joins that thread before returning, and
+        // the ticker's loop body always ticks at least once before it can ever
+        // observe the stop signal, so this guarantees `sp` has painted a frame
+        // with no wall-clock wait and no second writer left to race.
+        sp.bar.disable_steady_tick();
         let pb = section.progress_bar(4, "downloading");
+        // `set_prefix` / `set_message` / `set_position` all draw synchronously
+        // on this thread, so by the time this call returns both bars are
+        // already on screen — no sleep or poll needed.
         pb.set_position(2);
-        // A tick each, so both have painted a frame rather than only a message.
-        std::thread::sleep(std::time::Duration::from_millis(120));
         let held = screen.contents();
         sp.finish_silent();
         pb.finish();
@@ -591,5 +1195,78 @@ mod tests {
                 "expected a glyph before the text, got {row:?}"
             );
         }
+    }
+}
+
+/// The terminal cursor while a live region draws — see `output/cursor.rs`.
+#[cfg(test)]
+mod cursor_region_tests {
+    use super::super::Printer;
+
+    /// The observed defect: for the whole of every spinner a solid cursor block
+    /// sat in the right margin of the spinner's own row, on camera in every
+    /// demo. The region hides the cursor before its first paint and shows it
+    /// after its last clear, and does so once per region rather than once
+    /// per repaint.
+    #[test]
+    fn a_narrated_wait_hides_the_cursor_before_its_first_paint_and_shows_it_after_its_last() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let _ = screen.moves();
+        let out: Result<(), ()> = printer.narrate("Resolving module:nvim", |sp| {
+            sp.set_message("Resolving module:zsh");
+            Ok(())
+        });
+        assert!(out.is_ok());
+        drop(printer);
+
+        let moves = screen.moves();
+        let hide = moves
+            .find("[?25l")
+            .unwrap_or_else(|| panic!("the region never hid the cursor:\n{moves}"));
+        let show = moves
+            .rfind("[?25h")
+            .unwrap_or_else(|| panic!("the region never showed the cursor again:\n{moves}"));
+        let clear = moves
+            .find("Clear")
+            .unwrap_or_else(|| panic!("the region never cleared its row:\n{moves}"));
+        assert!(
+            hide < clear && clear < show,
+            "hide ({hide}) < the region's clear ({clear}) < show ({show}) must hold:\n{moves}"
+        );
+        assert_eq!(
+            moves.matches("[?25l").count(),
+            1,
+            "one region hides the cursor once:\n{moves}"
+        );
+        assert_eq!(
+            moves.matches("[?25h").count(),
+            1,
+            "one region shows the cursor once:\n{moves}"
+        );
+        assert!(
+            !screen.contents().contains("[?25"),
+            "the escape is consumed by the terminal, never painted:\n{}",
+            screen.contents()
+        );
+    }
+
+    /// The scrollback capture has no terminal to hide a cursor on: a bar goes
+    /// up and comes down exactly as on a tty, and the permanent output carries
+    /// neither escape — which is also what keeps every golden a golden.
+    #[test]
+    fn the_scrollback_capture_carries_neither_cursor_escape() {
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let out: Result<(), ()> = printer.narrate("Resolving module:nvim", |_| Ok(()));
+        assert!(out.is_ok());
+        // raw-capture-ok: the cursor escapes ARE the subject; captured_text strips them
+        let held = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !held.contains("[?25l"),
+            "hide escape in the scrollback: {held:?}"
+        );
+        assert!(
+            !held.contains("[?25h"),
+            "show escape in the scrollback: {held:?}"
+        );
     }
 }

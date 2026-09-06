@@ -15,6 +15,22 @@ use schemars::JsonSchema;
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 
+/// Ceiling on the `nonCompliantMachines` list a policy status enumerates.
+///
+/// A status object every operator replica watches has to stay well inside
+/// etcd's ~1.5 MiB limit, and a policy violated fleet-wide would otherwise
+/// carry one entry per machine. At the RFC 1123 worst case (a 253-character
+/// namespace and name) 500 entries is ~250 KiB, which leaves the conditions
+/// list and the rest of the object ample room.
+///
+/// The cap is on the ENUMERATION only: `nonCompliantCount` remains exact, so no
+/// number a user reads is ever wrong. The truncation is applied to a sorted
+/// list, so which machines fall outside is deterministic rather than
+/// per-reconcile arbitrary — a machine beyond the cap is absent from the
+/// transition memory and therefore re-fires its `PolicyViolation` event on each
+/// evaluation, which is the documented degradation at that scale.
+pub const MAX_NON_COMPLIANT_MACHINES: usize = 500;
+
 // ---------------------------------------------------------------------------
 // MachineConfig
 // ---------------------------------------------------------------------------
@@ -36,14 +52,27 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigSpec {
+    /// Hostname of the machine this document describes. The agent reconciles
+    /// only the MachineConfig whose hostname matches its own.
     pub hostname: String,
+    /// Name of the profile the machine reconciles against. Resolved on the
+    /// machine, from its own config directory or from a subscribed source.
     pub profile: String,
+    /// Modules to install on the machine, each naming a cluster-scoped
+    /// `Module` resource.
     #[serde(default)]
     pub module_refs: Vec<ModuleRef>,
+    /// Packages to install on top of whatever the profile declares, each
+    /// optionally version-pinned.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// Files to write on the machine, either inline or fetched from a source
+    /// path.
     #[serde(default)]
     pub files: Vec<FileSpec>,
+    /// System configurator settings to apply, keyed by
+    /// `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
+    /// no system settings are reconciled.
     #[serde(default)]
     pub system_settings: BTreeMap<String, serde_json::Value>,
 }
@@ -52,7 +81,10 @@ pub struct MachineConfigSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageRef {
+    /// Package name as the machine's own package manager knows it.
     pub name: String,
+    /// Exact version to pin to. Omitted, whatever the manager currently offers
+    /// is installed and left alone once present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -61,17 +93,28 @@ pub struct PackageRef {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleRef {
+    /// Name of the cluster-scoped `Module` resource to install.
     pub name: String,
+    /// Whether a failure to resolve or install this module fails the whole
+    /// reconcile. Default: `false`, so a missing module is reported and the
+    /// rest of the machine still converges.
     #[serde(default)]
     pub required: bool,
 }
 
+/// A file the operator writes on a managed machine.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSpec {
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory of the user the agent runs as.
     pub path: String,
+    /// Literal file body, written as-is. Mutually exclusive with `source`.
     pub content: Option<String>,
+    /// Path the body is read from instead of `content`, resolved against the
+    /// machine's config directory.
     pub source: Option<String>,
+    /// Octal permission bits applied after the write. Default: `0644`.
     #[serde(default = "default_mode")]
     pub mode: String,
 }
@@ -114,8 +157,12 @@ pub struct Condition {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {
+    /// Labels a resource must carry verbatim to match. Every entry must match;
+    /// an empty map matches everything.
     #[serde(default)]
     pub match_labels: BTreeMap<String, String>,
+    /// Set-based requirements a resource must satisfy, evaluated alongside
+    /// `matchLabels`. Every requirement must hold.
     #[serde(default)]
     pub match_expressions: Vec<LabelSelectorRequirement>,
 }
@@ -132,8 +179,13 @@ pub enum SelectorOperator {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelectorRequirement {
+    /// Label key this requirement tests.
     pub key: String,
+    /// How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+    /// `DoesNotExist`.
     pub operator: SelectorOperator,
+    /// Values the key is tested against. Required for `In` and `NotIn`, and
+    /// must be empty for `Exists` and `DoesNotExist`.
     #[serde(default)]
     pub values: Vec<String>,
 }
@@ -159,15 +211,23 @@ pub struct LabelSelectorRequirement {
 // allowlist at admission time, so serde-side strictness is redundant here.
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPolicySpec {
+    /// Modules every selected MachineConfig must carry. A machine missing one
+    /// is counted non-compliant.
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
     /// Modules staged as debug-only (CSI volume without volumeMount on declared containers).
     #[serde(default)]
     pub debug_modules: Vec<ModuleRef>,
+    /// Packages every selected MachineConfig must declare, each optionally
+    /// version-pinned.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// System settings every selected MachineConfig must declare, keyed the
+    /// same way as `MachineConfig.spec.systemSettings`.
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// Which MachineConfigs in this namespace the policy applies to. Empty,
+    /// it applies to all of them.
     #[serde(default)]
     pub target_selector: LabelSelector,
 }
@@ -177,6 +237,15 @@ pub struct ConfigPolicySpec {
 pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
+    /// `namespace/name` of the MachineConfigs currently violating this policy,
+    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+    /// `PolicyViolation` event fires on the transition into violation rather
+    /// than once per observation — an in-process memory would re-announce every
+    /// machine after an operator restart. `nonCompliantCount` is the exact
+    /// total and is never capped.
+    #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
+    pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -189,11 +258,23 @@ pub struct ConfigPolicyStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigReference {
+    /// Name of the referenced MachineConfig.
     pub name: String,
+    /// Namespace the MachineConfig lives in. Omitted, the referring
+    /// resource's own namespace is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 }
 
+/// Drifted system settings a device reported at check-in.
+///
+/// A device's report covers its system settings alone — the answers of the
+/// system configurators its profile declares (`sysctl`, `kernelModules`,
+/// `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
+/// and aliases are checked on the device by `cfgd diff` and reach the fleet only
+/// as the aggregate counts of a compliance summary, never as findings — so a
+/// device with no DriftAlert is a device whose system settings matched, not a
+/// device proven in sync.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -210,10 +291,16 @@ pub struct MachineConfigReference {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DriftAlertSpec {
+    /// Identifier of the device that reported the drift, as it enrolled.
     pub device_id: String,
+    /// The MachineConfig whose desired state the device diverged from.
     pub machine_config_ref: MachineConfigReference,
+    /// One entry per drifted system setting, each carrying what was declared and
+    /// what the device found.
     #[serde(default)]
     pub drift_details: Vec<DriftDetail>,
+    /// How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
+    /// Drives alert routing rather than any automatic remediation.
     pub severity: DriftSeverity,
 }
 
@@ -226,11 +313,20 @@ pub struct DriftAlertStatus {
     pub conditions: Vec<Condition>,
 }
 
+/// One system setting whose live value diverged from its declared value.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftDetail {
+    /// The drifted setting, named `<configurator>.<key>` as the device reported
+    /// it (e.g. `sysctl.net.ipv4.ip_forward`).
+    ///
+    /// The configurator qualifies the key because a key names a setting only
+    /// within its own configurator: two of them may declare the same one, and
+    /// this list merges by this field.
     pub field: String,
+    /// The value the MachineConfig declares.
     pub expected: String,
+    /// The value the device actually reported.
     pub actual: String,
 }
 
@@ -264,27 +360,39 @@ pub enum DriftSeverity {
 // `properties:`). K8s admission already gatekeeps unknown fields.
 #[serde(rename_all = "camelCase")]
 pub struct ClusterConfigPolicySpec {
-    /// Select which namespaces this cluster policy applies to.
+    /// Select which namespaces this cluster policy applies to. Empty, it
+    /// applies to every namespace in the cluster.
     #[serde(default)]
     pub namespace_selector: LabelSelector,
+    /// Modules every MachineConfig in a selected namespace must carry.
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
     /// Modules staged as debug-only across matching namespaces.
     #[serde(default)]
     pub debug_modules: Vec<ModuleRef>,
+    /// Packages every MachineConfig in a selected namespace must declare.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// System settings every MachineConfig in a selected namespace must
+    /// declare, keyed the same way as `MachineConfig.spec.systemSettings`.
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// Cluster-wide rules governing which modules may be admitted at all.
     #[serde(default)]
     pub security: SecurityPolicy,
 }
 
+/// Provenance rules a `Module` must satisfy to be admitted.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityPolicy {
+    /// Registry prefixes a module artifact may be pulled from; a trailing `*`
+    /// or `/` widens the match. Empty, any registry is accepted.
     #[serde(default)]
     pub trusted_registries: Vec<String>,
+    /// Whether a module carrying an unsigned OCI artifact may be admitted.
+    /// Default: `false` — creating any ClusterConfigPolicy at all starts
+    /// rejecting unsigned modules.
     #[serde(default)]
     pub allow_unsigned: bool,
 }
@@ -294,6 +402,15 @@ pub struct SecurityPolicy {
 pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
+    /// `namespace/name` of the MachineConfigs currently violating this policy,
+    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+    /// `PolicyViolation` event fires on the transition into violation rather
+    /// than once per observation — an in-process memory would re-announce every
+    /// machine after an operator restart. `nonCompliantCount` is the exact
+    /// total and is never capped.
+    #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
+    pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -306,6 +423,8 @@ pub struct ClusterConfigPolicyStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
+    /// Default package name, used on every platform `platforms` names no
+    /// override for.
     pub name: String,
     /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -316,7 +435,10 @@ pub struct PackageEntry {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleFileSpec {
+    /// Path to the file inside the module artifact.
     pub source: String,
+    /// Destination path the file is deployed to inside the pod or on the
+    /// machine.
     pub target: String,
 }
 
@@ -324,6 +446,8 @@ pub struct ModuleFileSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleScripts {
+    /// Command run once after the module's files and packages are in place.
+    /// Omitted, nothing runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_apply: Option<String>,
 }
@@ -332,10 +456,22 @@ pub struct ModuleScripts {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleEnvVar {
+    /// Variable name, as exported into the container or shell environment.
     pub name: String,
+    /// Value assigned to the variable.
     pub value: String,
+    /// Append to the variable's existing value with the platform's path
+    /// separator instead of replacing it. Default: `false`.
     #[serde(default)]
     pub append: bool,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
+    /// Linux container, so the pod-mutating webhook injects an entry only when
+    /// this is empty or names `linux` — nothing about a pod can answer a
+    /// distro or arch tag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 /// Cosign configuration for OCI artifact signature verification.
@@ -360,6 +496,8 @@ pub struct CosignSignature {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSignature {
+    /// How the artifact's cosign signature is verified. Omitted, no signature
+    /// is required of this module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cosign: Option<CosignSignature>,
 }
@@ -373,24 +511,37 @@ pub struct ModuleSignature {
     shortname = "mod",
     category = "cfgd",
     printcolumn = r#"{"name": "Artifact", "type": "string", "jsonPath": ".spec.ociArtifact"}"#,
-    printcolumn = r#"{"name": "Verified", "type": "boolean", "jsonPath": ".status.verified"}"#,
-    printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.availablePlatforms"}"#,
+    printcolumn = r#"{"name": "Signature", "type": "string", "jsonPath": ".status.signature"}"#,
+    printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.platformsSummary"}"#,
+    printcolumn = r#"{"name": "Available", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Available\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSpec {
+    /// Packages this module installs, each with optional per-platform name
+    /// overrides.
     #[serde(default)]
     pub packages: Vec<PackageEntry>,
+    /// Files this module deploys out of its artifact.
     #[serde(default)]
     pub files: Vec<ModuleFileSpec>,
+    /// Lifecycle commands run around the module's deployment.
     #[serde(default)]
     pub scripts: ModuleScripts,
+    /// Environment variables this module contributes to containers that mount
+    /// it.
     #[serde(default)]
     pub env: Vec<ModuleEnvVar>,
+    /// Names of other `Module` resources that must be applied first.
     #[serde(default)]
     pub depends: Vec<String>,
+    /// OCI reference the module's content is pulled from
+    /// (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content
+    /// inline and nothing is fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_artifact: Option<String>,
+    /// How the artifact's provenance is verified before it is admitted.
+    /// Omitted, verification is governed by the cluster policy alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<ModuleSignature>,
     /// Controls how the module is mounted in pods.
@@ -415,12 +566,37 @@ pub enum MountPolicy {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleStatus {
+    /// The `metadata.generation` every other field here was computed from. A
+    /// status whose `observedGeneration` is behind `metadata.generation`
+    /// describes the PREVIOUS spec, which is what lets a caller wait for a
+    /// verdict about the spec it just applied instead of reading the one it
+    /// replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_artifact: Option<String>,
     #[serde(default)]
     pub available_platforms: Vec<String>,
+    /// `availablePlatforms` rendered as one comma-joined string for the
+    /// `Platforms` printer column, and the only field that column may be bound
+    /// to: a column resolving to an array prints the Go rendering of the
+    /// slice, so an empty one reads as the literal `[]` where an absent value
+    /// leaves the cell empty. Absent when no platform is known, so the
+    /// JSONPath resolves to nothing and the cell stays blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms_summary: Option<String>,
     #[serde(default)]
     pub verified: bool,
+    /// The signature verdict as ONE word (`verified` / `unverified` /
+    /// `unsigned` / `unknown`), and the only field the `Signature` printer
+    /// column may be bound to. `verified` is the same verdict as a raw bool,
+    /// which reads as
+    /// `true` in a column beside a `kubectl cfgd status` row saying
+    /// `(verified)` about the same module — one fact, two vocabularies. Absent
+    /// when no reconcile has written it, so the JSONPath resolves to nothing
+    /// and the cell stays blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     /// Digest of the cosign signature (if verified).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_digest: Option<String>,
@@ -429,6 +605,31 @@ pub struct ModuleStatus {
     pub attestations: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
+}
+
+/// A module whose declared signature was checked against its key and held.
+pub const SIGNATURE_VERIFIED: &str = "verified";
+/// A module whose declared signature was checked and rejected — the artifact
+/// carries no signature, or none the declared key accepts.
+pub const SIGNATURE_UNVERIFIED: &str = "unverified";
+/// A module that declares no signature at all — nothing to verify, which is a
+/// different fact from a signature that failed.
+pub const SIGNATURE_UNSIGNED: &str = "unsigned";
+/// A module whose signature could not be checked at all: the verifier is
+/// missing, the artifact's registry could not be reached, or no reconcile has
+/// run yet. A fact about the CHECK, not about the signature, and the reason
+/// no surface may collapse it into [`SIGNATURE_UNVERIFIED`] — nor derive any
+/// other word from the spec and the raw bool, which cannot express it.
+pub const SIGNATURE_UNKNOWN: &str = "unknown";
+
+impl ModuleStatus {
+    /// The ONE derivation of [`ModuleStatus::platforms_summary`] from
+    /// [`ModuleStatus::available_platforms`]. Every writer of the status goes
+    /// through it, so the column and the list it summarizes cannot disagree.
+    #[must_use]
+    pub fn summarize_platforms(platforms: &[String]) -> Option<String> {
+        (!platforms.is_empty()).then(|| platforms.join(", "))
+    }
 }
 
 // ---------------------------------------------------------------------------

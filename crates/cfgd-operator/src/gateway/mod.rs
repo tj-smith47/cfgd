@@ -327,7 +327,7 @@ mod tests {
         // layer (distinct from the trimmed-empty branch at the top).
         // `\x01` (SOH) and `\x7f` (DEL) are both control chars outside the
         // visible-ASCII range, so each entry fails `HeaderValue::from_str`.
-        // We avoid `\x00` because `std::env::set_var` rejects nul bytes.
+        // `\x00` is avoided because `std::env::set_var` rejects nul bytes.
         let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "\x7fbad,\x01more");
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }

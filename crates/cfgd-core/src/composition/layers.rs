@@ -138,7 +138,7 @@ pub(super) fn build_source_layers(
     Ok(layers)
 }
 
-/// Convert a subscriber's `overrides` YAML mapping into a [`ProfileSpec`].
+/// Convert a subscriber's `overrides` YAML mapping into a [`crate::config::ProfileSpec`].
 ///
 /// The CLI (`cfgd source override <src> set <dotted.path> <value>`) writes env
 /// and aliases in MAP form (`overrides.env.EDITOR: nvim`), matching the sibling

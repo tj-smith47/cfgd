@@ -10,12 +10,62 @@
     "summary": "12 actions applied",
     "timestamp": "2026-05-14T10:00:00Z"
   },
+  "lastScanAt": "2026-05-14T10:00:00Z",
   "managedResources": [
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "/home/user/.cfgd.env",
+      "resourceType": "env",
+      "source": "local"
+    },
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
       "resourceId": "~/.bashrc",
       "resourceType": "file",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "dev-tools:files:12",
+      "resourceType": "module",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "dev-tools:packages:gcc,cargo,git",
+      "resourceType": "module",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "dev-tools:packages:neovim,age,fd",
+      "resourceType": "module",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "dev-tools:script",
+      "resourceType": "module",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "brew/ripgrep",
+      "resourceType": "package",
+      "source": "local"
+    },
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "brew/bat",
+      "resourceType": "package",
       "source": "local"
     }
   ],
@@ -24,12 +74,14 @@
       "files": 3,
       "name": "base",
       "packages": 5,
+      "scripts": 0,
       "status": "installed"
     },
     {
       "files": 12,
       "name": "dev-tools",
       "packages": 18,
+      "scripts": 3,
       "status": "installed"
     }
   ],

@@ -1,6 +1,5 @@
 Profile: default
-  Config   /etc/cfgd/cfgd.yaml
-  Profile  default
+  Config  /etc/cfgd/cfgd.yaml
 
 Layers
   default  source=local priority=1000

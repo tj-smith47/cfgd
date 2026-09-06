@@ -64,9 +64,9 @@ const COMMON_STYLES: &str = r#"
 /// Web UI auth: checks Authorization header, session cookie, or ?token= query param.
 /// When CFGD_API_KEY is not set, all requests are allowed.
 ///
-/// On successful `?token=` auth we mint a fresh random session ID (NOT the admin
-/// key) and store its hash in `state.web_sessions`, then set it as the
-/// `cfgd_session` cookie with `Secure; HttpOnly; SameSite=Strict`. A leaked
+/// On successful `?token=` auth a fresh random session ID (NOT the admin
+/// key) is minted and its hash stored in `state.web_sessions`, then set as
+/// the `cfgd_session` cookie with `Secure; HttpOnly; SameSite=Strict`. A leaked
 /// cookie therefore cannot be replayed to recover `CFGD_API_KEY`, and the
 /// server can invalidate sessions without rotating the admin key.
 async fn web_auth_middleware(
@@ -212,11 +212,11 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
             </div>
             <div class="stat-card healthy">
                 <div class="value">{healthy}</div>
-                <div class="label">Healthy</div>
+                <div class="label">No System Settings Drift</div>
             </div>
             <div class="stat-card drifted">
                 <div class="value">{drifted}</div>
-                <div class="label">Drifted</div>
+                <div class="label">System Settings Drift</div>
             </div>
             <div class="stat-card offline">
                 <div class="value">{offline}</div>
@@ -328,7 +328,7 @@ async fn device_detail(
     }
 
     let drift_html = if drift_events.is_empty() {
-        r#"<p class="muted">No drift events recorded for this device.</p>"#.to_string()
+        r#"<p class="muted">No system settings drift reported by this device. Devices report drifted system settings only; a drifted package or file is never reported here.</p>"#.to_string()
     } else {
         format!(
             r#"<table>
@@ -494,7 +494,7 @@ async fn device_detail(
                 <label>Type:
                     <select id="filter-type" onchange="applyFilters()">
                         <option value="all">All</option>
-                        <option value="drift">Drift</option>
+                        <option value="drift">System Settings Drift</option>
                         <option value="checkin">Check-in</option>
                     </select>
                 </label>
@@ -507,7 +507,7 @@ async fn device_detail(
                 <button class="btn" onclick="clearFilters()" style="margin-left:0.5rem;">Clear</button>
             </div>
 
-            <h3 style="color:#c9d1d9;font-size:1rem;margin:1rem 0 0.5rem;">Drift Events ({drift_count})</h3>
+            <h3 style="color:#c9d1d9;font-size:1rem;margin:1rem 0 0.5rem;">System Settings Drift ({drift_count})</h3>
             <div id="drift-section">
             {drift_html}
             </div>
@@ -522,7 +522,7 @@ async fn device_detail(
         var deviceId = {device_id_js};
         function getAuthHeader() {{
             // If CFGD_API_KEY is set on the server, users must provide a token.
-            // For the web UI, we read it from localStorage if available.
+            // For the web UI, read it from localStorage if available.
             var token = localStorage.getItem("cfgd_api_token");
             if (token) return {{"Authorization": "Bearer " + token}};
             return {{}};
@@ -680,7 +680,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
     }
 
     let events_table = if events.is_empty() {
-        r#"<div class="empty">No events recorded yet. Events will appear here as devices check in and report drift.</div>"#.to_string()
+        r#"<div class="empty">No events recorded yet. Events will appear here as devices check in and report system settings drift.</div>"#.to_string()
     } else {
         format!(
             r#"<table>
@@ -735,7 +735,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
 <body>
     <div class="container">
         <h1>cfgd Fleet Events <span id="sse-badge" class="live-badge disconnected">connecting</span></h1>
-        <p class="subtitle">Unified timeline of check-ins, config changes, and drift events</p>
+        <p class="subtitle">Unified timeline of check-ins, config changes, and system settings drift</p>
         <div class="nav">
             <a href="/">Devices</a>
             <a href="/events" class="active">Events</a>
@@ -752,7 +752,7 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
                     <option value="all">All</option>
                     <option value="checkin">Check-in</option>
                     <option value="config-changed">Config Changed</option>
-                    <option value="drift">Drift</option>
+                    <option value="drift">System Settings Drift</option>
                 </select>
             </label>
             <button class="btn" onclick="clearFleetFilters()">Clear</button>

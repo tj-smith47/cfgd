@@ -95,50 +95,53 @@ pub fn cmd_image_pack(
         base: base.map(|s| s.to_string()),
     };
 
-    printer.heading("Pack Image");
     let mut header = vec![
         ("Directory".to_string(), dir.posix().to_string()),
         ("Artifact".to_string(), artifact.to_string()),
     ];
+    // `Base` earns its row: nothing else in the block reports it. `Platform`
+    // does not — the settled row's detail carries the resolved value
+    // unconditionally, and `resolve_platform` is the flag or this host, so a
+    // row keyed on the flag could only ever restate the parenthetical.
     if let Some(b) = base {
         header.push(("Base".to_string(), b.to_string()));
     }
-    if let Some(p) = platform {
-        header.push(("Platform".to_string(), p.to_string()));
-    }
-    printer.kv_block(header);
 
-    let PackOutcome {
-        digest,
-        platform: platform_str,
-    } = cfgd_core::oci::pack_image(dir, artifact, &pack_opts, Some(printer)).map_err(|e| {
-        crate::cli::cli_error(
-            artifact,
-            "pack_failed",
-            cfgd_core::output::collapse_to_subject_line(&e),
-            serde_json::json!({ "artifact": artifact, "dir": dir.posix().to_string() }),
-        )
-    })?;
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being packed, the pack verdict (carrying the digest as its
+    // detail), the lockfile write and the signing verdict. A second section named `Pack` under a `Pack
+    // Image` title spends the word twice on one screen for two different
+    // things.
+    let (digest, platform_str, signed, attestation_attached) = {
+        let pack_sec = printer.section("Pack Image");
+        let _inherit = printer.depth_inheritance();
+        pack_sec.kv_block(header);
+        let PackOutcome {
+            digest,
+            platform: platform_str,
+        } = cfgd_core::oci::pack_image(dir, artifact, &pack_opts, Some(printer)).map_err(|e| {
+            crate::cli::cli_error(
+                artifact,
+                "pack_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "dir": dir.posix().to_string() }),
+            )
+        })?;
+        if let Some(lock_path) = lock {
+            let entry = cfgd_core::config::ImageLockEntry {
+                reference: artifact.to_string(),
+                digest: digest.clone(),
+                pinned: crate::cli::image::lockfile::pinned_reference(artifact, &digest)?,
+                locked_at: cfgd_core::utc_now_iso8601(),
+            };
+            crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
+            pack_sec.status_simple(Role::Ok, format!("Locked digest in {lock_path}"));
+        }
 
-    printer.kv("Digest", &digest);
-
-    let crate::cli::helpers::SignAttestOutcome {
-        signed,
-        attested: attestation_attached,
-    } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
-
-    if let Some(lock_path) = lock {
-        let entry = cfgd_core::config::ImageLockEntry {
-            reference: artifact.to_string(),
-            digest: digest.clone(),
-            pinned: crate::cli::image::lockfile::pinned_reference(artifact, &digest)?,
-            locked_at: cfgd_core::utc_now_iso8601(),
-        };
-        crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
-        printer.kv("Locked", lock_path);
-    }
-
-    printer.status_simple(Role::Ok, format!("Packed and pushed {artifact}"));
+        let crate::cli::helpers::SignAttestOutcome { signed, attested } =
+            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+        (digest, platform_str, signed, attested)
+    };
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "artifact": artifact,
@@ -527,7 +530,7 @@ mod tests {
 
         // Stand up a mock OCI registry that accepts the two blob uploads and
         // returns 201 on the manifest PUT, so the pack happy path completes and
-        // we reach the sign/attest + doc-emit stage.
+        // reaches the sign/attest + doc-emit stage.
         fn mock_pack_registry() -> (mockito::ServerGuard, String) {
             let mut server = mockito::Server::new();
             let registry = server.url().trim_start_matches("http://").to_string();

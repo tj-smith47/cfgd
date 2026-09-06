@@ -10,8 +10,9 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
-    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    partition_already_installed, pip_user_scripts_dir, pkg_run, planned_method_failed,
+    planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    run_pkg_query, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct PipxManager;
@@ -95,12 +96,20 @@ impl PackageManager for PipxManager {
         "pipx"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(pipx_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         pipx_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
-        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+        match detect_brew_system_method(PIPX_FALLBACK_METHOD, delivered) {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
             // The tool the pip arm would run: whichever is present, else the
@@ -126,7 +135,7 @@ impl PackageManager for PipxManager {
         // which has no decision to read and resolves the cascade as before.
         let method = cx
             .planned_method()
-            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD));
+            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD, &|_| false));
         match method {
             "pip" => pipx_pip_scripts_dir()
                 .into_iter()
@@ -162,7 +171,7 @@ impl PackageManager for PipxManager {
                 Some(method) => planned_method_unavailable("pipx", method),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
-                    message: "no installation method available".into(),
+                    message: "no method available to install pipx".into(),
                 },
             }
             .into());
@@ -209,7 +218,11 @@ impl PackageManager for PipxManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        for pkg in packages {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        for pkg in &fresh {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
                 cx,
@@ -219,6 +232,11 @@ impl PackageManager for PipxManager {
                 "install",
             )?;
         }
+        upgrade_each(cx, "pipx", &held, "pipx upgrade", |pkg| {
+            let mut cmd = pipx_cmd();
+            cmd.args(["upgrade", pkg]);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -243,13 +261,7 @@ impl PackageManager for PipxManager {
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // Query PyPI JSON API: https://pypi.org/pypi/<pkg>/json → .info.version
         let url = format!("https://pypi.org/pypi/{}/json", package);
-        let output = Command::new("curl")
-            .args(["-fsSL", &url])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "pipx".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query("pipx", Command::new("curl").args(["-fsSL", &url]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -315,7 +327,7 @@ pub(super) fn parse_pipx_list_versions(
             let version = info
                 .pointer("/metadata/main_package/package_version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
                 .to_string();
             packages.push(cfgd_core::providers::PackageInfo {
                 name: name.clone(),
@@ -330,6 +342,7 @@ pub(super) fn parse_pipx_list_versions(
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::super::shared::brew_available;
     use super::*;
@@ -743,7 +756,10 @@ mod tests {
             PipxManager
                 .install(&["black".into(), "ruff".into()], &cx)
                 .expect("Ok");
-            assert_eq!(s.invocation_count(), 2, "one pipx invocation per pkg");
+            // One listing (which packages does pipx already hold, so a held
+            // one is raised rather than re-installed) plus one install per
+            // package.
+            assert_eq!(s.invocation_count(), 3, "one pipx invocation per pkg");
             let argv = s.argv_log();
             assert!(argv.contains("install black"));
             assert!(argv.contains("install ruff"));

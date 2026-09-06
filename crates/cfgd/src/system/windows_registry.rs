@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::collections::HashMap;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Role;
@@ -6,6 +6,78 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::{diff_yaml_mapping, parse_reg_line, yaml_value_with_numeric_bools};
+
+/// One registry key's values, as one `reg query <key>` dump answers for them.
+///
+/// The dump prints every value under the key with its NAME, its TYPE and its
+/// DATA on one line, which is both questions cfgd asks — what is the value, and
+/// what type is it — so a key of twenty values is one spawn rather than the
+/// forty it used to be (`reg query … /v <name>` once for the value and again
+/// for the type, per value). Subkeys appear as full `HKEY_…` paths and are
+/// skipped by [`parse_reg_line`], so a subkey can never answer for a value.
+#[derive(Default)]
+pub(super) struct RegKeySnapshot {
+    values: HashMap<String, RegValue>,
+}
+
+struct RegValue {
+    reg_type: String,
+    data: String,
+}
+
+impl RegKeySnapshot {
+    /// Read one registry key. Empty on non-Windows and for a key that does not
+    /// exist — the same "not present" every lookup answered before.
+    ///
+    /// The seam is the one exception to the platform gate: a host with no
+    /// registry has nothing to ask, but a `reg` STANDING IN for one is exactly
+    /// how the spawn count is proven off Windows, where the suite runs.
+    fn read(key_path: &str) -> Self {
+        if !cfg!(windows) && std::env::var(cfgd_core::REG_BIN_ENV).is_err() {
+            return Self::default();
+        }
+        let mut cmd = cfgd_core::reg_cmd();
+        cmd.args(["query", key_path]);
+        match cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT) {
+            Ok(output) if output.status.success() => {
+                Self::parse(&String::from_utf8_lossy(&output.stdout))
+            }
+            _ => Self::default(),
+        }
+    }
+
+    pub(super) fn parse(dump: &str) -> Self {
+        let mut values = HashMap::new();
+        for line in dump.lines() {
+            if let Some((name, reg_type, data)) = parse_reg_line(line) {
+                values.entry(name.to_string()).or_insert(RegValue {
+                    reg_type: reg_type.to_string(),
+                    data: data.to_string(),
+                });
+            }
+        }
+        Self { values }
+    }
+
+    /// The value's data as cfgd compares it: a `REG_DWORD` in decimal, anything
+    /// else verbatim. `None` when the key carries no value of that name.
+    pub(super) fn value(&self, value_name: &str) -> Option<String> {
+        let entry = self.values.get(value_name)?;
+        if entry.reg_type == "REG_DWORD"
+            && let Some(hex) = entry.data.strip_prefix("0x")
+            && let Ok(n) = u32::from_str_radix(hex, 16)
+        {
+            return Some(n.to_string());
+        }
+        Some(entry.data.clone())
+    }
+
+    /// The value's registry type, for the write path's `REG_EXPAND_SZ`
+    /// preservation.
+    pub(super) fn reg_type(&self, value_name: &str) -> Option<&str> {
+        self.values.get(value_name).map(|v| v.reg_type.as_str())
+    }
+}
 
 /// WindowsRegistryConfigurator — reads/writes Windows registry settings.
 ///
@@ -25,66 +97,24 @@ use super::{diff_yaml_mapping, parse_reg_line, yaml_value_with_numeric_bools};
 pub struct WindowsRegistryConfigurator;
 
 impl WindowsRegistryConfigurator {
-    /// Parse a registry path into (hive, subpath).
-    /// Read a single registry value using `reg query`.
-    /// Returns `None` on non-Windows or if the value does not exist.
-    fn read_reg_value(key_path: &str, value_name: &str) -> Option<String> {
-        if !cfg!(windows) {
-            return None;
-        }
-        let output = Command::new("reg")
-            .args(["query", key_path, "/v", value_name])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Self::parse_reg_value_output(&stdout, value_name)
-    }
-
-    /// Read the registry type of an existing value.
-    fn read_reg_type(key_path: &str, value_name: &str) -> Option<String> {
-        if !cfg!(windows) {
-            return None;
-        }
-        let output = Command::new("reg")
-            .args(["query", key_path, "/v", value_name])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some((_, reg_type, _)) = parse_reg_line(line)
-                && line.contains(value_name)
-            {
-                return Some(reg_type.to_string());
-            }
-        }
-        None
-    }
-
     /// Write a registry value using `reg add`.
-    /// Preserves REG_EXPAND_SZ if the existing value has that type, detects
-    /// `%VAR%` patterns, and infers REG_DWORD for numeric values.
+    ///
+    /// `snapshot` is the key's pre-write state, read once for the whole key:
+    /// the existing type is what decides whether an existing `REG_EXPAND_SZ`
+    /// keeps its type. Falls back to `%VAR%` detection and numeric inference
+    /// for a value the key does not carry yet.
     fn write_reg_value(
         key_path: &str,
         value_name: &str,
         value: &str,
+        snapshot: &RegKeySnapshot,
         cx: &SystemContext<'_>,
     ) -> Result<()> {
         if !cfg!(windows) {
             return Ok(());
         }
 
-        // Check existing type to preserve REG_EXPAND_SZ
-        let existing_type = Self::read_reg_type(key_path, value_name);
-
-        let reg_type = if let Some(ref t) = existing_type
-            && t == "REG_EXPAND_SZ"
-        {
+        let reg_type = if snapshot.reg_type(value_name) == Some("REG_EXPAND_SZ") {
             "REG_EXPAND_SZ"
         } else if value.contains('%') && value.matches('%').count() >= 2 {
             // Looks like it contains %VAR% patterns
@@ -95,7 +125,7 @@ impl WindowsRegistryConfigurator {
             "REG_SZ"
         };
 
-        let output = Command::new("reg")
+        let output = cfgd_core::reg_cmd()
             .args([
                 "add", key_path, "/v", value_name, "/t", reg_type, "/d", value, "/f",
             ])
@@ -114,28 +144,6 @@ impl WindowsRegistryConfigurator {
             );
         }
         Ok(())
-    }
-
-    /// Parse `reg query` output for a single value.
-    ///
-    /// Input lines look like: `"    ValueName    REG_DWORD    0x0"`
-    /// For DWORD values, converts hex (`0x...`) to decimal string for comparison.
-    fn parse_reg_value_output(output: &str, value_name: &str) -> Option<String> {
-        for line in output.lines() {
-            if let Some((name, reg_type, raw_value)) = parse_reg_line(line)
-                && name == value_name
-            {
-                // Convert DWORD hex to decimal for comparison
-                if reg_type == "REG_DWORD"
-                    && let Some(hex_str) = raw_value.strip_prefix("0x")
-                    && let Ok(n) = u32::from_str_radix(hex_str, 16)
-                {
-                    return Some(n.to_string());
-                }
-                return Some(raw_value.to_string());
-            }
-        }
-        None
     }
 }
 
@@ -165,14 +173,18 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 None => continue,
             };
             let values = match values_val.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                // A key declaring no values has nothing to compare, so querying
+                // it is a spawn whose answer is discarded.
+                Some(m) if !m.is_empty() => m,
+                _ => continue,
             };
+            // One `reg query <key>` for the whole key, instead of one per value.
+            let snapshot = RegKeySnapshot::read(key_path);
             drifts.extend(diff_yaml_mapping(
                 values,
                 key_path,
                 yaml_value_with_numeric_bools,
-                |value_name| Self::read_reg_value(key_path, value_name).unwrap_or_default(),
+                |value_name| snapshot.value(value_name).unwrap_or_default(),
             ));
         }
 
@@ -191,18 +203,23 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 None => continue,
             };
             let values = match values_val.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                // Nothing to write, so nothing to read the existing types for.
+                Some(m) if !m.is_empty() => m,
+                _ => continue,
             };
+            // The key's state BEFORE this run's writes — one spawn for the
+            // whole key, and the only thing read from it is each value's
+            // existing type, which cfgd's own `reg add` is what would change.
+            let snapshot = RegKeySnapshot::read(key_path);
             for (name_val, desired_val) in values {
                 let name = match name_val.as_str() {
                     Some(n) => n,
                     None => continue,
                 };
                 let desired_str = yaml_value_with_numeric_bools(desired_val);
-                Self::write_reg_value(key_path, name, &desired_str, cx)?;
+                Self::write_reg_value(key_path, name, &desired_str, &snapshot, cx)?;
                 cx.report(
-                    Role::Ok,
+                    Role::Info,
                     format!("Set {}\\{} = {}", key_path, name, desired_str),
                 );
             }
@@ -216,13 +233,196 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
 mod tests {
     use super::*;
 
+    /// A verbatim `reg query HKCU\Software\cfgd-qp5` dump, captured on
+    /// Windows 10.0.26100 (the winserver VM) from a key seeded with one value
+    /// of every shape this configurator has to answer for: a plain string, one
+    /// carrying spaces, two DWORDs, a `REG_EXPAND_SZ`, an empty string, the
+    /// key's `(Default)` value, and a subkey line.
+    ///
+    /// It is the whole point of the bulk read: every NAME, TYPE and DATA cfgd
+    /// asks about is in this one dump, where it used to cost two `reg query
+    /// … /v <name>` spawns per value.
+    const REG_QUERY_DUMP: &str = "\r\n\
+        HKEY_CURRENT_USER\\Software\\cfgd-qp5\r\n\
+        \x20   PlainSz    REG_SZ    hello\r\n\
+        \x20   SpacedSz    REG_SZ    hello world\r\n\
+        \x20   NumDword    REG_DWORD    0x2a\r\n\
+        \x20   ZeroDword    REG_DWORD    0x0\r\n\
+        \x20   ExpandSz    REG_EXPAND_SZ    %SystemRoot%\\system32\r\n\
+        \x20   EmptySz    REG_SZ    \r\n\
+        \x20   (Default)    REG_SZ    defaultval\r\n\
+        \r\n\
+        HKEY_CURRENT_USER\\Software\\cfgd-qp5\\Child\r\n";
+
+    #[test]
+    fn snapshot_answers_every_value_and_type_from_one_real_dump() {
+        let snapshot = RegKeySnapshot::parse(REG_QUERY_DUMP);
+
+        assert_eq!(snapshot.value("PlainSz").as_deref(), Some("hello"));
+        assert_eq!(snapshot.value("SpacedSz").as_deref(), Some("hello world"));
+        // A DWORD is compared in decimal, the spelling a declared `42` has.
+        assert_eq!(snapshot.value("NumDword").as_deref(), Some("42"));
+        assert_eq!(snapshot.value("ZeroDword").as_deref(), Some("0"));
+        assert_eq!(
+            snapshot.value("ExpandSz").as_deref(),
+            Some(r"%SystemRoot%\system32")
+        );
+        assert_eq!(snapshot.value("(Default)").as_deref(), Some("defaultval"));
+        // `reg query` pads an empty value with the separator and nothing else,
+        // which the per-value read rendered as the empty string too.
+        assert_eq!(snapshot.value("EmptySz"), None);
+        assert_eq!(snapshot.value("NoSuchValue"), None);
+
+        // The type half of the dump — the second `reg query` per value this
+        // change deletes. It is what keeps an existing REG_EXPAND_SZ from
+        // being rewritten as a REG_SZ.
+        assert_eq!(snapshot.reg_type("ExpandSz"), Some("REG_EXPAND_SZ"));
+        assert_eq!(snapshot.reg_type("NumDword"), Some("REG_DWORD"));
+        assert_eq!(snapshot.reg_type("PlainSz"), Some("REG_SZ"));
+        assert_eq!(snapshot.reg_type("NoSuchValue"), None);
+    }
+
+    #[test]
+    fn snapshot_never_answers_a_value_question_with_a_subkey() {
+        // The dump's last line names a SUBKEY, not a value. A type lookup once
+        // scanned for any line merely CONTAINING the name, so a name appearing
+        // in a subkey path (or in another value's data) could answer for it.
+        let snapshot = RegKeySnapshot::parse(REG_QUERY_DUMP);
+        assert_eq!(snapshot.value("Child"), None);
+        assert_eq!(snapshot.reg_type("Child"), None);
+    }
+
+    #[test]
+    fn snapshot_of_a_missing_key_answers_nothing() {
+        // `reg query` on a key that does not exist writes its error to stderr
+        // and exits 1, which `RegKeySnapshot::read` turns into an empty
+        // snapshot — the same "" every per-value read produced.
+        let snapshot = RegKeySnapshot::parse("");
+        assert_eq!(snapshot.value("PlainSz"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn registry_diff_queries_a_key_once_however_many_values_it_declares() {
+        // The seam stands in for `reg.exe`, which is what lets the spawn count
+        // be proven off Windows. The dump it answers with is the captured one.
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            cfgd_core::REG_BIN_ENV,
+            0,
+            REG_QUERY_DUMP,
+            "",
+        );
+        let mut values = serde_yaml::Mapping::new();
+        for (name, desired) in [
+            ("PlainSz", "hello"),
+            ("SpacedSz", "hello world"),
+            ("NumDword", "42"),
+            ("ExpandSz", "elsewhere"),
+        ] {
+            values.insert(
+                serde_yaml::Value::String(name.into()),
+                serde_yaml::Value::String(desired.into()),
+            );
+        }
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\cfgd-qp5".into()),
+            serde_yaml::Value::Mapping(values),
+        );
+
+        let drifts = WindowsRegistryConfigurator
+            .diff(&serde_yaml::Value::Mapping(outer))
+            .unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("cfgd-qp5"),
+            vec![r"query HKCU\Software\cfgd-qp5"],
+            "one query answers every value, and its type with it"
+        );
+        assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+        assert_eq!(drifts[0].key, r"HKCU\Software\cfgd-qp5.ExpandSz");
+        assert_eq!(drifts[0].actual, r"%SystemRoot%\system32");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn registry_apply_queries_each_key_once_before_writing_it() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            cfgd_core::REG_BIN_ENV,
+            0,
+            REG_QUERY_DUMP,
+            "",
+        );
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
+        let mut values = serde_yaml::Mapping::new();
+        values.insert(
+            serde_yaml::Value::String("PlainSz".into()),
+            serde_yaml::Value::String("hello".into()),
+        );
+        values.insert(
+            serde_yaml::Value::String("ExpandSz".into()),
+            serde_yaml::Value::String("elsewhere".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\cfgd-qp5".into()),
+            serde_yaml::Value::Mapping(values),
+        );
+
+        WindowsRegistryConfigurator
+            .apply(
+                &serde_yaml::Value::Mapping(outer),
+                &cfgd_core::providers::SystemContext::new(&printer),
+            )
+            .unwrap();
+
+        // The writes themselves are `cfg(windows)`-gated, so off Windows the
+        // query is the only spawn — and it is the one the per-value type read
+        // used to repeat.
+        assert_eq!(
+            shim.argv_lines_naming("cfgd-qp5"),
+            vec![r"query HKCU\Software\cfgd-qp5"],
+            "the pre-write state is read once for the whole key"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn registry_diff_of_a_key_declaring_no_values_queries_nothing() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            cfgd_core::REG_BIN_ENV,
+            0,
+            REG_QUERY_DUMP,
+            "",
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\cfgd-qp5-empty".into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+
+        let drifts = WindowsRegistryConfigurator
+            .diff(&serde_yaml::Value::Mapping(outer))
+            .unwrap();
+
+        assert!(drifts.is_empty());
+        assert!(
+            shim.argv_lines_naming("cfgd-qp5-empty").is_empty(),
+            "a key declaring no values is never queried: {}",
+            shim.argv_log()
+        );
+    }
+
     #[test]
     fn registry_parse_reg_value_dword() {
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           HideFileExt    REG_DWORD    0x0\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "HideFileExt"),
+            RegKeySnapshot::parse(output).value("HideFileExt"),
             Some("0".to_string())
         );
     }
@@ -233,7 +433,7 @@ mod tests {
                       \n\
                           ShowHidden    REG_DWORD    0x1\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "ShowHidden"),
+            RegKeySnapshot::parse(output).value("ShowHidden"),
             Some("1".to_string())
         );
     }
@@ -244,7 +444,7 @@ mod tests {
                       \n\
                           Timeout    REG_DWORD    0xff\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Timeout"),
+            RegKeySnapshot::parse(output).value("Timeout"),
             Some("255".to_string())
         );
     }
@@ -255,7 +455,7 @@ mod tests {
                       \n\
                           Theme    REG_SZ    dark\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Theme"),
+            RegKeySnapshot::parse(output).value("Theme"),
             Some("dark".to_string())
         );
     }
@@ -263,10 +463,7 @@ mod tests {
     #[test]
     fn registry_parse_reg_value_missing() {
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\n";
-        assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Missing"),
-            None
-        );
+        assert_eq!(RegKeySnapshot::parse(output).value("Missing"), None);
     }
 
     #[test]
@@ -274,18 +471,12 @@ mod tests {
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           OtherValue    REG_SZ    hello\n";
-        assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Missing"),
-            None
-        );
+        assert_eq!(RegKeySnapshot::parse(output).value("Missing"), None);
     }
 
     #[test]
     fn registry_parse_reg_value_empty_input() {
-        assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output("", "Anything"),
-            None
-        );
+        assert_eq!(RegKeySnapshot::parse("").value("Anything"), None);
     }
 
     #[test]
@@ -324,7 +515,7 @@ mod tests {
                       \n\
                           Path    REG_EXPAND_SZ    %SystemRoot%\\system32\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Path"),
+            RegKeySnapshot::parse(output).value("Path"),
             Some(r"%SystemRoot%\system32".to_string())
         );
     }
@@ -334,7 +525,7 @@ mod tests {
         // Verify proper hex parsing with leading zeros
         let output = "    Count    REG_DWORD    0x00000010\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Count"),
+            RegKeySnapshot::parse(output).value("Count"),
             Some("16".to_string())
         );
     }
@@ -347,11 +538,11 @@ mod tests {
                           Beta    REG_SZ    two\n\
                           Gamma    REG_DWORD    0xa\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Beta"),
+            RegKeySnapshot::parse(output).value("Beta"),
             Some("two".to_string())
         );
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Gamma"),
+            RegKeySnapshot::parse(output).value("Gamma"),
             Some("10".to_string())
         );
     }
@@ -398,7 +589,7 @@ mod tests {
     fn parse_reg_value_output_dword_max_value() {
         let output = "    MaxVal    REG_DWORD    0xffffffff\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "MaxVal"),
+            RegKeySnapshot::parse(output).value("MaxVal"),
             Some("4294967295".to_string()),
         );
     }
@@ -529,7 +720,7 @@ mod tests {
     fn parse_reg_value_output_sz_with_spaces() {
         let output = "    Description    REG_SZ    A long description with spaces\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Description"),
+            RegKeySnapshot::parse(output).value("Description"),
             Some("A long description with spaces".to_string()),
         );
     }
@@ -541,7 +732,7 @@ mod tests {
     Dup    REG_SZ    first\n\
     Dup    REG_SZ    second\n";
         assert_eq!(
-            WindowsRegistryConfigurator::parse_reg_value_output(output, "Dup"),
+            RegKeySnapshot::parse(output).value("Dup"),
             Some("first".to_string()),
         );
     }
@@ -551,7 +742,7 @@ mod tests {
         // If the hex string after 0x is not valid, from_str_radix fails,
         // so it falls through to return the raw value
         let output = "    BadHex    REG_DWORD    0xZZZZ\n";
-        let result = WindowsRegistryConfigurator::parse_reg_value_output(output, "BadHex");
+        let result = RegKeySnapshot::parse(output).value("BadHex");
         // The DWORD hex parse fails, so the raw value "0xZZZZ" is returned
         assert_eq!(result, Some("0xZZZZ".to_string()));
     }
@@ -560,7 +751,7 @@ mod tests {
     fn registry_parse_reg_value_dword_no_0x_prefix() {
         // DWORD without 0x prefix — strip_prefix returns None, falls to raw return
         let output = "    PlainDword    REG_DWORD    42\n";
-        let result = WindowsRegistryConfigurator::parse_reg_value_output(output, "PlainDword");
+        let result = RegKeySnapshot::parse(output).value("PlainDword");
         assert_eq!(result, Some("42".to_string()));
     }
 
@@ -637,25 +828,19 @@ mod tests {
             r"HKCU\Test",
             "TestValue",
             "42",
+            &RegKeySnapshot::default(),
             &cfgd_core::providers::SystemContext::new(&printer),
         )
         .unwrap();
     }
 
     #[test]
-    fn registry_read_reg_value_returns_none_on_non_windows() {
-        assert_eq!(
-            WindowsRegistryConfigurator::read_reg_value(r"HKCU\Test", "Key"),
-            None
-        );
-    }
-
-    #[test]
-    fn registry_read_reg_type_returns_none_on_non_windows() {
-        assert_eq!(
-            WindowsRegistryConfigurator::read_reg_type(r"HKCU\Test", "Key"),
-            None
-        );
+    fn registry_snapshot_read_is_empty_on_non_windows() {
+        // Off Windows there is no registry to read, and an empty snapshot is
+        // what every lookup answered "not present" from before.
+        let snapshot = RegKeySnapshot::read(r"HKCU\Test");
+        assert_eq!(snapshot.value("Key"), None);
+        assert_eq!(snapshot.reg_type("Key"), None);
     }
 
     // Cross-platform on purpose: `apply()`'s narration is unconditional and

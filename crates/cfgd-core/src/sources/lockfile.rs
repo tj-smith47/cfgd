@@ -13,6 +13,7 @@ const LOCKFILE_NAME: &str = "sources.lock";
 /// Returns an empty lockfile if the file does not exist.
 pub fn load_sources_lockfile(config_dir: &Path) -> Result<SourcesLockfile> {
     let path = config_dir.join(LOCKFILE_NAME);
+    crate::record_config_input(&path);
     if !path.exists() {
         return Ok(SourcesLockfile::default());
     }

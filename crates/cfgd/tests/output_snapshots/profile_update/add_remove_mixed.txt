@@ -4,4 +4,6 @@ Update Profile: default
 ⚠ Module 'missing' not found in profile
 ✓ Removed env: EDITOR
 
-✓ Updated profile 'default' (2 changes)
+✓ 2 changes written
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

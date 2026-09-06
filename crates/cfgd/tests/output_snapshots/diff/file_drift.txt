@@ -2,16 +2,11 @@ Diff
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-Phase: Files
+Files
   profile:tiny
-    ⊙ <TARGET> (new file)
-hello world
-  ⚠ File drift detected
+    ◉ <TARGET> (new file)
+    hello world
 
-Phase: Packages
-  ✓ No package drift
+⚠ Drift detected — 1 file (packages, shell, system clean)
 
-Phase: System
-  ✓ No system drift
-
-⚠ Drift detected
+→ Run `cfgd apply` to reconcile

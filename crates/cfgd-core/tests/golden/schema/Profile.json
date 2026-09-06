@@ -4,9 +4,11 @@
   "definitions": {
     "AptSpec": {
       "additionalProperties": false,
+      "description": "The object form of `apt`: a package list, a file listing packages, or both. A bare list of names folds into `packages`.",
       "properties": {
         "file": {
           "default": null,
+          "description": "Path to a package-list file to install from, one name per line.",
           "type": [
             "string",
             "null"
@@ -14,6 +16,7 @@
         },
         "packages": {
           "default": [],
+          "description": "APT package names to install.",
           "items": {
             "type": "string"
           },
@@ -85,9 +88,11 @@
     },
     "BrewSpec": {
       "additionalProperties": false,
+      "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
       "properties": {
         "casks": {
           "default": [],
+          "description": "Homebrew casks (GUI applications) to install.",
           "items": {
             "type": "string"
           },
@@ -95,6 +100,7 @@
         },
         "file": {
           "default": null,
+          "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
           "type": [
             "string",
             "null"
@@ -102,6 +108,7 @@
         },
         "formulae": {
           "default": [],
+          "description": "Homebrew formulae (CLI packages) to install.",
           "items": {
             "type": "string"
           },
@@ -109,6 +116,7 @@
         },
         "taps": {
           "default": [],
+          "description": "Third-party taps to add before installing formulae/casks.",
           "items": {
             "type": "string"
           },
@@ -119,9 +127,10 @@
     },
     "CargoSpec": {
       "additionalProperties": false,
-      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+      "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
       "properties": {
         "file": {
+          "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
           "type": [
             "string",
             "null"
@@ -129,6 +138,7 @@
         },
         "packages": {
           "default": [],
+          "description": "Crate names to install (`cargo install`).",
           "items": {
             "type": "string"
           },
@@ -139,31 +149,39 @@
     },
     "CustomManagerSpec": {
       "additionalProperties": false,
+      "description": "A user-defined package manager under `spec.packages.custom[]`, driven entirely by shell commands. ```yaml custom: - name: asdf check: \"command -v asdf\" listInstalled: \"asdf list\" install: \"asdf install {package}\" uninstall: \"asdf uninstall {package}\" packages: [nodejs] ```",
       "properties": {
         "check": {
+          "description": "Command that exits zero when this manager is available on the machine.",
           "type": "string"
         },
         "install": {
+          "description": "Command template to install a package; `{package}` is substituted.",
           "type": "string"
         },
         "listInstalled": {
+          "description": "Command whose stdout lists installed package names, one per line.",
           "type": "string"
         },
         "name": {
+          "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
           "type": "string"
         },
         "packages": {
           "default": [],
+          "description": "Package names to install with this manager.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "uninstall": {
+          "description": "Command template to uninstall a package; `{package}` is substituted.",
           "type": "string"
         },
         "update": {
           "default": null,
+          "description": "Command to refresh the manager's own package index/cache before installs.",
           "type": [
             "string",
             "null"
@@ -234,11 +252,21 @@
       ]
     },
     "EnvVar": {
+      "description": "A single `NAME=VALUE` environment variable entry.",
       "properties": {
         "name": {
+          "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
           "type": "string"
         },
+        "platforms": {
+          "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "value": {
+          "description": "Value assigned to the variable, exported verbatim into the shell environment.",
           "type": "string"
         }
       },
@@ -280,9 +308,11 @@
     },
     "FilesSpec": {
       "additionalProperties": false,
+      "description": "`spec.files`: files this profile deploys and their permission overrides. ```yaml files: managed: - source: files/gitconfig target: ~/.gitconfig permissions: ~/.ssh/id_ed25519: \"0600\" ```",
       "properties": {
         "managed": {
           "default": [],
+          "description": "Files this profile deploys, each pairing a source in the config directory with a target on the machine. Empty, no files are managed.",
           "items": {
             "$ref": "#/definitions/ManagedFileSpec"
           },
@@ -293,6 +323,7 @@
             "type": "string"
           },
           "default": {},
+          "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after deployment.",
           "type": "object"
         }
       },
@@ -300,9 +331,11 @@
     },
     "FlatpakSpec": {
       "additionalProperties": false,
+      "description": "The object form of `flatpak`: application ids and the remote to install them from. A bare list of ids folds into `packages`.",
       "properties": {
         "packages": {
           "default": [],
+          "description": "Flatpak application ids to install.",
           "items": {
             "type": "string"
           },
@@ -310,6 +343,7 @@
         },
         "remote": {
           "default": null,
+          "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
           "type": [
             "string",
             "null"
@@ -320,6 +354,7 @@
     },
     "ManagedFileSpec": {
       "additionalProperties": false,
+      "description": "One entry of `spec.files.managed[]`: a file this profile deploys. ```yaml files: managed: - source: files/gitconfig target: ~/.gitconfig permissions: \"644\" ```",
       "properties": {
         "encryption": {
           "anyOf": [
@@ -341,7 +376,7 @@
               "type": "null"
             }
           ],
-          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema)."
+          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise."
         },
         "permissions": {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -356,7 +391,7 @@
         },
         "source": {
           "default": "",
-          "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+          "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
           "type": "string"
         },
         "strategy": {
@@ -368,9 +403,10 @@
               "type": "null"
             }
           ],
-          "description": "Per-file deployment strategy override. If None, uses the global default."
+          "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies."
         },
         "target": {
+          "description": "Destination path on the machine. A leading `~` expands to the home directory.",
           "type": "string"
         }
       },
@@ -381,9 +417,11 @@
     },
     "NpmSpec": {
       "additionalProperties": false,
+      "description": "The object form of `npm`: global packages, a `package.json` to install from, or both. A bare list of names folds into `global`.",
       "properties": {
         "file": {
           "default": null,
+          "description": "Path to a `package.json` to install dependencies from.",
           "type": [
             "string",
             "null"
@@ -391,6 +429,22 @@
         },
         "global": {
           "default": [],
+          "description": "Package names to install globally (`npm install -g`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PackageListSpec": {
+      "additionalProperties": false,
+      "description": "The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same list under a `packages` key.",
+      "properties": {
+        "packages": {
+          "default": [],
+          "description": "Package names.",
           "items": {
             "type": "string"
           },
@@ -401,16 +455,36 @@
     },
     "PackagesSpec": {
       "additionalProperties": false,
+      "description": "`spec.packages`: packages to install, grouped by package manager. Every manager field accepts either a bare list of names or (for the managers with options of their own) a mapping: ```yaml packages: brew: formulae: [ripgrep, fzf] casks: [alacritty] apt: [curl, git] cargo: [ripgrep] ```",
       "properties": {
         "apk": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "APK packages (Alpine)."
         },
         "apt": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/AptSpec"
             },
@@ -418,10 +492,18 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "APT packages (Debian/Ubuntu)."
         },
         "brew": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/BrewSpec"
             },
@@ -429,10 +511,18 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Homebrew packages (macOS/Linux)."
         },
         "cargo": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/CargoSpec"
             },
@@ -440,31 +530,64 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Cargo packages (`cargo install`)."
         },
         "chocolatey": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Chocolatey packages (Windows)."
         },
         "custom": {
           "default": [],
+          "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
           "items": {
             "$ref": "#/definitions/CustomManagerSpec"
           },
           "type": "array"
         },
         "dnf": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "DNF packages (Fedora/RHEL)."
         },
         "flatpak": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/FlatpakSpec"
             },
@@ -472,24 +595,56 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Flatpak packages (Linux)."
         },
         "go": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Go packages (`go install`)."
         },
         "nix": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Nix packages (`nix-env` / `nix profile`)."
         },
         "npm": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/NpmSpec"
             },
@@ -497,38 +652,94 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "npm global packages."
         },
         "pacman": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Pacman packages (Arch)."
         },
         "pipx": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "pipx-installed Python applications."
         },
         "pkg": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "pkg packages (FreeBSD)."
         },
         "scoop": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Scoop packages (Windows)."
         },
         "snap": {
           "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             {
               "$ref": "#/definitions/SnapSpec"
             },
@@ -536,28 +747,65 @@
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Snap packages (Linux)."
         },
         "winget": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Winget packages (Windows)."
         },
         "yum": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Yum packages (legacy RHEL/CentOS)."
         },
         "zypper": {
+          "anyOf": [
+            {
+              "description": "Package names, as a bare list.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/definitions/PackageListSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "description": "Zypper packages (openSUSE)."
         }
       },
       "type": "object"
@@ -582,7 +830,7 @@
         },
         {
           "const": "Toml",
-          "description": "TOML, edited via `toml_edit` to preserve comments and layout.",
+          "description": "TOML, edited in place to preserve comments and layout.",
           "type": "string"
         }
       ]
@@ -615,78 +863,88 @@
       },
       "type": "object"
     },
+    "ScriptCommand": {
+      "description": "The mapping form of a script entry: a command with a timeout, shell, guard condition or working directory.",
+      "properties": {
+        "continueOnError": {
+          "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "creates": {
+          "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idleTimeout": {
+          "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interactive": {
+          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+          "type": "boolean"
+        },
+        "onlyIf": {
+          "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "description": "The command or script body to run.",
+          "type": "string"
+        },
+        "shell": {
+          "$ref": "#/definitions/ScriptShell",
+          "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
+        },
+        "timeout": {
+          "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unless": {
+          "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workdir": {
+          "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
     "ScriptEntry": {
       "anyOf": [
         {
+          "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
           "type": "string"
         },
         {
-          "properties": {
-            "continueOnError": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "creates": {
-              "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "idleTimeout": {
-              "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "interactive": {
-              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
-              "type": "boolean"
-            },
-            "onlyIf": {
-              "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "run": {
-              "type": "string"
-            },
-            "shell": {
-              "$ref": "#/definitions/ScriptShell",
-              "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
-            },
-            "timeout": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "unless": {
-              "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "workdir": {
-              "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "run"
-          ],
-          "type": "object"
+          "$ref": "#/definitions/ScriptCommand",
+          "description": "The mapping form, carrying the body and its knobs."
         }
-      ]
+      ],
+      "description": "A lifecycle script entry: either a bare command string, or a mapping for one that needs a timeout, shell, or guard condition. ```yaml preApply: \"echo starting\" # or postApply: run: brew update timeout: 2m onlyIf: command -v brew ```"
     },
     "ScriptShell": {
       "description": "Interpreter for inline lifecycle scripts.",
@@ -710,9 +968,11 @@
     },
     "ScriptSpec": {
       "additionalProperties": false,
+      "description": "`spec.scripts`: lifecycle hooks run at specific points in the reconcile cycle. ```yaml scripts: preApply: \"echo starting apply\" postApply: - run: brew cleanup continueOnError: true onDrift: \"notify-send 'cfgd: drift detected'\" ```",
       "properties": {
         "onChange": {
           "default": [],
+          "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -720,6 +980,7 @@
         },
         "onDrift": {
           "default": [],
+          "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -727,6 +988,7 @@
         },
         "postApply": {
           "default": [],
+          "description": "Run once after every action in an apply completes.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -734,6 +996,7 @@
         },
         "postReconcile": {
           "default": [],
+          "description": "Run once after a daemon reconcile tick completes.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -741,6 +1004,7 @@
         },
         "preApply": {
           "default": [],
+          "description": "Run once before any action in an apply.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -748,6 +1012,7 @@
         },
         "preReconcile": {
           "default": [],
+          "description": "Run once before a daemon reconcile tick begins.",
           "items": {
             "$ref": "#/definitions/ScriptEntry"
           },
@@ -758,14 +1023,17 @@
     },
     "SecretSpec": {
       "additionalProperties": false,
+      "description": "One entry of `spec.secrets[]`: a secret resolved into a file, into environment variables, or both. At least one of `target` / `envs` must be set; an entry carrying both writes the file AND exports the variables from one resolution. ```yaml secrets: - source: op://Personal/GitHub/token envs: [GITHUB_TOKEN] - source: ssh_key target: ~/.ssh/id_ed25519 - source: vault://secret/data/api#key target: ~/.config/api-key envs: [API_KEY] ```",
       "properties": {
         "backend": {
+          "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
           "type": [
             "string",
             "null"
           ]
         },
         "envs": {
+          "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
           "items": {
             "type": "string"
           },
@@ -775,15 +1043,18 @@
           ]
         },
         "source": {
+          "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
           "type": "string"
         },
         "target": {
+          "description": "File path to write the decrypted secret to. May be combined with `envs`.",
           "type": [
             "string",
             "null"
           ]
         },
         "template": {
+          "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
           "type": [
             "string",
             "null"
@@ -796,12 +1067,22 @@
       "type": "object"
     },
     "ShellAlias": {
+      "description": "A single shell alias entry.",
       "properties": {
         "command": {
+          "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
           "type": "string"
         },
         "name": {
+          "description": "Alias name, as typed at the shell prompt.",
           "type": "string"
+        },
+        "platforms": {
+          "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -812,9 +1093,11 @@
     },
     "SnapSpec": {
       "additionalProperties": false,
+      "description": "The object form of `snap`: strict and classic-confinement snaps. A bare list of names folds into `packages`.",
       "properties": {
         "classic": {
           "default": [],
+          "description": "Snap names installed with `--classic` confinement.",
           "items": {
             "type": "string"
           },
@@ -822,6 +1105,7 @@
         },
         "packages": {
           "default": [],
+          "description": "Snap names installed with default (strict) confinement.",
           "items": {
             "type": "string"
           },
@@ -831,9 +1115,11 @@
       "type": "object"
     }
   },
+  "description": "`spec`: the declared surface of a profile.",
   "properties": {
     "aliases": {
       "default": [],
+      "description": "Shell aliases this profile sets.",
       "items": {
         "$ref": "#/definitions/ShellAlias"
       },
@@ -841,6 +1127,7 @@
     },
     "backups": {
       "default": [],
+      "description": "Declarative backup jobs this profile schedules.",
       "items": {
         "$ref": "#/definitions/BackupSpec"
       },
@@ -848,6 +1135,7 @@
     },
     "env": {
       "default": [],
+      "description": "Environment variables this profile sets.",
       "items": {
         "$ref": "#/definitions/EnvVar"
       },
@@ -862,7 +1150,7 @@
           "type": "null"
         }
       ],
-      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces."
+      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces."
     },
     "files": {
       "anyOf": [
@@ -873,10 +1161,12 @@
           "type": "null"
         }
       ],
-      "default": null
+      "default": null,
+      "description": "Files this profile deploys."
     },
     "inherits": {
       "default": [],
+      "description": "Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.",
       "items": {
         "type": "string"
       },
@@ -884,6 +1174,7 @@
     },
     "modules": {
       "default": [],
+      "description": "Names of modules this profile includes.",
       "items": {
         "type": "string"
       },
@@ -898,7 +1189,8 @@
           "type": "null"
         }
       ],
-      "default": null
+      "default": null,
+      "description": "Packages this profile installs, grouped by manager."
     },
     "scripts": {
       "anyOf": [
@@ -909,10 +1201,12 @@
           "type": "null"
         }
       ],
-      "default": null
+      "default": null,
+      "description": "Lifecycle scripts (`preApply`, `postApply`, …) this profile runs."
     },
     "secrets": {
       "default": [],
+      "description": "Secrets this profile resolves into files or environment variables.",
       "items": {
         "$ref": "#/definitions/SecretSpec"
       },
@@ -921,6 +1215,7 @@
     "system": {
       "additionalProperties": true,
       "default": {},
+      "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.",
       "type": "object"
     }
   },

@@ -23,8 +23,99 @@ pub(super) fn insert_system_facts(ctx: &mut Context) {
     ctx.insert("__hostname", &cfgd_core::hostname_string());
     ctx.insert(
         "__distro",
-        cfgd_core::platform::Platform::detect().distro.as_str(),
+        cfgd_core::platform::Platform::current().distro.as_str(),
     );
+}
+
+/// One Tera engine plus the bodies already registered in it.
+///
+/// `add_raw_template` re-runs `finalize_templates` over EVERY template the
+/// engine holds, so re-registering a body already in there costs a walk of the
+/// whole set — and a run renders the same file repeatedly (plan previews it,
+/// apply writes it, a diff shows it again). `registered` maps each template
+/// name to the digest of the body last stored under it, so an unchanged body
+/// is skipped and a body that changed under the same name (a `preApply` hook
+/// that rewrites a source template) is still re-registered rather than
+/// rendered stale.
+struct TemplateEngine {
+    tera: Tera,
+    registered: std::collections::HashMap<String, String>,
+    /// How many bodies this engine has actually handed to `add_raw_template`.
+    /// The observable behind the skip: a render that reused a registration
+    /// leaves it where a re-registration would have raised it.
+    #[cfg(test)]
+    registrations: usize,
+}
+
+impl TemplateEngine {
+    fn new(sandboxed: bool) -> Self {
+        let mut tera = Tera::default();
+        tera.autoescape_on(Vec::<&str>::new());
+        register_custom_functions(&mut tera, sandboxed);
+        Self {
+            tera,
+            registered: std::collections::HashMap::new(),
+            #[cfg(test)]
+            registrations: 0,
+        }
+    }
+
+    fn ensure_template(&mut self, name: &str, content: &str) -> tera::TeraResult<()> {
+        let digest = cfgd_core::sha256_hex(content.as_bytes());
+        if self.registered.get(name).is_some_and(|d| *d == digest) {
+            return Ok(());
+        }
+        self.tera.add_raw_template(name, content)?;
+        self.registered.insert(name.to_string(), digest);
+        #[cfg(test)]
+        {
+            self.registrations += 1;
+        }
+        Ok(())
+    }
+}
+
+/// The two engines a file manager renders through, split by sandbox.
+///
+/// The ONLY per-render difference in the function set is whether `env()` is
+/// blocked, and a single engine could serve both only by re-registering every
+/// custom function immediately before each render. Two engines register each
+/// function exactly once for the manager's whole life and make the sandbox a
+/// property of which engine a template lands in rather than of what the last
+/// caller happened to install.
+///
+/// The split is also the reach boundary for Tera's own `include` / `extends`:
+/// a template resolves only names registered in the SAME engine, so a local
+/// template cannot pull in a source-delivered one, or the reverse. That is the
+/// intended shape — a source-delivered template inheriting from a local one
+/// would render sandboxed content through an unsandboxed parent — but it means
+/// a cross-origin reference is unrepresentable rather than merely denied.
+pub(super) struct TemplateEngines {
+    local: TemplateEngine,
+    sandboxed: TemplateEngine,
+}
+
+impl TemplateEngines {
+    pub(super) fn new() -> Self {
+        Self {
+            local: TemplateEngine::new(false),
+            sandboxed: TemplateEngine::new(true),
+        }
+    }
+
+    /// Total `add_raw_template` calls across both engines.
+    #[cfg(test)]
+    pub(super) fn registrations(&self) -> usize {
+        self.local.registrations + self.sandboxed.registrations
+    }
+
+    fn engine_for(&mut self, source_origin: Option<&str>) -> &mut TemplateEngine {
+        if source_origin.is_some() {
+            &mut self.sandboxed
+        } else {
+            &mut self.local
+        }
+    }
 }
 
 impl super::CfgdFileManager {
@@ -47,15 +138,17 @@ impl super::CfgdFileManager {
         })?;
 
         let template_name = path.display().to_string();
-        let mut tera = self.tera.lock().map_err(|_| FileError::TemplateError {
+        let mut engines = self.tera.lock().map_err(|_| FileError::TemplateError {
             path: path.to_path_buf(),
             message: "tera mutex poisoned".to_string(),
         })?;
-        // Register before add_raw_template: tera 2.0 validates function calls during
-        // finalize_templates() which is invoked by add_raw_template.
-        register_custom_functions(&mut tera, source_origin.is_some());
-
-        tera.add_raw_template(&template_name, &template_content)
+        // The engine's custom functions were registered when it was built, which
+        // tera 2.0 requires to happen before `add_raw_template` — that call runs
+        // `finalize_templates()`, which validates every function a template
+        // calls.
+        let engine = engines.engine_for(source_origin);
+        engine
+            .ensure_template(&template_name, &template_content)
             .map_err(|e| FileError::TemplateError {
                 path: path.to_path_buf(),
                 message: format_tera_error(&e),
@@ -70,7 +163,7 @@ impl super::CfgdFileManager {
             None => &self.context,
         };
 
-        tera.render(&template_name, ctx).map_err(|e| {
+        engine.tera.render(&template_name, ctx).map_err(|e| {
             let msg = format_tera_error(&e);
             // If a source template references an undefined variable, it means
             // it tried to access a local variable that isn't in its sandbox.

@@ -29,11 +29,19 @@ use crate::config::{
     self, CfgdConfig, LOCAL_LAYER, MergedProfile, NotifyMethod, OriginType, ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
-use crate::output::{Printer, Role};
+use crate::output::Printer;
 use crate::providers::{
     FileAction, PackageAction, PackageContext, PackageManager, ProviderRegistry,
 };
 use crate::state::StateStore;
+
+/// A file plan together with the manager that produced it — see
+/// [`DaemonHooks::plan_files_with_manager`]. The manager is optional because a
+/// hook may own no concrete `FileManager`.
+pub type PlannedFiles = (
+    Vec<FileAction>,
+    Option<Box<dyn crate::providers::FileManager>>,
+);
 
 /// Trait for binary-specific operations the daemon needs.
 /// The workstation binary (`cfgd`) implements this with concrete provider types.
@@ -43,6 +51,22 @@ pub trait DaemonHooks: Send + Sync {
 
     /// Plan file actions by comparing desired vs actual state.
     fn plan_files(&self, config_dir: &Path, resolved: &ResolvedProfile) -> Result<Vec<FileAction>>;
+
+    /// [`Self::plan_files`] plus the file manager that produced the plan, for a
+    /// caller that needs both and must not pay two constructions — a manager
+    /// carries a config load and a secret-backend build, and the reconcile tick
+    /// both plans files and asks what its link-deployed files now hold.
+    ///
+    /// The default hands back no manager, leaving such a caller with the plan
+    /// alone; a binary that owns a concrete `FileManager` overrides this and
+    /// implements [`Self::plan_files`] in terms of it.
+    fn plan_files_with_manager(
+        &self,
+        config_dir: &Path,
+        resolved: &ResolvedProfile,
+    ) -> Result<PlannedFiles> {
+        Ok((self.plan_files(config_dir, resolved)?, None))
+    }
 
     /// Plan package actions by comparing installed vs desired.
     ///
@@ -114,6 +138,21 @@ pub trait DaemonHooks: Send + Sync {
     }
 }
 
+/// The module cache root a tick deploys into and judges ownership against.
+///
+/// The `--cache-dir`-aware root every daemon tick resolves modules from; the
+/// fallback is what a daemon with no writable cache dir has always used.
+/// [`resolve_daemon_modules`] and `reconcile::reconcile_tick`'s unmanaged-file
+/// sweep both call this instead of re-deriving the same root by hand, or a
+/// re-rooted cache dir and the sweep's own idea of it drift apart.
+pub(super) fn tick_module_cache(
+    config_dir: &Path,
+    scope: crate::Scope,
+    over: Option<&Path>,
+) -> PathBuf {
+    crate::module_cache_root(over, scope).unwrap_or_else(|_| config_dir.join(".module-cache"))
+}
+
 /// Resolve a profile's modules for a daemon tick.
 ///
 /// Builds the platform + available-manager map + module cache base and drives
@@ -121,32 +160,31 @@ pub trait DaemonHooks: Send + Sync {
 /// declares no modules or when resolution fails, logging the failure at `warn`
 /// so it is never silently swallowed. Shared by the reconcile and compliance
 /// ticks so both resolve modules identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_daemon_modules(
     registry: &ProviderRegistry,
     resolved: &ResolvedProfile,
     config_dir: &Path,
     source_roots: &[crate::modules::SourceModuleRoot],
+    installed: Option<&PackageContext<'_>>,
     printer: &Printer,
     scope: crate::Scope,
+    cache_dir_override: Option<&Path>,
 ) -> Vec<crate::modules::ResolvedModule> {
     if resolved.merged.modules.is_empty() {
         return Vec::new();
     }
-    let platform = crate::platform::Platform::detect();
-    let mgr_map: HashMap<String, &dyn PackageManager> = registry
-        .package_managers
-        .iter()
-        .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
-        .collect();
-    let cache_base = crate::modules::default_module_cache_dir_for(scope)
-        .unwrap_or_else(|_| config_dir.join(".module-cache"));
+    let platform = crate::platform::Platform::current();
+    let mgr_map = registry.manager_map();
+    let cache_base = tick_module_cache(config_dir, scope, cache_dir_override);
     match crate::modules::resolve_modules(
         &resolved.merged.modules,
         config_dir,
         &cache_base,
         source_roots,
-        &platform,
+        platform,
         &mgr_map,
+        installed,
         printer,
     ) {
         Ok(m) => m,
@@ -162,8 +200,8 @@ pub(crate) fn resolve_daemon_modules(
 /// The reconcile loop must see the same source-composed desired state every
 /// other command does, but the tight tick must never touch the network — the
 /// daemon's own repo-sync task handles fetch cadence. So this loads each source
-/// from its on-disk cache ([`SourceManager::load_sources_cached`]), warns+skips
-/// never-synced sources, then runs the shared [`SourceManager::compose`] path.
+/// from its on-disk cache ([`crate::sources::SourceManager::load_sources_cached`]), warns+skips
+/// never-synced sources, then runs the shared [`crate::sources::SourceManager::compose`] path.
 /// With no sources configured it returns the local profile unchanged and empty
 /// module roots.
 ///
@@ -191,11 +229,17 @@ pub(crate) fn compose_daemon_desired_state(
     local: &ResolvedProfile,
     printer: &Printer,
     scope: crate::Scope,
-) -> Result<(ResolvedProfile, Vec<crate::modules::SourceModuleRoot>)> {
+    cache_dir_override: Option<&Path>,
+) -> Result<DaemonComposition> {
     if cfg.spec.sources.is_empty() {
-        return Ok((local.clone(), Vec::new()));
+        return Ok(DaemonComposition {
+            resolved: local.clone(),
+            source_module_roots: Vec::new(),
+            advisories: Vec::new(),
+        });
     }
-    let cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
+    let cache_dir = crate::resolve_cache_dir(cache_dir_override, scope)
+        .map(|d| d.join("sources"))
         .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
@@ -207,7 +251,23 @@ pub(crate) fn compose_daemon_desired_state(
         local,
         crate::composition::ConstraintMode::Enforce,
     )?;
-    Ok((result.resolved, result.source_module_roots))
+    Ok(DaemonComposition {
+        resolved: result.resolved,
+        source_module_roots: result.source_module_roots,
+        advisories: mgr.take_advisories(),
+    })
+}
+
+/// What composing the daemon's desired state produced.
+pub(crate) struct DaemonComposition {
+    pub(crate) resolved: ResolvedProfile,
+    pub(crate) source_module_roots: Vec<crate::modules::SourceModuleRoot>,
+    /// The lines the composition printed about its sources, each carrying the
+    /// channel it was printed on, kept so a caller REUSING this composition can
+    /// re-state them AS THEY WERE SAID. The conditions they describe persist
+    /// until someone runs `cfgd sync` (or drops `--allow-unsigned`), and a
+    /// warning that stops appearing reads as resolved.
+    pub(crate) advisories: Vec<crate::sources::SourceAdvisory>,
 }
 
 const DEBOUNCE_MS: u64 = 500;
@@ -235,7 +295,7 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// the client-side connect (`connect_daemon_ipc`), and `cfgd paths`, so all
 /// agree on the socket location. Precedence:
 /// 1. `CFGD_DAEMON_IPC_PATH` — verbatim override (test harnesses, operators).
-/// 2. `cfgd.sock` under [`resolve_runtime_dir`]`(runtime_over)`, honoring the
+/// 2. `cfgd.sock` under [`crate::resolve_runtime_dir`]`(runtime_over)`, honoring the
 ///    `--runtime-dir` flag / `CFGD_RUNTIME_DIR` env / `$XDG_RUNTIME_DIR/cfgd`
 ///    (per-user tmpfs on Linux) / `$HOME/.cache/cfgd/runtime` (Linux fallback)
 ///    / `$HOME/Library/Application Support/cfgd/runtime` (macOS). World-writable
@@ -277,7 +337,12 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope
         }
     }
 }
-const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
+/// The reconcile interval a daemon runs at when `spec.daemon.reconcile.interval`
+/// is unset — also the staleness threshold `cfgd status`'s recorded-state
+/// header compares its last-scan age against: on a machine with a live daemon
+/// this is exactly how far behind "now" the recorded state can be and still be
+/// current, so a `status` reading past it is worth a hint toward `--scan`.
+pub const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
 #[cfg(unix)]
 const LAUNCHD_LABEL: &str = "com.cfgd.daemon";
@@ -324,9 +389,28 @@ pub(super) struct ReconcileTask {
 pub struct SourceStatus {
     pub name: String,
     pub last_sync: Option<String>,
-    pub last_reconcile: Option<String>,
-    pub drift_count: u32,
+    /// Outstanding drift attributable to THIS source, or `None` for "cannot
+    /// say".
+    ///
+    /// Nothing fills it today, and the `Drift` column it feeds is dropped from
+    /// every render as a result (`Table::without_unfillable_columns`). Drift is
+    /// recorded per RESOURCE and the resource's declaring layer is not on the
+    /// row: four of the seven action kinds hardcode `LOCAL_LAYER` as their
+    /// origin, and the file watcher records with no origin at all, so a count
+    /// derived from what is stored would attribute a `team` module's script to
+    /// `local`. The machine-wide total lives on
+    /// [`DaemonStatusResponse::drift_count`] and is stated once, in the header.
+    #[serde(default)]
+    pub drift_count: Option<u32>,
     pub status: String,
+    /// The commit the source's checkout is at, full length: seeded from the
+    /// repository HEAD when the daemon starts and moved by every pull the
+    /// sync tick accepts. The `Commit` column renders it through
+    /// `short_commit`; the payload keeps the whole id. `None` is "not a
+    /// repository" (a `local` layer that is not under git), never "unknown
+    /// commit".
+    #[serde(default)]
+    pub last_commit: Option<String>,
 }
 
 // --- Shared Daemon State ---
@@ -345,6 +429,42 @@ pub struct DaemonStatusResponse {
     pub update_available: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_reconcile: Vec<ModuleReconcileStatus>,
+    /// The cadence the running loop is actually on — the shortest of the
+    /// resolved per-module reconcile intervals, re-read after every SIGHUP
+    /// reload. `None` from a daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_interval_secs: Option<u64>,
+    /// The shortest of the resolved per-source sync intervals, on the same
+    /// terms as [`Self::reconcile_interval_secs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_interval_secs: Option<u64>,
+    /// The config file the running loop was started against, POSIX-folded, and
+    /// the profile it resolved. Every other surface reporting on a machine's
+    /// configuration opens with the pair (`cfgd status`, every run header);
+    /// the daemon is the one that runs unattended, so a dashboard that cannot
+    /// say WHICH config the loop is reconciling is the one that most needs to.
+    /// `None` from a daemon that predates the fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Every module that profile resolves to, in the resolver's own order —
+    /// the row every other surface reporting on a resolved profile opens with,
+    /// derived through the same [`crate::output::HeaderModule::of_resolved`]
+    /// they read. Written by the reconcile tick, so it is empty until the
+    /// first one completes, and from a profile that resolves to none.
+    ///
+    /// Not a duplicate of [`Self::module_reconcile`], which lists only the
+    /// modules whose resolved reconcile settings earned them a dedicated timer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<crate::output::HeaderModule>,
+    /// The resolved profile's `inherits:` chain, nearest parent first — the
+    /// same fact [`Self::modules`] is to `HeaderModule::of_resolved`, read off
+    /// [`crate::config::ResolvedProfile::inherits_chain`] by the reconcile
+    /// tick that wrote [`Self::profile`]. Empty for a profile that declares no
+    /// `inherits:`, and from a daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_inherits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,6 +483,18 @@ pub(super) struct DaemonState {
     last_sync: Option<String>,
     drift_count: u32,
     sources: Vec<SourceStatus>,
+    // Seeded once at startup from what `run_daemon` was invoked with; a SIGHUP
+    // reload re-reads the same file under the same profile.
+    config_path: Option<String>,
+    pub(super) profile: Option<String>,
+    pub(super) modules: Vec<crate::output::HeaderModule>,
+    pub(super) profile_inherits: Vec<String>,
+    // The `spec.sources[]` subscriptions the config declares
+    // (`ComposedSource::from_declared`), in declaration order — seeded at
+    // startup and re-stated by every reconcile tick, so an unattended run names
+    // where its configuration comes from whether or not this machine has synced
+    // and whichever profile the last tick resolved.
+    pub(super) composed_sources: Vec<crate::reconciler::ComposedSource>,
     update_available: Option<String>,
     // The stale-skill signature ("user:N,project:M") last surfaced via the
     // notifier, so the consolidated skill-stale notice fires at most once per
@@ -373,6 +505,11 @@ pub(super) struct DaemonState {
     // (used in tests so endpoint returns empty events without touching the
     // user's real `~/.local/state/cfgd/state.db`).
     store_path: Option<PathBuf>,
+    // The pump cadences, held as the live handles the loop itself reads rather
+    // than as copies taken at startup: SIGHUP rewrites both in place, and an
+    // interval reported from a copy describes a timer that is no longer running.
+    reconcile_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
+    sync_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl DaemonState {
@@ -385,20 +522,36 @@ impl DaemonState {
             sources: vec![SourceStatus {
                 name: LOCAL_LAYER.to_string(),
                 last_sync: None,
-                last_reconcile: None,
-                drift_count: 0,
+                drift_count: None,
                 status: "active".to_string(),
+                last_commit: None,
             }],
+            config_path: None,
+            profile: None,
+            modules: Vec::new(),
+            profile_inherits: Vec::new(),
+            composed_sources: Vec::new(),
             update_available: None,
             skills_stale_notified: None,
             module_last_reconcile: HashMap::new(),
             store_path: None,
+            reconcile_secs: None,
+            sync_secs: None,
         }
     }
 
     fn with_store_path(mut self, path: PathBuf) -> Self {
         self.store_path = Some(path);
         self
+    }
+
+    fn set_interval_handles(
+        &mut self,
+        reconcile_secs: Arc<std::sync::atomic::AtomicU64>,
+        sync_secs: Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.reconcile_secs = Some(reconcile_secs);
+        self.sync_secs = Some(sync_secs);
     }
 
     #[cfg(test)]
@@ -417,6 +570,18 @@ impl DaemonState {
             sources: self.sources.clone(),
             update_available: self.update_available.clone(),
             module_reconcile: vec![],
+            reconcile_interval_secs: self
+                .reconcile_secs
+                .as_ref()
+                .map(|v| v.load(std::sync::atomic::Ordering::Relaxed)),
+            sync_interval_secs: self
+                .sync_secs
+                .as_ref()
+                .map(|v| v.load(std::sync::atomic::Ordering::Relaxed)),
+            config_path: self.config_path.clone(),
+            profile: self.profile.clone(),
+            modules: self.modules.clone(),
+            profile_inherits: self.profile_inherits.clone(),
         }
     }
 }
@@ -487,20 +652,20 @@ impl Notifier {
                 .show()
                 .map(|_| ())
                 .map_err(|e| e.to_string());
-            // The receiver is gone once we time out below; ignore the drop.
+            // The receiver is gone once the timeout below fires; ignore the drop.
             let _ = tx.send(outcome);
         });
 
         match rx.recv_timeout(DESKTOP_NOTIFY_TIMEOUT) {
-            Ok(Ok(())) => tracing::debug!(title = %title, "desktop notification sent"),
+            Ok(Ok(())) => tracing::debug!(title = %title, "daemon: desktop notification sent"),
             Ok(Err(e)) => {
-                tracing::warn!(error = %e, "desktop notification failed, falling back to stdout");
+                tracing::warn!(error = %e, "daemon: desktop notification failed, falling back to the log");
                 self.notify_stdout(title, message);
             }
             Err(_) => {
                 tracing::warn!(
                     timeout_secs = DESKTOP_NOTIFY_TIMEOUT.as_secs(),
-                    "desktop notification timed out, falling back to stdout"
+                    "daemon: desktop notification timed out, falling back to the log"
                 );
                 self.notify_stdout(title, message);
             }
@@ -508,12 +673,12 @@ impl Notifier {
     }
 
     fn notify_stdout(&self, title: &str, message: &str) {
-        tracing::info!(title = %title, message = %message, "notification");
+        tracing::info!("daemon: {title} — {message}");
     }
 
     fn notify_webhook(&self, title: &str, message: &str) {
         let Some(ref url) = self.webhook_url else {
-            tracing::warn!("webhook notification requested but no webhook-url configured");
+            tracing::warn!("daemon: webhook notification requested but no webhook-url configured");
             return;
         };
 
@@ -528,8 +693,8 @@ impl Notifier {
                 .header("Content-Type", "application/json")
                 .send(body.as_str())
             {
-                Ok(_) => tracing::debug!(url = %url, "webhook notification sent"),
-                Err(e) => tracing::warn!(error = %e, "webhook notification failed"),
+                Ok(_) => tracing::debug!(url = %url, "daemon: webhook notification sent"),
+                Err(e) => tracing::warn!(error = %e, "daemon: webhook notification failed"),
             }
         });
     }
@@ -560,6 +725,7 @@ mod reconcile;
 mod runner;
 mod service;
 mod sync;
+pub(crate) mod tick_cache;
 
 #[cfg(test)]
 mod tests;
@@ -586,7 +752,10 @@ use sync::*;
 
 // --- Public re-exports (preserve crate::daemon::<name> API) ---
 
-pub use git::git_pull_sync;
+pub use git::{
+    PullFailure, PullFailureKind, PullOutcome, RefMovement, git_pull_sync, is_git_repository,
+    pull_failure_summary,
+};
 pub use health_ipc::query_daemon_status;
 pub use service::{
     install_service, run_as_windows_service, service_binpath_argv, start_service, uninstall_service,
@@ -610,6 +779,9 @@ pub(super) struct PreLoopSetup {
     pub config_dir: PathBuf,
     pub sync_tasks: Vec<SyncTask>,
     pub initial_source_status: Vec<SourceStatus>,
+    /// The config directory's HEAD, when it is a repository: what the `local`
+    /// row's `Commit` column reads before the first pull moves it.
+    pub local_head_commit: Option<String>,
     pub managed_paths: Vec<PathBuf>,
     pub reconcile_tasks: Vec<ReconcileTask>,
     /// One timer per SCHEDULED `spec.backups[]` entry, plus the re-resolve
@@ -619,6 +791,9 @@ pub(super) struct PreLoopSetup {
     pub shortest_reconcile: Duration,
     pub shortest_sync: Duration,
     pub server_checkin_url: Option<String>,
+    /// The profile the loop resolved — `--profile`, then `spec.profile`, then
+    /// `default`. What `daemon status` names beside the config path.
+    pub profile_name: String,
 }
 
 /// Build everything `run_daemon` needs before it starts spawning tasks.
@@ -634,6 +809,7 @@ pub(super) fn build_pre_loop_setup(
     scope: crate::Scope,
     printer: &Printer,
     state_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
     let mut cfg = config::load_config(config_path)?;
     // Once per process lifetime, not per reconcile tick: the daemon reloads
@@ -665,7 +841,8 @@ pub(super) fn build_pre_loop_setup(
         .to_path_buf();
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
 
-    let source_cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
+    let source_cache_dir = crate::resolve_cache_dir(cache_dir, scope)
+        .map(|d| d.join("sources"))
         .unwrap_or_else(|_| config_dir.join(".cfgd-sources"));
     let sync_tasks = build_sync_tasks(
         &config_dir,
@@ -680,11 +857,13 @@ pub(super) fn build_pre_loop_setup(
                 .map(|m| m.spec.policy.constraints.require_signed_commits)
         },
     );
-    let initial_source_status = build_initial_source_status(&cfg.spec.sources);
+    let initial_source_status = build_initial_source_status(&cfg.spec.sources, &source_cache_dir);
+    let local_head_commit = crate::sources::SourceManager::head_commit(&config_dir);
 
     let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
 
     let (profiles_dir, profile_name) = profile_context(config_path, &cfg, profile_override);
+    let resolved_profile_name = profile_name.to_string();
     let resolved_profile = config::resolve_profile(profile_name, &profiles_dir).ok();
     let profile_chain: Vec<String> = resolved_profile
         .as_ref()
@@ -724,13 +903,14 @@ pub(super) fn build_pre_loop_setup(
         printer,
         scope,
         state_dir,
+        cache_dir,
         now,
     ) {
         Ok(resolved) => BackupTimers::new(resolved, now),
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "backup timers: profile resolution failed — no scheduled backups installed, retrying"
+                "daemon: backup timers — profile resolution failed, no scheduled backups installed, retrying"
             );
             BackupTimers::empty_with_retry(now)
         }
@@ -747,24 +927,33 @@ pub(super) fn build_pre_loop_setup(
         config_dir,
         sync_tasks,
         initial_source_status,
+        local_head_commit,
         managed_paths,
         reconcile_tasks,
         backup_timers,
         shortest_reconcile,
         shortest_sync,
         server_checkin_url,
+        profile_name: resolved_profile_name,
     })
 }
 
 // --- Main Daemon Entry Point ---
 
 /// The directory roots a caller relocates when the process-level `--runtime-dir`
-/// / `--state-dir` flags are set. `None` for either falls through to its env var
-/// (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR`), then to the scope default.
+/// / `--state-dir` / `--cache-dir` flags are set. `None` for any of them falls
+/// through to its env var (`CFGD_RUNTIME_DIR` / `CFGD_STATE_DIR` /
+/// `CFGD_CACHE_DIR`), then to the scope default.
 #[derive(Debug, Clone, Default)]
 pub struct DaemonDirOverrides {
     pub runtime_dir: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
+    /// Threaded to every source/module cache resolution the reconcile loop
+    /// makes, so a daemon started with `--cache-dir` reads the SAME cache every
+    /// non-daemon verb already honors through `resolve_cache_dir` — a daemon
+    /// silently resolving the default cache while `cfgd sync` fills a caller-named
+    /// one would compose sources whose checkout the reconcile loop never sees.
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
@@ -812,6 +1001,7 @@ pub(super) fn cli_run_overrides(
     DaemonRunOverrides {
         ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
         state_dir_override: dirs.state_dir,
+        cache_dir_override: dirs.cache_dir,
         scope,
         ..DaemonRunOverrides::default()
     }
@@ -841,6 +1031,11 @@ pub(super) fn cli_run_overrides(
 pub(super) struct DaemonRunOverrides {
     pub ipc_path: Option<PathBuf>,
     pub state_dir_override: Option<PathBuf>,
+    /// The `--cache-dir` twin of `state_dir_override`: threaded to every source
+    /// and module cache resolution the loop makes (compose, module resolution,
+    /// the startup source-cache scan). `None` falls through to `CFGD_CACHE_DIR`
+    /// then the scope default, exactly like every non-daemon verb's `--cache-dir`.
+    pub cache_dir_override: Option<PathBuf>,
     pub skip_health_server: bool,
     pub skip_startup_checkin: bool,
     pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
@@ -851,6 +1046,7 @@ impl Default for DaemonRunOverrides {
     fn default() -> Self {
         Self {
             ipc_path: None,
+            cache_dir_override: None,
             state_dir_override: None,
             skip_health_server: false,
             skip_startup_checkin: false,
@@ -882,9 +1078,6 @@ pub(super) async fn run_daemon_with(
     overrides: DaemonRunOverrides,
     cfgd_version: &str,
 ) -> Result<()> {
-    printer.heading("Daemon");
-    printer.status_simple(Role::Info, "Starting cfgd daemon...");
-
     let ipc_path = overrides
         .ipc_path
         .clone()
@@ -914,18 +1107,29 @@ pub(super) async fn run_daemon_with(
         overrides.scope,
         &printer,
         resolved_state_dir.as_deref(),
+        overrides.cache_dir_override.as_deref(),
     )?;
 
     let (daemon_state, state_dir_warning) =
         init_daemon_state_with_warning(resolved_state_dir.as_deref(), overrides.scope);
     if let Some(msg) = state_dir_warning {
-        printer.status_simple(Role::Warn, msg);
+        tracing::warn!("daemon: {msg}");
     }
     let state = Arc::new(Mutex::new(daemon_state));
 
     // Initialize per-source status entries
     {
         let mut st = state.lock().await;
+        st.config_path = Some(crate::PathDisplayExt::display_posix(&config_path));
+        st.profile = Some(setup.profile_name.clone());
+        for s in st.sources.iter_mut().filter(|s| s.name == LOCAL_LAYER) {
+            s.last_commit = setup.local_head_commit.clone();
+        }
+        // Declared, not composed: a scheduled run that fires before the first
+        // reconcile tick — or under a profile no tick resolved — still names
+        // what the config subscribes to.
+        st.composed_sources =
+            crate::reconciler::ComposedSource::from_declared(&setup.cfg.spec.sources);
         st.sources.extend(setup.initial_source_status.clone());
     }
 
@@ -957,7 +1161,7 @@ pub(super) async fn run_daemon_with(
         let health_ipc_path = ipc_path.to_string_lossy().to_string();
         Some(tokio::spawn(async move {
             if let Err(e) = run_health_server(&health_ipc_path, health_state).await {
-                tracing::error!(error = %e, "health server error");
+                tracing::error!(error = %e, "daemon: health server error");
             }
         }))
     };
@@ -968,7 +1172,12 @@ pub(super) async fn run_daemon_with(
         setup.backup_timers.len(),
         setup.backup_timers.degraded_reason(),
     );
-    print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
+    print_startup_banner(
+        &printer,
+        &intervals,
+        &ipc_path.to_string_lossy(),
+        cfgd_version,
+    );
 
     // Initial server check-in at startup (skippable for offline tests).
     if setup.server_checkin_url.is_some() && !overrides.skip_startup_checkin {
@@ -998,6 +1207,10 @@ pub(super) async fn run_daemon_with(
     let sync_secs = Arc::new(std::sync::atomic::AtomicU64::new(
         setup.shortest_sync.as_secs(),
     ));
+    state
+        .lock()
+        .await
+        .set_interval_handles(Arc::clone(&reconcile_secs), Arc::clone(&sync_secs));
 
     // Build the triggers + spawn the production pumps/signal handlers, OR
     // adopt the externally-supplied triggers verbatim. The cleanup path at
@@ -1049,13 +1262,12 @@ pub(super) async fn run_daemon_with(
         };
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown_printer = Arc::clone(&printer);
         let shutdown_abort = Arc::clone(&abort);
         let signals = shutdown_signals.ok_or_else(|| DaemonError::WatchError {
             message: "internal: production path did not install shutdown signals".to_string(),
         })?;
         let shutdown_task = tokio::spawn(async move {
-            let code = signals.wait(shutdown_printer).await;
+            let code = signals.wait().await;
             // Raised BEFORE the trigger: the loop may be awaiting a blocking
             // backup hook, and the select! arm that observes the trigger cannot
             // run until that await returns. The flag is what lets it return.
@@ -1098,9 +1310,11 @@ pub(super) async fn run_daemon_with(
         printer: Arc::clone(&printer),
         state_dir_override: resolved_state_dir.clone(),
         explicit_state_dir,
+        cache_dir_override: overrides.cache_dir_override.clone(),
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),
+        tick_cache: Arc::new(tick_cache::TickCache::new()),
     };
 
     let loop_result = run_daemon_loop(
@@ -1138,12 +1352,15 @@ pub(super) async fn run_daemon_with(
     if let Some(h) = health_handle {
         h.abort();
         // Drain the cancellation; the JoinError is always Cancelled here
-        // (we just sent abort), nothing actionable to surface.
+        // (abort was just sent), nothing actionable to surface.
         let _ = h.await;
     }
     cleanup_ipc_socket(&ipc_path);
 
-    printer.status_simple(Role::Ok, "Daemon stopped");
+    // The bookend to the startup line, and on the same stream: a run whose
+    // start is in the journal and whose end is on a stdout nobody kept is a run
+    // nobody can tell apart from one still going.
+    tracing::info!("daemon: stopped");
     loop_result
 }
 
@@ -1159,7 +1376,7 @@ pub(super) fn init_daemon_state(override_dir: Option<&Path>, scope: crate::Scope
     init_daemon_state_with_warning(override_dir, scope).0
 }
 
-/// Like [`init_daemon_state`] but also returns a printer-facing warning
+/// Like the test-only `init_daemon_state` but also returns a printer-facing warning
 /// message when the platform default state dir resolution fails — callers
 /// can surface it in the startup banner so operators aren't dependent on
 /// catching the `tracing::warn!` line.
@@ -1176,8 +1393,9 @@ pub(super) fn init_daemon_state_with_warning(
             None,
         ),
         Err(e) => {
-            tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
-            let banner = format!("Drift endpoint disabled: cannot resolve default state dir ({e})");
+            // The sentence the caller logs, not a second copy of it: the
+            // daemon's stream carries one statement per fact.
+            let banner = format!("drift endpoint disabled: cannot resolve default state dir ({e})");
             (DaemonState::new(), Some(banner))
         }
     }
@@ -1214,10 +1432,14 @@ pub(super) fn check_already_running(_ipc_path: &Path, _scope: crate::Scope) -> R
     Ok(())
 }
 
-/// Build the "Intervals: ..." line components for the startup banner. Returns
-/// a vector of `key=value` segments the printer joins with `, `. Sync,
+/// Build the cadence segments the startup line joins with `, `. Sync,
 /// compliance, and backup segments are conditional; reconcile is always
 /// present.
+///
+/// Prose rather than `key=value`, because these land on the daemon's log —
+/// the one stream a running daemon has — and every other line on it is a
+/// sentence. `reconcile=30s` also states the wrong thing: it reads as a
+/// setting's value when what it reports is how often something happens.
 pub(super) fn format_interval_lines(
     parsed: &ParsedDaemonConfig,
     compliance_interval: Option<Duration>,
@@ -1225,39 +1447,66 @@ pub(super) fn format_interval_lines(
     backups_degraded: Option<backup::DegradedReason>,
 ) -> Vec<String> {
     let mut intervals = vec![format!(
-        "reconcile={}s",
+        "reconcile every {}s",
         parsed.reconcile_interval.as_secs()
     )];
     if parsed.auto_pull || parsed.auto_push {
+        let directions = match (parsed.auto_pull, parsed.auto_push) {
+            (true, true) => " (pull and push)",
+            (true, false) => " (pull only)",
+            _ => " (push only)",
+        };
         intervals.push(format!(
-            "sync={}s (pull={}, push={})",
-            parsed.sync_interval.as_secs(),
-            parsed.auto_pull,
-            parsed.auto_push
+            "sync every {}s{directions}",
+            parsed.sync_interval.as_secs()
         ));
     }
     if let Some(interval) = compliance_interval {
-        intervals.push(format!("compliance={}s", interval.as_secs()));
+        intervals.push(format!("compliance every {}s", interval.as_secs()));
     }
     if scheduled_backups > 0 || backups_degraded.is_some() {
         // The degraded note rides the count because the count alone is
         // misleading: it is whatever survived a partial resolution, and an
-        // operator reading "backups=2 scheduled" has no way to tell that a
+        // operator reading "2 scheduled backups" has no way to tell that a
         // source's third one is missing until it fails to happen. The two
         // causes are named apart because they need different remedies.
         let note = backups_degraded.map_or("", backup::DegradedReason::banner_note);
-        intervals.push(format!("backups={scheduled_backups} scheduled{note}"));
+        intervals.push(format!(
+            "{scheduled_backups} scheduled {}{note}",
+            crate::plural_noun(scheduled_backups, "backup")
+        ));
     }
     intervals
 }
 
-/// Emit the three-line startup banner: health endpoint, interval summary,
-/// run hint. Pure-output; testable via `Printer::for_test_at(Verbosity::Normal)`
-/// (Quiet suppresses Ok/Info statuses).
-pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
-    printer.status_simple(Role::Ok, format!("Health: {}", ipc_path));
-    printer.status_simple(Role::Ok, format!("Intervals: {}", intervals.join(", ")));
-    printer.status_simple(Role::Info, "Daemon running — press Ctrl+C to stop");
+/// Announce the daemon's startup on the stream it will spend its life writing.
+///
+/// The banner used to be three `Printer` status lines above a log, which made
+/// the first thing a reader saw the only thing on screen that carried no
+/// timestamp and no subsystem — and under systemd, where the `Printer` writes
+/// to a captured stdout nobody follows, it was the only startup evidence and it
+/// landed in a different place from every line after it.
+///
+/// The Ctrl+C hint stays a `Printer` hint, and only where a human could press
+/// it: the key reaches a process through a controlling terminal's line
+/// discipline, which a service manager's child does not have.
+///
+/// The version line is the banner's own, not a restatement of the cadence line
+/// under it: it is the only place on the stream that says WHICH build is
+/// running, and an operator reading a journal after an upgrade is asking
+/// exactly that.
+pub(super) fn print_startup_banner(
+    printer: &Printer,
+    intervals: &[String],
+    ipc_path: &str,
+    cfgd_version: &str,
+) {
+    tracing::info!("daemon: starting cfgd {cfgd_version}");
+    tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
+    tracing::info!("daemon: running — {}", intervals.join(", "));
+    if printer.can_prompt() {
+        printer.hint("Press Ctrl+C to stop");
+    }
 }
 
 /// Synchronous body of the startup server check-in. Resolves the profile,
@@ -1298,7 +1547,7 @@ pub(super) fn run_startup_checkin_blocking(
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
         Some(p) => p,
         None => {
-            tracing::error!("no profile configured — skipping reconciliation");
+            tracing::error!("daemon: no profile configured — skipping startup check-in");
             return;
         }
     };
@@ -1306,27 +1555,27 @@ pub(super) fn run_startup_checkin_blocking(
         Ok(resolved) => {
             let changed = try_server_checkin(cfg, &resolved);
             if changed {
-                tracing::info!("server reports config changed at startup");
+                tracing::info!("daemon: server reports config changed at startup");
             }
             // Consume any pending server config at startup so the first
             // reconcile tick picks up the changes.
             match crate::state::load_pending_server_config() {
                 Ok(Some(_pending)) => {
                     tracing::info!(
-                        "startup: found pending server config — first reconcile will apply it"
+                        "daemon: found pending server config — first reconcile will apply it"
                     );
                     if let Err(e) = crate::state::clear_pending_server_config() {
-                        tracing::warn!(error = %e, "startup: failed to clear pending server config");
+                        tracing::warn!(error = %e, "daemon: failed to clear pending server config at startup");
                     }
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::warn!(error = %e, "startup: failed to load pending server config");
+                    tracing::warn!(error = %e, "daemon: failed to load pending server config at startup");
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "startup check-in: failed to resolve profile");
+            tracing::warn!(error = %e, "daemon: startup check-in failed to resolve profile");
         }
     }
 }
@@ -1405,6 +1654,8 @@ struct ShutdownSignals {
 #[cfg(unix)]
 impl ShutdownSignals {
     fn install() -> Self {
+        // The live region's cursor hook must leave the signal to this loop.
+        crate::output::claim_termination_signals();
         fn register(
             kind: tokio::signal::unix::SignalKind,
             name: &str,
@@ -1412,7 +1663,7 @@ impl ShutdownSignals {
             match tokio::signal::unix::signal(kind) {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    tracing::warn!(error = %e, signal = name, "failed to register shutdown handler");
+                    tracing::warn!(error = %e, signal = name, "daemon: failed to register shutdown handler");
                     None
                 }
             }
@@ -1426,7 +1677,7 @@ impl ShutdownSignals {
     /// Block until the operator asks the daemon to stop, returning the POSIX
     /// `128 + signum` code for the signal that arrived — the value in-flight
     /// work sees through [`crate::AbortFlag::aborted`].
-    async fn wait(self, printer: Arc<Printer>) -> u8 {
+    async fn wait(self) -> u8 {
         async fn recv(signal: Option<tokio::signal::unix::Signal>) {
             match signal {
                 Some(mut s) => {
@@ -1437,11 +1688,11 @@ impl ShutdownSignals {
         }
         tokio::select! {
             _ = recv(self.sigterm) => {
-                printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
+                tracing::info!("daemon: received SIGTERM, shutting down");
                 143
             }
             _ = recv(self.sigint) => {
-                printer.status_simple(Role::Info, "Shutting down daemon...");
+                tracing::info!("daemon: shutting down");
                 130
             }
         }
@@ -1463,7 +1714,7 @@ impl ShutdownSignals {
         match tokio::signal::windows::ctrl_c() {
             Ok(c) => Self { ctrl_c: Some(c) },
             Err(e) => {
-                tracing::warn!(error = %e, signal = "CTRL_C", "failed to register shutdown handler");
+                tracing::warn!(error = %e, signal = "CTRL_C", "daemon: failed to register shutdown handler");
                 Self { ctrl_c: None }
             }
         }
@@ -1471,14 +1722,14 @@ impl ShutdownSignals {
 
     /// Block until the operator asks the daemon to stop, returning the POSIX
     /// `128 + signum` code the rest of the daemon speaks in.
-    async fn wait(self, printer: Arc<Printer>) -> u8 {
+    async fn wait(self) -> u8 {
         match self.ctrl_c {
             Some(mut c) => {
                 c.recv().await;
             }
             None => std::future::pending::<()>().await,
         }
-        printer.status_simple(Role::Info, "Shutting down daemon...");
+        tracing::info!("daemon: shutting down");
         130
     }
 }

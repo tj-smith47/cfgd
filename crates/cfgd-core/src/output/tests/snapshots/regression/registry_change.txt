@@ -1,2 +1,2 @@
-Registry changes
+Registry Changes
   - module foo @ 1.2.3 → 1.2.4

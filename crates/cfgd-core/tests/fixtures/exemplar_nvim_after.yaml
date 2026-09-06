@@ -171,8 +171,8 @@ spec:
     command: nvim
 
   scripts:
-    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
-    # only via timestamp tracking, but the underlying commands handle re-runs.
+    # First-run bootstrap. An unguarded script runs on every apply, so each
+    # step's command is written to tolerate a re-run.
     # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
     # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
     # toolchains are already on PATH — no per-step export needed.

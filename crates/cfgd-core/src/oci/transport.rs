@@ -133,7 +133,7 @@ pub(super) fn authenticated_request(
     let basic_authz = auth.map(|cred| cred.basic_auth_header());
 
     // First attempt — may get 401. `run_request` disables status-as-error so a
-    // 401 is returned as `Ok(resp)` and we can read its Www-Authenticate header.
+    // 401 is returned as `Ok(resp)` and its Www-Authenticate header can be read.
     let resp = run_request(
         agent,
         method,
@@ -195,17 +195,25 @@ pub(super) fn authenticated_request(
 /// Resolve the authoritative digest of a just-PUT manifest/index.
 ///
 /// Prefers the registry's `Docker-Content-Digest` response header, falling back
-/// to hashing the exact bytes we sent. A conformant registry echoes the digest
+/// to hashing the exact bytes sent. A conformant registry echoes the digest
 /// of those bytes — but one that re-canonicalizes the manifest stores (and
 /// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
 /// `volume.image` reference) must come from the registry whenever it provides one.
 pub(super) fn resolve_pushed_digest(resp: &Response<Body>, sent_bytes: &[u8]) -> String {
+    response_digest(resp).unwrap_or_else(|| sha256_digest(sent_bytes))
+}
+
+/// The digest the registry itself names for a response, when it names one.
+///
+/// The header half of [`resolve_pushed_digest`], for a reader holding a
+/// response whose body it has not read yet: the fallback needs those bytes,
+/// and consuming the body to hash it is the caller's step, not this one's.
+pub(super) fn response_digest(resp: &Response<Body>) -> Option<String> {
     header(resp, "Docker-Content-Digest")
         .or_else(|| header(resp, "docker-content-digest"))
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| sha256_digest(sent_bytes))
 }
 
 /// Upload a blob to the registry via the monolithic upload flow.
@@ -256,7 +264,7 @@ pub(super) fn upload_blob(
     let sep = if location.contains('?') { "&" } else { "?" };
     let put_url = format!("{location}{sep}digest={digest}");
 
-    // For the PUT, we need to handle the case where location is a relative URL
+    // For the PUT, handle the case where location is a relative URL
     let put_url = if put_url.starts_with("http://") || put_url.starts_with("https://") {
         put_url
     } else {

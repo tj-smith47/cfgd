@@ -1,10 +1,6 @@
-Update Sources
-◐ Fetching source 'upd-src'
-  From file://<BARE_ROOT>/upd-src-source
-   * branch            master     -> FETCH_HEAD
-✓ Fetching source 'upd-src'
-
-source:upd-src
-  ✓ updated
+Update source:upd-src
+✓ Updated
 
 ✓ Updated 1 source
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

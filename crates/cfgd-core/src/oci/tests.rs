@@ -400,7 +400,7 @@ fn oci_descriptor_with_annotations_round_trips() {
 #[test]
 fn is_insecure_registry_false_when_env_not_set() {
     // With the env var not containing our test registry, it should be false
-    // (we cannot safely unset env vars in parallel tests, but the default
+    // (env vars cannot safely be unset in parallel tests, but the default
     // is empty which means no registry is insecure)
     assert!(!is_insecure_registry("totally-not-insecure.example.com"));
 }
@@ -769,7 +769,7 @@ mod bridge {
         let artifact_ref = format!("{}/test/bridge-push:v1", registry);
 
         let (printer, cap) = Printer::for_test_doc();
-        let digest = push_module(module_dir.path(), &artifact_ref, None, Some(&printer)).unwrap();
+        let outcome = push_module(module_dir.path(), &artifact_ref, None, Some(&printer)).unwrap();
 
         let summary = OciPushSummary {
             artifact: "<MOCK_URL>/test/bridge-push:v1".to_string(),
@@ -783,8 +783,11 @@ mod bridge {
 
         let raw = strip_ansi(&cap.human());
         let url_normalized = normalize_mock_url(&raw, &server_url, &registry);
-        // Also normalize the actual digest (sha256:<hex>) since it's content-derived
-        let digest_normalized = url_normalized.replace(&digest, "<DIGEST>");
+        // Also normalize the actual digest (sha256:<hex>) since it's
+        // content-derived, and the resolved platform since it is this host's.
+        let digest_normalized = url_normalized
+            .replace(&outcome.digest, "<DIGEST>")
+            .replace(&outcome.platform, "<PLATFORM>");
         let captured = strip_spinner_duration(digest_normalized);
 
         assert!(

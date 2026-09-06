@@ -1,7 +1,50 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, renderer::Table};
+
+/// The `managed_resources` rows whose file on disk no longer holds the bytes
+/// cfgd recorded when it last deployed it.
+///
+/// Only `file` rows are asked: a module's row carries one aggregate hash over
+/// many targets and a package row hashes nothing, so neither names a path to
+/// read back.
+///
+/// Four cases are SKIPPED rather than reported, and each is the same
+/// distinction — a question that went unanswered is not an answer. A row with
+/// no recorded hash was never described by cfgd, so nothing on disk could have
+/// diverged from it; a file that is gone, that is too large to have been
+/// captured, or that cannot be read yields no hash to compare at all. Reporting
+/// any of them would ask the operator to rule on a divergence nobody observed.
+fn hand_modified_files(resources: &[cfgd_core::state::ManagedResource]) -> Vec<String> {
+    resources
+        .iter()
+        .filter(|r| r.resource_type == "file")
+        .filter_map(|r| {
+            let recorded = r.last_hash.as_deref()?;
+            // Resolved, not raw: a Symlink/Hardlink-deployed target IS its
+            // module's source file, and the hash recorded for it is that file's
+            // own bytes — so the comparison has to read through the link.
+            let state = cfgd_core::capture_file_resolved_state(std::path::Path::new(
+                r.resource_id.as_str(),
+            ))
+            .ok()
+            .flatten()?;
+            (!state.oversized && state.content_hash != recorded).then(|| r.resource_id.clone())
+        })
+        .collect()
+}
+
+/// The one shape both abort paths report, so a cancel reads the same to a
+/// `-o json` consumer whichever prompt produced it.
+fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
+    Doc::new()
+        .status(Role::Info, "Cancelled — source not removed")
+        .with_data(serde_json::json!({
+            "name": name,
+            "managedResources": managed_count,
+            "cancelled": true,
+        }))
+}
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -9,7 +52,34 @@ pub fn cmd_source_remove(
     name: &str,
     keep_all: bool,
     remove_all: bool,
+    yes: bool,
     ignore_not_found: bool,
+) -> anyhow::Result<()> {
+    run_source_remove(
+        cli,
+        printer,
+        name,
+        keep_all,
+        remove_all,
+        yes,
+        ignore_not_found,
+        true,
+    )
+}
+
+/// The body of `cfgd source remove`. `closing` is whether this removal is the
+/// whole command — a `source replace` runs one mid-report and closes on its own
+/// verdict, so only a closing removal carries the next-step hint.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_source_remove(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    keep_all: bool,
+    remove_all: bool,
+    yes: bool,
+    ignore_not_found: bool,
+    closing: bool,
 ) -> anyhow::Result<()> {
     if keep_all && remove_all {
         return Err(crate::cli::cli_error(
@@ -22,7 +92,7 @@ pub fn cmd_source_remove(
 
     // The heading names the subject with the canonical owner token, so every
     // line below it says only what happened.
-    printer.heading(format!("Remove {}", Owner::source(name).token()));
+    printer.heading_owner_prefixed("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;
@@ -61,9 +131,12 @@ pub fn cmd_source_remove(
             ));
             let mut t = Table::new(["Type", "Resource"]);
             for r in &resources {
-                t = t.row([r.resource_type.clone(), r.resource_id.clone()]);
+                t = t.row([
+                    r.resource_type.clone(),
+                    cfgd_core::fold_home_in_text(&r.resource_id),
+                ]);
             }
-            res_sec.table(t);
+            res_sec.table(t.without_unfillable_columns());
         }
 
         let options = vec![
@@ -74,15 +147,7 @@ pub fn cmd_source_remove(
         let choice = printer.prompt_select("What to do with these resources?", &options)?;
 
         if choice.starts_with("Cancel") {
-            printer.emit(
-                Doc::new()
-                    .status(Role::Info, "Cancelled — source not removed")
-                    .with_data(serde_json::json!({
-                        "name": name,
-                        "managedResources": managed_count,
-                        "cancelled": true,
-                    })),
-            );
+            printer.emit(cancelled_doc(name, managed_count));
             return Ok(());
         }
 
@@ -125,6 +190,36 @@ pub fn cmd_source_remove(
     // (their `source` column still points at a config_source that no longer
     // exists). "kept" already re-owns them to `local` above.
     if disposition == "purged" {
+        // The recorded hash is the only record that these edits ever diverged
+        // from what cfgd deployed; purging the row takes it, and the file is
+        // then just an untracked file nobody can tell apart from a pristine
+        // one. So the operator is shown each one and asked, rather than told
+        // afterwards.
+        let modified = hand_modified_files(&resources);
+        if !modified.is_empty() {
+            for path in &modified {
+                // The confirm below approves exactly these rows, so the path
+                // escapes rather than leaving it to the renderer's fold, which
+                // STRIPS: an operator ruling on a path carrying `\x1b[2K` has
+                // to see those bytes. Same policy as `cli/sync.rs`'s
+                // permission-change bullets.
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Modified since cfgd deployed it: {}",
+                        cfgd_core::fold_home_in_text(&cfgd_core::escape_control_chars(path))
+                    ),
+                );
+            }
+            let question = format!(
+                "Forget {} anyway?",
+                cfgd_core::pluralize(modified.len(), "hand-modified file")
+            );
+            if !yes && !printer.prompt_confirm(&question)? {
+                printer.emit(cancelled_doc(name, managed_count));
+                return Ok(());
+            }
+        }
         for r in &resources {
             state.remove_managed_resource(&r.resource_type, &r.resource_id)?;
         }
@@ -148,13 +243,14 @@ pub fn cmd_source_remove(
     }
 
     // Remove the cached clone. It lives at `<cache_dir>/<name>` (see
-    // SourceManager::load_source). Delete the directory directly: the previous
-    // SourceManager::remove_source path keyed off an in-memory `sources` map
-    // that this command never populates, so it returned NotFound and the cache
-    // dir leaked on every removal.
-    let cached_dir = source_cache_dir(cli)?.join(name);
-    if cached_dir.exists()
-        && let Err(e) = std::fs::remove_dir_all(&cached_dir)
+    // SourceManager::load_source). Routed through `discard_cached_checkout`
+    // rather than `SourceManager::remove_source`, which keys off an in-memory
+    // `sources` map this command never populates and so returned NotFound while
+    // the cache dir leaked on every removal. The helper is what holds the
+    // source-cache lock across the delete, so this cannot take out the tree a
+    // concurrent `cfgd sync` is cloning into.
+    if let Err(e) =
+        cfgd_core::sources::discard_cached_checkout(&source_cache_dir(cli)?, name, printer)
     {
         // Config + state mutations already landed, so a cache-removal failure
         // is non-fatal — but surface it as a visible warning rather than a
@@ -168,16 +264,16 @@ pub fn cmd_source_remove(
         );
     }
 
-    printer.emit(
-        Doc::new()
-            .status(Role::Ok, "removed")
-            .with_data(serde_json::json!({
-                "name": name,
-                "managedResources": managed_count,
-                "disposition": disposition,
-                "cancelled": false,
-            })),
-    );
+    let mut doc = Doc::new().status(Role::Ok, "Removed");
+    if closing {
+        doc = doc.hint(super::success_next_step(super::Mutation::SourceRemoved));
+    }
+    printer.emit(doc.with_data(serde_json::json!({
+        "name": name,
+        "managedResources": managed_count,
+        "disposition": disposition,
+        "cancelled": false,
+    })));
     Ok(())
 }
 
@@ -205,7 +301,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: Some(state_dir),
             config_dir: None,
             cache_dir: None,
@@ -226,7 +325,7 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(&cli, &printer, "acme", true, true, false)
+        let err = cmd_source_remove(&cli, &printer, "acme", true, true, false, false)
             .expect_err("keep_all + remove_all must conflict");
         drop(printer);
 
@@ -242,7 +341,7 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(&cli, &printer, "nope", false, false, false)
+        let err = cmd_source_remove(&cli, &printer, "nope", false, false, false, false)
             .expect_err("absent source must error");
         drop(printer);
 
@@ -259,7 +358,7 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(&cli, &printer, "nope", false, false, true)
+        cmd_source_remove(&cli, &printer, "nope", false, false, false, true)
             .expect("--ignore-not-found must succeed for an absent source");
         drop(printer);
 
@@ -280,7 +379,7 @@ mod tests {
         );
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
             .expect("removing a source with no managed resources must succeed");
         drop(printer);
 
@@ -309,10 +408,24 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+            .upsert_pending_decision(
+                "acme",
+                "packages.brew.k9s",
+                "recommended",
+                "install",
+                "v1",
+                None,
+            )
             .expect("seed pending decision");
         state
-            .upsert_pending_decision("acme", "files.~/.gitconfig", "recommended", "install", "v1")
+            .upsert_pending_decision(
+                "acme",
+                "files.~/.gitconfig",
+                "recommended",
+                "install",
+                "v1",
+                None,
+            )
             .expect("seed second decision");
         state
             .resolve_decision("files.~/.gitconfig", "rejected")
@@ -320,7 +433,7 @@ mod tests {
         drop(state);
 
         let (printer, _cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", true, false, false)
+        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
             .expect("removing a source must succeed");
         drop(printer);
 
@@ -342,14 +455,15 @@ mod tests {
         // Seed state: one managed resource owned by source "acme".
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/foo", "acme", None, None)
@@ -357,7 +471,7 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", true, false, false)
+        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
             .expect("keep_all removal must succeed");
         drop(printer);
 
@@ -391,6 +505,150 @@ mod tests {
         );
     }
 
+    /// Seed a source-owned `file` row pointing at a real file under `dir`,
+    /// recorded with `recorded_hash`. Returns the file's resource id.
+    fn seed_deployed_file(
+        cli: &Cli,
+        dir: &std::path::Path,
+        contents: &str,
+        recorded_hash: Option<&str>,
+    ) -> String {
+        let path = dir.join("deployed.conf");
+        std::fs::write(&path, contents).expect("write deployed file");
+        let id = cfgd_core::to_posix_string(&path);
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
+        state
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
+            .expect("seed config_source");
+        state
+            .upsert_managed_resource("file", &id, "acme", recorded_hash, None)
+            .expect("seed managed resource");
+        id
+    }
+
+    #[test]
+    fn a_hand_modified_file_warns_and_a_declined_confirm_leaves_everything_standing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        // Recorded as the bytes cfgd deployed; what is on disk now is not them.
+        let id = seed_deployed_file(
+            &cli,
+            dir.path(),
+            "edited by hand",
+            Some(&cfgd_core::sha256_hex(b"as cfgd deployed it")),
+        );
+
+        let (printer, cap) =
+            Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
+        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
+            .expect("a declined confirm is an abort, not a failure");
+        drop(printer);
+
+        let human = cap.human();
+        assert!(
+            human.contains(&id),
+            "the warning must name the modified file: {human}"
+        );
+
+        let doc = cap.json().expect("decline must emit a Doc");
+        assert_eq!(doc["cancelled"], true, "a declined confirm must not remove");
+
+        assert!(
+            config_has_source(&cli, "acme"),
+            "a declined confirm must leave the source in config"
+        );
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+        assert!(
+            !state
+                .managed_resources_by_source("acme")
+                .expect("query by source")
+                .is_empty(),
+            "a declined confirm must leave the recorded hash — the only record the file ever diverged"
+        );
+    }
+
+    #[test]
+    fn a_hand_modified_file_is_purged_without_a_prompt_under_yes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        seed_deployed_file(
+            &cli,
+            dir.path(),
+            "edited by hand",
+            Some(&cfgd_core::sha256_hex(b"as cfgd deployed it")),
+        );
+
+        // No seeded prompt answer: a test printer cannot prompt, so reaching a
+        // confirm here would fail the command rather than pass silently.
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", false, true, true, false)
+            .expect("--yes must purge without asking");
+        drop(printer);
+
+        assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+        assert!(
+            state
+                .managed_resources_by_source("acme")
+                .expect("query by source")
+                .is_empty(),
+            "--yes must still purge the rows"
+        );
+    }
+
+    #[test]
+    fn an_unmodified_file_is_purged_silently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let id = seed_deployed_file(
+            &cli,
+            dir.path(),
+            "as cfgd deployed it",
+            Some(&cfgd_core::sha256_hex(b"as cfgd deployed it")),
+        );
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
+            .expect("an unmodified file must not stop to ask");
+        drop(printer);
+
+        let human = cap.human();
+        assert!(
+            !human.contains(&id),
+            "an unmodified file must not be named at all: {human}"
+        );
+        assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
+    }
+
+    #[test]
+    fn a_file_with_no_recorded_hash_is_purged_silently() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        // Never recorded, so there is nothing the bytes could have diverged
+        // from — that is not the same question as "was this edited".
+        let id = seed_deployed_file(&cli, dir.path(), "whatever is here now", None);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
+            .expect("a NULL last_hash must not stop to ask");
+        drop(printer);
+
+        let human = cap.human();
+        assert!(
+            !human.contains(&id),
+            "a row with no recorded hash must not be reported as modified: {human}"
+        );
+        assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
+    }
+
     #[test]
     fn remove_with_remove_all_reports_purged_disposition() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -398,14 +656,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/bar", "acme", None, None)
@@ -413,7 +672,7 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, false)
+        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
             .expect("remove_all removal must succeed");
         drop(printer);
 
@@ -462,14 +721,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/baz", "acme", None, None)
@@ -481,7 +741,7 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Cancel (abort remove)".into(),
             )]);
-        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
             .expect("cancel path must return Ok");
         drop(printer);
 
@@ -502,14 +762,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/keepme", "acme", None, None)
@@ -520,7 +781,7 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Keep all (resources become locally managed)".into(),
             )]);
-        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
             .expect("keep choice must return Ok");
         drop(printer);
 

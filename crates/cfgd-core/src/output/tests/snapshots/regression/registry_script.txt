@@ -1,2 +1,2 @@
-Scripts (will run)
+Scripts (Will Run)
   - ./post-install.sh

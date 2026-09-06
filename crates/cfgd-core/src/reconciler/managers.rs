@@ -5,21 +5,26 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::providers::{
-    PackageAction, PackageManager, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS, is_system_manager,
+    PackageAction, PackageManager, PackageManagerExt, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS,
+    is_system_manager,
 };
 
-use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan};
-
-/// The manager name a module package carries when its "install" is an inline
-/// script rather than a manager command. It names no registry entry.
-const SCRIPT_SENTINEL: &str = "script";
+use super::env_engine::ManagerPathDir;
+use super::types::{
+    Action, DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan,
+};
 
 /// What the run has to do about one manager.
 enum MemberState {
     /// Present already — refresh its index.
     Present,
-    /// Absent, provisioned by the method its own cascade resolved to.
-    Provision { via: String },
+    /// Absent, provisioned by the method its own cascade resolved to — or,
+    /// when a module declares the same tool as a package, by the route that
+    /// entry's `prefer`/`aliases` chain resolved to.
+    Provision {
+        via: String,
+        declared: Option<DeclaredProvision>,
+    },
     /// Absent and unprovisionable on this host, with the cause named.
     Refused { reason: String },
 }
@@ -54,6 +59,69 @@ struct Graph {
     prefers: BTreeMap<String, String>,
 }
 
+/// The tools a module declares as PACKAGES that cfgd also needs as MANAGERS,
+/// keyed on the canonical name the module wrote.
+///
+/// cfgd bootstraps `pipx`, `cargo`, `npm`, `go` and `gem` by its own default
+/// route while a module is free to declare any of them as an ordinary package
+/// with a `prefer` list and per-manager `aliases`. Left to disagree, the two
+/// put two copies of one toolchain on the machine and let `PATH` order pick
+/// the winner. The module's entry is the more specific statement, so the
+/// provision resolves through it and the `Packages` phase then elides the
+/// entry through the predicate it already has.
+///
+/// Only a MODULE entry qualifies: `prefer`/`aliases` are a `spec.packages`
+/// module-entry grammar, and a profile-level `spec.packages.<manager>` list
+/// names the manager's own package name (`rustc`), which carries no canonical
+/// tool to match a manager against.
+///
+/// And only an entry whose AUTHOR named the manager
+/// ([`ResolvedPackage::manager_declared`](crate::modules::ResolvedPackage::manager_declared)).
+/// `ResolvedPackage::manager` is what RESOLUTION chose, which for an entry
+/// carrying neither `prefer` nor `aliases` is cfgd's own platform default —
+/// so a bare `- name: npm` read as a declaration and turned the npm node into
+/// `provision npm via apt`, installing apt's entire node toolchain in place of
+/// the brew cascade [`plan_managers`] documents npm as preferring. A route
+/// outranks that cascade, so only a real declaration may mint one.
+pub(super) fn declared_manager_routes(
+    module_routed: &[(PhaseName, Action)],
+) -> BTreeMap<String, DeclaredProvision> {
+    let mut routes = BTreeMap::new();
+    for (_, action) in module_routed {
+        let Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) = action
+        else {
+            continue;
+        };
+        for pkg in resolved {
+            // cfgd's own platform default is not a statement by the module's
+            // author, and only a statement outranks the manager's cascade.
+            if !pkg.manager_declared {
+                continue;
+            }
+            // An inline script names no registry entry, so there is no
+            // installer to route a provision through.
+            if pkg.manager == crate::SCRIPT_SENTINEL {
+                continue;
+            }
+            // A manager cannot install itself: `cargo install cargo` needs the
+            // cargo the provision is there to deliver.
+            if crate::manager_family(&pkg.manager) == crate::manager_family(&pkg.canonical_name) {
+                continue;
+            }
+            routes
+                .entry(pkg.canonical_name.clone())
+                .or_insert_with(|| DeclaredProvision {
+                    installer: pkg.manager.clone(),
+                    package: pkg.resolved_name.clone(),
+                });
+        }
+    }
+    routes
+}
+
 /// Plan the manager nodes for this run.
 ///
 /// Membership starts from the managers this run's own work NAMES — a package
@@ -65,6 +133,11 @@ struct Graph {
 /// when no package names it). Without the closure an edge either dangles or the
 /// install happens invisibly, which is the unrendered bootstrap this phase
 /// exists to replace.
+///
+/// A cascade is priced against the managers this run DELIVERS as well as the
+/// ones the host has: when brew is itself a provision member of the plan, a
+/// cascade that prefers brew plans `via brew` behind that node, rather than
+/// falling to the system arm because the host it probed had no brew yet.
 ///
 /// Membership is deliberately NOT the desired package set: an index refresh is
 /// only worth its network round trip when something in the run consumes the
@@ -93,12 +166,38 @@ pub fn plan_managers(
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
 ) -> Vec<Action> {
+    let declared = declared_manager_routes(module_routed);
+    plan_managers_with_routes(registry, package_actions, module_routed, &declared, &[])
+}
+
+/// [`plan_managers`] over routes derived somewhere else, and over a membership
+/// the caller widens.
+///
+/// The elision that follows a first pass DROPS the very entries the routes were
+/// minted from, so a second pass re-deriving them off the survivors would hand
+/// back a cascade where the module had named a route. The caller derives once,
+/// before anything is elided, and both passes read that one answer.
+///
+/// `extra_wanted` is the same defect one layer out. Membership starts from what
+/// the run's SURVIVING work names, and a cascade's arm is then priced off the
+/// managers already settled, so eliding a mediator's last consuming entry
+/// retires that mediator and drops the cascade to its host arm — leaving the
+/// package the elision dropped delivered by nothing. The elision names the
+/// mediators its own pairs were installed through, and they stay members.
+pub(super) fn plan_managers_with_routes(
+    registry: &ProviderRegistry,
+    package_actions: &[PackageAction],
+    module_routed: &[(PhaseName, Action)],
+    declared: &BTreeMap<String, DeclaredProvision>,
+    extra_wanted: &[String],
+) -> Vec<Action> {
     // The one system manager every prerequisite in this run is installed from,
     // resolved once so two prerequisites can never name two installers on the
     // same host.
     let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
 
-    let mut queue: VecDeque<String> = wanted_managers(registry, package_actions, module_routed);
+    let mut queue: VecDeque<String> =
+        wanted_managers(registry, package_actions, module_routed, extra_wanted);
 
     let mut graph = Graph::default();
     while let Some(name) = queue.pop_front() {
@@ -114,10 +213,46 @@ pub fn plan_managers(
             graph.members.insert(name, MemberState::Present);
             continue;
         }
+        // The module's own route to this tool outranks cfgd's default cascade,
+        // and reaches every manager alike — including one whose own bootstrap
+        // has a single arm (`cargo` installs through rustup and nothing else),
+        // which is exactly the case a per-manager table would have missed. The
+        // node still verifies the manager afterwards, so a route that installs
+        // something else entirely fails here rather than in `Packages`.
+        if let Some(route) = declared.get(&name) {
+            let installer = node_manager(registry, &route.installer).to_string();
+            if find_manager(registry, &installer).is_some() {
+                graph.prefers.insert(name.clone(), installer.clone());
+                queue.push_back(installer);
+                graph.members.insert(
+                    name,
+                    MemberState::Provision {
+                        via: route.installer.clone(),
+                        declared: Some(route.clone()),
+                    },
+                );
+                continue;
+            }
+        }
         // No cascade at all on this platform (apt on macOS, winget on Linux).
         // There is no cfgd decision to render: the manager was never a
         // candidate here, and `Packages` says so.
-        let Some(plan) = pm.bootstrap_plan() else {
+        //
+        // Priced against the machine this plan LEAVES, not the one it found:
+        // a member already settled as present or provisioned is a mediator
+        // every cascade closed after it may install through, and the edge the
+        // cascade then mints orders this node behind that provision. The
+        // wanted set is a `BTreeSet`, so `brew` is settled before every
+        // cascade that prefers it (`go`, `npm`, `pipx`); the closure never
+        // pulls an absent brew in for a cascade's sake, so a host with no
+        // brew and no brew work keeps its system arm.
+        let delivered = |manager: &str| {
+            graph
+                .members
+                .get(manager)
+                .is_some_and(MemberState::yields_a_usable_manager)
+        };
+        let Some(plan) = pm.bootstrap_plan_given(&delivered) else {
             continue;
         };
 
@@ -165,9 +300,13 @@ pub fn plan_managers(
             graph.prefers.insert(name.clone(), preferred.clone());
             queue.push_back(preferred);
         }
-        graph
-            .members
-            .insert(name, MemberState::Provision { via: plan.method });
+        graph.members.insert(
+            name,
+            MemberState::Provision {
+                via: plan.method,
+                declared: None,
+            },
+        );
     }
 
     refuse_provisions_with_no_usable_installer(&mut graph);
@@ -175,19 +314,73 @@ pub fn plan_managers(
     build_actions(registry, &graph, installer.as_deref())
 }
 
+/// The packages a provision node DELIVERS, under the manager that installs
+/// them.
+///
+/// `provision npm via brew` IS a `brew install node`, and a declared route is
+/// an install of the module's own package name through the installer its
+/// `prefer` chain picked. The ONE derivation, read by the plan (which elides a
+/// module entry naming one of these, so the `Packages` row never names a
+/// package a row above it already landed) and by the apply's settle (which
+/// records what actually landed, so a shortfall the run itself produced is
+/// worded `provisioned by this run`). Empty for anything but a provision, and
+/// for a cascade whose bootstrap is a vendor script rather than a package
+/// install.
+///
+/// The PLANNED `via` is what a settled node ran: the executor hands it down as
+/// [`crate::providers::PackageContext::planned_method`], which a cascade honors
+/// as BINDING — a mediator that became unavailable after planning fails the
+/// provision (`planned_method_unavailable`) rather than substituting another
+/// arm, and a failure never reaches the settle. So a recorded pair can never
+/// credit the run with a package some other route installed.
+///
+/// A cascade's names are the MEDIATOR's own (`mediated_packages("brew") ==
+/// ["node"]`), never the module's `aliases:` spelling for the same package;
+/// the elision asks the entry's canonical name for exactly that reason.
+pub(super) fn provision_delivered_packages(
+    registry: &ProviderRegistry,
+    node: &ManagerAction,
+) -> Vec<(String, String)> {
+    let ManagerAction::Provision { via, declared, .. } = node else {
+        return Vec::new();
+    };
+    // A declared route is never batched, so it speaks for the whole node.
+    if let Some(route) = declared {
+        return vec![(route.installer.clone(), route.package.clone())];
+    }
+    node.provisioned_managers()
+        .iter()
+        .filter_map(|manager| {
+            find_manager(registry, manager)
+                .and_then(|pm| pm.mediated_packages(via))
+                .map(|names| names.into_iter().map(|name| (via.clone(), name)))
+        })
+        .flatten()
+        .collect()
+}
+
 /// The managers this run's own work names, family-folded and deduplicated.
 ///
-/// Two shapes count, and no others. A planned INSTALL — profile-level or a
-/// module's — is a consumer of the manager's index and so earns a refresh. A
-/// profile-level SKIP is a manager the run wanted and could not plan for, which
-/// is where a refusal gets named. An uninstall consumes no index and a manager
-/// nothing in the run touches has nothing to refresh for.
+/// Two shapes of ACTION count, and no others. A planned INSTALL —
+/// profile-level or a module's — is a consumer of the manager's index and so
+/// earns a refresh. A profile-level SKIP is a manager the run wanted and could
+/// not plan for, which is where a refusal gets named. An uninstall consumes no
+/// index and a manager nothing in the run touches has nothing to refresh for.
+///
+/// `extra` is the caller's own claim on membership, folded through the same
+/// family node so it cannot mint a second node for a sub-manager: the
+/// mediators a re-plan must keep, named by the elision that removed the
+/// entries which had been naming them.
 fn wanted_managers(
     registry: &ProviderRegistry,
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
+    extra: &[String],
 ) -> VecDeque<String> {
-    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    let mut wanted: BTreeSet<String> = extra
+        .iter()
+        .map(|m| node_manager(registry, m).to_string())
+        .collect();
     for action in package_actions {
         let manager = match action {
             PackageAction::Install { manager, .. } | PackageAction::Skip { manager, .. } => manager,
@@ -204,7 +397,7 @@ fn wanted_managers(
             continue;
         };
         for pkg in resolved {
-            if pkg.manager == SCRIPT_SENTINEL {
+            if pkg.manager == crate::SCRIPT_SENTINEL {
                 continue;
             }
             wanted.insert(node_manager(registry, &pkg.manager).to_string());
@@ -340,7 +533,7 @@ fn build_actions(
     }
 
     let mut provisions: Vec<Provisioning<'_>> = Vec::new();
-    for (manager, via) in provision_order(graph) {
+    for (manager, via, declared) in provision_order(graph) {
         let mut depends_on: Vec<String> = graph
             .needs
             .get(manager)
@@ -356,6 +549,7 @@ fn build_actions(
         provisions.push(Provisioning {
             manager,
             via,
+            declared,
             depends_on,
         });
     }
@@ -406,7 +600,7 @@ fn build_actions(
 ///
 /// Derived from the registry rather than listed at the CLI, and from the SAME
 /// two rules the planner seeds nodes with: a manager is named by the node it
-/// would be planned under ([`node_manager`]'s family collapse, which folds
+/// would be planned under (`node_manager`'s family collapse, which folds
 /// `brew-cask` onto `brew` only when `brew` is itself registered), and a tool
 /// is named by the bootstrap plan that shells out to it. A validator listing
 /// families alone refused `--phase prerequisites.curl` — a spelling
@@ -420,7 +614,7 @@ fn build_actions(
 /// it is what keeps this a spelling gate rather than a second planner.
 pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
     let mut selectors = BTreeSet::new();
-    for pm in &registry.package_managers {
+    for pm in registry.package_managers() {
         selectors.insert(node_manager(registry, pm.name()).to_string());
         if let Some(plan) = pm.bootstrap_plan() {
             selectors.extend(plan.requires);
@@ -554,7 +748,7 @@ fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
 }
 
 fn note_consumer(consumers: &mut BTreeSet<String>, manager: &str) {
-    if manager == SCRIPT_SENTINEL {
+    if manager == crate::SCRIPT_SENTINEL {
         return;
     }
     consumers.insert(manager.to_string());
@@ -604,6 +798,7 @@ pub fn restrict_provision_batches(plan: &mut Plan, phase: &PhaseName, selector: 
 struct Provisioning<'g> {
     manager: &'g str,
     via: &'g str,
+    declared: Option<&'g DeclaredProvision>,
     depends_on: Vec<String>,
 }
 
@@ -640,7 +835,11 @@ fn batch_provisions<'g>(
     // Leading a batch keeps the leader's own node id, so a depended-on manager
     // may lead. Joining one dissolves the member's node, so it may not join.
     let can_lead = |p: &Provisioning<'_>| {
-        find_manager(registry, p.via).is_some()
+        // A declared route installs the module's own package name; a batch
+        // installs `mediated_packages`, which are the manager's. They are not
+        // the same command, so a declared provision neither leads nor joins.
+        p.declared.is_none()
+            && find_manager(registry, p.via).is_some()
             && find_manager(registry, p.manager)
                 .and_then(|pm| pm.mediated_packages(p.via))
                 .is_some_and(|pkgs| !pkgs.is_empty())
@@ -674,6 +873,7 @@ fn batch_provisions<'g>(
         actions.push(Action::Manager(ManagerAction::Provision {
             manager: provisioning.manager.to_string(),
             via: provisioning.via.to_string(),
+            declared: provisioning.declared.cloned(),
             batched: Vec::new(),
             depends_on: provisioning.depends_on,
         }));
@@ -681,28 +881,34 @@ fn batch_provisions<'g>(
     actions
 }
 
+/// One scheduled provision: the manager, the method it runs, and the module's
+/// declared route when one decided that method.
+type Scheduled<'g> = (&'g str, &'g str, Option<&'g DeclaredProvision>);
+
 /// The provisions in dependency order, each with the method it runs — read from
 /// the same lookup that classified it, so a provision naming no method is not
 /// representable. A manager whose cascade installs through another provisioned
 /// manager follows it. Ties break by name, so the order is a function of the
 /// host rather than of iteration.
-fn provision_order(graph: &Graph) -> Vec<(&str, &str)> {
-    let mut pending: Vec<(&str, &str)> = graph
+fn provision_order(graph: &Graph) -> Vec<Scheduled<'_>> {
+    let mut pending: Vec<Scheduled<'_>> = graph
         .members
         .iter()
         .filter_map(|(name, state)| match state {
-            MemberState::Provision { via } => Some((name.as_str(), via.as_str())),
+            MemberState::Provision { via, declared } => {
+                Some((name.as_str(), via.as_str(), declared.as_ref()))
+            }
             MemberState::Present | MemberState::Refused { .. } => None,
         })
         .collect();
-    let mut ordered: Vec<(&str, &str)> = Vec::with_capacity(pending.len());
+    let mut ordered: Vec<Scheduled<'_>> = Vec::with_capacity(pending.len());
     while !pending.is_empty() {
-        let ready: Vec<(&str, &str)> = pending
+        let ready: Vec<Scheduled<'_>> = pending
             .iter()
             .copied()
-            .filter(|(name, _)| {
+            .filter(|(name, _, _)| {
                 graph.prefers.get(*name).is_none_or(|preferred| {
-                    !pending.iter().any(|(pending, _)| pending == preferred)
+                    !pending.iter().any(|(pending, _, _)| pending == preferred)
                 })
             })
             .collect();
@@ -738,7 +944,7 @@ fn node_manager<'r>(registry: &'r ProviderRegistry, name: &'r str) -> &'r str {
 
 fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dyn PackageManager> {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .find(|pm| pm.name() == name)
         .map(|pm| pm.as_ref())
@@ -755,13 +961,22 @@ fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dy
 pub(super) fn fold_provision_path_dirs<'a>(
     registry: &ProviderRegistry,
     actions: impl IntoIterator<Item = &'a Action>,
-    recorded: Vec<String>,
-) -> Vec<String> {
+    recorded: Vec<ManagerPathDir>,
+) -> Vec<ManagerPathDir> {
     let mut dirs = recorded;
     for action in actions {
-        let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
+        let Action::Manager(node @ ManagerAction::Provision { declared, .. }) = action else {
             continue;
         };
+        // A node running the module's declared route runs no cascade, so the
+        // cascade's directories are not the ones this install creates: apt's
+        // rustc lands on the system PATH, and folding rustup's `~/.cargo/bin`
+        // in would name a directory nothing on this host populates. What the
+        // installer really made is recorded by `record_created_path_dirs` as
+        // the install finishes.
+        if declared.is_some() {
+            continue;
+        }
         // Every manager the node provisions, not only the one it is named
         // for: a batched member's directories land on this host exactly as
         // the leader's do, and an env file missing them is a binary cfgd
@@ -774,8 +989,11 @@ pub(super) fn fold_provision_path_dirs<'a>(
                 continue;
             };
             for dir in plan.creates_path_dirs {
-                if !dirs.contains(&dir) {
-                    dirs.push(dir);
+                if !dirs.iter().any(|d| d.dir == dir) {
+                    dirs.push(ManagerPathDir {
+                        manager: manager.to_string(),
+                        dir,
+                    });
                 }
             }
         }
@@ -788,7 +1006,7 @@ pub(super) fn fold_provision_path_dirs<'a>(
 /// has none, which is the refusal path.
 fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageManager> {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|pm| pm.as_ref())
         .find(|pm| is_system_manager(pm.name()) && pm.is_available())
@@ -824,8 +1042,14 @@ mod tests {
     }
 
     /// One module install of `package` through `manager`, routed to `Packages`
-    /// exactly as `plan_modules` routes it.
-    fn module_install(manager: &str, package: &str) -> Vec<(PhaseName, Action)> {
+    /// exactly as `plan_modules` routes it. `declared` is whether the module's
+    /// author named that manager (`prefer`/`aliases`) or resolution defaulted
+    /// to it.
+    fn module_install_declared(
+        manager: &str,
+        package: &str,
+        declared: bool,
+    ) -> Vec<(PhaseName, Action)> {
         vec![(
             PhaseName::Packages,
             Action::Module(ModuleAction::with_origin(
@@ -835,16 +1059,162 @@ mod tests {
                         canonical_name: package.to_string(),
                         resolved_name: package.to_string(),
                         manager: manager.to_string(),
+                        manager_declared: declared,
                         version: None,
                         script: None,
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     }],
                 },
                 None,
             )),
         )]
+    }
+
+    fn module_install(manager: &str, package: &str) -> Vec<(PhaseName, Action)> {
+        module_install_declared(manager, package, false)
+    }
+
+    /// The `via` and `declared` a `tool` provision settles as, given a module
+    /// entry for `tool` resolved onto `alt` with the stated provenance. `tool`
+    /// is absent and its own cascade installs it through `sys`.
+    fn tool_route(declared: bool) -> (String, Option<DeclaredProvision>) {
+        // `widget` is why cfgd needs `tool` as a MANAGER at all; the `tool`
+        // entry beside it is what may or may not route its provision.
+        let mut routed = module_install_declared("alt", "tool", declared);
+        routed.extend(module_install_declared("tool", "widget", false));
+        let actions = plan_actions_with_modules(
+            Vec::new(),
+            routed,
+            vec![
+                MockPackageManager::new("alt"),
+                MockPackageManager::new("sys"),
+                MockPackageManager::new("tool")
+                    .unavailable()
+                    .bootstrappable_via("sys"),
+            ],
+        );
+        actions
+            .iter()
+            .find_map(|a| match a {
+                Action::Manager(ManagerAction::Provision {
+                    manager,
+                    via,
+                    declared,
+                    ..
+                }) if manager == "tool" => Some((via.clone(), declared.clone())),
+                _ => None,
+            })
+            .expect("the absent manager is provisioned")
+    }
+
+    /// What a provision node DELIVERS is read off the route the PLAN settled.
+    ///
+    /// A declared route speaks for the whole node (it is never batched) and
+    /// delivers the module's own package name through its own installer; a
+    /// cascade delivers each member's `mediated_packages` under the mediator
+    /// the plan named. Both halves are what the apply's settle records into
+    /// `provisioned_packages` and what the plan's elision judges an entry by,
+    /// so the two cannot disagree about which package a row above landed.
+    ///
+    /// The planned `via` is the truth about what ran because
+    /// `PackageContext::planned_method` is binding on the cascade — the arm it
+    /// names is the only one attempted, and a host that lost that mediator
+    /// between plan and apply fails the node instead of silently taking
+    /// another route (pinned in `packages::shared`).
+    #[test]
+    fn a_provisions_delivered_pair_is_read_off_the_planned_route() {
+        let mut builder = ReconcilerTestHarness::builder();
+        for pm in [
+            MockPackageManager::new("alt"),
+            MockPackageManager::new("sys"),
+            MockPackageManager::new("tool")
+                .unavailable()
+                .mediated_by("sys", &["tool-pkg"]),
+            MockPackageManager::new("mate")
+                .unavailable()
+                .mediated_by("sys", &["mate-pkg"]),
+        ] {
+            builder = builder.with_package_manager(pm);
+        }
+        let harness = builder.build();
+        let registry = &harness.registry;
+
+        let cascade = ManagerAction::Provision {
+            manager: "tool".to_string(),
+            via: "sys".to_string(),
+            declared: None,
+            batched: vec!["mate".to_string()],
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            provision_delivered_packages(registry, &cascade),
+            vec![
+                ("sys".to_string(), "tool-pkg".to_string()),
+                ("sys".to_string(), "mate-pkg".to_string()),
+            ],
+            "a cascade delivers every member's mediated packages under the planned mediator"
+        );
+
+        let routed = ManagerAction::Provision {
+            manager: "tool".to_string(),
+            via: "alt".to_string(),
+            declared: Some(DeclaredProvision {
+                installer: "alt".to_string(),
+                package: "tool-alias".to_string(),
+            }),
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            provision_delivered_packages(registry, &routed),
+            vec![("alt".to_string(), "tool-alias".to_string())],
+            "a declared route delivers the module's own name through its own installer"
+        );
+
+        assert!(
+            provision_delivered_packages(
+                registry,
+                &ManagerAction::Refuse {
+                    manager: "tool".to_string(),
+                    reason: "no cascade".to_string(),
+                },
+            )
+            .is_empty(),
+            "a node that provisions nothing delivers nothing"
+        );
+    }
+
+    /// `ResolvedPackage::manager` is what RESOLUTION chose, not what the module
+    /// author said. An entry carrying neither `prefer` nor `aliases` lands on
+    /// cfgd's own platform default, and reading that as a declaration is what
+    /// turned a bare `- name: npm` into `provision npm via apt` — apt's whole
+    /// node toolchain in place of the brew cascade npm's own bootstrap picks.
+    #[test]
+    fn a_resolver_defaulted_manager_is_not_a_declared_provision_route() {
+        let (via, declared) = tool_route(false);
+        assert_eq!(
+            via, "sys",
+            "with no declaration the manager's own cascade provisions it"
+        );
+        assert!(
+            declared.is_none(),
+            "cfgd's platform default is not a route the module declared: {declared:?}"
+        );
+    }
+
+    /// The other half of the same predicate: an entry the author DID route
+    /// still outranks the cascade, so the fix cannot have retired the feature.
+    #[test]
+    fn an_author_declared_manager_still_routes_the_provision() {
+        let (via, declared) = tool_route(true);
+        assert_eq!(via, "alt", "the module's own chain picks the installer");
+        assert_eq!(
+            declared.map(|d| (d.installer, d.package)),
+            Some(("alt".to_string(), "tool".to_string()))
+        );
     }
 
     /// Every action `plan_managers` mints for the given package work.
@@ -907,10 +1277,13 @@ mod tests {
             provisions.len(),
             1,
             "one apt-get install serves both, so one node says so: {:?}",
-            actions.iter().map(format_plan_item).collect::<Vec<_>>()
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            format_plan_item(provisions[0]),
+            format_plan_item(provisions[0], crate::output::theme::ICON_ARROW),
             "provision npm, pipx via apt",
             "the line has to account for every manager the command installs"
         );
@@ -944,7 +1317,7 @@ mod tests {
         let lines: Vec<String> = actions
             .iter()
             .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-            .map(format_plan_item)
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
             .collect();
         assert_eq!(
             lines,
@@ -1025,7 +1398,7 @@ mod tests {
         let actions = plan_managers(&harness.registry, &installs(&["apt", "npm", "pipx"]), &[]);
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, Vec::new());
         assert!(
-            dirs.contains(&"/opt/pipx/bin".to_string()),
+            dirs.iter().any(|d| d.dir == "/opt/pipx/bin"),
             "a batched member's directory is on this host too: {dirs:?}"
         );
     }
@@ -1040,7 +1413,7 @@ mod tests {
             .iter()
             .flat_map(|phase| phase.actions())
             .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
-            .map(format_plan_item)
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
             .collect();
         assert_eq!(
             lines,
@@ -1240,6 +1613,76 @@ mod tests {
         );
     }
 
+    /// A cascade is priced against the plan it joins: brew is absent on this
+    /// host but a `Provision` member of the same plan, so npm's cascade plans
+    /// `via brew` behind brew's node rather than falling to the system arm
+    /// the host alone would have answered.
+    #[test]
+    fn a_cascade_prefers_the_mediator_this_run_provisions() {
+        let actions = plan_actions(
+            installs(&["brew", "npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("brew")
+                    .unavailable()
+                    .bootstrappable_via("homebrew installer"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .preferring_delivered(&["brew"])
+                    .bootstrappable_via("apt"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        let Some(Action::Manager(ManagerAction::Provision {
+            via, depends_on, ..
+        })) = actions
+            .iter()
+            .find(|a| format_action_description(a) == "manager:provision:npm")
+        else {
+            panic!("npm must be provisioned: {ids:?}");
+        };
+        assert_eq!(
+            via, "brew",
+            "npm's cascade must see the brew this run provisions: {ids:?}"
+        );
+        assert_eq!(
+            depends_on,
+            &vec!["manager:provision:brew".to_string()],
+            "and its node waits on brew's provision"
+        );
+    }
+
+    /// The other half: a host with no brew and no brew work keeps the system
+    /// arm. The closure never installs brew for a cascade's sake.
+    #[test]
+    fn a_cascade_with_no_brew_in_the_plan_keeps_its_host_arm() {
+        let actions = plan_actions(
+            installs(&["npm"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("brew")
+                    .unavailable()
+                    .bootstrappable_via("homebrew installer"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .preferring_delivered(&["brew"])
+                    .bootstrappable_via("apt"),
+            ],
+        );
+        let ids: Vec<String> = actions.iter().map(format_action_description).collect();
+        assert!(
+            !ids.iter().any(|id| id == "manager:provision:brew"),
+            "brew is not pulled in for a cascade's sake: {ids:?}"
+        );
+        let Some(Action::Manager(ManagerAction::Provision { via, .. })) = actions
+            .iter()
+            .find(|a| format_action_description(a) == "manager:provision:npm")
+        else {
+            panic!("npm must be provisioned: {ids:?}");
+        };
+        assert_eq!(via, "apt");
+    }
+
     #[test]
     #[serial_test::serial]
     fn a_missing_required_tool_plans_a_prerequisite_from_the_system_manager() {
@@ -1302,7 +1745,10 @@ mod tests {
             ],
             "a provision waits on both its tool and its installer"
         );
-        let items: Vec<String> = actions.iter().map(format_plan_item).collect();
+        let items: Vec<String> = actions
+            .iter()
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+            .collect();
         assert_eq!(
             items,
             vec![
@@ -1335,7 +1781,10 @@ mod tests {
              visible in the phase the user is told to look at: {ids:?}"
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![format!(
                 "cannot provision npm — {ABSENT_TOOL} is missing and no system manager is available"
             )],
@@ -1357,7 +1806,10 @@ mod tests {
             ],
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![format!(
                 "cannot provision npm — {ABSENT_TOOL} is missing and apt does not install it \
                  under that name"
@@ -1387,7 +1839,10 @@ mod tests {
              left promising `provision npm via brew` with no brew: {ids:?}"
         );
         assert_eq!(
-            actions.iter().map(format_plan_item).collect::<Vec<_>>(),
+            actions
+                .iter()
+                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+                .collect::<Vec<_>>(),
             vec![
                 "cannot provision npm — it installs through brew, which cannot be provisioned"
                     .to_string()
@@ -1594,13 +2049,13 @@ mod tests {
                     .creating_dirs(&["/home/u/.cargo/bin"]),
             )
             .build();
-        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
         assert_eq!(
             dirs,
             vec![
-                "/opt/homebrew/bin".to_string(),
-                "/home/u/.cargo/bin".to_string(),
+                ManagerPathDir::new("brew", "/opt/homebrew/bin"),
+                ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
             ],
             "the recorded dirs stay first; the provisioned manager's declared dir is appended"
         );
@@ -1625,7 +2080,7 @@ mod tests {
                     .creating_dirs(&["/home/u/.cargo/bin"]),
             )
             .build();
-        let recorded = vec!["/home/u/.cargo/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("cargo", "/home/u/.cargo/bin")];
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
         assert_eq!(dirs, recorded, "a dir already recorded is not repeated");
     }
@@ -1635,7 +2090,7 @@ mod tests {
         let harness = ReconcilerTestHarness::builder()
             .with_package_manager(MockPackageManager::new("brew"))
             .build();
-        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let dirs =
             fold_provision_path_dirs(&harness.registry, &Vec::<Action>::new(), recorded.clone());
         assert_eq!(dirs, recorded);
@@ -1723,6 +2178,7 @@ mod tests {
         let pipx_provision = Action::Manager(ManagerAction::Provision {
             manager: "pipx".to_string(),
             via: "pipx installer".to_string(),
+            declared: None,
             batched: vec![],
             depends_on: vec![ManagerAction::prereq_node("curl")],
         });
@@ -1743,6 +2199,132 @@ mod tests {
             2,
             "both the curl prerequisite and pipx's provision survive: {:?}",
             prereq_phase.actions().collect::<Vec<_>>()
+        );
+    }
+
+    /// One batched provision node, as `collapse_provisions` would have minted
+    /// it: `manager` leads, `batched` ride along, one `via` command delivers
+    /// all of them.
+    fn batched_provision(manager: &str, batched: &[&str], via: &str) -> Action {
+        Action::Manager(ManagerAction::Provision {
+            manager: manager.to_string(),
+            via: via.to_string(),
+            declared: None,
+            batched: batched.iter().map(|m| (*m).to_string()).collect(),
+            depends_on: Vec::new(),
+        })
+    }
+
+    /// Every provision line the plan still carries, as the tree renders it.
+    fn provision_lines(plan: &Plan) -> Vec<String> {
+        plan.phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+            .collect()
+    }
+
+    /// Every provision node's persisted id.
+    fn provision_ids(plan: &Plan) -> Vec<String> {
+        plan.phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(format_action_description)
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_member_whose_installs_are_all_skipped_leaves_the_command() {
+        // `--skip packages.pipx` takes away everything pipx was going to
+        // install. The one apt command provisioning the batch must stop
+        // carrying pipx with it, or the run installs a toolchain nothing asked
+        // for — the shape `shrink_provision_batches` exists to prevent.
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt")],
+            vec![pkg_install("npm", "typescript")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision npm via apt"],
+            "no surviving install needs pipx, so the mediator command that \
+             would have installed it stops naming it"
+        );
+        assert_eq!(
+            provision_ids(&plan),
+            vec!["manager:provision:npm"],
+            "the surviving leader keeps the identity it already had"
+        );
+    }
+
+    #[test]
+    fn a_dropped_unpinned_leader_promotes_the_next_batch_member() {
+        // The mirror case: the skip took away npm's installs and npm is the
+        // batch's LEADER, so the node's identity moves to pipx. Safe only
+        // because nothing depends on `manager:provision:npm`.
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt")],
+            vec![pkg_install("pipx", "black")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision pipx via apt"],
+            "the surviving member leads the command it is now the whole of"
+        );
+        assert_eq!(
+            provision_ids(&plan),
+            vec!["manager:provision:pipx"],
+            "the node's persisted identity is the promoted leader's, so the \
+             journal row names the manager the command actually provisions"
+        );
+        let edges: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter_map(|action| match action {
+                Action::Manager(node) => Some(node.depends_on().to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            !edges.contains(&ManagerAction::provision_node("npm")),
+            "promotion may only retire an id nothing waits on: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn an_unconsumed_leader_another_node_waits_on_keeps_its_place() {
+        // npm has no surviving install of its own, but pnpm is provisioned
+        // THROUGH npm and its edge resolves against `manager:provision:npm`.
+        // Dropping npm here would promote pipx and leave that edge naming a
+        // node no phase carries, so the leader is retained.
+        let pnpm = Action::Manager(ManagerAction::Provision {
+            manager: "pnpm".to_string(),
+            via: "npm".to_string(),
+            declared: None,
+            batched: Vec::new(),
+            depends_on: vec![ManagerAction::provision_node("npm")],
+        });
+        let mut plan = one_phase_plan(
+            vec![batched_provision("npm", &["pipx"], "apt"), pnpm],
+            vec![pkg_install("pipx", "black"), pkg_install("pnpm", "vite")],
+        );
+
+        prune_to_surviving_consumers(&mut plan);
+
+        assert_eq!(
+            provision_lines(&plan),
+            vec!["provision npm, pipx via apt", "provision pnpm via npm"],
+            "npm stays in the command that installs it, because pnpm's \
+             provisioning waits on the node npm's name identifies"
         );
     }
 
@@ -1971,7 +2553,7 @@ mod tests {
             fold_provision_path_dirs(&plan_registry, &manager_actions, Vec::new());
         assert_eq!(
             path_dirs_at_plan,
-            vec!["/opt/cargo-bin".to_string()],
+            vec![ManagerPathDir::new("cargo", "/opt/cargo-bin")],
             "the not-yet-provisioned manager's declared dir is already folded into the \
              plan before it is bootstrapped"
         );

@@ -22,6 +22,7 @@ fn pkg_ok(name: &str) -> VerifyResult {
         expected: "installed".into(),
         actual: "installed".into(),
         matches: true,
+        unmanaged: false,
     }
 }
 
@@ -32,6 +33,7 @@ fn sysctl_drift(key: &str, want: &str, have: &str) -> VerifyResult {
         expected: want.into(),
         actual: have.into(),
         matches: false,
+        unmanaged: false,
     }
 }
 
@@ -43,6 +45,8 @@ fn ok_fixture() -> VerifyOutput {
         results,
         pass_count,
         fail_count,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -57,6 +61,8 @@ fn drift_fixture() -> VerifyOutput {
         results,
         pass_count,
         fail_count,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -65,6 +71,8 @@ fn empty_fixture() -> VerifyOutput {
         results: Vec::new(),
         pass_count: 0,
         fail_count: 0,
+        system_errors: Vec::new(),
+        standing: Vec::new(),
     }
 }
 
@@ -72,7 +80,7 @@ fn empty_fixture() -> VerifyOutput {
 fn verify_ok_human() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/ok.txt");
 }
@@ -81,7 +89,7 @@ fn verify_ok_human() {
 fn verify_ok_json() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
@@ -98,7 +106,7 @@ fn verify_ok_json() {
 fn verify_drift_human() {
     let output = drift_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/drift.txt");
 }
@@ -107,7 +115,7 @@ fn verify_drift_human() {
 fn verify_empty_human() {
     let output = empty_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     let human = cap.human();
     assert!(

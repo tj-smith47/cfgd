@@ -7,13 +7,15 @@
 #![cfg(test)]
 
 use http::Method;
-use serde_json::json;
 
 use super::drift::{create_drift_alert_crd, find_machine_config_for_device};
 use super::*;
 use crate::controllers::test_fixtures::mc_list;
 use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
-use crate::crds::{MachineConfig, MachineConfigSpec};
+use crate::crds::{
+    DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfig, MachineConfigReference,
+    MachineConfigSpec,
+};
 
 const HOSTNAME: &str = "host-prod";
 const DEVICE_ID: &str = "dev-001";
@@ -51,9 +53,9 @@ fn mc_for(name: &str, hostname: &str) -> MachineConfig {
 
 fn detail() -> DriftDetailInput {
     DriftDetailInput {
-        field: "packages.kubectl".to_string(),
-        expected: "1.28".to_string(),
-        actual: "1.27".to_string(),
+        field: "sysctl.net.ipv4.ip_forward".to_string(),
+        expected: "1".to_string(),
+        actual: "0".to_string(),
     }
 }
 
@@ -64,6 +66,31 @@ fn stripped_ts() -> String {
 
 fn expected_alert_name() -> String {
     format!("drift-{}-{}", DEVICE_ID, stripped_ts())
+}
+
+/// The API server echoes the created object back, and the client deserializes
+/// it. A stub body missing `spec` fails to deserialize, which sends the create
+/// path down its unparsable-body arm — so a test using one exercises that arm
+/// rather than the ordinary success it is named for.
+fn created_alert_response(mc_ref: &str) -> DriftAlert {
+    let mut alert = DriftAlert::new(
+        &expected_alert_name(),
+        DriftAlertSpec {
+            device_id: DEVICE_ID.to_string(),
+            machine_config_ref: MachineConfigReference {
+                name: mc_ref.to_string(),
+                namespace: None,
+            },
+            drift_details: vec![DriftDetail {
+                field: detail().field,
+                expected: detail().expected,
+                actual: detail().actual,
+            }],
+            severity: DriftSeverity::Medium,
+        },
+    );
+    alert.metadata.namespace = Some("default".to_string());
+    alert
 }
 
 // -----------------------------------------------------------------------
@@ -81,11 +108,7 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
         // 2. POST DriftAlert — accept (201).
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response("mc-prod")),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
@@ -128,8 +151,8 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
         "default severity is Medium"
     );
     assert_eq!(
-        body["spec"]["driftDetails"][0]["field"], "packages.kubectl",
-        "drift detail field is preserved verbatim"
+        body["spec"]["driftDetails"][0]["field"], "sysctl.net.ipv4.ip_forward",
+        "drift detail field is preserved verbatim, configurator qualifier included"
     );
 }
 
@@ -143,11 +166,7 @@ async fn create_drift_alert_crd_falls_back_to_synthetic_name_when_no_mc_matches(
         ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[mc])),
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response(&synthetic)),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
@@ -171,6 +190,103 @@ async fn create_drift_alert_crd_falls_back_to_synthetic_name_when_no_mc_matches(
 }
 
 #[tokio::test]
+async fn a_device_id_that_is_not_a_legal_k8s_name_is_reshaped_before_it_is_posted() {
+    let hostile = "Laptop_01";
+    let synthetic = format!("{HOSTNAME}-mc");
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
+        ExpectedCall::post(drift_alerts_create_path())
+            .with_status(201)
+            .returning_json(&created_alert_response(&synthetic)),
+    ]);
+
+    create_drift_alert_crd(&ctx.client, hostile, HOSTNAME, &[detail()], TIMESTAMP)
+        .await
+        .expect("a reshaped id still posts");
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        2,
+        "the object must be accepted on the first attempt, not retried into a 422 ladder"
+    );
+
+    let body = report
+        .find(Method::POST, "/driftalerts")
+        .unwrap()
+        .body_json();
+    assert_eq!(
+        body["metadata"]["name"],
+        format!("drift-laptop-01-{}", stripped_ts()),
+        "an underscore in the device id must not reach the object name"
+    );
+    assert_eq!(
+        body["metadata"]["labels"][cfgd_core::LABEL_DEVICE_ID],
+        "laptop-01",
+        "the device-id label must carry the reshaped id"
+    );
+    assert_eq!(
+        body["spec"]["deviceId"], hostile,
+        "the spec keeps the id the device sent — only the k8s-addressable copies are reshaped"
+    );
+}
+
+#[tokio::test]
+async fn an_over_long_id_and_hostname_are_cut_to_what_a_label_value_holds() {
+    let hostile_id = "D".repeat(100);
+    let hostile_host = format!("Host_{}", "x".repeat(100));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
+        ExpectedCall::post(drift_alerts_create_path())
+            .with_status(201)
+            .returning_json(&created_alert_response("ignored")),
+    ]);
+
+    create_drift_alert_crd(
+        &ctx.client,
+        &hostile_id,
+        &hostile_host,
+        &[detail()],
+        TIMESTAMP,
+    )
+    .await
+    .expect("an over-long id still posts");
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        2,
+        "no retry ladder on an accepted POST"
+    );
+
+    let body = report
+        .find(Method::POST, "/driftalerts")
+        .unwrap()
+        .body_json();
+    for key in [cfgd_core::LABEL_DEVICE_ID, cfgd_core::LABEL_MACHINE_CONFIG] {
+        let value = body["metadata"]["labels"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("label {key} must be a string"));
+        assert!(
+            value.len() <= 63,
+            "label {key} must fit the 63 bytes a label value allows, got {}",
+            value.len()
+        );
+        assert!(
+            !value.ends_with('-'),
+            "label {key} must not end on a hyphen the cut exposed: {value}"
+        );
+    }
+    assert_eq!(
+        body["metadata"]["name"],
+        format!("drift-{}-{}", "d".repeat(63), stripped_ts()),
+        "the object name is built from the same reshaped id"
+    );
+}
+
+#[tokio::test]
 async fn create_drift_alert_crd_treats_409_conflict_as_already_exists_no_retry() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
@@ -190,6 +306,36 @@ async fn create_drift_alert_crd_treats_409_conflict_as_already_exists_no_retry()
     );
 }
 
+/// A 2xx whose body does not deserialize means the object was created and only
+/// the server's echo of it is unreadable. Retrying would POST a second time and
+/// take a 409 to learn what the first response already said.
+#[tokio::test(start_paused = true)]
+async fn create_drift_alert_crd_does_not_retry_a_created_alert_with_an_unparsable_body() {
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
+        // 201, but the body is not a DriftAlert — the client cannot parse it.
+        ExpectedCall::post(drift_alerts_create_path())
+            .with_status(201)
+            .returning_json(&serde_json::json!({ "kind": "DriftAlert" })),
+    ]);
+
+    create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
+        .await
+        .expect("a created alert is Ok even when its echo cannot be parsed");
+
+    let report = harness.finish().await;
+    let posts: Vec<_> = report
+        .captured
+        .iter()
+        .filter(|r| r.method == Method::POST && r.path.ends_with("/driftalerts"))
+        .collect();
+    assert_eq!(
+        posts.len(),
+        1,
+        "an unparsable 2xx body is success, not a failed create to retry"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn create_drift_alert_crd_retries_on_server_error_then_succeeds() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -199,11 +345,7 @@ async fn create_drift_alert_crd_retries_on_server_error_then_succeeds() {
         // Attempt 2 → 201 → success.
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response(&format!("{HOSTNAME}-mc"))),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)

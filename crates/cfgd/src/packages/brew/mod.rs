@@ -13,7 +13,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
-    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live,
+    install_batch_then_per_package, partition_already_installed, pkg_run, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_cmd_msg, run_pkg_query, upgrade_each,
 };
 
 pub struct BrewManager;
@@ -71,21 +72,100 @@ pub(super) fn parse_brew_info_version(
 
 pub struct BrewTapManager;
 
+// Older brew has no `trust` subcommand and no trust gate either, so its
+// "Unknown command: trust/untrust" refusal means there is nothing to record.
+fn is_missing_trust_subcommand(message: &str) -> bool {
+    message.to_lowercase().contains("unknown command")
+}
+
+impl BrewTapManager {
+    // Current brew ignores formulae, casks and commands from a tap the user
+    // has not trusted (`brew trust --tap` records the grant in trust.json,
+    // non-interactively — the command takes no confirmation), so a tap cfgd
+    // adds is only usable once trusted. A real trust failure leaves the tap's
+    // formulae uninstallable, which fails the install it belongs to.
+    fn trust_tap(&self, tap: &str) -> Result<()> {
+        match run_pkg_cmd_msg(
+            "brew-tap",
+            brew_cmd().args(["trust", "--tap", tap]),
+            "install",
+            &format!("brew trust --tap {tap}"),
+        ) {
+            Err(PackageError::InstallFailed { message, .. })
+                if is_missing_trust_subcommand(&message) =>
+            {
+                Ok(())
+            }
+            other => Ok(other.map(|_| ())?),
+        }
+    }
+
+    // The untap already succeeded when this runs, so a failed untrust is
+    // residue (a trust.json entry naming a tap that no longer exists), never
+    // a failed uninstall — it is reported as a caveat instead of propagated,
+    // which also keeps untap working for taps trusted before cfgd recorded
+    // trust at all.
+    fn untrust_tap(&self, tap: &str, cx: &cfgd_core::providers::PackageContext<'_>) {
+        match run_pkg_cmd_msg(
+            "brew-tap",
+            brew_cmd().args(["untrust", "--tap", tap]),
+            "uninstall",
+            &format!("brew untrust --tap {tap}"),
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                if let PackageError::UninstallFailed { message, .. } = &e
+                    && is_missing_trust_subcommand(message)
+                {
+                    return;
+                }
+                // The error's own Display opens on the manager name, because
+                // it is read standalone in a `Result` chain; here the tag
+                // already says `brew-tap`, so the note states what was left
+                // behind instead of repeating the speaker.
+                let detail = match &e {
+                    PackageError::UninstallFailed { message, .. } => {
+                        cfgd_core::output::collapse_to_subject_line(message)
+                    }
+                    other => cfgd_core::output::collapse_to_subject_line(other),
+                };
+                cx.report(
+                    Role::Warn,
+                    "brew-tap",
+                    format!("could not untrust {tap}: {detail}"),
+                );
+            }
+        }
+    }
+}
+
 impl PackageManager for BrewTapManager {
     fn name(&self) -> &str {
         "brew-tap"
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // A tap is a repository: it has no version to be below, so nothing
+        // ever asks this — declared rather than defaulted so the answer is a
+        // statement, not an omission.
+        None
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
     }
 
     fn is_available(&self) -> bool {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A sub-manager has no bootstrap of its own: `brew` provisions the one
         // binary all three share.
         None
     }
 
+    // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -111,6 +191,7 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "install",
             )?;
+            self.trust_tap(tap)?;
         }
         Ok(())
     }
@@ -129,6 +210,7 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "uninstall",
             )?;
+            self.untrust_tap(tap, cx);
         }
         Ok(())
     }
@@ -136,6 +218,12 @@ impl PackageManager for BrewTapManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         // Taps don't have versions
         Ok(None)
+    }
+
+    fn registers_family_sources(&self) -> bool {
+        // A tap is a formula SOURCE: `brew`/`brew-cask` installs in the same
+        // run may only resolve once it is added, so tap installs order first.
+        true
     }
 }
 
@@ -148,16 +236,25 @@ impl PackageManager for BrewCaskManager {
         "brew-cask"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // A sub-manager has no bootstrap of its own: `brew` provisions the one
         // binary all three share.
         None
     }
 
+    // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -174,9 +271,18 @@ impl PackageManager for BrewCaskManager {
         casks: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx, "brew-cask", casks, |pkgs| {
+        if casks.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, casks, cx);
+        install_batch_then_per_package(cx, "brew-cask", &fresh, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").arg("--cask").args(pkgs);
+            cmd
+        })?;
+        upgrade_each(cx, "brew-cask", &held, "brew upgrade --cask", |pkg| {
+            let mut cmd = brew_cmd();
+            cmd.arg("upgrade").arg("--cask").arg(pkg);
             cmd
         })?;
         Ok(())
@@ -203,13 +309,10 @@ impl PackageManager for BrewCaskManager {
 
     fn available_version(&self, cask: &str) -> Result<Option<String>> {
         // brew info --json=v2 --cask <pkg> → .casks[0].version
-        let output = brew_cmd()
-            .args(["info", "--json=v2", "--cask", cask])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "brew-cask".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "brew-cask",
+            brew_cmd().args(["info", "--json=v2", "--cask", cask]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -219,6 +322,33 @@ impl PackageManager for BrewCaskManager {
             "brew-cask",
         )
     }
+
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        // `--cask` pins the same population `installed_packages` lists, and the
+        // line shape is the formula listing's, so both parse through one
+        // reader. Without this the versioned enumeration fell back to the
+        // trait's identity-only answer and every cask floor was a check that
+        // could not run.
+        let output = run_pkg_cmd(
+            "brew-cask",
+            brew_cmd().args(["list", "--cask", "--versions"]),
+            "list",
+        )?;
+        Ok(parse_brew_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::brew_version_meets_minimum(available, min_version)
+    }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::brew_comparable(version)
+    }
 }
 
 impl PackageManager for BrewManager {
@@ -226,11 +356,19 @@ impl PackageManager for BrewManager {
         "brew"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        Some("upgrade")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(brew_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         brew_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // `curl` is named, not gated on: the installer needs it, but brew has
         // always offered to provision itself regardless, and narrowing that here
         // would drop the manager instead of reporting the missing tool.
@@ -241,6 +379,7 @@ impl PackageManager for BrewManager {
         )
     }
 
+    // bootstrap-arm-ok: one installer script, run as the linuxbrew user when root
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         let install_url = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
 
@@ -254,6 +393,7 @@ impl PackageManager for BrewManager {
                     "/bin/bash",
                     "linuxbrew",
                 ])
+                // own-path-ok: useradd is the host's, not a manager this run bootstraps
                 .status()
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "brew".into(),
@@ -343,9 +483,18 @@ impl PackageManager for BrewManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx, "brew", packages, |pkgs| {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let (held, fresh) = partition_already_installed(self, packages, cx);
+        install_batch_then_per_package(cx, "brew", &fresh, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").args(pkgs);
+            cmd
+        })?;
+        upgrade_each(cx, "brew", &held, "brew upgrade", |pkg| {
+            let mut cmd = brew_cmd();
+            cmd.arg("upgrade").arg(pkg);
             cmd
         })?;
         Ok(())
@@ -387,13 +536,7 @@ impl PackageManager for BrewManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // brew info --json=v2 <pkg> → .formulae[0].versions.stable
-        let output = brew_cmd()
-            .args(["info", "--json=v2", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "brew".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query("brew", brew_cmd().args(["info", "--json=v2", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -407,6 +550,17 @@ impl PackageManager for BrewManager {
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
         brew_path_dirs()
     }
+
+    // `created_path_dirs` is deliberately NOT overridden: the default (empty)
+    // answer is correct here. brew's prefix is never a directory cfgd itself
+    // created — a fresh bootstrap installs brew there, but the prefix pre-dates
+    // that install (Homebrew's own installer creates it, cfgd only ever runs
+    // it), so it never belongs in the generated env file (see env.rs's
+    // ownership invariant). The install-time PATH-resolution gap this
+    // otherwise leaves — the next action can't resolve a binary brew's own
+    // install just populated — is closed at the process level only, in
+    // `reconciler::packages::register_install_path_dirs`, which never
+    // persists anything.
 
     fn installed_packages_with_versions(
         &self,
@@ -425,11 +579,19 @@ impl PackageManager for BrewManager {
             &output.stdout,
         )))
     }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::brew_version_meets_minimum(available, min_version)
+    }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::brew_comparable(version)
+    }
 }
 
 /// Parse `brew list --versions` output (format: `package 1.2.3`) into PackageInfo.
 /// Each line has package name followed by one or more version tokens separated by spaces.
-/// We take the last version token as the installed version.
+/// The last version token is taken as the installed version.
 pub(super) fn parse_brew_versions(stdout: &str) -> Vec<cfgd_core::providers::PackageInfo> {
     stdout
         .lines()
@@ -443,7 +605,7 @@ pub(super) fn parse_brew_versions(stdout: &str) -> Vec<cfgd_core::providers::Pac
             let version = parts
                 .next()
                 .and_then(|v| v.split_whitespace().last())
-                .unwrap_or("unknown");
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
             if name.is_empty() {
                 return None;
             }

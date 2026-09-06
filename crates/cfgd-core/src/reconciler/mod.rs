@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 
+mod adopt;
 mod apply;
 mod env;
 mod env_engine;
@@ -24,6 +25,7 @@ mod run;
 mod scripts;
 mod scripts_apply;
 mod secrets;
+mod sidecar;
 mod system;
 mod types;
 mod verify;
@@ -31,42 +33,72 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use apply::{action_matches_phase_filter, emit_action_notes};
-pub use env_engine::launchd_env_plist;
+pub use adopt::{
+    ConflictResolver, ResolvedConflict, UNMANAGED_DRIFT_CAUSE, UNMANAGED_SKIP_REASON,
+    apply_conflict_policy, is_unmanaged_file, mark_unmanaged_drift, module_file_desired_hash,
+    sweep_label, sweep_unmanaged_file_targets, unmanaged_conflict_error,
+};
+pub use apply::{
+    action_matches_phase_filter, action_produced_detail, render_caveats, widest_produced_detail,
+};
+pub use env::recorded_manager_path_dirs;
+pub use env_engine::{
+    ENV_VERB_INJECT, ENV_VERB_WRITE, ManagerPathDir, launchd_env_plist, recorded_env_method,
+};
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
     EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
 };
+pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
-    DisplaySubject, action_display_subject, bare_script_subject, condense_action_desc_for_display,
-    format_action_description, format_plan_item, format_plan_items, hook_script_subject,
-    module_script_subject, script_run_subject, system_key_doubling_error, system_resource_key,
+    DisplaySubject, ModuleScope, action_display_subject, action_display_subject_within,
+    bare_script_subject, condense_action_desc_for_display, format_action_description,
+    format_plan_item, format_plan_items, hook_script_subject, module_file_resource_id,
+    module_file_spec_resource_id, module_row_facet, module_row_names_a_file, module_row_owner,
+    module_scope, module_script_subject, module_script_subject_within, row_attributable_to_module,
+    script_run_subject, script_run_subject_within, split_module_file_resource_id,
+    system_key_doubling_error, system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{
-    ActualPackages, AutoAccepted, DECISION_ACTION_INSTALL, DecisionExclusions, DecisionMint,
-    DecisionScope, DecisionTargets, DeliveredItems, SourcePolicyReview, Subscriptions, TIER_LOCKED,
-    TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions, configured_auto_apply,
-    declared_decision_paths, hash_resources, local_profile, mint_decisions, owns_decision_store,
+    ActualPackages, AutoAccepted, DECISION_ACTION_INSTALL, DecisionContents, DecisionExclusions,
+    DecisionMint, DecisionScope, DecisionTargets, DecisionsTitleScope, DeliveredItems,
+    MSG_ANSWER_DECISIONS, MSG_INCLUDE_DECLINED_DECISIONS, SourcePolicyReview, Subscriptions,
+    TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions,
+    WithheldFromPlan, answer_decisions_hint, configured_auto_apply, decision_resource_content,
+    decision_row_annotation, decisions_by_source, declared_decision_fingerprints,
+    declared_decision_paths, declined_decisions_title, hash_resources, local_profile,
+    merged_entry_owners, mint_decisions, owns_decision_store, pending_decisions_title,
     review_source_policies, review_source_policy, source_delivered_layers,
-    source_delivered_profile, undecidable_source_batches, withhold_from_plan,
+    source_delivered_profile, title_cased_tier, undecidable_source_batches, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
-    ApplyRun, BACKUPS_PHASE_LABEL, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO, PhaseCoverage,
-    PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle, ScopedGroup,
-    ScopedPhase, align_width, align_width_of, in_scope_tree, pseudo_phase, render_apply_result,
-    render_plan_tree, render_run_rollup,
+    ApplyRun, BACKUPS_PHASE_LABEL, ComposedSource, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO,
+    PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
+    ScopedGroup, ScopedPhase, align_width_of, in_scope_tree, nothing_to_do_verdict, outcome_counts,
+    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup, report_align_width,
+    report_subject_budget, run_next_step, sole_phase,
 };
+pub(crate) use sidecar::is_stamped_sidecar_name;
+pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
-    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
+    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP,
+    ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, MODULE_FACET_FILES_REFUSED, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
-    Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
+    Plan, ReconcileContext, RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction,
+    Tier, action_drift_rows, apply_heals_action_rows, attempted_count, module_files_unprobed,
+    module_skipped_whole, package_action_drift_rows, package_drift_resource_id,
+    package_entry_drift_id, split_package_drift_resource_id,
 };
-pub use verify::{VerifyResult, verify};
+pub use verify::{
+    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,
+    env_item_verify_results, env_verify_results, package_version_drift, package_version_floor,
+    verify,
+};
 
 pub(crate) use env::all_recorded_path_dirs;
 /// Widened past this crate for `cfgd::cli::plan_ops::filter_plan`, the one
@@ -131,16 +163,177 @@ pub struct Reconciler<'a> {
     /// still gets the surface written behind its back the moment a secret
     /// resolves an env var or a package manager is bootstrapped mid-run.
     withhold_env_surface: bool,
+    withheld_rows: Option<&'a DecisionExclusions>,
+    /// Secrets resolved during THIS run, so one reference costs one spawn of
+    /// its backend however many actions name it.
+    ///
+    /// A single declared reference becomes a `Resolve` action for the file it
+    /// writes and a `ResolveEnv` action for the variables it exports, and both
+    /// used to spawn `op read` / `sops -d` for the same value. The cache lives
+    /// on the reconciler because a reconciler IS one run — a CLI apply builds
+    /// one and drops it, a daemon builds one per tick — so plaintext never
+    /// outlives the work that needed it.
+    secrets: crate::providers::SecretCache,
+    /// The config directory patch scripts are anchored under, when the caller
+    /// has one.
+    ///
+    /// `None` leaves a `Patch` entry unanswerable at plan time, so it is
+    /// planned on every run (a fixture, a validation pass). Every command that
+    /// plans against a real host sets it through
+    /// [`Reconciler::with_config_dir`], which is what lets a `Patch` module
+    /// converge instead of re-running its hooks on every daemon tick.
+    config_dir: Option<PathBuf>,
+    /// The run's installed-state reader, used to drop a module package the
+    /// machine already carries.
+    ///
+    /// `None` plans a module's whole declared list, which is what a caller with
+    /// no machine to ask about wants (a fixture, a validation pass). Every
+    /// command that plans against a real host sets it through
+    /// [`Reconciler::diffing_installed`] and hands over the SAME context its
+    /// profile-package planner uses, so one enumeration per manager answers
+    /// both halves of the run.
+    installed: Option<&'a crate::providers::PackageContext<'a>>,
+    /// Targets an unmanaged-file conflict settled as `Backup`, to be copied
+    /// aside as the action that displaces each one executes.
+    ///
+    /// The decision is made while the plan is built — that is where the policy,
+    /// the prompt and the plan mutation live — but the COPY is a disk mutation,
+    /// and a plan is a preview until the operator confirms it. Carrying the
+    /// decision here defers the write to the phase whose work it is part of, so
+    /// `backed up to …` rides as a DETAIL on the row of the write it protects —
+    /// under `Phase: Files`, on the success row and the failure row alike —
+    /// instead of standing as its own line above the run's header.
+    sidecar_backups: std::collections::HashSet<PathBuf>,
+    /// Managers a node of THIS run already failed to put on the machine.
+    ///
+    /// A provision that failed is the run's own verdict that the manager is not
+    /// here, and it outranks any later probe: `is_available()` bottoms out in a
+    /// path lookup whose memo the intervening installs moved and whose last arm
+    /// is a bare `exists()`, so a manager cfgd just reported it could not
+    /// provision can answer "available" one phase later and be spawned into an
+    /// `ENOENT`. Within one phase the lane dispatcher's `fail_dependents`
+    /// already withholds the downstream work; this is the same withholding
+    /// carried ACROSS phases, where no DAG edge reaches.
+    unprovisioned: std::cell::RefCell<Vec<String>>,
+    /// Managers a node of THIS run has already PUT on the machine — the
+    /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
+    /// own `Prerequisites` phase already deliver this tool".
+    ///
+    /// A module entry naming a tool cfgd bootstraps (`- name: npm`) with no
+    /// `prefer` and no `aliases` is not a route
+    /// (`ResolvedPackage::manager_declared`), so the manager's own cascade
+    /// provisions it — brew for npm — and the entry then still stands as an
+    /// apt install of the same toolchain, which apt's installed listing has
+    /// no way to elide because apt is not what landed it. Two copies of one
+    /// toolchain with `PATH` order picking the winner is exactly what the
+    /// route feature exists to prevent, so the elision keys on the tool the
+    /// provision DELIVERED rather than on the manager that delivered it.
+    ///
+    /// Recorded from the node's own success, never re-probed: `is_available()`
+    /// cannot tell a tool this run installed from one that was here all along,
+    /// and only the former makes the entry beside it a duplicate.
+    provisioned: std::cell::RefCell<Vec<String>>,
+    /// The `(installer, package)` pairs those provisions INSTALLED — `("brew",
+    /// "node")` for `provision npm via brew` — recorded from the node's own
+    /// success beside [`Self::provisioned`], so an install row can tell an
+    /// entry this run delivered from one the machine arrived with
+    /// ([`Self::delivered_by_this_run`]).
+    provisioned_packages: std::cell::RefCell<Vec<(String, String)>>,
+    /// What this run is scoped to, for the `applies` row it records.
+    ///
+    /// `None` falls back to the resolved profile's own name, which is what
+    /// every profile-scoped caller wants. A `--module` run has no profile to
+    /// name and says so here instead, so the recorded row states the truth
+    /// rather than a placeholder every reader then has to special-case.
+    recorded_scope: Option<String>,
 }
 
 impl<'a> Reconciler<'a> {
+    /// The file manager the registry this reconciler was built over holds —
+    /// what the CLI's post-apply hash refresh hands back to
+    /// [`Self::refresh_link_deployed_hashes`], so a caller holding only the
+    /// reconciler (`init --apply`) refreshes exactly what `apply` does.
+    pub fn file_manager(&self) -> Option<&dyn crate::providers::FileManager> {
+        self.registry.file_manager.as_deref()
+    }
+
     pub fn new(registry: &'a ProviderRegistry, state: &'a StateStore) -> Self {
         Self {
             registry,
             state,
             home: resolved_home(),
             withhold_env_surface: false,
+            withheld_rows: None,
+            secrets: crate::providers::SecretCache::new(),
+            config_dir: None,
+            installed: None,
+            sidecar_backups: std::collections::HashSet::new(),
+            unprovisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned_packages: std::cell::RefCell::new(Vec::new()),
+            recorded_scope: None,
         }
+    }
+
+    /// Copy each of `targets` aside as the action that displaces it executes,
+    /// reporting where the copy landed on that action's own row.
+    ///
+    /// Set from the unmanaged-file conflict pass, which decides the policy but
+    /// no longer carries it out: see `Self::sidecar_backups`.
+    #[must_use]
+    pub fn backing_up(mut self, targets: std::collections::HashSet<PathBuf>) -> Self {
+        self.sidecar_backups = targets;
+        self
+    }
+
+    /// Copy `target` aside if this run settled it as an adoption.
+    ///
+    /// Called from both file-writing paths — a profile `spec.files` action and
+    /// a module's own deploy loop — immediately before the write that displaces
+    /// the target.
+    fn back_up_adopted_target(
+        &self,
+        target: &Path,
+    ) -> crate::errors::Result<Option<sidecar::SidecarOutcome>> {
+        if self.sidecar_backups.contains(target) {
+            return sidecar::backup_file(target).map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Record `scope` as what this run was scoped to, in place of the resolved
+    /// profile's name: see `Self::recorded_scope`.
+    #[must_use]
+    pub fn recording_scope(mut self, scope: impl Into<String>) -> Self {
+        self.recorded_scope = Some(scope.into());
+        self
+    }
+
+    /// Anchor plan-time `Patch` evaluation under `config_dir`.
+    ///
+    /// A patch merge is a function of the live target plus a script anchored at
+    /// the module's directory with the standard `CFGD_*` metadata — metadata
+    /// only the config directory can complete. Without it a `Patch` entry can
+    /// never read as converged and its module re-plans (and re-hooks) forever.
+    #[must_use]
+    pub fn with_config_dir(mut self, config_dir: &Path) -> Self {
+        self.config_dir = Some(config_dir.to_path_buf());
+        self
+    }
+
+    /// Diff a module's declared packages against what its manager reports
+    /// installed, the way the profile-level planner already does.
+    ///
+    /// Without it a module re-lists its entire package set on every plan and
+    /// re-shells to the manager on every apply, so a converged machine never
+    /// reads as converged: `cfgd plan` prints the same block forever and the
+    /// only thing making `cfgd apply` a no-op is the manager binary's own
+    /// idempotency. Pass the context the command already built for its profile
+    /// packages — a second one would re-enumerate every manager.
+    #[must_use]
+    pub fn diffing_installed(mut self, cx: &'a crate::providers::PackageContext<'a>) -> Self {
+        self.installed = Some(cx);
+        self
     }
 
     /// Withhold the env surface from the post-phase regeneration when `yes`.
@@ -152,6 +345,21 @@ impl<'a> Reconciler<'a> {
     #[must_use]
     pub fn withholding_env_surface(mut self, yes: bool) -> Self {
         self.withhold_env_surface = yes;
+        self
+    }
+
+    /// The exclusions whose withheld resources this run's drift resolve must
+    /// leave alone.
+    ///
+    /// The keep-side twin of [`withhold_from_plan`]: a caller that pruned its
+    /// plan hands the same set here, so a row naming a resource awaiting a
+    /// source decision is not healed by an apply that deliberately did not
+    /// touch it. Read through
+    /// [`DecisionExclusions::withholds_recorded_row`], which owns the
+    /// per-grammar matching.
+    #[must_use]
+    pub fn withholding_rows(mut self, exclusions: &'a DecisionExclusions) -> Self {
+        self.withheld_rows = Some(exclusions);
         self
     }
 
@@ -168,8 +376,27 @@ impl<'a> Reconciler<'a> {
             state,
             home: home.into(),
             withhold_env_surface: false,
+            withheld_rows: None,
+            secrets: crate::providers::SecretCache::new(),
+            config_dir: None,
+            installed: None,
+            sidecar_backups: std::collections::HashSet::new(),
+            unprovisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned: std::cell::RefCell::new(Vec::new()),
+            provisioned_packages: std::cell::RefCell::new(Vec::new()),
+            recorded_scope: None,
         }
     }
+}
+
+/// The primary managed env file under `home` on THIS host — the one file the
+/// per-item env checks read back, and the one the env engine always writes
+/// first. Named once for every caller outside this module, so a consumer
+/// cannot mint a second platform split and end up pointing at a file the
+/// verifier does not read.
+#[must_use]
+pub fn primary_env_file(home: &Path) -> PathBuf {
+    env_engine::primary_env_file_path(home, env_engine::EnvPlatform::current())
 }
 
 #[cfg(not(any(test, feature = "test-helpers")))]

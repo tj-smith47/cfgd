@@ -6,7 +6,9 @@ use std::process::Command;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
-use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{
+    canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+};
 
 pub struct WingetManager;
 
@@ -15,7 +17,7 @@ pub struct WingetManager;
 /// the version is the first token of the Version column (any trailing `Available`/
 /// `Source` columns are ignored). This is the primitive; [`parse_winget_list`]
 /// derives the case-folded identity set from it.
-fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
+pub(super) fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
     let mut out = Vec::new();
     let mut header_seen = false;
     let mut id_start = 0;
@@ -47,7 +49,7 @@ fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
                     .get(id_end..)
                     .and_then(|s| s.split_whitespace().next())
                     .filter(|v| !v.is_empty())
-                    .unwrap_or("unknown");
+                    .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION);
                 out.push(PackageInfo {
                     name: id.to_string(),
                     version: version.to_string(),
@@ -70,15 +72,26 @@ impl PackageManager for WingetManager {
         "winget"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `winget install --id <id>` on a held Id attempts the upgrade of the
+        // installed package — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(Command::new("winget").arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         cfgd_core::command_available("winget")
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // winget ships with Windows; nothing cfgd runs can provision it.
         None
     }
 
+    // bootstrap-arm-ok: winget ships with Windows; there is nothing to install it with
     fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Err(PackageError::BootstrapFailed {
             manager: "winget".into(),
@@ -128,6 +141,11 @@ impl PackageManager for WingetManager {
     }
 
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        // One spawn per package on purpose: winget's multi-package form is
+        // positional QUERIES (case-insensitive substring over name/id/moniker;
+        // usage `winget install [[-q] <query> ...]`), while `--id` is a
+        // single-value option. A batch would drop the id-restricted match and
+        // can resolve a declared id to a different package than this path does.
         for pkg in packages {
             run_pkg_cmd_live(
                 cx,
@@ -160,18 +178,29 @@ impl PackageManager for WingetManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = Command::new("winget")
-            .args(["show", "--id", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "winget".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "winget",
+            Command::new("winget").args(["show", "--id", package]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_version_field(&stdout))
+    }
+
+    /// winget-listed versions carry a fourth build component
+    /// (`133.0.6943.98`) semver has no field for and refuses outright.
+    fn version_comparable(&self, version: &str) -> bool {
+        super::versions::fourpart_comparable(version)
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        super::versions::fourpart_version_meets_minimum(available, min_version)
+    }
+
+    fn floor_comparable(&self, floor: &str) -> bool {
+        super::versions::fourpart_comparable(floor)
     }
 }
 
@@ -179,6 +208,7 @@ impl PackageManager for WingetManager {
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 

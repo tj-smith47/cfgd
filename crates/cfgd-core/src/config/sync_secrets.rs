@@ -5,33 +5,61 @@ use serde::{Deserialize, Serialize};
 
 use super::source::default_sync_interval;
 
+/// `spec.sync`: automatic push/pull settings for the daemon's git sync loop.
+///
+/// ```yaml
+/// sync:
+///   autoPush: true
+///   autoPull: true
+///   interval: 5m
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncConfig {
+    /// Automatically commit and push local config changes. Default: `false`.
     #[serde(default)]
     pub auto_push: bool,
+    /// Automatically pull upstream config changes. Default: `false`.
     #[serde(default)]
     pub auto_pull: bool,
+    /// How often the daemon runs the sync loop, as a duration string (`"5m"`, `"1h"`).
+    /// Default: `1h`.
     #[serde(default = "default_sync_interval")]
     pub interval: String,
 }
 
+/// `spec.notify`: how the daemon reports detected drift.
+///
+/// ```yaml
+/// notify:
+///   drift: true
+///   method: Webhook
+///   webhookUrl: https://example.com/hook
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotifyConfig {
+    /// Send a notification whenever the daemon detects drift. Default: `false`.
     #[serde(default)]
     pub drift: bool,
+    /// Where a drift notification is delivered. Default: `Desktop`.
     #[serde(default)]
     pub method: NotifyMethod,
+    /// Webhook URL to POST to when `method` is `Webhook`. Required only for that method.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_url: Option<String>,
 }
 
+/// Delivery method for a `notify.method` value: `Desktop`, `Stdout`, or `Webhook`
+/// (case-insensitive on read; case-sensitive `PascalCase` in generated YAML).
 #[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub enum NotifyMethod {
+    /// A native desktop notification.
     #[default]
     Desktop,
+    /// A line written to the daemon's own stdout/log.
     Stdout,
+    /// A JSON POST to `webhookUrl`.
     Webhook,
 }
 
@@ -41,13 +69,28 @@ case_insensitive_enum!(NotifyMethod {
     "Webhook" => NotifyMethod::Webhook,
 });
 
+/// `spec.secrets`: the default secret backend and its integrations.
+///
+/// ```yaml
+/// secrets:
+///   backend: sops
+///   sops:
+///     ageKey: ~/.config/sops/age/keys.txt
+///   integrations:
+///     - name: 1password
+///       vault: Personal
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretsConfig {
+    /// Default secret backend name (`sops`, `1password`, `bitwarden`, `vault`, `age`).
+    /// Default: `sops`.
     #[serde(default = "default_secrets_backend")]
     pub backend: String,
+    /// sops-specific settings, used when `backend` is `sops`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sops: Option<SopsConfig>,
+    /// Named backend integrations a `${secret:<name>:<ref>}` reference can select.
     #[serde(default)]
     pub integrations: Vec<SecretIntegration>,
 }
@@ -56,20 +99,43 @@ fn default_secrets_backend() -> String {
     "sops".to_string()
 }
 
+/// sops backend settings under `spec.secrets.sops`.
+///
+/// ```yaml
+/// sops:
+///   ageKey: ~/.config/sops/age/keys.txt
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SopsConfig {
+    /// Path to the age private key file sops decrypts with. Falls back to sops's
+    /// own default search path when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_key: Option<PathBuf>,
 }
 
+/// One named secret backend integration under `spec.secrets.integrations[]`.
+///
+/// Every field beyond `name` is backend-specific and captured verbatim into
+/// `extra`, so it accepts arbitrary per-backend keys (`vault`/`item` for
+/// 1Password, `mount`/`path` for Vault, and so on).
+///
+/// ```yaml
+/// integrations:
+///   - name: 1password
+///     vault: Personal
+///     item: GitHub Token
+/// ```
 // no deny_unknown_fields — incompatible with serde(flatten) on `extra`; the
 // flattened map intentionally captures arbitrary per-backend keys (vault, item,
 // etc.) and `deny_unknown_fields` would short-circuit that routing.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretIntegration {
+    /// Integration name (`1password`, `bitwarden`, `vault`), referenced by
+    /// `${secret:<name>:<ref>}`.
     pub name: String,
+    /// Backend-specific settings, flattened to the top level in YAML.
     #[serde(flatten)]
     #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub extra: HashMap<String, serde_yaml::Value>,

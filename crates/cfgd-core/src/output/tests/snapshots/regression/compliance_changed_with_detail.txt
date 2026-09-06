@@ -1,2 +1,2 @@
-Changed (1)
+Changed
   ✗ ssh.password-auth (Pass → Violation) — sshd_config sets PasswordAuthentication=yes

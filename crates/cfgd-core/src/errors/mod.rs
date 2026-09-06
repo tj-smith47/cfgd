@@ -16,24 +16,30 @@ fn join_quoted_posix(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
-// Top-level variants print `"<category>: <inner>"` because `{0}` expands the
+// A LABELLED variant prints `"<category>: <inner>"` because `{0}` expands the
 // inner error's Display once. `main.rs` formats with `{}`, which emits this
 // single-layer message. Do NOT switch `main.rs` to `{:#}` — that also walks
-// `source()` (via `#[from]`) and would duplicate the inner text. The
-// Composition variant uses `#[source]` (not `#[from]`) because a manual
-// `From<CompositionError>` impl exists for error-context wrapping.
+// `source()` (via `#[from]`) and would duplicate the inner text.
+//
+// A variant is labelled only when the label is LOAD-BEARING for some member of
+// its inner enum: a sentence that already names its own subject reads perfectly
+// without one, and on an action row — which carries its own ✗ and its own
+// subject — the label is a third layer saying nothing. `CfgdError::kind()` is
+// what a `-o json` consumer routes on, so nothing structured depends on the
+// prose label. Every variant's verdict and its reason are pinned by
+// `no_error_a_row_renders_opens_on_a_category_label` below.
 #[derive(Debug, thiserror::Error)]
 pub enum CfgdError {
     #[error("config error: {0}")]
     Config(#[from] ConfigError),
 
-    #[error("file error: {0}")]
+    #[error(transparent)]
     File(#[from] FileError),
 
-    #[error("package error: {0}")]
+    #[error(transparent)]
     Package(#[from] PackageError),
 
-    #[error("secret error: {0}")]
+    #[error(transparent)]
     Secret(#[from] SecretError),
 
     #[error("state error: {0}")]
@@ -42,16 +48,19 @@ pub enum CfgdError {
     #[error("daemon error: {0}")]
     Daemon(#[from] DaemonError),
 
-    #[error("source error: {0}")]
+    // Transparent: every `SourceError` sentence already names the source and
+    // says what went wrong, so the wrapper's own prefix added a category label
+    // ahead of a sentence that reads perfectly without one.
+    #[error(transparent)]
     Source(#[from] SourceError),
 
-    #[error("composition error: {0}")]
-    Composition(#[source] Box<CompositionError>),
+    #[error(transparent)]
+    Composition(Box<CompositionError>),
 
     #[error("upgrade error: {0}")]
     Upgrade(#[from] UpgradeError),
 
-    #[error("module error: {0}")]
+    #[error(transparent)]
     Module(#[from] ModuleError),
 
     #[error("generate error: {0}")]
@@ -60,14 +69,41 @@ pub enum CfgdError {
     #[error("oci error: {0}")]
     Oci(#[from] OciError),
 
-    #[error("skill error: {0}")]
+    #[error(transparent)]
     Skill(#[from] SkillError),
 
-    #[error("backup error: {0}")]
+    #[error(transparent)]
     Backup(#[from] BackupError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl CfgdError {
+    /// A stable, machine-readable name for the top-level variant — the
+    /// domain a structured (`-o json`) consumer can route a failure on
+    /// without parsing the human message. Snake_case to match every other
+    /// `error_kind` string the CLI boundary already emits (`not_found`,
+    /// `already_exists`, …).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Config(_) => "config",
+            Self::File(_) => "file",
+            Self::Package(_) => "package",
+            Self::Secret(_) => "secret",
+            Self::State(_) => "state",
+            Self::Daemon(_) => "daemon",
+            Self::Source(_) => "source",
+            Self::Composition(_) => "composition",
+            Self::Upgrade(_) => "upgrade",
+            Self::Module(_) => "module",
+            Self::Generate(_) => "generate",
+            Self::Oci(_) => "oci",
+            Self::Skill(_) => "skill",
+            Self::Backup(_) => "backup",
+            Self::Io(_) => "io",
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +130,11 @@ pub enum ConfigError {
 
     #[error("profile not found: {name}")]
     ProfileNotFound { name: String },
+
+    // No "in config" here: this variant renders under `CfgdError::Config`'s own
+    // "config error: " prefix, and the two together said config twice.
+    #[error("key '{key}' not found")]
+    KeyNotFound { key: String },
 
     #[error(
         "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
@@ -199,6 +240,25 @@ pub enum FileError {
         "patch script for {path} is blocked: source '{source_name}' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
     )]
     PatchScriptBlocked { path: PathBuf, source_name: String },
+
+    #[error("failed to back up {path}: {message}")]
+    BackupFailed { path: PathBuf, message: String },
+
+    #[error(
+        "{}target exists as unmanaged file: {} (--on-conflict fail)",
+        .module.as_ref().map(|m| format!("module '{m}': ")).unwrap_or_default(),
+        crate::PathDisplayExt::posix(.path)
+    )]
+    UnmanagedTarget {
+        path: PathBuf,
+        module: Option<String>,
+    },
+
+    #[error(
+        "interrupted at the unmanaged-file prompt for {}; nothing was applied",
+        crate::PathDisplayExt::posix(.path)
+    )]
+    AdoptionPromptInterrupted { path: PathBuf },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -231,7 +291,13 @@ pub enum PackageError {
         source: std::io::Error,
     },
 
-    #[error("{manager} bootstrap failed: {message}")]
+    // The message says what happened and names the manager it happened to, so
+    // the variant adds no label of its own: `provision cargo via apt (rustc)`
+    // already wears the ✗ and the subject, and `package error: cargo bootstrap
+    // failed: cargo not on PATH …` said cargo three times and "bootstrap"
+    // twice for one failure. The word was wrong as often as it was redundant —
+    // a declared route runs no cascade at all.
+    #[error("{message}")]
     BootstrapFailed { manager: String, message: String },
 
     // The manager is not registered at all — no phase can provision a name
@@ -461,15 +527,25 @@ pub enum BackupError {
         target_kind: &'static str,
     },
 
-    /// The safety backup taken immediately before a restore-to-source did not
-    /// produce a snapshot. The restore is abandoned: overwriting live data
+    /// The safety copy taken immediately before a restore-to-source could not
+    /// be written. The restore is abandoned: overwriting live data
     /// whose current contents were NOT captured is the failure mode the safety
-    /// backup exists to prevent.
+    /// copy exists to prevent.
     #[error(
-        "backup '{name}': the safety backup of the current source failed ({message}); \
+        "backup '{name}': the safety copy of the current source failed ({message}); \
          refusing to overwrite data that is not backed up — fix the failure, or pass --to to restore elsewhere"
     )]
     SafetyBackupFailed { name: String, message: String },
+
+    /// `cfgd backup rollback <name>` on a unit whose source has no
+    /// `.cfgd-backup` sidecar beside it. Nothing displaced the source, so
+    /// there is nothing to put back — and the verb that would leave one is
+    /// the one the message names.
+    #[error(
+        "backup '{name}': no rollback copy beside {}; a rollback puts back the sidecar a restore or an apply left there",
+        .source_path.posix()
+    )]
+    NoRollbackCopy { name: String, source_path: PathBuf },
 
     /// A fatal failure aborted a restore while the unit's `postBackup` hook
     /// ALSO failed on the way out. Carried as one error because the abort is
@@ -499,6 +575,9 @@ pub enum BackupError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    #[error("no apply found with ID {apply_id}")]
+    ApplyNotFound { apply_id: i64 },
+
     #[error("state database error: {0}")]
     Database(String),
 
@@ -507,6 +586,17 @@ pub enum StateError {
 
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
+
+    /// No home directory could be resolved, so the named per-user root has no
+    /// location on this host.
+    ///
+    /// Its own variant rather than a [`Self::DirectoryNotWritable`] carrying a
+    /// placeholder path: nothing resolved, so there is no path to name, and a
+    /// hand-written POSIX default (`~/.cache/cfgd`) reads as a lie on the one
+    /// platform — Windows, where `directories` has the most ways to answer
+    /// `None` — that a reader is most likely to be looking at it from.
+    #[error("cannot locate the per-user {role} directory: no home directory found")]
+    HomeDirectoryUnresolved { role: &'static str },
 
     #[error("state filesystem I/O failed at {path}: {source}")]
     FilesystemIo {
@@ -524,6 +614,16 @@ pub enum StateError {
 
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
+
+    // The lock-acquire identity re-check spent its budget without ever
+    // confirming the locked file was still the one the path names. Nobody is
+    // known to hold anything, so this deliberately names the file rather than
+    // a holder: sending the operator after a PID would be a lie, and the
+    // source-lock path must not read the failure as contention.
+    #[error(
+        "could not safely acquire the lock at {path}: the lock file kept changing underneath the acquire"
+    )]
+    LockFileUnstable { path: PathBuf },
 
     // Every SQLite access from a concurrent install lane is a message to the
     // coordinator, which owns the one connection; this is that message failing
@@ -582,6 +682,40 @@ pub enum SourceError {
 
     #[error("signature verification failed for source '{name}': {message}")]
     SignatureVerificationFailed { name: String, message: String },
+}
+
+impl SourceError {
+    /// The failure WITHOUT the source's own name, for a row already rendered
+    /// under a `source:<name>` owner. [`Display`] keeps the full sentence for a
+    /// top-level boundary that has no heading to inherit the subject from;
+    /// under one, repeating the name puts it on the line twice.
+    ///
+    /// [`Display`]: std::fmt::Display
+    pub fn cause(&self) -> String {
+        match self {
+            Self::NotFound { .. } => "not found".to_string(),
+            Self::FetchFailed { message, .. } => format!("fetch failed: {message}"),
+            Self::InvalidManifest { message, .. } => {
+                format!("invalid ConfigSource manifest: {message}")
+            }
+            Self::PinRefNotFound { pin, available, .. } => format!(
+                "no git ref matched pin '{pin}'{}",
+                available
+                    .as_ref()
+                    .map(|a| format!(" (available tags: {a})"))
+                    .unwrap_or_default()
+            ),
+            Self::EmptyProvides { .. } => "provides neither profiles nor modules".to_string(),
+            Self::ProfileNotFound { profile, .. } => format!("profile '{profile}' not found"),
+            // The one variant carrying no name: its Display already reads as a
+            // cause, so the two forms coincide rather than one being derived.
+            Self::CacheError { message } => format!("source cache error: {message}"),
+            Self::GitError { message, .. } => format!("git error: {message}"),
+            Self::SignatureVerificationFailed { message, .. } => {
+                format!("signature verification failed: {message}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -712,7 +846,7 @@ pub enum ModuleError {
     NotFound { name: String },
 
     #[error(
-        "module '{name}' is declared by source '{source_name}' (provides.modules) but its body is missing from that source — the publisher must add modules/{name}/module.yaml, or run 'cfgd source update {source_name}'"
+        "module '{name}' is declared by source '{source_name}' (provides.modules) but its body is missing from that source — the publisher must add modules/{name}/module.yaml, or run `cfgd source update {source_name}`"
     )]
     OfferedButMissing { name: String, source_name: String },
 
@@ -797,6 +931,16 @@ pub enum GenerateError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
+    #[error(
+        "unknown provider '{name}'{}",
+        if .valid.is_empty() {
+            String::new()
+        } else {
+            format!(" — valid providers: {}", .valid.join(", "))
+        }
+    )]
+    UnknownProvider { name: String, valid: Vec<String> },
+
     #[error("failed to render skill for provider '{provider}': {message}")]
     Render { provider: String, message: String },
 
@@ -883,6 +1027,144 @@ pub enum OciError {
 mod tests {
     use super::*;
 
+    /// No error a row renders opens on a category label.
+    ///
+    /// `✗ provision cargo via apt — package error: cargo bootstrap failed:
+    /// cargo still not available after bootstrap` stacked three layers on one
+    /// failure: the glyph already said failed, the row's subject already said
+    /// cargo, and "package error" is a domain a `-o json` consumer reads off
+    /// `CfgdError::kind()` rather than off the prose. A label earns its place
+    /// only when it is LOAD-BEARING for some member of its inner enum — a
+    /// sentence that does not name its own subject.
+    ///
+    /// The verdict is a judgment, not a predicate a scan can compute, so the
+    /// table below IS the judgment: a new `CfgdError` variant fails this test
+    /// until it is classified here, with the reason a labelled one keeps its
+    /// label, and the source is checked against the verdict either way.
+    #[test]
+    fn no_error_a_row_renders_opens_on_a_category_label() {
+        // (variant, label if the label is load-bearing, why)
+        let verdicts: &[(&str, Option<&str>, &str)] = &[
+            (
+                "Config",
+                Some("config error"),
+                "`key '{key}' not found` names no config, and says so in its own comment",
+            ),
+            ("File", None, "every variant names a path or a target"),
+            (
+                "Package",
+                None,
+                "every variant names its manager, its dependency or its own cause",
+            ),
+            (
+                "Secret",
+                None,
+                "every variant names sops, a provider, a path or a reference",
+            ),
+            (
+                "State",
+                Some("state error"),
+                "`migration failed: {message}` names no state",
+            ),
+            (
+                "Daemon",
+                Some("daemon error"),
+                "`service error` / `watch error` name no daemon",
+            ),
+            ("Source", None, "every variant names the source"),
+            (
+                "Composition",
+                None,
+                "every variant names the source or the resource",
+            ),
+            (
+                "Upgrade",
+                Some("upgrade error"),
+                "`download failed` / `version parse error` name no upgrade",
+            ),
+            ("Module", None, "every variant names the module or the url"),
+            (
+                "Generate",
+                Some("generate error"),
+                "`validation failed: {message}` names no generation",
+            ),
+            (
+                "Oci",
+                Some("oci error"),
+                "`archive error` / `build error` / `signing error` name no artifact",
+            ),
+            (
+                "Skill",
+                None,
+                "every variant names the provider or the skill file",
+            ),
+            ("Backup", None, "every variant opens `backup '{name}':`"),
+            (
+                "Io",
+                Some("io error"),
+                "the inner is `std::io::Error`, whose Display names no subject at all",
+            ),
+        ];
+
+        let src = include_str!("mod.rs");
+        let start = src
+            .find("pub enum CfgdError {")
+            .expect("CfgdError is declared in this file");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("the enum closes")];
+
+        let mut seen = Vec::new();
+        let mut pending: Option<&str> = None;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("#[error(") {
+                pending = Some(if rest.starts_with("transparent") {
+                    ""
+                } else {
+                    rest
+                });
+                continue;
+            }
+            let Some(attr) = pending else { continue };
+            let Some(name) = trimmed.split('(').next().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            pending = None;
+            let (_, label, why) = verdicts.iter().find(|(v, _, _)| *v == name).unwrap_or_else(
+                || {
+                    panic!(
+                        "`CfgdError::{name}` is unclassified: decide whether its inner sentences \
+                         name their own subject, then add it to this table"
+                    )
+                },
+            );
+            match label {
+                None => assert!(
+                    attr.is_empty(),
+                    "`CfgdError::{name}` is classified transparent ({why}) but its source \
+                     still carries a label: {attr}"
+                ),
+                Some(label) => assert!(
+                    attr.starts_with(&format!("\"{label}: ")),
+                    "`CfgdError::{name}` keeps its label ({why}) but its source spells it {attr}"
+                ),
+            }
+            seen.push(name);
+        }
+        assert_eq!(
+            seen.len(),
+            verdicts.len(),
+            "the walk read every variant, found {seen:?}"
+        );
+
+        // The row the whole rule is about, end to end.
+        let rendered = CfgdError::from(PackageError::BootstrapFailed {
+            manager: "cargo".into(),
+            message: "cargo not on PATH after apt installed rustc".into(),
+        })
+        .to_string();
+        assert_eq!(rendered, "cargo not on PATH after apt installed rustc");
+    }
+
     /// Table-driven: every `From<SubError> for CfgdError` variant in one test.
     #[test]
     fn all_sub_errors_convert_to_cfgd_error() {
@@ -958,5 +1240,141 @@ mod tests {
             matches!(cfgd_err, CfgdError::State(StateError::Database(_))),
             "rusqlite error must map to CfgdError::State(Database)",
         );
+    }
+
+    #[test]
+    fn kind_names_the_top_level_variant_not_the_literal_word_error() {
+        let config_err: CfgdError = ConfigError::ProfileNotFound {
+            name: "work".into(),
+        }
+        .into();
+        assert_eq!(config_err.kind(), "config");
+
+        let source_err: CfgdError = SourceError::NotFound {
+            name: "acme".into(),
+        }
+        .into();
+        assert_eq!(source_err.kind(), "source");
+
+        let io_err: CfgdError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        assert_eq!(io_err.kind(), "io");
+    }
+
+    /// One of every [`SourceError`] variant, so a rule about how these read is
+    /// asserted over the whole population rather than over whichever variants a
+    /// test author happened to remember. A variant added without a line here
+    /// fails to compile: the match below is exhaustive by construction.
+    fn source_error_population(name: &str) -> Vec<SourceError> {
+        let population = vec![
+            SourceError::NotFound { name: name.into() },
+            SourceError::FetchFailed {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::InvalidManifest {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::PinRefNotFound {
+                name: name.into(),
+                pin: "~1".into(),
+                available: Some("v1.0.0".into()),
+            },
+            SourceError::EmptyProvides { name: name.into() },
+            SourceError::ProfileNotFound {
+                name: name.into(),
+                profile: "work".into(),
+            },
+            SourceError::CacheError {
+                message: "disk full".into(),
+            },
+            SourceError::GitError {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::SignatureVerificationFailed {
+                name: name.into(),
+                message: "boom".into(),
+            },
+        ];
+        // Exhaustiveness gate: a new variant has no arm here and fails to build,
+        // which is what makes the population above a population rather than a list.
+        for err in &population {
+            match err {
+                SourceError::NotFound { .. }
+                | SourceError::FetchFailed { .. }
+                | SourceError::InvalidManifest { .. }
+                | SourceError::PinRefNotFound { .. }
+                | SourceError::EmptyProvides { .. }
+                | SourceError::ProfileNotFound { .. }
+                | SourceError::CacheError { .. }
+                | SourceError::GitError { .. }
+                | SourceError::SignatureVerificationFailed { .. } => {}
+            }
+        }
+        population
+    }
+
+    /// Every `SourceError` variant that embeds a source NAME must leave it out
+    /// of `cause()`: the row rendering a cause sits under a `source:<name>`
+    /// owner heading, and a cause repeating the name puts it on the line twice.
+    /// Walk the whole population so the next variant trips here.
+    #[test]
+    fn every_named_source_error_leaves_its_name_out_of_its_cause() {
+        const NAME: &str = "zzsentinelzz";
+        let population: Vec<SourceError> = source_error_population(NAME)
+            .into_iter()
+            // The one nameless variant is asserted on separately below.
+            .filter(|e| !matches!(e, SourceError::CacheError { .. }))
+            .collect();
+        for err in &population {
+            let cause = err.cause();
+            assert!(
+                !cause.contains(NAME),
+                "cause() must not name the source: {cause}"
+            );
+            assert!(!cause.is_empty(), "every variant states a cause");
+            // Display keeps the full sentence, for a boundary with no heading.
+            assert!(
+                err.to_string().contains(NAME),
+                "Display must still name the source: {err}"
+            );
+        }
+        // The one nameless variant: cause and Display coincide.
+        let cache = SourceError::CacheError {
+            message: "disk full".into(),
+        };
+        assert_eq!(cache.cause(), cache.to_string());
+    }
+
+    /// A source failure renders under a `source:<name>` owner as
+    /// `✗ sync failed — <cause>`, where the em-dash is the row's OWN glue
+    /// between the outcome and its cause. A message that uses ` — ` again for
+    /// a second clause puts two em-dashes with two different meanings on one
+    /// line, which is the shape the source-error reword exists to remove —
+    /// a second clause is parenthesised instead. Walk the whole population so
+    /// the next variant, and the next literal in an existing one, trips here.
+    #[test]
+    fn no_source_error_uses_an_em_dash_as_a_clause_separator() {
+        for err in source_error_population("acme") {
+            for rendered in [err.to_string(), err.cause()] {
+                assert!(
+                    !rendered.contains(" — "),
+                    "parenthesise the second clause instead: {rendered}"
+                );
+            }
+        }
+    }
+
+    /// `CfgdError::Source` is transparent: no category prefix ahead of a
+    /// sentence that already names the source and says what went wrong.
+    #[test]
+    fn a_wrapped_source_error_renders_without_a_category_prefix() {
+        let wrapped: CfgdError = SourceError::NotFound {
+            name: "acme".into(),
+        }
+        .into();
+        assert_eq!(wrapped.to_string(), "source 'acme' not found");
+        assert_eq!(wrapped.kind(), "source");
     }
 }

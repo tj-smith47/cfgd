@@ -610,6 +610,239 @@ fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
 }
 
 #[test]
+#[serial_test::serial]
+fn an_uncontended_source_lock_is_taken_without_announcing_a_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let guard = acquire_source_lock(&cache, || {
+        panic!("nothing holds the lock, so nothing waits")
+    })
+    .expect("a free lock is taken");
+    assert!(
+        cache.join(SOURCE_CACHE_LOCK_FILENAME).is_file(),
+        "the lock lands in the cache dir it guards"
+    );
+    drop(guard);
+}
+
+#[test]
+#[serial_test::serial]
+fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_releases() {
+    // The blocking arm is the one that can hang a CLI, so it is driven rather
+    // than reasoned about — with channels and the acquire's own witness, never
+    // a clock. The holder stays on THIS thread and the waiter is spawned, so
+    // the middle assertion is decidable: while the guard below is alive no
+    // correct acquire can have returned.
+    //
+    // `await_blocking_source_acquire` is what makes it decidable in the other
+    // direction too. Receiving `waited` only proves the waiter announced; it
+    // has not yet re-entered the lock, so releasing at that point lets a
+    // NON-blocking second acquire succeed on its first try. The witness fires
+    // from inside the acquire, so the holder does not release until the waiter
+    // is genuinely blocked on it: mutate the arm to `LockWait::Refuse` and this
+    // test goes red instead of passing on scheduling luck.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let guard = acquire_source_lock(&cache, || panic!("the first holder never waits"))
+        .expect("the holder takes a free lock");
+
+    let (waited_tx, waited_rx) = std::sync::mpsc::channel::<()>();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel::<()>();
+    let waiter_cache = cache.clone();
+    let waiter = std::thread::spawn(move || {
+        let held = acquire_source_lock(&waiter_cache, move || {
+            let _ = waited_tx.send(());
+        })
+        .expect("a contended acquire waits for the holder rather than refusing");
+        let _ = acquired_tx.send(());
+        drop(held);
+    });
+
+    waited_rx
+        .recv()
+        .expect("a lock already held must announce the wait before blocking on it");
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "the announced wait must be followed by a blocking acquire"
+    );
+    assert!(
+        matches!(
+            acquired_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the lock is still held on this thread, so the waiter must not hold one too"
+    );
+
+    drop(guard);
+    acquired_rx
+        .recv()
+        .expect("the wait ends when the holder releases");
+    waiter.join().expect("the waiter thread finishes");
+}
+
+fn remove_with_retry(op: impl Fn() -> std::io::Result<()>, what: &str) {
+    // A foreign scanner's hold has been observed to outlast a full second on a
+    // loaded Windows host, so the budget is generous: this loop only ever
+    // spins when something outside the process is in the way.
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..1000 {
+        match op() {
+            Ok(()) => return,
+            Err(e) => {
+                last = Some(e);
+                // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    panic!("{what}: still failing after retries: {last:?}");
+}
+
+#[test]
+#[serial_test::serial]
+fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
+    // A user wiping a cache directory mid-run removes the lock file, and the
+    // directory holding it, under a live holder. A contender already blocked on
+    // that file would wake holding an exclusive lock on an unlinked inode,
+    // while the next process creates a fresh file at the same path and locks
+    // THAT — both "the" holder. The acquire re-checks identity after the lock
+    // is granted and re-opens on a mismatch, re-creating the directory it needs
+    // to re-open INTO, which is the half that a re-check alone does not give:
+    // without it the woken contender fails ENOENT for having waited politely.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let lock_path = cache.join(SOURCE_CACHE_LOCK_FILENAME);
+    let guard = acquire_source_lock(&cache, || panic!("the first holder never waits"))
+        .expect("the holder takes a free lock");
+
+    // The contender blocks on the file that is about to be deleted.
+    let (took_tx, took_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let contender_cache = cache.clone();
+    let contender = std::thread::spawn(move || {
+        let held = acquire_source_lock(&contender_cache, || {}).expect("the contender waits");
+        let _ = took_tx.send(());
+        let _ = release_rx.recv();
+        drop(held);
+    });
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "the contender must be blocked on the lock file before it is removed"
+    );
+
+    // Exactly what a `rm -rf <cache dir>` does to a live holder: the lock file
+    // AND the directory it lives in. On Windows a scanner (Defender, the
+    // indexer) briefly holds fresh files without FILE_SHARE_DELETE, so an
+    // unlucky remove fails with a sharing violation; retry the simulation
+    // briefly. The code under test never deletes, so this loop is fixture
+    // robustness against a foreign handle, not synchronization of cfgd.
+    remove_with_retry(
+        || std::fs::remove_file(&lock_path),
+        "the file the holder locked is removed",
+    );
+    // On Windows the POSIX-deleted lock file pins its parent directory until
+    // every open handle on it closes (persistent on Server 2025 runners;
+    // Server 2022 releases the pin at the unlink). The holder's handle and
+    // the blocked contender's both stay open by design for the length of
+    // this test, so no retry budget can outwait DirectoryNotEmpty — and a
+    // real `rm -rf` on such a host hits the same wall, leaving the directory
+    // standing too, so the directory-gone state is unreachable there and the
+    // file-gone half above is the whole simulation. Everything the test
+    // proves keys on the FILE being replaced; a surviving directory only
+    // means the re-acquire skips its re-create step.
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..1000 {
+        match std::fs::remove_dir(&cache) {
+            Ok(()) => {
+                last = None;
+                break;
+            }
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                last = None;
+                break;
+            }
+            Err(e) => {
+                last = Some(e);
+                // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    if let Some(e) = last {
+        panic!("the directory holding it goes too: still failing after retries: {e:?}");
+    }
+    drop(guard);
+    took_rx.recv().expect("the contender takes the lock");
+
+    // Whatever file the contender ended up holding, a later acquire has to be
+    // excluded by it. Without the identity re-check the contender is on an
+    // orphan inode, this acquire creates a new file and takes it immediately,
+    // and two holders are in the section at once.
+    let (late_tx, late_rx) = std::sync::mpsc::channel::<()>();
+    let late_cache = cache.clone();
+    let late = std::thread::spawn(move || {
+        let held = acquire_source_lock(&late_cache, || {}).expect("the late acquire waits");
+        let _ = late_tx.send(());
+        drop(held);
+    });
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "a lock taken after the file was replaced must still exclude the next acquire"
+    );
+    assert!(
+        matches!(
+            late_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the contender still holds the section, so nothing else may be in it"
+    );
+
+    let _ = release_tx.send(());
+    late_rx.recv().expect("the late acquire completes in turn");
+    contender.join().expect("the contender thread finishes");
+    late.join().expect("the late thread finishes");
+}
+
+#[test]
+#[serial_test::serial]
+fn an_acquire_that_never_finds_its_own_file_says_so_instead_of_claiming_a_holder() {
+    // Someone deleting the lock in a loop exhausts the re-open budget. The
+    // acquire must then fail, NOT hand back a guard over a file the path no
+    // longer names: that guard is the double-holder state the re-check exists
+    // to prevent. And the failure is not contention — nobody holds anything —
+    // so it must not announce a wait, and the error names the lock file that
+    // kept changing rather than a holder to go look for.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    // One budget's worth: exhaustion on the non-blocking probe propagates
+    // directly instead of being read as a held lock and retried blocking.
+    // Exactly that many, so the injection drains itself here and leaks nothing
+    // into whatever runs next on this thread.
+    crate::force_stale_lock_rechecks(crate::STALE_LOCK_ATTEMPTS);
+
+    let err = acquire_source_lock(&cache, || {
+        panic!("exhaustion is not contention; no wait may be announced")
+    })
+    .expect_err("an acquire that can never confirm its file must not return a guard");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::LockFileUnstable { .. })
+        ),
+        "exhaustion names the unstable lock file, got: {err}"
+    );
+    // The variant match above already rules out the holder-claiming error; a
+    // negative substring check against a message embedding a random tempdir
+    // path could trip on the path itself, so pin the static wording instead.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("could not safely acquire the lock at")
+            && msg.contains(SOURCE_CACHE_LOCK_FILENAME),
+        "the failure names the lock file that kept changing: {msg}"
+    );
+}
+
+#[test]
 fn backup_lock_rejects_a_name_that_would_escape_the_locks_dir() {
     // The name is interpolated into the lock filename, and this is a `pub`
     // cfgd-core API — a caller that skipped `validate_backup_specs` must be
@@ -636,15 +869,18 @@ fn merge_aliases_override_by_name() {
         config::ShellAlias {
             name: "vim".into(),
             command: "vi".into(),
+            platforms: vec![],
         },
         config::ShellAlias {
             name: "ll".into(),
             command: "ls -l".into(),
+            platforms: vec![],
         },
     ];
     let updates = vec![config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     merge_aliases(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -657,10 +893,12 @@ fn merge_aliases_appends_new() {
     let mut base = vec![config::ShellAlias {
         name: "vim".into(),
         command: "nvim".into(),
+        platforms: vec![],
     }];
     let updates = vec![config::ShellAlias {
         name: "ll".into(),
         command: "ls -la".into(),
+        platforms: vec![],
     }];
     merge_aliases(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -764,15 +1002,18 @@ fn merge_env_overrides_by_name() {
         config::EnvVar {
             name: "FOO".into(),
             value: "old".into(),
+            platforms: vec![],
         },
         config::EnvVar {
             name: "BAR".into(),
             value: "keep".into(),
+            platforms: vec![],
         },
     ];
     let updates = vec![config::EnvVar {
         name: "FOO".into(),
         value: "new".into(),
+        platforms: vec![],
     }];
     merge_env(&mut base, &updates);
     assert_eq!(base.len(), 2);
@@ -786,10 +1027,124 @@ fn merge_env_adds_new() {
     let updates = vec![config::EnvVar {
         name: "NEW".into(),
         value: "val".into(),
+        platforms: vec![],
     }];
     merge_env(&mut base, &updates);
     assert_eq!(base.len(), 1);
     assert_eq!(base[0].name, "NEW");
+}
+
+// --- fold_env_layer: PATH concatenates, every other name replaces ---
+
+fn ev(name: &str, value: &str) -> config::EnvVar {
+    config::EnvVar {
+        name: name.into(),
+        value: value.into(),
+        platforms: vec![],
+    }
+}
+
+fn path_value(env: &[config::EnvVar]) -> &str {
+    let paths: Vec<&config::EnvVar> = env.iter().filter(|e| e.name == "PATH").collect();
+    // The invariant `fold_path_line`'s single lookup depends on: however many
+    // layers declared PATH, the fold leaves exactly one entry behind.
+    assert_eq!(paths.len(), 1, "one PATH per merged env: {env:?}");
+    &paths[0].value
+}
+
+#[test]
+fn a_layers_path_concatenates_onto_the_base_in_declaration_order() {
+    let mut base = vec![ev("PATH", "$HOME/.local/bin:$PATH"), ev("EDITOR", "vim")];
+    fold_env_layer(
+        &mut base,
+        &[ev("PATH", "/opt/homebrew/bin:$PATH"), ev("EDITOR", "nvim")],
+        ':',
+    );
+    // Base bucket first, then overlay, with the ambient reference written once.
+    assert_eq!(
+        path_value(&base),
+        "$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+    );
+    // Every other name is still last-writer-wins.
+    assert_eq!(
+        base.iter().find(|e| e.name == "EDITOR").unwrap().value,
+        "nvim"
+    );
+}
+
+#[test]
+fn entries_after_the_ambient_reference_stay_after_it() {
+    let mut base = vec![ev("PATH", "$PATH:/usr/local/games")];
+    fold_env_layer(&mut base, &[ev("PATH", "/opt/bin:$PATH:/opt/late")], ':');
+    assert_eq!(
+        path_value(&base),
+        "/opt/bin:$PATH:/usr/local/games:/opt/late"
+    );
+}
+
+#[test]
+fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
+    let mut base = vec![ev("PATH", "/only/this")];
+    fold_env_layer(&mut base, &[ev("PATH", "/and/this")], ':');
+    assert_eq!(path_value(&base), "/only/this:/and/this");
+}
+
+#[test]
+fn one_directory_written_two_ways_lands_on_path_once() {
+    let home = crate::expand_tilde(std::path::Path::new("~"));
+    let literal = format!("{}/.cargo/bin", crate::to_posix_string(&home));
+    // The host's own separator, because a Windows home is `C:/Users/...` and
+    // splitting that on `:` reads one directory as two entries — the exact
+    // reading `PATH_LIST_SEPARATOR` exists to keep out of the fold.
+    let sep = crate::PATH_LIST_SEPARATOR;
+    let mut base = vec![ev("PATH", &format!("$HOME/.cargo/bin{sep}$PATH"))];
+    fold_env_layer(
+        &mut base,
+        &[ev("PATH", &format!("{literal}{sep}/opt/bin"))],
+        sep,
+    );
+    // First occurrence wins, so the spelling the earlier layer used survives;
+    // the overlay names no ambient reference, so its remaining entry joins the
+    // bucket ahead of the one the base declaration placed.
+    assert_eq!(
+        path_value(&base),
+        format!("$HOME/.cargo/bin{sep}/opt/bin{sep}$PATH")
+    );
+}
+
+#[test]
+fn the_windows_separator_folds_the_same_way() {
+    // A PowerShell env file joins on `;`; folding a Windows PATH on `:` would
+    // read one declaration as a single entry and concatenate two lists into an
+    // unusable one.
+    let mut base = vec![ev("PATH", "C:\\tools;$env:PATH")];
+    fold_env_layer(&mut base, &[ev("PATH", "C:\\other;$env:PATH")], ';');
+    assert_eq!(path_value(&base), "C:\\tools;C:\\other;$env:PATH");
+}
+
+#[test]
+fn the_ambient_reference_keeps_the_spelling_of_the_first_declaration_that_named_one() {
+    let mut base = vec![ev("PATH", "/a:${PATH}")];
+    fold_env_layer(&mut base, &[ev("PATH", "/b:$PATH")], ':');
+    assert_eq!(path_value(&base), "/a:/b:${PATH}");
+}
+
+#[test]
+fn a_layer_declaring_no_path_leaves_the_base_declaration_alone() {
+    let mut base = vec![ev("PATH", "/a:$PATH")];
+    fold_env_layer(&mut base, &[ev("EDITOR", "nvim")], ':');
+    assert_eq!(path_value(&base), "/a:$PATH");
+}
+
+#[test]
+fn the_cli_setter_still_replaces_a_path_declaration() {
+    // `merge_env` is the DOCUMENT-edit semantic: `profile update --env PATH=x`
+    // rewrites the user's YAML, and concatenating there would make the flag
+    // unable to ever shorten a PATH.
+    let mut doc = vec![ev("PATH", "/old:$PATH")];
+    merge_env(&mut doc, &[ev("PATH", "/new")]);
+    assert_eq!(doc.len(), 1);
+    assert_eq!(doc[0].value, "/new");
 }
 
 #[test]
@@ -928,6 +1283,108 @@ fn copy_dir_recursive_does_not_descend_into_a_symlinked_output() {
         !src.join("copy/copy").exists(),
         "the walk followed its own output back through the link"
     );
+}
+
+#[test]
+fn a_host_that_will_not_make_links_names_the_privilege_it_needs() {
+    // 1314 is a Windows kernel's answer, but the mapping that turns it into a
+    // sentence is pure — so the wording pins on any host, which is the whole
+    // reason a Windows operator can be promised it.
+    let refused = crate::symlink_error(
+        std::path::Path::new("a.md"),
+        std::path::Path::new("/copy/link.md"),
+        std::io::Error::from_raw_os_error(1314),
+    );
+    let text = refused.to_string();
+    assert!(
+        text.contains("Developer Mode") && text.contains("a.md -> /copy/link.md"),
+        "a refused link must name itself and the fix, not an error number: {text}"
+    );
+    assert!(
+        !text.contains("1314"),
+        "the operator gets a sentence: {text}"
+    );
+
+    let other = crate::symlink_error(
+        std::path::Path::new("a.md"),
+        std::path::Path::new("/copy/link.md"),
+        std::io::Error::from_raw_os_error(2),
+    );
+    assert!(
+        !other.to_string().contains("Developer Mode"),
+        "only a privilege refusal carries the privilege advice"
+    );
+}
+
+#[test]
+fn a_relative_link_target_is_probed_against_the_links_own_parent() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("tree");
+    std::fs::create_dir_all(tree.join("data")).unwrap();
+    let probe = crate::symlink_dir_probe(std::path::Path::new("data"), &tree.join("link"));
+    assert!(
+        probe.is_dir(),
+        "a relative target resolves against the link's parent, not the process CWD"
+    );
+    let absolute =
+        crate::symlink_dir_probe(&tree.join("data"), std::path::Path::new("/elsewhere/link"));
+    assert_eq!(absolute, tree.join("data"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_a_copy_cannot_recreate_names_the_link_inside_the_source() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(&src).unwrap();
+    std::os::unix::fs::symlink("a.md", src.join("link.md")).unwrap();
+    // The counterpart name is already taken, so the recreate refuses — the same
+    // shape a Windows host without the privilege takes, on a host that has it.
+    let dst = root.path().join("copy");
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("link.md"), "occupied").unwrap();
+
+    let err = copy_dir_recursive_preserving_symlinks(&src, &dst)
+        .expect_err("an occupied counterpart name cannot be linked over");
+
+    assert!(
+        err.to_string()
+            .contains(&src.join("link.md").display().to_string()),
+        "the refusal must name the link inside the source tree: {err}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_relative_link_to_a_directory_lands_as_a_directory_link() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("tree");
+    std::fs::create_dir_all(tree.join("data")).unwrap();
+    std::fs::write(tree.join("data/a.txt"), "a").unwrap();
+    let link = tree.join("link");
+    if create_symlink(std::path::Path::new("data"), &link).is_err() {
+        // A host without the privilege makes no link at all, so the reparse
+        // type it would have chosen is not observable from here.
+        return;
+    }
+    assert!(
+        std::fs::metadata(&link).is_ok_and(|m| m.is_dir()),
+        "a relative link to a directory must be traversable as one"
+    );
+}
+
+#[test]
+fn a_snapshot_normalizer_substitutes_the_home_folded_spelling_too() {
+    let home = tempfile::tempdir().unwrap();
+    let target = home.path().join("data").join("notes.txt");
+    with_test_home(home.path(), || {
+        let rendered = format!("rollback {}", fold_home_in_text(&to_posix_string(&target)));
+        assert_eq!(
+            normalize_for_snapshot(&rendered, &[(target.as_path(), "<SOURCE>")]),
+            "rollback <SOURCE>",
+            "a display slot folds the home directory, so the normalizer has to know that spelling"
+        );
+    });
 }
 
 #[test]
@@ -1670,19 +2127,20 @@ fn normalize_for_snapshot_skips_empty_path_keys() {
 
 #[test]
 fn posixify_os_error_text_collapses_linux_form() {
-    let s = "file error: io error on /tmp/foo: File exists (os error 17)";
+    let s = "io error on /tmp/foo: File exists (os error 17)";
     assert_eq!(
         posixify_os_error_text(s),
-        "file error: io error on /tmp/foo: <os error>"
+        "io error on /tmp/foo: <os error>"
     );
 }
 
 #[test]
 fn posixify_os_error_text_collapses_windows_form() {
-    let s = "file error: io error on /tmp/foo: Cannot create a file when that file already exists. (os error 183)";
+    let s =
+        "io error on /tmp/foo: Cannot create a file when that file already exists. (os error 183)";
     assert_eq!(
         posixify_os_error_text(s),
-        "file error: io error on /tmp/foo: <os error>"
+        "io error on /tmp/foo: <os error>"
     );
 }
 

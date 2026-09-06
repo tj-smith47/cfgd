@@ -1,2 +1,2 @@
 Backups
-⊙ No backups configured
+◉ No backups configured

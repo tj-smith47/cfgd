@@ -23,14 +23,15 @@ pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
-pub use pull::{SignaturePolicy, pull_module};
+pub use pull::{ArtifactFacts, SignaturePolicy, artifact_facts, pull_module};
 pub use push::{
-    current_platform, parse_platform_target, push_module, push_module_multiplatform,
+    PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,
 };
 pub use sign::{
-    VerifyOptions, attach_attestation, generate_slsa_provenance, sign_artifact, verify_attestation,
-    verify_signature,
+    COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,
+    attestation_type_name, check_signature, generate_slsa_provenance, sign_artifact,
+    verify_attestation, verify_signature,
 };
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ pub const MEDIA_TYPE_MODULE_CONFIG: &str = "application/vnd.cfgd.module.config.v
 pub const MEDIA_TYPE_MODULE_LAYER: &str = "application/vnd.cfgd.module.layer.v1.tar+gzip";
 
 /// OCI image manifest v2 media type.
-pub(super) const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+pub const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 
 /// Standard OCI image config media type (the JSON blob whose digest becomes the manifest's config
 /// descriptor). Use this when building a standard mountable image (e.g. `cfgd image pack`), as
@@ -122,10 +123,10 @@ impl OciReference {
         } else if let Some((name, tag)) = reference.rsplit_once(':') {
             // Be careful not to split on port numbers. A port number is preceded
             // by the registry hostname (no slashes after the colon before the next
-            // slash). We check: if the part after ':' contains '/' it's not a tag.
+            // slash): the part after ':' containing '/' means it's not a tag.
             // Also, if the name part has no '/' at all, and the tag looks numeric,
             // it might be a port — but that would make the reference invalid without
-            // a repo path. We handle by checking if 'tag' looks like a port (all digits)
+            // a repo path. Handled by checking if 'tag' looks like a port (all digits)
             // AND the name_part has no slash.
             if tag.chars().all(|c| c.is_ascii_digit()) && !name.contains('/') {
                 // Looks like host:port with no repo — invalid
@@ -185,19 +186,48 @@ impl OciReference {
         }
     }
 
-    /// Base API URL for this registry.
-    pub(super) fn api_base(&self) -> String {
-        let scheme = if self.registry == "localhost"
+    /// Whether this reference's registry is reached over plain HTTP: a
+    /// loopback address, or a registry named in `OCI_INSECURE_REGISTRIES`.
+    ///
+    /// Public because cosign opens its own connection to the same registry and
+    /// has to be told the same thing. cosign only treats loopback as plain
+    /// HTTP on its own, so a signature check against any other insecure
+    /// registry fails at the TLS handshake while cfgd's own manifest reads
+    /// against it succeed.
+    #[must_use]
+    pub fn uses_plain_http(&self) -> bool {
+        self.registry == "localhost"
             || self.registry.starts_with("localhost:")
             || self.registry.starts_with("127.0.0.1")
             || is_insecure_registry(&self.registry)
-        {
+    }
+
+    /// Base API URL for this registry.
+    pub(super) fn api_base(&self) -> String {
+        let scheme = if self.uses_plain_http() {
             "http"
         } else {
             "https"
         };
         format!("{scheme}://{}/v2", self.registry)
     }
+}
+
+/// The detail of the row that settles a push: the two facts the push produced
+/// on its own — the manifest digest the registry now serves, and the platform
+/// it resolved and stamped into that manifest as [`crate::OCI_ANNOTATION_PLATFORM`].
+///
+/// One wording over both producers ([`push_module`] and [`pack_image`]), so the
+/// two artifact-pushing rows cannot spell the same pair of facts two ways. The
+/// platform belongs HERE and nowhere else: `resolve_platform` is the flag or
+/// this host, so a header kv row echoing `--platform` could only ever restate
+/// this parenthetical — the same fact twice in one five-line block, and never
+/// able to differ. The resolved value is ground truth the run produced, and the
+/// operator reads it back off the manifest into a Module's `PLATFORMS` column
+/// whether or not a flag named it, so the detail states it unconditionally and
+/// both verbs read the same either way.
+pub(crate) fn artifact_row_detail(digest: &str, platform: &str) -> String {
+    format!("{digest} ({platform})")
 }
 
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).

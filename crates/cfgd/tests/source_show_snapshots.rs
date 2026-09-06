@@ -22,17 +22,26 @@
 use std::path::{Path, PathBuf};
 
 use cfgd::cli::error::render_cli_error;
-use cfgd::cli::output_types::{SourceResourceEntry, SourceShowOutput, SourceStateInfo};
-use cfgd::cli::source::show::{build_source_not_found_error, build_source_show_doc};
+use cfgd::cli::output_types::{
+    SourceEncryptionOutput, SourcePolicyOutput, SourceResourceEntry, SourceShowOutput,
+    SourceStateInfo,
+};
+use cfgd::cli::source::show::{
+    build_source_not_found_error, build_source_show_doc, effective_source_policy,
+    source_manifest_output,
+};
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy,
-    ConfigSourceProvides, ConfigSourceSpec, EnvVar, ManagedFileSpec, NpmSpec, PackagesSpec,
-    PolicyItems, SourceConstraints,
+    ConfigSourceProvides, ConfigSourceSpec, EncryptionConstraint, EncryptionMode, EnvVar,
+    ManagedFileSpec, NpmSpec, PackagesSpec, PolicyItems, SourceConstraints,
 };
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
+
+/// Pinned so the humanized `Last Sync` row is a fixed string in every golden.
+const NOW: &str = "2026-06-01T14:00:00Z";
 
 fn happy_output() -> SourceShowOutput {
     SourceShowOutput {
@@ -46,9 +55,10 @@ fn happy_output() -> SourceShowOutput {
         auto_apply: false,
         pin_version: Some("v1.2.3".into()),
         state: Some(SourceStateInfo {
-            status: "synced".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-05-14T10:00:00Z".into()),
             last_commit: Some("deadbeef1234567890abcdef".into()),
+            signed: Some(true),
             version: Some("3.1.0".into()),
             locked_ref: None,
             locked_commit: None,
@@ -68,6 +78,26 @@ fn happy_output() -> SourceShowOutput {
             },
         ],
         modules: vec!["dev-tools".into(), "shell".into()],
+        // `signed_commits_bypassed: true` and a real `encryption` block
+        // exercise the two policy fields this golden previously never
+        // covered: `security.allowUnsigned` bypassing an active
+        // `require_signed_commits` demand, and the manifest's
+        // `policy.constraints.encryption` reaching the rendered/serialized
+        // policy at all.
+        policy: Some(SourcePolicyOutput {
+            require_signed_commits: true,
+            signed_commits_bypassed: true,
+            scripts_allowed: false,
+            secrets_read_allowed: false,
+            system_changes_allowed: false,
+            allowed_target_paths: vec!["~/.config/**".into(), "~/.bashrc".into()],
+            encryption: Some(SourceEncryptionOutput {
+                required_targets: vec!["secrets/**".into()],
+                backend: Some("sops".into()),
+                mode: Some("Always".into()),
+            }),
+        }),
+        manifest: Some(source_manifest_output(&happy_manifest())),
     }
 }
 
@@ -100,6 +130,7 @@ fn happy_manifest() -> ConfigSourceDocument {
                     env: vec![EnvVar {
                         name: "EDITOR".into(),
                         value: "nvim".into(),
+                        platforms: vec![],
                     }],
                     ..PolicyItems::default()
                 },
@@ -116,10 +147,33 @@ fn happy_manifest() -> ConfigSourceDocument {
                 },
                 locked: PolicyItems::default(),
                 optional: PolicyItems::default(),
-                constraints: SourceConstraints::default(),
+                // The rendered Policy block is DERIVED from these constraints
+                // and the subscription below, so the fixture states them rather
+                // than hand-setting a `SourcePolicyOutput` the render could
+                // contradict.
+                constraints: SourceConstraints {
+                    no_scripts: true,
+                    no_secrets_read: true,
+                    allowed_target_paths: vec!["~/.config/**".into(), "~/.bashrc".into()],
+                    allow_system_changes: false,
+                    require_signed_commits: true,
+                    encryption: Some(EncryptionConstraint {
+                        required_targets: vec!["secrets/**".into()],
+                        backend: Some("sops".into()),
+                        mode: Some(EncryptionMode::Always),
+                    }),
+                },
             },
         },
     }
+}
+
+/// The happy manifest with a PROFILE promised as well, for the two goldens
+/// that pin what a subscriber sees of a profile before subscribing to it.
+fn manifest_promising_a_profile() -> ConfigSourceDocument {
+    let mut manifest = happy_manifest();
+    manifest.spec.provides.profiles = vec!["dev".into()];
+    manifest
 }
 
 fn empty_output() -> SourceShowOutput {
@@ -136,6 +190,8 @@ fn empty_output() -> SourceShowOutput {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
+        manifest: None,
     }
 }
 
@@ -144,9 +200,86 @@ fn source_show_happy_human() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/happy.txt");
+}
+
+/// A promised profile the checkout DOES carry is elaborated in place: the
+/// subscriber reads the profile's own declared content — env values, packages —
+/// off this screen before deciding to subscribe. Golden, because the elaboration
+/// is a whole nested inventory and an assertion on two substrings would not
+/// notice it losing a block.
+#[test]
+fn source_show_provided_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      - ripgrep\n",
+    )
+    .unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+        NOW,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/provided_profile.txt");
+}
+
+/// The absence arm: the manifest promises `dev` and the checkout does not carry
+/// it. That reads as a manifest/checkout disagreement, NOT as a load failure —
+/// the golden is what keeps the two worded apart.
+#[test]
+fn source_show_missing_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+        NOW,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/missing_profile.txt");
+}
+
+/// The FAILURE arm beside it: the file is there and does not load. "declared by
+/// the manifest but not found in the source" would be a lie about a profile
+/// that is right there, so this one names the cause instead.
+#[test]
+fn source_show_unloadable_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "spec: [this is not a profile\n",
+    )
+    .unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    assert!(
+        human.contains("could not be loaded"),
+        "a load failure must not read as an absence: {human}"
+    );
+    assert!(
+        !human.contains("not found in the source"),
+        "the absence wording must not claim a file that exists is missing: {human}"
+    );
 }
 
 #[test]
@@ -154,7 +287,7 @@ fn source_show_happy_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");
@@ -172,7 +305,7 @@ fn source_show_lists_delivered_modules_human_and_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -194,7 +327,7 @@ fn source_show_no_modules_omits_field() {
     // (serde skip_serializing_if) and renders no Modules section.
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -213,7 +346,7 @@ fn source_show_no_modules_omits_field() {
 fn source_show_empty_human() {
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/empty.txt");
 }
@@ -251,19 +384,22 @@ fn source_show_state_with_locked_ref_and_commit() {
         auto_apply: false,
         pin_version: Some("v2.0.0".into()),
         state: Some(SourceStateInfo {
-            status: "synced".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-06-01T12:00:00Z".into()),
             last_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
+            signed: Some(false),
             version: Some("2.0.0".into()),
             locked_ref: Some("v2.0.0".into()),
             locked_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
         }),
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
+        manifest: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -279,7 +415,26 @@ fn source_show_state_with_locked_ref_and_commit() {
         human.contains("Locked Commit"),
         "Locked Commit kv must appear: {human}"
     );
-    // Commit is truncated to SHORT_COMMIT_LEN (12); check the prefix.
+    // The two SHAs are there to be compared, so the rows sit adjacent and the
+    // fact ABOUT the checked-out commit follows the pair instead of splitting it.
+    let lines: Vec<&str> = human.lines().map(str::trim_start).collect();
+    let last = lines
+        .iter()
+        .position(|l| l.starts_with("Last Commit"))
+        .expect("Last Commit row");
+    assert!(
+        lines[last + 1].starts_with("Locked Commit"),
+        "Locked Commit must directly follow Last Commit: {human}"
+    );
+    let signed = lines
+        .iter()
+        .position(|l| l.starts_with("Signed"))
+        .expect("Signed row");
+    assert!(
+        signed > last + 1,
+        "Signed must follow the commit pair, never sit between it: {human}"
+    );
+    // Commit is truncated by `short_commit` (12 chars); check the prefix.
     assert!(
         human.contains("aabbccddeeff"),
         "truncated locked commit must appear: {human}"
@@ -310,6 +465,7 @@ fn manifest_with_locked_policy() -> ConfigSourceDocument {
                     env: vec![EnvVar {
                         name: "CORP_PROXY".into(),
                         value: "http://proxy.corp.example.com:8080".into(),
+                        platforms: vec![],
                     }],
                     ..PolicyItems::default()
                 },
@@ -340,14 +496,25 @@ fn source_show_locked_policy_section_renders() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        // A manifest and a derived policy always travel together in
+        // production, so the fixture derives one rather than leaving the
+        // screen's Policy rows to a shape `cmd_source_show` never emits.
+        policy: Some(effective_source_policy(
+            None,
+            &manifest_with_locked_policy().spec.policy.constraints,
+            false,
+        )),
+        manifest: None,
     };
     let manifest = manifest_with_locked_policy();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
-    let human = cap.human();
+    // "env:" and its qualifier now render in separate theme slots; strip SGR
+    // before matching content.
+    let human = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
         human.contains("Locked"),
         "Locked subsection must render: {human}"
@@ -356,8 +523,12 @@ fn source_show_locked_policy_section_renders() {
         human.contains("env: CORP_PROXY"),
         "locked env entry must render: {human}"
     );
-    // The Count kv must appear inside the Locked subsection.
-    assert!(human.contains("Count"), "Count kv must appear: {human}");
+    // The rows ARE the count — a `Count` kv above them restated what the
+    // reader can already see.
+    assert!(
+        !human.contains("Count"),
+        "the Count kv must be gone: {human}"
+    );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/locked_policy.txt");
 }
 
@@ -433,14 +604,22 @@ fn source_show_all_package_manager_types_render() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: Some(effective_source_policy(
+            None,
+            &manifest_with_all_package_managers().spec.policy.constraints,
+            false,
+        )),
+        manifest: None,
     };
     let manifest = manifest_with_all_package_managers();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
-    let human = cap.human();
+    // Each manager label and its qualifier now render in separate theme
+    // slots; strip SGR before matching content.
+    let human = cfgd_core::output::strip_ansi(&cap.human());
 
     // brew formulae (lines 157-159)
     assert!(

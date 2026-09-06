@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::PathDisplayExt;
 use crate::config::{BackupSpec, ScriptEntry, render_backup_name_pattern};
 use crate::errors::{BackupError, Result};
-use crate::output::{Printer, Role, collapse_to_subject_line};
+use crate::output::{OwnerLabel, Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{
     ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, ScriptSubject, build_script_env,
     effective_continue_on_error, execute_script, script_default_workdir,
@@ -22,14 +22,18 @@ use crate::reconciler::{
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
 pub mod restore;
+pub mod rollback;
 pub mod schedule;
 
 #[cfg(test)]
 mod tests;
 
 pub use restore::{
-    RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots, restore_backup, restore_target,
-    select_snapshot,
+    RESTORE_ACTION_COUNT, RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots,
+    report_restore, restore_backup, restore_target, select_snapshot,
+};
+pub use rollback::{
+    RollbackCopy, RollbackOutcome, report_rollback, rollback_backup, rollback_copy,
 };
 pub use schedule::next_run_at;
 
@@ -159,11 +163,14 @@ impl BackupRunReport {
 /// branch on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupOperation {
-    /// A snapshot is being taken (`cfgd backup run`, apply, the daemon timer,
-    /// and the safety snapshot a restore takes).
+    /// A snapshot is being taken (`cfgd backup run`, apply, and the daemon
+    /// timer).
     Backup,
     /// A snapshot is being put back (`cfgd backup restore`).
     Restore,
+    /// The pre-restore sidecar is being put back over the source
+    /// (`cfgd backup rollback`).
+    Rollback,
 }
 
 impl BackupOperation {
@@ -172,6 +179,7 @@ impl BackupOperation {
         match self {
             BackupOperation::Backup => "backup",
             BackupOperation::Restore => "restore",
+            BackupOperation::Rollback => "rollback",
         }
     }
 }
@@ -238,7 +246,15 @@ pub fn run_backup(
     // meant to put it in, so a snapshot of it would be untrustworthy.
     let copy = match pre_error {
         Some(_) => None,
-        None => Some(take_snapshot(unit, &source)),
+        None => {
+            // Retired silently on BOTH outcomes: the snapshot's own line is
+            // rendered after this function returns, so a settled spinner here
+            // would print a second row for the same copy.
+            let sp = printer.spinner(format!("Snapshotting {}", spec.name));
+            let taken = take_snapshot(unit, &source);
+            sp.finish_silent();
+            Some(taken)
+        }
     };
     // No snapshot item here: the snapshot's LINE is rendered after this
     // function returns — by `report_backup_record` on a recorded run, or by
@@ -279,40 +295,6 @@ struct RunOutcome {
     post_error: Option<BackupError>,
 }
 
-/// Take the snapshot, record the run, and prune — with **no hooks**, and with
-/// the unit's lock already held by the caller.
-///
-/// The safety backup [`restore::restore_backup`] takes needs exactly this half
-/// of [`run_backup`]: an ordinary row and an ordinary retention prune, inside
-/// the lock and inside the hook envelope the restore already holds open.
-/// Re-entering [`run_backup`] would do neither — the `flock` is per open file
-/// description, so the nested acquire would report the restore as the holder of
-/// the unit it is restoring, and the unit's hooks would run a second time around
-/// a source the restore has already quiesced.
-fn snapshot_and_record(
-    unit: &BackupUnit<'_>,
-    store: &StateStore,
-    printer: &Printer,
-) -> Result<BackupRunRecord> {
-    let started_at = crate::utc_now_iso8601();
-    let source = unit.source();
-    let copy = Some(take_snapshot(unit, &source));
-    // No items out-parameter: a restore's safety snapshot renders no owner
-    // group, so there is no pseudo-phase rollup to count its lines.
-    record_run(
-        store,
-        unit,
-        printer,
-        &source,
-        started_at,
-        RunOutcome {
-            pre_error: None,
-            copy,
-            post_error: None,
-        },
-    )
-}
-
 /// The snapshot line's subject: `snapshot <destination file name>`, or the bare
 /// `snapshot` when nothing was captured.
 ///
@@ -327,6 +309,40 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
         Some(name) => format!("snapshot {}", name.to_string_lossy()),
         None => "snapshot".to_string(),
     }
+}
+
+/// The restore line's subject: `restore <target> from <snapshot name>`.
+///
+/// Sited beside [`snapshot_subject`] because the two rows are the two mutating
+/// verbs of one command settling in one slot, and they already share their
+/// role ([`outcome_role`]) and their detail ([`outcome_detail`]): the subject
+/// was the one slot of the three left per call site, and it shipped as
+/// `Restored from …` under a `snapshot …` twenty lines up. An action row's
+/// subject is a lowercase verb head — `create`, `skip`, `brew install`,
+/// `snapshot` — and the sentence-case, past-tense grammar belongs to the
+/// result line a run CLOSES on, never to the rows its body is made of.
+///
+/// The target is IN the subject, the way `create ~/.zshrc` names what it
+/// writes: a `Destination` row hung under the action put the one fact a
+/// reader checks first on a muted line below the verdict about it. The unit's
+/// declared source is the run header's (`Source`), never a row under the
+/// action either.
+pub(super) fn restore_subject(target: &str, snapshot: &str) -> String {
+    format!(
+        "restore {} from {snapshot}",
+        crate::fold_home_in_text(target)
+    )
+}
+
+/// The rollback line's subject: `rollback <target> from <copy file name>`.
+///
+/// The third member of the family [`snapshot_subject`] and [`restore_subject`]
+/// belong to, and built to the same rule: a lowercase verb head, the target it
+/// WRITES, and what it wrote from. The copy's file NAME, never its path — it
+/// sits beside the target the subject already names, and the run header's
+/// `Source` row states the unit's own path.
+pub(super) fn rollback_subject(target: &str, copy: &str) -> String {
+    format!("rollback {} from {copy}", crate::fold_home_in_text(target))
 }
 
 /// The width the snapshot line will occupy, derived before the run.
@@ -444,23 +460,63 @@ pub fn run_backup_group(
     report
 }
 
-/// Join a run's failures, write its record, and prune to `spec.retention`.
-///
-/// Report a completed run on the status line every surface shares.
+/// The role a completed backup-engine outcome settles as.
 ///
 /// `is_clean()` is the exit-code predicate, and the human line uses the same
-/// three-way split: a fully clean run is Ok, a Success run with a failed
-/// `postBackup` hook is Warn (the snapshot is fine, but something needs
-/// attention), and no artifact at all is Fail. `cfgd apply`, `cfgd backup run`,
-/// and the daemon's scheduled fire all render through here so a run cannot look
-/// different depending on which surface produced it.
+/// three-way split: a fully clean outcome is Ok, one whose artifact landed but
+/// whose hooks failed is Warn (the data is there, but something needs
+/// attention), and one that produced no artifact at all is Fail. `run_backup`
+/// and `restore_backup` are the two mutating verbs of one command and both
+/// settle here, so a fourth outcome cannot be worded twice.
+pub(super) fn outcome_role(clean: bool, produced_artifact: bool) -> Role {
+    if clean {
+        Role::Ok
+    } else if produced_artifact {
+        Role::Warn
+    } else {
+        Role::Fail
+    }
+}
+
+/// The one detail slot a completed backup-engine outcome carries.
 ///
-/// **Size versus error in the one detail slot — the error wins, and the size
-/// joins it.** Both can be present at once: `record_run` sets `Success`
-/// whenever an artifact exists and still joins any hook failures into `error`,
-/// so a `postBackup` failure after a good snapshot carries both. The error
-/// leads because it is what the reader must act on; the size stays because it
-/// is the evidence that the snapshot itself landed.
+/// **Size versus error — the error wins, and the size joins it.** Both can be
+/// present at once: `record_run` sets `Success` whenever an artifact exists and
+/// still joins any hook failures into `error`, so a `postBackup` failure after a
+/// good snapshot carries both. The error leads because it is what the reader
+/// must act on; the size stays because it is the evidence that the payload
+/// itself landed. `None` is a row with nothing to qualify it, which renders as
+/// a bare status line.
+pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Option<String> {
+    match (error, size) {
+        (Some(e), Some(size)) => Some(format!("{} ({size})", collapse_to_subject_line(e))),
+        (Some(e), None) => Some(collapse_to_subject_line(e)),
+        (None, size) => size,
+    }
+}
+
+/// The closing hint a restore or a rollback leaves when it displaced live
+/// data: where the previous contents went, and how to put them back.
+///
+/// `report_restore` and `report_rollback` are the two mutating verbs that
+/// take a safety copy, and both close on this one sentence so a wording edit
+/// cannot land in one and not the other. The verb inside `safety.detail()`
+/// is the sidecar's own — a copy that was REUSED must not read as one written
+/// this time.
+pub(super) fn safety_copy_hint(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
+    format!(
+        "Previous contents {}; put them back with `cfgd backup rollback {name}`",
+        safety.detail()
+    )
+}
+
+/// Join a run's failures, write its record, and prune to `spec.retention`.
+///
+/// Report a completed run on the status line every surface shares. `cfgd
+/// apply`, `cfgd backup run`, and the daemon's scheduled fire all render
+/// through here so a run cannot look different depending on which surface
+/// produced it; the role and the detail are `outcome_role`'s and
+/// `outcome_detail`'s.
 ///
 /// Returns the [`BackupItem`] for the line it just emitted, so the rollup counts
 /// from the same value the screen was written from. A recorded run always
@@ -470,20 +526,11 @@ pub fn run_backup_group(
 #[must_use = "the item is what the rollup counts; push it onto the report"]
 pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> BackupItem {
     let subject = snapshot_subject(record.destination_path.as_deref().map(Path::new));
-    let role = if record.is_clean() {
-        Role::Ok
-    } else if record.status == BackupRunStatus::Success {
-        Role::Warn
-    } else {
-        Role::Fail
-    };
-    let size = record.size_bytes.map(crate::format_bytes);
-    let detail = match (&record.error, size) {
-        (Some(e), Some(size)) => Some(format!("{} ({size})", collapse_to_subject_line(e))),
-        (Some(e), None) => Some(collapse_to_subject_line(e)),
-        (None, Some(size)) => Some(size),
-        (None, None) => None,
-    };
+    let role = outcome_role(record.is_clean(), record.status == BackupRunStatus::Success);
+    let detail = outcome_detail(
+        record.error.as_deref(),
+        record.size_bytes.map(crate::format_bytes),
+    );
     match detail {
         Some(detail) => {
             printer.status(role, subject.as_str()).detail(detail);
@@ -496,9 +543,8 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> Back
     }
 }
 
-/// The shared tail of every path that produces a `backup_runs` row, so the
-/// hook-carrying [`run_backup`] and the hook-free [`snapshot_and_record`] can
-/// never disagree about a run's recorded status, error joining, or pruning.
+/// The tail of [`run_backup`] that produces the `backup_runs` row: status,
+/// error joining, and the retention prune that follows every recorded run.
 fn record_run(
     store: &StateStore,
     unit: &BackupUnit<'_>,
@@ -1012,7 +1058,7 @@ fn staging_path(target: &Path) -> PathBuf {
 /// The metadata is read **unfollowed**, so a symlink occupying the path is
 /// deleted itself rather than having its target truncated — the property the
 /// restore overlay depends on to never write outside its target.
-fn remove_existing(path: &Path) -> std::io::Result<()> {
+pub(super) fn remove_existing(path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
         // Windows reports a directory symlink or junction as a symlink, not a
@@ -1050,18 +1096,17 @@ fn remove_existing(path: &Path) -> std::io::Result<()> {
 /// foreign row bounds the table instead of aiming a recursive delete.
 fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) {
     let spec = unit.spec;
+    let owner = OwnerLabel::new("backup", &spec.name).plain();
     let destination = unit.destination_dir();
     let runs = match store.backup_runs(&spec.name) {
         Ok(runs) => runs,
         Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "backup '{}': retention prune skipped — could not read run history: {}",
-                    spec.name,
+            printer
+                .status(Role::Warn, format!("{owner}: retention prune skipped"))
+                .detail(format!(
+                    "could not read run history: {}",
                     collapse_to_subject_line(&e)
-                ),
-            );
+                ));
             return;
         }
     };
@@ -1070,8 +1115,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     let drop_row = |id: i64| {
         if let Err(e) = store.delete_backup_run(id) {
             warn(format!(
-                "backup '{}': could not delete run record {id}: {}",
-                spec.name,
+                "{owner}: could not delete run record {id}: {}",
                 collapse_to_subject_line(&e)
             ));
         }
@@ -1089,9 +1133,8 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             && !is_snapshot_within(Path::new(path), &destination)
         {
             warn(format!(
-                "backup '{}': run {} records a snapshot outside the destination {} ({path}); \
+                "{owner}: run {} records a snapshot outside the destination {} ({path}); \
                  dropping the record and leaving the path untouched — delete it yourself if it is stale",
-                spec.name,
                 run.id,
                 destination.posix(),
             ));
@@ -1113,8 +1156,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             let path = Path::new(path);
             if let Err(e) = remove_existing(path) {
                 warn(format!(
-                    "backup '{}': could not prune snapshot {}: {}",
-                    spec.name,
+                    "{owner}: could not prune snapshot {}: {}",
                     path.posix(),
                     collapse_to_subject_line(&e)
                 ));

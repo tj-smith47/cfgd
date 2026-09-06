@@ -1,4 +1,5 @@
 use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::PackageManagerExt;
 
 use super::*;
 
@@ -154,6 +155,22 @@ fn parse_brew_versions_single_package_no_trailing_newline() {
     assert_eq!(pkgs.len(), 1);
     assert_eq!(pkgs[0].name, "ripgrep");
     assert_eq!(pkgs[0].version, "14.1.0");
+}
+
+#[test]
+fn brew_manager_created_path_dirs_is_empty() {
+    // brew's prefix is never a directory cfgd itself created — Homebrew's own
+    // installer makes it, cfgd only ever runs that installer — so it must
+    // never reach the generated env file via `created_path_dirs` (the ONLY
+    // surface that publishes there), whatever `path_dirs` answers for
+    // in-process resolution. See `reconciler::packages::register_install_path_dirs`
+    // for where the install-time PATH-resolution gap is actually closed,
+    // at the process level only.
+    let mgr = BrewManager;
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    assert!(mgr.created_path_dirs(&cx).is_empty());
 }
 
 #[test]
@@ -360,6 +377,67 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
     );
 }
 
+/// A brew formula version names its upstream release and then Homebrew's own
+/// packaging revision (`0.12.5_1`), which loose semver reads as a prerelease
+/// and refuses — so every formula carrying a revision both errored its floor
+/// check and re-planned as an install on a converged machine.
+#[test]
+fn a_brew_formula_version_compares_on_its_upstream_part() {
+    for (installed, floor) in [
+        ("0.12.5_1", "0.11"),
+        ("0.12.5_1", "0.12.5"),
+        ("2.43.0", "2.43"),
+        ("1.2.3_4", "1.2.3"),
+    ] {
+        assert!(
+            BrewManager.version_meets_minimum(installed, floor),
+            "brew {installed} clears a minVersion of {floor}"
+        );
+        assert!(
+            BrewManager.version_comparable(installed),
+            "brew {installed} is comparable, not an erroring check"
+        );
+    }
+    assert!(
+        !BrewManager.version_meets_minimum("0.10.9_2", "0.11"),
+        "the upstream part is still what decides the floor"
+    );
+    assert!(
+        !BrewManager.version_comparable("HEAD-a1b2c3d"),
+        "a HEAD build states no upstream version to compare"
+    );
+}
+
+/// A cask states its build after a comma (`1.2.3,4567`), a grammar no formula
+/// uses; the build identifies the vendor's artifact, never a release ordering,
+/// so the floor is judged on the version before it.
+#[test]
+fn a_brew_cask_version_compares_on_the_part_before_its_build() {
+    for (installed, floor) in [("1.2.3,4567", "1.2"), ("2.0.0,build9", "2"), ("2.0.0", "2")] {
+        assert!(
+            BrewCaskManager.version_meets_minimum(installed, floor),
+            "cask {installed} clears a minVersion of {floor}"
+        );
+        assert!(
+            BrewCaskManager.version_comparable(installed),
+            "cask {installed} is comparable, not an erroring check"
+        );
+    }
+    assert!(
+        !BrewCaskManager.version_meets_minimum("1.2.3,4567", "2"),
+        "the version before the build is what decides the floor"
+    );
+    assert!(
+        !BrewCaskManager.version_comparable("latest"),
+        "a cask tracking `latest` states no version to compare"
+    );
+    assert!(
+        !BrewCaskManager.version_comparable("133.0.6943.98"),
+        "a four-part vendor version is beyond the shared comparator, so the \
+         floor is a check that could not run rather than an invented verdict"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PackageManager-impl tests via the CFGD_BREW_BIN ToolShim. Drive every
 // install / uninstall / update / list / available_version branch without a
@@ -471,11 +549,11 @@ mod brew_shim {
             err.to_string().contains("no such formula"),
             "single-package failure must surface the tool's real error: {err}"
         );
+        let argv = shim.argv_log();
         assert_eq!(
-            shim.invocation_count(),
+            argv.lines().filter(|l| l.contains("install jira")).count(),
             1,
-            "a single-package batch has nothing to isolate; it must not be retried: {}",
-            shim.argv_log()
+            "a single-package batch has nothing to isolate; it must not be retried: {argv}"
         );
     }
 
@@ -560,6 +638,39 @@ mod brew_shim {
         );
     }
 
+    /// A package the machine already holds reaches `install` only because the
+    /// plan kept it — it sits below a declared `minVersion` — and `brew
+    /// install` is a no-op on a formula that is present. The already-held half
+    /// of the batch therefore goes through `brew upgrade`, or the run reports
+    /// an action that raised nothing and the floor is still unmet on the next
+    /// scan.
+    #[test]
+    #[serial]
+    fn brew_raises_an_already_installed_package_instead_of_reinstalling_it() {
+        // The shim answers every invocation with the same listing, so
+        // `brew list --formulae -1` reports `git` installed and `vim` not.
+        let shim = ToolShim::install(SHIM_ENV, 0, "git\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewManager
+            .install(&["git".into(), "vim".into()], &cx)
+            .expect("install Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("upgrade git"),
+            "a held package is raised, not re-installed: {argv}"
+        );
+        assert!(
+            argv.contains("install vim"),
+            "a package the machine lacks is still installed: {argv}"
+        );
+        assert!(
+            !argv.contains("install git"),
+            "a held package is never handed to install: {argv}"
+        );
+    }
+
     #[test]
     #[serial]
     fn brew_installed_packages_parses_newline_list_into_set() {
@@ -612,11 +723,36 @@ mod brew_shim {
         assert_eq!(git.version, "2.40.1");
     }
 
+    /// The cask listing is what makes the cask comparator reachable: without
+    /// it no cask version is ever read, and a declared floor on one is judged
+    /// against nothing.
+    #[test]
+    #[serial]
+    fn brew_cask_installed_packages_with_versions_lists_casks_with_their_builds() {
+        let shim = ToolShim::install(SHIM_ENV, 0, "google-chrome 133.0.6943.98,1234\n", "");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        let pkgs = BrewCaskManager
+            .installed_packages_with_versions(&cx)
+            .expect("Ok");
+        let chrome = pkgs
+            .iter()
+            .find(|p| p.name == "google-chrome")
+            .expect("the cask is listed");
+        assert_eq!(chrome.version, "133.0.6943.98,1234");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("list --cask --versions"),
+            "the cask listing asks brew for casks with versions: {argv}"
+        );
+    }
+
     // --- BrewTapManager ---
 
     #[test]
     #[serial]
-    fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
+    fn brew_tap_install_taps_then_trusts_each_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -624,15 +760,59 @@ mod brew_shim {
         BrewTapManager
             .install(&["org/foo".into(), "org/bar".into()], &cx)
             .expect("Ok");
-        assert_eq!(shim.invocation_count(), 2, "one brew invocation per tap");
+        assert_eq!(
+            shim.invocation_count(),
+            4,
+            "one tap + one trust invocation per entry: {}",
+            shim.argv_log()
+        );
         let argv = shim.argv_log();
-        assert!(argv.contains("tap org/foo"));
-        assert!(argv.contains("tap org/bar"));
+        let lines: Vec<&str> = argv.lines().collect();
+        let tap_at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| *l == needle)
+                .unwrap_or_else(|| panic!("missing `{needle}` in {lines:?}"))
+        };
+        // Trust follows its own tap: brew ignores an untrusted tap's formulae,
+        // so a formula install later in the run needs the grant already recorded.
+        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/foo"));
+        assert!(tap_at("tap org/bar") < tap_at("trust --tap org/bar"));
     }
 
     #[test]
     #[serial]
-    fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
+    fn brew_tap_install_tolerates_an_old_brew_without_the_trust_subcommand() {
+        let shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: Unknown command: trust");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewTapManager
+            .install(&["org/foo".into()], &cx)
+            .expect("an old brew with no trust gate needs no trust step");
+        assert!(shim.argv_log().contains("tap org/foo"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_install_propagates_a_real_trust_failure() {
+        let _shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        let err = BrewTapManager
+            .install(&["org/foo".into()], &cx)
+            .expect_err("a failed trust leaves the tap's formulae ignored");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew trust --tap org/foo"),
+            "error must name the trust step that failed: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_untaps_then_untrusts_each_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -640,6 +820,27 @@ mod brew_shim {
         BrewTapManager
             .uninstall(&["org/foo".into()], &cx)
             .expect("Ok");
+        let argv = shim.argv_log();
+        let lines: Vec<&str> = argv.lines().collect();
+        let untap = lines.iter().position(|l| *l == "untap org/foo");
+        let untrust = lines.iter().position(|l| *l == "untrust --tap org/foo");
+        assert!(
+            untap.is_some() && untrust.is_some() && untap < untrust,
+            "untap must run, then its trust entry is removed: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_tolerates_a_failed_untrust() {
+        let shim =
+            ToolShim::install_failing_on(SHIM_ENV, "untrust", "Error: org/foo is not trusted");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewTapManager
+            .uninstall(&["org/foo".into()], &cx)
+            .expect("a stale trust entry is residue, not a failed untap");
         assert!(shim.argv_log().contains("untap org/foo"));
     }
 
@@ -1090,11 +1291,14 @@ mod bridge {
         // back through the context's NoteSink instead of printing here — the
         // reconciler renders them attached to the action's own status line.
         // Caveat body must be a single line — renderer forbids embedded newlines.
+        // No line of this body parses as `<formula> <version>` naming `git`:
+        // the shim answers the pre-install listing with the same bytes, and a
+        // formula the listing claims is RAISED rather than installed.
         let caveat_stdout = "==> Installing git\n\
             ==> Caveats\n\
             Run xcode-select --install to complete setup.\n\
             ==> Summary\n\
-            git installed.\n";
+            Installation complete.\n";
         let _shim = ToolShim::install(SHIM_ENV, 0, caveat_stdout, "");
 
         let (printer, cap) = Printer::for_test_doc();

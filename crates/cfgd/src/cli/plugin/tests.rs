@@ -213,6 +213,7 @@ async fn probe_with_deadline_degrades_on_stall() {
     // ("not connected"). A 10ms deadline keeps the test fast and deterministic.
     let deadline = std::time::Duration::from_millis(10);
     let stalled = async {
+        // sleep-ok: a never-completes-in-time stall is the subject under test — the deadline wrapper must degrade before this fires
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         ComponentVersion::Version("0.4.0".to_string())
     };
@@ -310,7 +311,7 @@ fn plugin_cli_parse_debug_command() {
         } => {
             assert_eq!(pod, "my-pod");
             assert_eq!(module, vec!["nettools:1.0"]);
-            assert_eq!(namespace, "prod");
+            assert_eq!(namespace, Some("prod".to_string()));
             assert_eq!(image, "alpine:3.18");
         }
         _ => panic!("Expected Debug command"),
@@ -318,7 +319,7 @@ fn plugin_cli_parse_debug_command() {
 }
 
 #[test]
-fn plugin_cli_parse_debug_default_namespace_and_image() {
+fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
     let cli =
         PluginCli::try_parse_from(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"]).unwrap();
 
@@ -326,7 +327,10 @@ fn plugin_cli_parse_debug_default_namespace_and_image() {
         PluginCommand::Debug {
             namespace, image, ..
         } => {
-            assert_eq!(namespace, "default");
+            // An omitted `-n` parses to `None`, not the literal "default" —
+            // `resolve_namespace` fills it in at dispatch time, so parsing
+            // alone must not bake a value in.
+            assert_eq!(namespace, None);
             assert_eq!(image, "ubuntu:22.04");
         }
         _ => panic!("Expected Debug command"),
@@ -379,7 +383,7 @@ fn plugin_cli_parse_exec_command() {
         } => {
             assert_eq!(pod, "my-pod");
             assert_eq!(module, vec!["tools:1.0"]);
-            assert_eq!(namespace, "default");
+            assert_eq!(namespace, None);
             assert_eq!(command, vec!["ls", "-la"]);
         }
         _ => panic!("Expected Exec command"),
@@ -407,7 +411,7 @@ fn plugin_cli_parse_inject_command() {
         } => {
             assert_eq!(resource, "deployment/myapp");
             assert_eq!(module, vec!["cfg:1.0"]);
-            assert_eq!(namespace, "staging");
+            assert_eq!(namespace, Some("staging".to_string()));
         }
         _ => panic!("Expected Inject command"),
     }
@@ -416,7 +420,7 @@ fn plugin_cli_parse_inject_command() {
 #[test]
 fn plugin_cli_parse_status_command() {
     let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status"]).unwrap();
-    assert!(matches!(cli.command, PluginCommand::Status));
+    assert!(matches!(cli.command, PluginCommand::Status { .. }));
 }
 
 #[test]
@@ -658,7 +662,7 @@ fn cmd_status_kube_connect_failed_returns_error_meta() {
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_status(&printer).unwrap_err();
+    let err = cmd_status(&printer, "default").unwrap_err();
     drop(printer);
 
     let meta = err
@@ -731,6 +735,30 @@ fn cmd_version_emits_client_version_string() {
     );
 }
 
+#[test]
+fn debug_container_prompt_names_its_modules_in_literal_brackets() {
+    let ec = debug_ephemeral_container(&[("nettools", "v1"), ("tracing", "2.0.0")], "busybox:1.36");
+
+    let env = ec["env"].as_array().expect("env must be a list");
+    let value_of = |key: &str| {
+        env.iter()
+            .find(|e| e["name"] == key)
+            .and_then(|e| e["value"].as_str())
+            .unwrap_or_else(|| panic!("{key} must be set"))
+    };
+
+    assert_eq!(value_of("PS1"), "[cfgd:nettools:v1,tracing:2.0.0] \\w $ ");
+    assert!(
+        !value_of("PS1").contains("\\["),
+        "a non-printing marker around visible prompt text breaks bash's cursor math and draws no bracket under busybox"
+    );
+    assert!(value_of("PATH").starts_with("/cfgd-modules/nettools/bin:/cfgd-modules/tracing/bin:"));
+    assert_eq!(ec["name"], "cfgd-debug");
+    assert_eq!(ec["image"], "busybox:1.36");
+    assert_eq!(ec["volumeMounts"][0]["mountPath"], "/cfgd-modules/nettools");
+    assert_eq!(ec["volumeMounts"][1]["mountPath"], "/cfgd-modules/tracing");
+}
+
 // ============================================================================
 // Mock kube-rs tests — happy paths via injected Client
 // ============================================================================
@@ -779,6 +807,24 @@ mod mock_kube {
         })
     }
 
+    /// A pod carrying the cfgd modules annotation — what makes a pod one this
+    /// command reports.
+    fn annotated_pod_json(name: &str, namespace: &str, modules: &str) -> serde_json::Value {
+        let mut pod = pod_json(name, namespace);
+        pod["metadata"]["annotations"] =
+            serde_json::json!({ cfgd_core::MODULES_ANNOTATION: modules });
+        pod
+    }
+
+    fn pod_list_response(items: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PodList",
+            "metadata": {"resourceVersion": "1"},
+            "items": items,
+        })
+    }
+
     // --- cmd_debug happy path ---
 
     #[tokio::test(flavor = "current_thread")]
@@ -810,7 +856,7 @@ mod mock_kube {
         let json = cap.json().expect("success doc must carry data payload");
         assert_eq!(json["pod"], "mypod");
         assert_eq!(json["namespace"], "prod");
-        assert_eq!(json["verified"], true);
+        assert_eq!(json["mountPath"][0], "/cfgd-modules/nettools");
         assert_eq!(json["modules"][0], "nettools:1.0.0");
     }
 
@@ -946,11 +992,19 @@ mod mock_kube {
                             "kind": "Module",
                             "metadata": {"name": "debug-utils"},
                             "spec": {"ociArtifact": "ghcr.io/cfgd/debug-utils:2.0.0"},
-                            "status": {"verified": false}
+                            "status": {"verified": false, "signature": "unsigned"}
                         }
                     ]
                 });
                 json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(
+                    200,
+                    &pod_list_response(vec![
+                        annotated_pod_json("app", "demo", "nettools:1.0.0,debug-utils:2.0.0"),
+                        pod_json("unrelated", "demo"),
+                    ]),
+                )
             } else {
                 json_response(404, &serde_json::json!({"message": "not found"}))
             }
@@ -958,18 +1012,179 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
         drop(printer);
 
         assert!(result.is_ok(), "cmd_status should succeed, got: {result:?}");
         let json = cap.json().expect("status doc must carry data payload");
+        assert_eq!(json["context"], "kind-cfgd");
+        assert_eq!(json["namespace"], "demo");
         let modules = json["modules"].as_array().expect("modules should be array");
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0]["name"], "nettools");
         assert_eq!(modules[0]["artifact"], "ghcr.io/cfgd/nettools:1.0.0");
         assert_eq!(modules[0]["verified"], true);
+        assert_eq!(
+            modules[0]["signature"], "verified",
+            "a raw `verified: true` with no word beside it is the one fact the bool asserts alone"
+        );
         assert_eq!(modules[1]["name"], "debug-utils");
         assert_eq!(modules[1]["verified"], false);
+        assert_eq!(modules[1]["signature"], "unsigned");
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        // spot-check the shape a person reads, not only the payload a script does
+        assert!(human.contains("Status"), "human render:\n{human}");
+        crate::cli::test_support::assert_nests_under(&human, "Status", "Context");
+        crate::cli::test_support::assert_nests_under(&human, "Modules", "nettools");
+        crate::cli::test_support::assert_nests_under(&human, "Pods", "app");
+
+        let pods = json["pods"].as_array().expect("pods should be array");
+        assert_eq!(
+            pods.len(),
+            1,
+            "only the pod carrying the modules annotation is a cfgd pod"
+        );
+        assert_eq!(pods[0]["name"], "app");
+        assert_eq!(
+            pods[0]["modules"],
+            serde_json::json!(["nettools:1.0.0", "debug-utils:2.0.0"])
+        );
+    }
+
+    /// `unknown` — a check that could not run — is the fourth verdict word, and
+    /// the controller is the only thing that can name it. The plugin passes a
+    /// written `status.signature` through untouched and reads an ABSENT one as
+    /// that same word: a Module no reconcile has written is a check that has
+    /// not run, whatever its spec declares. It had derived `unverified` from
+    /// the spec's declared key and the raw bool, which told the reader cosign
+    /// had rejected an artifact nothing had looked at — permanently, on any
+    /// cluster with no operator running.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_surfaces_the_controllers_unknown_verdict() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/modules") {
+                let list = serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1"},
+                    "items": [
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "unreachable"},
+                            "spec": {
+                                "ociArtifact": "ghcr.io/cfgd/unreachable:1.0.0",
+                                "signature": {"cosign": {"keyless": true}}
+                            },
+                            "status": {"verified": false, "signature": "unknown"}
+                        },
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "not-reconciled"},
+                            "spec": {
+                                "ociArtifact": "ghcr.io/cfgd/not-reconciled:1.0.0",
+                                "signature": {"cosign": {"keyless": true}}
+                            },
+                            "status": {"verified": false}
+                        },
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "bare"},
+                            "spec": {"ociArtifact": "ghcr.io/cfgd/bare:1.0.0"}
+                        }
+                    ]
+                });
+                json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(200, &pod_list_response(vec![]))
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_status should succeed, got: {result:?}");
+        let json = cap.json().expect("status doc must carry data payload");
+        let modules = json["modules"].as_array().expect("modules should be array");
+        assert_eq!(
+            modules[0]["signature"],
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "the controller's own word reaches the payload unchanged"
+        );
+        assert_eq!(
+            modules[1]["signature"],
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "no verdict written yet: the declared key says nothing about a check that has not run"
+        );
+        assert_eq!(
+            modules[2]["signature"],
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "no verdict written and no status at all"
+        );
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            human.contains("unreachable") && human.contains("unknown"),
+            "the row a person reads carries the fourth word:\n{human}"
+        );
+        crate::cli::test_support::assert_nests_under(&human, "Modules", "unreachable");
+    }
+
+    /// The plugin's signature word and the CRD's `Signature` printer column
+    /// read ONE field, so a Module with no status at all renders the same
+    /// answer on both: the column's JSONPath resolves to nothing, and the
+    /// plugin spells that absence as `unknown`. Fails on a plugin that reads
+    /// the spec — or a `verified: false` — to fill the slot with a verdict.
+    #[test]
+    fn a_status_less_module_reads_unknown_on_the_plugin_and_the_crd_column_alike() {
+        use kube::CustomResourceExt;
+
+        let crd = cfgd_crd::Module::crd();
+        let column = crd.spec.versions[0]
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .find(|c| c.name == "Signature")
+            .expect("the Module CRD carries a Signature column");
+        assert_eq!(
+            column.json_path.replace('.', "/"),
+            MODULE_SIGNATURE_POINTER,
+            "the plugin reads the field the CRD column binds to"
+        );
+
+        let module: kube::core::DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": "Module",
+            "metadata": {"name": "unreconciled"},
+            "spec": {
+                "ociArtifact": "ghcr.io/cfgd/unreconciled:1.0.0",
+                "signature": {"cosign": {"keyless": true}}
+            }
+        }))
+        .expect("a Module with no status deserializes");
+        let row = ModuleRow::from_object(&module);
+        assert_eq!(row.signature, cfgd_crd::SIGNATURE_UNKNOWN);
+        assert!(!row.verified, "the raw bool stays false on the wire");
+
+        let mut declined = module.clone();
+        declined.data["status"] = serde_json::json!({"verified": false});
+        assert_eq!(
+            ModuleRow::from_object(&declined).signature,
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "a bare `false` cannot say whether cosign rejected, nothing was declared, or nothing ran"
+        );
+        assert!(
+            module.data.pointer(MODULE_SIGNATURE_POINTER).is_none(),
+            "the column's JSONPath resolves to nothing for the same object"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -984,6 +1199,8 @@ mod mock_kube {
                     "items": []
                 });
                 json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(200, &pod_list_response(vec![]))
             } else {
                 json_response(404, &serde_json::json!({"message": "not found"}))
             }
@@ -991,13 +1208,14 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
         drop(printer);
 
         assert!(result.is_ok(), "cmd_status should succeed with empty list");
         let json = cap.json().unwrap();
         let modules = json["modules"].as_array().unwrap();
         assert!(modules.is_empty());
+        assert!(json["pods"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1017,7 +1235,7 @@ mod mock_kube {
 
         let (printer, _cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
 
         assert!(result.is_err(), "must fail on 403");
         let err_msg = result.unwrap_err().to_string();
@@ -1233,6 +1451,126 @@ mod mock_kube {
         let json = cap.json().unwrap();
         assert_eq!(json["operator"], "unknown (forbidden)");
         assert_eq!(json["csi"], "unknown (forbidden)");
+    }
+
+    // --- -o yaml round-trips -o json (the global `-o` format flag is shared
+    // with the main CLI's parser; `DocCapture::json()` reads the Doc's data
+    // directly and so cannot prove the *requested* format's own serializer
+    // agrees — these drive the real stdout stream through `emit_structured`
+    // for both formats and compare the parsed values) ---
+
+    fn status_module_list_response(req: http::Request<kube::client::Body>) -> Response<Body> {
+        let path = req.uri().path().to_string();
+        if path.contains("/modules") {
+            json_response(
+                200,
+                &serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1234"},
+                    "items": [{
+                        "apiVersion": "cfgd.io/v1alpha1",
+                        "kind": "Module",
+                        "metadata": {"name": "nettools"},
+                        "spec": {"ociArtifact": "ghcr.io/cfgd/nettools:1.0.0"},
+                        "status": {"verified": true, "signature": "verified"}
+                    }]
+                }),
+            )
+        } else if path.contains("/pods") {
+            json_response(200, &pod_list_response(vec![]))
+        } else {
+            json_response(404, &serde_json::json!({"message": "not found"}))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_yaml_round_trips_json_payload() {
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_status_async(
+            &json_printer,
+            Some(mock_client(status_module_list_response)),
+            "kind-cfgd",
+            "demo",
+        )
+        .await
+        .expect("json-format status must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_status_async(
+            &yaml_printer,
+            Some(mock_client(status_module_list_response)),
+            "kind-cfgd",
+            "demo",
+        )
+        .await
+        .expect("yaml-format status must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["modules"][0]["name"], "nettools");
+    }
+
+    fn version_only_response(req: http::Request<kube::client::Body>) -> Response<Body> {
+        let path = req.uri().path().to_string();
+        if path == "/version" || path == "/version/" {
+            json_response(200, &serde_json::json!({"major": "1", "minor": "29"}))
+        } else {
+            json_response(
+                200,
+                &serde_json::json!({
+                    "apiVersion": "apps/v1", "kind": "DeploymentList",
+                    "metadata": {"resourceVersion": "1"}, "items": []
+                }),
+            )
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_yaml_round_trips_json_payload() {
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_version_async(
+            &json_printer,
+            Some(mock_client(version_only_response)),
+            "cfgd-system",
+        )
+        .await
+        .expect("json-format version must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_version_async(
+            &yaml_printer,
+            Some(mock_client(version_only_response)),
+            "cfgd-system",
+        )
+        .await
+        .expect("yaml-format version must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["kubectl"], "1.29");
     }
 }
 
@@ -1551,6 +1889,64 @@ images:
     }
 
     #[test]
+    fn cmd_deploy_yaml_round_trips_json_payload() {
+        // `DocCapture::json()` (used above) reads the Doc's data directly and
+        // so cannot prove the *requested* format's own serializer agrees —
+        // this drives the real stdout stream through `emit_structured` for
+        // both formats and compares the parsed values.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("cfgd-images.lock");
+        std::fs::write(
+            &lock_path,
+            "\
+images:
+  - reference: registry.jarvispro.io/gome/server:abc
+    digest: sha256:deadbeef
+    pinned: registry.jarvispro.io/gome/server@sha256:deadbeef
+    lockedAt: 2026-01-01T00:00:00Z
+",
+        )
+        .expect("write lockfile");
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
+
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_deploy(
+            &json_printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("json-format deploy must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_deploy(
+            &yaml_printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("yaml-format deploy must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["applied"], false);
+    }
+
+    #[test]
     fn cmd_deploy_skips_trailing_empty_yaml_document() {
         let dir = tempfile::tempdir().expect("tempdir");
         let lock_path = dir.path().join("cfgd-images.lock");
@@ -1726,10 +2122,11 @@ images:
         let manifest_path = dir.path().join("pod.yaml");
         std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
 
-        let (printer, out) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, out, err_buf) =
+            Printer::for_test_split_streams(cfgd_core::output::Verbosity::Normal);
         assert!(
             !printer.is_structured(),
-            "for_test_at must yield a non-structured (table) printer"
+            "for_test_split_streams must yield a non-structured (table) printer"
         );
         cmd_deploy(
             &printer,
@@ -1741,19 +2138,168 @@ images:
         .expect("human-mode deploy must succeed");
         drop(printer);
 
-        let printed = out.lock().expect("lock capture").clone();
+        let stdout = cfgd_core::test_helpers::captured_text(&out);
+        let stderr = cfgd_core::test_helpers::captured_text(&err_buf);
         assert!(
-            printed.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
-            "stdout must carry the pinned digest ref: {printed}"
+            stdout.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "stdout must carry the pinned digest ref: {stdout}"
         );
         assert!(
-            !printed.contains("gome/server:abc"),
-            "stdout must not carry the old mutable tag: {printed}"
+            !stdout.contains("gome/server:abc"),
+            "stdout must not carry the old mutable tag: {stdout}"
+        );
+        // stdout is the pipeline into `kubectl apply -f -`: nothing but the
+        // manifest may land there, and the split capture states that directly.
+        assert!(
+            !stdout.contains('\u{25C9}'),
+            "no status line may reach the data channel: {stdout}"
+        );
+        assert!(
+            stderr.contains("\u{25C9} Pinned registry.jarvispro.io/gome/server:abc"),
+            "the rewrite summary must reach the human channel on stderr: {stderr}"
         );
         // The unmapped volume passes through untouched.
         assert!(
-            printed.contains("registry.jarvispro.io/other/thing:xyz"),
-            "unmapped volume reference must survive verbatim: {printed}"
+            stdout.contains("registry.jarvispro.io/other/thing:xyz"),
+            "unmapped volume reference must survive verbatim: {stdout}"
         );
     }
+}
+
+/// Every plugin subcommand offering `--namespace` resolves it the way plain
+/// `kubectl` does: an explicit flag, else the kubeconfig current context's
+/// namespace, else `default`. A variant that reached `cmd_*` with the raw
+/// `Option` would silently pick its own fallback, and two subcommands run
+/// back to back would read different namespaces from one kubeconfig.
+#[test]
+fn every_namespace_taking_plugin_variant_resolves_through_one_helper() {
+    let source = include_str!("mod.rs");
+    let dispatch = source
+        .split_once("match cli.command {")
+        .expect("plugin dispatch is a match on cli.command")
+        .1;
+
+    // The variants clap declares with an OPTIONAL namespace — `version`
+    // declares a `String` with a clap default instead, and so has nothing to
+    // resolve.
+    let enum_body = source
+        .split_once("enum PluginCommand {")
+        .expect("plugin subcommands are one enum")
+        .1;
+    let mut optional_ns_variants: Vec<&str> = Vec::new();
+    let mut current: Option<&str> = None;
+    for line in enum_body.lines() {
+        if line == "}" {
+            break;
+        }
+        if let Some(name) = line
+            .strip_prefix("    ")
+            .and_then(|l| l.strip_suffix(" {"))
+            .filter(|n| !n.is_empty() && n.chars().all(char::is_alphanumeric))
+        {
+            current = Some(name);
+        }
+        if line.trim() == "namespace: Option<String>,"
+            && let Some(name) = current.take()
+        {
+            optional_ns_variants.push(name);
+        }
+    }
+    // Positive control: the walk really reads variants, so its per-variant
+    // assertion below is not vacuously satisfied by an empty list.
+    assert!(
+        optional_ns_variants.len() >= 4 && optional_ns_variants.contains(&"Status"),
+        "expected the namespace-taking plugin variants to be found, got {optional_ns_variants:?}"
+    );
+
+    for variant in optional_ns_variants {
+        let arm = dispatch
+            .split_once(&format!("PluginCommand::{variant} {{"))
+            .unwrap_or_else(|| panic!("{variant} must have a dispatch arm"))
+            .1;
+        // The arm ends at the next variant's arm, or at the match's close.
+        let arm = arm.split("PluginCommand::").next().unwrap_or(arm);
+        assert!(
+            arm.contains("resolve_namespace(namespace)"),
+            "PluginCommand::{variant} takes an optional --namespace but does not \
+             resolve it through resolve_namespace"
+        );
+    }
+}
+
+// --- resolve_namespace / current_context_namespace ---
+
+/// Write a minimal kubeconfig fixture: one cluster, one context named
+/// `test-ctx` set as `current-context`. `namespace` is the context's
+/// declared namespace, or `None` to omit the field entirely (the "context
+/// names no namespace" arm). No `users:` entry is needed — `kube`'s loader
+/// defaults auth info when a context names none.
+fn write_kubeconfig_fixture(dir: &std::path::Path, namespace: Option<&str>) -> std::path::PathBuf {
+    let ns_line = namespace
+        .map(|ns| format!("      namespace: {ns}\n"))
+        .unwrap_or_default();
+    let path = dir.join("kubeconfig");
+    std::fs::write(
+        &path,
+        format!(
+            "\
+apiVersion: v1
+kind: Config
+current-context: test-ctx
+clusters:
+  - name: test-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: test-ctx
+    context:
+      cluster: test-cluster
+{ns_line}users: []
+"
+        ),
+    )
+    .expect("write kubeconfig fixture");
+    path
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_explicit_flag_wins() {
+    // Points KUBECONFIG at a path that names no such file — proves the
+    // explicit value short-circuits before any kubeconfig read happens, not
+    // merely that it happens to win a race against one.
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    assert_eq!(
+        resolve_namespace(Some("prod".to_string())),
+        "prod",
+        "an explicit --namespace must always win"
+    );
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_uses_context_namespace_when_omitted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let kubeconfig = write_kubeconfig_fixture(dir.path(), Some("prod-ns"));
+    let _kc = EnvVarGuard::set("KUBECONFIG", &kubeconfig.to_string_lossy());
+
+    assert_eq!(
+        resolve_namespace(None),
+        "prod-ns",
+        "an omitted --namespace must resolve from the kubeconfig current context"
+    );
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_falls_back_to_default_when_context_names_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let kubeconfig = write_kubeconfig_fixture(dir.path(), None);
+    let _kc = EnvVarGuard::set("KUBECONFIG", &kubeconfig.to_string_lossy());
+
+    assert_eq!(
+        resolve_namespace(None),
+        "default",
+        "a context naming no namespace must fall back to \"default\", same as kubectl"
+    );
 }

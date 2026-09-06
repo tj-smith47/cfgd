@@ -3,22 +3,32 @@ kind: ClusterConfigPolicy
 metadata:
   name: org-baseline
 spec:
+  # Cluster-scoped, so the selector is what bounds it: a namespace opts in by
+  # carrying this label rather than being enrolled here by name.
   namespaceSelector:
     matchLabels:
       cfgd.io/managed: "true"
   requiredModules:
+    # The audit baseline every machine carries, whatever else its team's own
+    # ConfigPolicy adds on top.
     - name: compliance-tools
       required: true
     - name: corp-certs
       required: true
   packages:
     - name: osquery
+    # Floored rather than pinned: the rule is "new enough to carry the current
+    # detection rules", not one exact build.
     - name: falco
       version: ">=0.37"
   settings:
+    # Hides kernel pointers from unprivileged readers; the baseline the
+    # compliance scan checks for.
     kernel.kptr_restrict: "2"
   security:
+    # replace with your own registries — images from anywhere else are refused
     trustedRegistries:
       - ghcr.io/acme-corp/
       - registry.acme.internal/
+    # An unsigned image cannot be attributed to a build, so it never runs.
     allowUnsigned: false

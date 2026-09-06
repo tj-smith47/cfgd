@@ -1,0 +1,13 @@
+Rollback: docs
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Source   <SOURCE>
+  Actions  1 planned
+
+backup:docs
+  ✓ rollback <SOURCE> from notes.txt.cfgd-backup — 4 B
+  → Previous contents backed up to <SOURCE>.cfgd-backup.<TIMESTAMP>; put them back with `cfgd backup rollback docs`
+
+✓ Rollback complete — 1 action succeeded (XXs wall)
+
+→ Run `cfgd backup run docs` to take a snapshot of what was just put back

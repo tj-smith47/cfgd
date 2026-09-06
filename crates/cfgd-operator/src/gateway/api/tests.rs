@@ -365,29 +365,29 @@ fn pagination_params_custom() {
 #[test]
 fn drift_detail_input_roundtrip() {
     let detail = DriftDetailInput {
-        field: "package/vim".to_string(),
-        expected: "installed".to_string(),
-        actual: "missing".to_string(),
+        field: "sysctl.vm.swappiness".to_string(),
+        expected: "10".to_string(),
+        actual: "60".to_string(),
     };
     let json = serde_json::to_string(&detail).unwrap();
     let parsed: DriftDetailInput = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.field, "package/vim");
-    assert_eq!(parsed.expected, "installed");
-    assert_eq!(parsed.actual, "missing");
+    assert_eq!(parsed.field, "sysctl.vm.swappiness");
+    assert_eq!(parsed.expected, "10");
+    assert_eq!(parsed.actual, "60");
 }
 
 #[test]
 fn drift_request_deserialization() {
     let json = r#"{
         "details": [
-            {"field": "pkg/vim", "expected": "9.0", "actual": "8.2"},
-            {"field": "file/bashrc", "expected": "hash-a", "actual": "hash-b"}
+            {"field": "sysctl.net.ipv4.ip_forward", "expected": "1", "actual": "0"},
+            {"field": "kernelModules.overlay", "expected": "loaded", "actual": "absent"}
         ]
     }"#;
     let req: DriftRequest = serde_json::from_str(json).unwrap();
     assert_eq!(req.details.len(), 2);
-    assert_eq!(req.details[0].field, "pkg/vim");
-    assert_eq!(req.details[1].field, "file/bashrc");
+    assert_eq!(req.details[0].field, "sysctl.net.ipv4.ip_forward");
+    assert_eq!(req.details[1].field, "kernelModules.overlay");
 }
 
 // --- SetConfigRequest deserialization ---
@@ -1988,9 +1988,9 @@ async fn record_drift_event_success() {
     let auth = AuthContext::Admin;
     let req = DriftRequest {
         details: vec![DriftDetailInput {
-            field: "package/vim".to_string(),
-            expected: "installed".to_string(),
-            actual: "missing".to_string(),
+            field: "sysctl.vm.swappiness".to_string(),
+            expected: "10".to_string(),
+            actual: "60".to_string(),
         }],
     };
     let result = record_drift_event(
@@ -2036,9 +2036,9 @@ async fn record_drift_event_broadcasts_to_sse() {
     let auth = AuthContext::Admin;
     let req = DriftRequest {
         details: vec![DriftDetailInput {
-            field: "file/bashrc".to_string(),
-            expected: "hash-a".to_string(),
-            actual: "hash-b".to_string(),
+            field: "sysctl.vm.max_map_count".to_string(),
+            expected: "262144".to_string(),
+            actual: "65530".to_string(),
         }],
     };
     let _ = record_drift_event(
@@ -2069,7 +2069,7 @@ async fn record_drift_event_device_auth_denies_other() {
     };
     let req = DriftRequest {
         details: vec![DriftDetailInput {
-            field: "pkg/vim".to_string(),
+            field: "sysctl.vm.swappiness".to_string(),
             expected: "9.0".to_string(),
             actual: "8.2".to_string(),
         }],
@@ -2093,7 +2093,7 @@ async fn record_drift_event_nonexistent_device() {
     let auth = AuthContext::Admin;
     let req = DriftRequest {
         details: vec![DriftDetailInput {
-            field: "pkg/vim".to_string(),
+            field: "sysctl.vm.swappiness".to_string(),
             expected: "9.0".to_string(),
             actual: "8.2".to_string(),
         }],
@@ -2474,7 +2474,7 @@ async fn verify_enrollment_rejects_nonexistent_challenge() {
 async fn verify_enrollment_rejects_when_no_keys_registered() {
     // Drives lines 197-202 (matching_keys.is_empty() branch). The challenge
     // exists but no user public keys are registered for that username, so
-    // the filtered list is empty and we return InvalidRequest.
+    // the filtered list is empty and InvalidRequest is returned.
     let (state, _tmp) = test_state_key_enrollment();
     let challenge = state
         .db

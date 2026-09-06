@@ -1,0 +1,54 @@
+{
+  "docs": "docs/spec/profile.md#specpackagesbrew",
+  "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/profile.md#specpackagesbrew",
+  "fields": [
+    {
+      "description": "Homebrew packages (macOS/Linux).",
+      "name": "brew",
+      "required": false,
+      "type": "([]string | BrewSpec)",
+      "variants": [
+        {
+          "description": "Package names, as a bare list.",
+          "name": "[]string",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "Homebrew casks (GUI applications) to install.",
+              "name": "casks",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
+              "name": "file",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "Homebrew formulae (CLI packages) to install.",
+              "name": "formulae",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "Third-party taps to add before installing formulae/casks.",
+              "name": "taps",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare list of names folds into `formulae`.",
+          "name": "BrewSpec",
+          "required": false,
+          "type": "object",
+          "typeName": "BrewSpec"
+        }
+      ]
+    }
+  ],
+  "path": "profile.spec.packages.brew"
+}

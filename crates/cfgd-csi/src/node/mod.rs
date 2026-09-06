@@ -21,7 +21,7 @@ use crate::csi::v1::{
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
 /// Env var holding the registry allow-list for CSI module pulls.
-/// Comma-separated list of host[:port] entries; `*` disables the check.
+/// Comma-separated list of `host[:port]` entries; `*` disables the check.
 /// Unset leaves the check disabled but emits a startup warning.
 pub const ALLOWED_REGISTRIES_ENV: &str = "CFGD_CSI_ALLOWED_REGISTRIES";
 
@@ -84,7 +84,7 @@ fn parse_allowed_registries_from_env() -> Option<Vec<String>> {
     )
 }
 
-/// Extract the registry host[:port] from a full `oci_ref` like
+/// Extract the registry `host[:port]` from a full `oci_ref` like
 /// `ghcr.io/org/mod:tag` or `myregistry.local:5000/org/mod:tag`. Refs without
 /// an explicit registry (e.g. `cfgd-modules/foo:v1`) return the empty string.
 fn registry_of(oci_ref: &str) -> &str {

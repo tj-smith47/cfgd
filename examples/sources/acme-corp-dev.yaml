@@ -1,7 +1,10 @@
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigSource
 metadata:
+  # replace ACME with your own organization throughout this file — the names,
+  # paths and registries below are all illustrative
   name: acme-corp-dev
+  # Bumped whenever the policy below changes, so a subscriber can pin a range.
   version: "2.1.0"
   description: ACME Corp developer environment baseline
 spec:
@@ -10,6 +13,8 @@ spec:
       - acme-base
       - acme-backend
       - acme-frontend
+    # Picks the default profile per platform, so a subscriber does not have to
+    # name one for the common case.
     platformProfiles:
       macos: acme-base
       debian: acme-backend
@@ -22,6 +27,8 @@ spec:
       - approved-editor
 
   policy:
+    # required: applied without asking. Reserved for what a machine on the
+    # corporate network cannot function (or be compliant) without.
     required:
       packages:
         brew:
@@ -35,6 +42,8 @@ spec:
       modules:
         - corp-vpn
         - corp-certs
+    # recommended: offered, and withheld until the subscriber decides (or
+    # `subscription.acceptRecommended` answers for them).
     recommended:
       packages:
         brew:
@@ -44,13 +53,19 @@ spec:
             - kubectx
       modules:
         - approved-editor
+    # optional: never applied unless the subscriber opts in by name.
     optional:
       profiles:
         - acme-sre
+    # locked: the subscriber may not override these, which is the point for a
+    # security policy the source is accountable for.
     locked:
       files:
         - source: security/security-policy.yaml
           target: ~/.config/company/security-policy.yaml
+    # What this source promises it will never do. A subscriber composes on the
+    # strength of these, so widening one is a breaking change to the version
+    # above.
     constraints:
       noScripts: true
       noSecretsRead: true

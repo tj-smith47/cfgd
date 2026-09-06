@@ -340,7 +340,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if output.status.success() {
-                        cx.report(Role::Ok, format!("Created service {}", entry.name));
+                        cx.report(Role::Info, format!("Created service {}", entry.name));
                         exists = true;
                     } else {
                         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -387,7 +387,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            cx.report(Role::Ok, format!("Started service {}", entry.name));
+                            cx.report(Role::Info, format!("Started service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             cx.report(
@@ -402,7 +402,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            cx.report(Role::Ok, format!("Stopped service {}", entry.name));
+                            cx.report(Role::Info, format!("Stopped service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             cx.report(

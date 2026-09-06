@@ -1,15 +1,14 @@
 Create Module: apply-mod
 
-Created module 'apply-mod' at <CONFIG_DIR>/modules/apply-mod
+Created at <CONFIG_DIR>/modules/apply-mod
   (none)
 
-→ Add to a profile with: cfgd profile update <profile> --module <name>
-→ Fine-tune with: cfgd module edit <name>
+→ Add it to a profile with `cfgd profile update <profile> --module apply-mod`
+→ Fine-tune with `cfgd module edit apply-mod`
 
 ✓ Generated .github/workflows/cfgd-release.yml
 
 Apply
-  Config   <CONFIG_DIR>/cfgd.yaml
-  Modules  apply-mod
+  Config  ~/cfgd.yaml
 
 ✓ Nothing to do — everything is up to date

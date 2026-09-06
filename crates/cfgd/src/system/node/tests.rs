@@ -2724,7 +2724,7 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     let sc = SeccompConfigurator;
 
     // profiles key with empty sequence — should try to create /etc/cfgd/seccomp
-    // but that requires root, so we just verify the no-profiles case
+    // but that requires root, so this just verifies the no-profiles case
     let mut m = serde_yaml::Mapping::new();
     m.insert(
         serde_yaml::Value::String("profiles".into()),
@@ -2732,7 +2732,7 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     // Empty profiles list - should still try to create dir but won't error
-    // because we catch the permission error at fs::create_dir_all
+    // because the permission error is caught at fs::create_dir_all
     // Actually, let's verify this specific case doesn't panic
     let result = sc.apply(
         &desired,
@@ -2759,7 +2759,7 @@ fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_cal
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("non-sequence value is a no-op");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("modprobe"),
         "no-op path must not emit a modprobe line: {captured}"
@@ -2770,8 +2770,8 @@ fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_cal
 fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
     // Empty `Sequence([])` → match Ok(Some([])) → for-loop body doesn't run,
     // desired_names stays empty, persist_modules is called with an empty
-    // slice (which removes any prior conf file; we can't observe that path
-    // without writing to /etc/, so we pin only the user-visible signal:
+    // slice (which removes any prior conf file; that path cannot be observed
+    // without writing to /etc/, so only the user-visible signal is pinned:
     // no `modprobe` info line fires).
     let km = KernelModuleConfigurator;
     let (printer, buf) =
@@ -2781,7 +2781,7 @@ fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("empty sequence must Ok");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("modprobe"),
         "empty-sequence path must not invoke modprobe: {captured}"
@@ -2803,7 +2803,7 @@ fn apparmor_apply_with_no_profiles_field_emits_no_output_and_loads_nothing() {
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("missing profiles key is a no-op");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("AppArmor"),
         "no-profiles path must not announce any AppArmor work: {captured}"
@@ -2837,7 +2837,7 @@ fn apparmor_apply_skips_profile_entries_with_path_traversal() {
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("traversal-skip path must Ok");
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("path traversal"),
         "should warn about traversal: {output}"
@@ -2877,7 +2877,7 @@ fn apparmor_apply_skips_a_profile_path_that_names_no_file() {
     )
     .expect("a skipped entry must not fail apply");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("names no file or directory"),
         "should warn about the unusable path: {output}"
@@ -2919,7 +2919,7 @@ fn seccomp_apply_skips_a_file_name_that_resolves_to_the_profiles_dir() {
     )
     .expect("a skipped entry must not fail apply");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("names no file or directory"),
         "should warn about the unusable file name: {output}"
@@ -3081,7 +3081,7 @@ fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemc
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     result.expect_err("a failing restart must surface as an error");
     assert!(
         captured.contains("restoring previous config"),
@@ -3159,7 +3159,7 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     // to fail, so the failure arm runs on every host — including a real k8s
     // node, where "in CI/tests systemctl is either absent or the kubelet unit
     // doesn't exist" is false and this test would otherwise restart the
-    // node's kubelet and then fail on the Ok it got back. We assert:
+    // node's kubelet and then fail on the Ok it got back. Assertions:
     //   (a) the merged config IS written to disk (atomic_write fired)
     //   (b) the returned Err carries a systemctl-related message
     let _shim = cfgd_core::test_helpers::ToolShim::install(
@@ -3260,7 +3260,7 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
     )
     .expect_err("a failing restart must surface as an error");
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("restoring previous config"),
         "rollback warning must fire after restart failure: {captured}"
@@ -3296,7 +3296,7 @@ fn kubelet_error_subject_handles_multiline_systemctl_output() {
         &err,
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     // First line embedded as the head of the subject.
     assert!(
         captured.contains("Transport endpoint is not connected"),
@@ -3345,7 +3345,7 @@ fn containerd_rollback_subject_handles_multiline_systemctl_output() {
         ),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     let status_line = captured
         .lines()
         .find(|l| l.contains("rollback: containerd restart also failed"))
@@ -3377,7 +3377,7 @@ fn sysctl_apply_with_non_mapping_desired_is_a_noop() {
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("non-mapping must be Ok no-op");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("sysctl"),
         "no work-line should be emitted on no-op: {captured}"
@@ -3409,7 +3409,7 @@ fn sysctl_apply_with_invalid_key_returns_validation_err() {
         msg.contains("invalid sysctl key"),
         "err should reference key validation: {msg}"
     );
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("sysctl -w NOT.LOWERCASE=1"),
         "info line should fire before validation Err: {captured}"
@@ -3433,7 +3433,7 @@ fn sysctl_apply_skips_non_string_keys_without_panicking() {
         &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("non-string keys must be skipped, not error");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("sysctl -w"),
         "no work-line should fire when key is skipped: {captured}"
@@ -3468,7 +3468,7 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
         .expect("a shimmed systemctl succeeds, so only the unreadable source warns");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("Failed to read unit file"),
         "expected read-failed warning in printer buffer: {captured}"
@@ -3495,7 +3495,7 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("Installing unit file:"),
         "info line for install should fire: {captured}"
@@ -3521,7 +3521,7 @@ fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
         .expect("Ok");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("systemctl enable cfgd-test-phantom-enable.service"),
         "info line for enable shellout should fire: {captured}"
@@ -3551,7 +3551,7 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
         .expect("Ok");
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("systemctl disable cfgd-test-phantom-disable.service"),
         "disable info line should fire when enabled=false: {captured}"

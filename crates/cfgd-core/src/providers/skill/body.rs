@@ -11,17 +11,28 @@
 
 use std::fmt::Write;
 
+use super::SkillScope;
 use crate::generate::SkillModel;
 
-/// Render the provider-agnostic skill body for `model`.
+/// Render the provider-agnostic skill body for `model` at `scope`.
 ///
 /// The returned markdown carries the protocol scaffold (precondition →
 /// enumerate → research → decide+justify → draft → validate → self-critique),
 /// the body-level `<!-- cfgd-version: … · cfgd-min-version: … -->` stamp read by
-/// step 0, a fenced `## Fallback schema (if cfgd is unavailable)` block, the
-/// before/after exemplar, and the captured ground-truth examples. Providers wrap
-/// this verbatim in their native envelope (frontmatter, TOML, managed block).
-pub fn render_skill_body(model: &SkillModel) -> String {
+/// step 0, the before/after exemplar, and the captured ground-truth examples.
+/// Providers wrap this verbatim in their native envelope (frontmatter, TOML,
+/// managed block).
+///
+/// A fenced `## Fallback schema (if cfgd is unavailable)` block closes the body
+/// at [`SkillScope::Project`] ONLY, and steps 0/1/5 word their fallback branch
+/// to match. A project skill is committed and travels to machines that may not
+/// carry cfgd at all, so it has to hold the schema itself; a user-scope skill is
+/// installed beside the cfgd that rendered it, where `cfgd explain <kind>
+/// -o json` — which step 1 already runs — is both authoritative and always
+/// present. The block is 41–85% of a rendered skill, so shipping it where it can
+/// only ever be the stale copy of a live command costs the reading agent most of
+/// its context window for nothing.
+pub fn render_skill_body(model: &SkillModel, scope: SkillScope) -> String {
     let kind_word = model.kind.as_str();
     let token = model.field_walk.explain_kind;
     let min = &model.min_cfgd_version;
@@ -48,60 +59,91 @@ pub fn render_skill_body(model: &SkillModel) -> String {
 
     // The field-walk command line, pulled from the model so the explain token
     // is single-sourced. The drill-down clause is gated on `drill_hint` per the
-    // FieldWalkSpec contract.
+    // FieldWalkSpec contract. `-o json` already returns the whole nested tree
+    // (every field's `children`), so the drill-down is the HUMAN form for
+    // reading one field's docs, never a second JSON walk.
     let explain_kind = format!("cfgd explain {token}");
     let drill_clause = if model.field_walk.drill_hint {
-        format!(", and `{explain_kind}.<field> -o json` to drill into nested objects")
+        format!(" `{explain_kind}.<field>` (no `-o`) prints one field's docs readably.")
     } else {
         String::new()
+    };
+
+    let embeds_schema = scope == SkillScope::Project;
+    let step_0_tail = if embeds_schema {
+        format!("if it is older than {min}, warn and take the fallback branch in steps 1 and 5.")
+    } else {
+        format!(
+            "if it is older than {min}, warn that its field list may be incomplete and say so \
+in the summary."
+        )
+    };
+    let step_1_fallback = if embeds_schema {
+        format!(" Fallback: the embedded schema below (stamped {cfgd_version}).")
+    } else {
+        String::new()
+    };
+    let step_5_fallback = if embeds_schema {
+        " Fallback: check the draft by hand against the embedded schema (required keys, \
+types, enums) and tell the user it was not machine-validated."
+    } else {
+        ""
     };
 
     let _ = writeln!(out, "## Protocol");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; \
-if it is absent, STOP and tell the user to install cfgd >= {min}. Run `cfgd --version`; \
-if it is older than {min}, warn and prefer the embedded fallback schema below."
+        "0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the \
+user to install cfgd >= {min}; {step_0_tail}"
     );
     let _ = writeln!(
         out,
-        "1. **Enumerate every field for this kind (live-first, snapshot-fallback).** \
-Run `{explain_kind} -o json` for the authoritative live schema{drill_clause}. If cfgd is \
-absent or older than the stamp, use the embedded fallback schema below (stamped {cfgd_version})."
+        "1. **Enumerate every field.** Run `{explain_kind} -o json` once. The payload is the \
+complete field list step 3 walks: every field, nested ones under `children`, each with \
+`type`, `description` and `required`; its `location` is the path the finished file goes \
+to.{drill_clause}{step_1_fallback}"
     );
     let _ = writeln!(
         out,
-        "2. **Research best practices externally for THIS subject.** {}",
+        "2. **Research THIS subject before choosing values.** {}",
         model.research_protocol
     );
     let _ = writeln!(
         out,
-        "3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** \
-Box-checking is a failure; meeting the rubric above is the target."
+        "3. **Decide include or omit for EVERY field from step 1, and write the WHY as a \
+comment beside each included one.** Omit a field the subject does not use or whose value \
+would equal the default; note a non-obvious omission in a comment too."
     );
     let _ = writeln!(
         out,
-        "4. **Draft thoroughly:** transitive deps explicit, version constraints set, \
-platforms scoped, multi-step scripts idempotent (timeout + continueOnError), \
-comments-as-specification."
+        "4. **Draft.** Declare every dependency the subject needs at run time, transitive \
+ones included. Set a version floor only where a feature needs it, and say which. Gate \
+platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` \
+/ `unless` / `creates` where the kind offers them, or a command that is itself idempotent), \
+give it a `timeout`, and set `continueOnError: true` only where a failure must not abort \
+the apply. Never write a credential into a value; a secret belongs in the profile's \
+`spec.secrets`. No placeholders, no stub comments."
     );
     let _ = writeln!(
         out,
-        "5. **Validate against the schema:** `{}` — fix until clean \
-(validate against the embedded snapshot if cfgd is unavailable).",
+        "5. **Validate:** `{}` (`-` reads stdin; add `-o json` for a parseable report). A \
+non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is \
+valid`.{step_5_fallback}",
         model.validate_cmd
     );
     let _ = writeln!(
         out,
-        "6. **Self-critique against the rubric:** \"Box-checking or thorough? Which field \
-did I skip, and was that deliberate?\" Iterate until the answer holds."
+        "6. **Self-critique.** For each field in the step-1 list, name the evidence behind \
+its value or its omission; a field you cannot account for goes back to step 2."
     );
     let _ = writeln!(out);
 
     render_exemplar(&mut out, model);
     render_examples(&mut out, model);
-    render_fallback_schema(&mut out, model, &explain_kind);
+    if embeds_schema {
+        render_fallback_schema(&mut out, model, &explain_kind);
+    }
 
     out
 }
@@ -138,6 +180,12 @@ fn render_examples(out: &mut String, model: &SkillModel) {
         return;
     }
     let _ = writeln!(out, "## Ground-truth examples");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Validated resources of this kind, shown for shape and depth. A value like \
+`you@example.com` is the example's placeholder; your draft carries the real one."
+    );
     let _ = writeln!(out);
     for example in &model.examples {
         write_fence(out, "yaml", &example.contents);
@@ -178,7 +226,7 @@ mod tests {
     #[test]
     fn skill_body_contains_protocol_validate_and_version_stamp() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
-        let body = render_skill_body(&model);
+        let body = render_skill_body(&model, SkillScope::Project);
         assert!(body.contains("cfgd explain module")); // step 1 field walk
         assert!(body.contains(&model.validate_cmd)); // step 5 validate
         assert!(body.contains("cfgd-min-version")); // runtime guard stamp
@@ -188,16 +236,55 @@ mod tests {
     #[test]
     fn fallback_schema_block_is_present_and_fenced() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
-        let body = render_skill_body(&model);
+        let body = render_skill_body(&model, SkillScope::Project);
         assert!(body.contains("## Fallback schema (if cfgd is unavailable)"));
         assert!(body.contains("```json"));
         assert!(body.contains(&model.schema_snapshot.json_schema));
     }
 
     #[test]
+    fn user_scope_omits_the_schema_and_every_reference_to_it() {
+        for kind in [
+            SkillKind::Module,
+            SkillKind::Profile,
+            SkillKind::Source,
+            SkillKind::MachineConfig,
+            SkillKind::ConfigPolicy,
+            SkillKind::ClusterConfigPolicy,
+        ] {
+            let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
+            let body = render_skill_body(&model, SkillScope::User);
+            let k = kind.as_str();
+            assert!(
+                !body.contains("## Fallback schema"),
+                "{k}: user scope still embeds the schema"
+            );
+            assert!(
+                !body.contains(&model.schema_snapshot.json_schema),
+                "{k}: user scope still carries the schema payload"
+            );
+            // A protocol that still names a branch the body no longer holds sends
+            // the agent looking for a block that is not there.
+            assert!(
+                !body.contains("embedded schema"),
+                "{k}: user scope still points at the embedded schema"
+            );
+            assert!(
+                !body.contains("fallback branch"),
+                "{k}: user scope still names a fallback branch"
+            );
+            // The live command the omission relies on has to still be prescribed.
+            assert!(
+                body.contains(&format!("cfgd explain {} -o json", kind.command_token())),
+                "{k}: user scope dropped the live field walk too"
+            );
+        }
+    }
+
+    #[test]
     fn version_stamp_carries_both_rendering_and_floor_versions() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
-        let body = render_skill_body(&model);
+        let body = render_skill_body(&model, SkillScope::Project);
         // Assemble the expected stamp from literal fragments — with the real
         // middot baked into the literal — rather than the renderer's own format
         // string, so a middot->hyphen (or any separator) drift fails the test
@@ -214,13 +301,13 @@ mod tests {
     #[test]
     fn all_six_protocol_steps_are_present_in_order() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
-        let body = render_skill_body(&model);
+        let body = render_skill_body(&model, SkillScope::Project);
         let mut last = 0;
         for marker in [
             "0. **Precondition",
             "1. **Enumerate",
             "2. **Research",
-            "3. **For EVERY field",
+            "3. **Decide",
             "4. **Draft",
             "5. **Validate",
             "6. **Self-critique",
@@ -235,16 +322,16 @@ mod tests {
 
     #[test]
     fn exemplar_rendered_only_when_present() {
-        let with = render_skill_body(&skill_model_for(
-            SkillKind::Module,
-            env!("CARGO_PKG_VERSION"),
-        ));
+        let with = render_skill_body(
+            &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+            SkillScope::Project,
+        );
         assert!(with.contains("## Worked exemplar (the quality bar)"));
         // Source has no exemplar, so the section is omitted entirely.
-        let without = render_skill_body(&skill_model_for(
-            SkillKind::Source,
-            env!("CARGO_PKG_VERSION"),
-        ));
+        let without = render_skill_body(
+            &skill_model_for(SkillKind::Source, env!("CARGO_PKG_VERSION")),
+            SkillScope::Project,
+        );
         assert!(!without.contains("## Worked exemplar"));
     }
 }

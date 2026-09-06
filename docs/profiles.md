@@ -6,7 +6,7 @@ For the complete field-by-field reference, see the [Profile spec reference](spec
 
 ## Layout
 
-Profiles live under `profiles/` in your config dir. The canonical layout is a **bundle** — a
+Profiles live under `profiles/` in your config dir. The canonical layout is a **bundle**: a
 directory per profile holding `profile.yaml` next to a `files/` payload:
 
 ```
@@ -19,13 +19,13 @@ profiles/
         └── gitconfig
 ```
 
-The legacy **flat** form — `profiles/<name>.yaml` (or `.yml`) — is still read, so existing
+The legacy **flat** form (`profiles/<name>.yaml` or `.yml`) is still read, so existing
 configs keep working. Run [`cfgd profile migrate`](cli-reference.md#cfgd-profile-migrate-name)
 to move a flat profile into its bundle. If more than one form exists for one name, cfgd
-fails closed rather than guess which wins — the error names every coexisting path; delete
+fails closed rather than guess which wins: the error names every coexisting path; delete
 or migrate all but one. The blast radius is scoped to the ambiguous profile itself: direct
-operations on it (apply, switch, show, delete) fail, while unrelated operations — creating
-or deleting other profiles, listing, workflow generation — warn about it and continue.
+operations on it (apply, switch, show, delete) fail, while unrelated operations (creating
+or deleting other profiles, listing, workflow generation) warn about it and continue.
 
 ## Profile YAML
 
@@ -176,6 +176,12 @@ core → base → macos → work
  └── grandparent (resolved because base inherits it)
 ```
 
+Every command reporting on a resolved profile — `apply`, `plan`, `diff`, `sync`, `status` — opens on
+the same header, and its `Profile` row carries an `(inherits: …)` annotation only for what the
+`inherits` chain actually added beyond the profile you named: `Profile work (inherits: core →
+shared)` when `work` extends other profiles, no annotation at all when it inherits nothing. The
+[`modules` field](#the-modules-field) resolves the same way, and its own row is annotated the same way.
+
 ### Merge Rules
 
 | Resource | Merge Strategy |
@@ -188,6 +194,7 @@ core → base → macos → work
 | `system` | Deep merge — later profile overrides at the leaf key level |
 | `secrets` | Append — deduplicated by target path, later wins on conflict |
 | `scripts` | Append — all scripts from all layers run in resolution order |
+| `backups` | Append: deduplicated by `name`, later layer overrides |
 | `modules` | Union — all modules from all layers combined, deduplicated |
 
 ## Env Vars
@@ -210,12 +217,13 @@ Homebrew, and `brew`'s binaries are reachable from the next shell without you ed
 The test is who made the directory, not who installed the manager: a manager that was already on
 the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
 `$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
-prints a `Shell environment changed` reminder after any apply that touched either.
+prints a re-source reminder, under the `cfgd:env` group of the closing **Caveats** section, after
+any apply that touched either.
 
 ### Example: make `EDITOR` reach everywhere
 
 ```yaml
-# profiles/workstation/profile.yaml
+# profiles/envdemo/profile.yaml
 spec:
   env:
     - name: EDITOR
@@ -233,20 +241,21 @@ Apply
 
 Phase: Prerequisites
   cfgd:env
-    ✓ write /home/you/.cfgd.env
+    ✓ write /home/you/.cfgd.env                       — 1 var
     ✓ inject source line into /home/you/.bashrc
     ✓ inject source line into /home/you/.zshenv
     ✓ inject source line into /home/you/.profile
-    ✓ write /home/you/.config/environment.d/cfgd.conf
+    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
   cfgd:session
     ✓ publish 1 var to the session manager
 
-✓ Apply complete — 6 actions succeeded (0.3s)
+✓ Apply complete — 6 actions succeeded (0.3s wall)
 
-Shell environment changed
-  ⚠ run `source ~/.cfgd.env` — or open a new shell
+Caveats
+  cfgd:env
+    → Run `source ~/.cfgd.env`, or open a new shell
 
-# Now every entry point sees it — no re-login:
+# Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
 nvim
 $ bash -lc 'echo $EDITOR'                 # login shell
@@ -255,13 +264,62 @@ $ systemctl --user show-environment | grep EDITOR
 EDITOR=nvim                                # systemd --user units + Wayland GUI
 ```
 
+Each write states what went into that file, and only that file: `~/.cfgd.env` carries env
+vars and aliases, while `environment.d` and the macOS LaunchAgent carry env vars alone.
+
+A host with no session manager to publish to (a container, a Linux box without a systemd
+user manager) still lists the `cfgd:session` row, with the reason in place of a result, and
+prices it outside the run's count at both ends: the header's `Actions` row never promised
+it, and the closing line names it as the last clause of its count list, with the reason after
+a colon (the one parenthetical on that line is the elapsed):
+
+```console
+  cfgd:session
+    ∅ publish 1 var to the session manager — no session manager
+
+✓ Apply complete — 5 actions succeeded, 1 not attempted: no session manager (0.3s wall)
+```
+
+`-o json` carries the same split as `succeeded` / `skipped` / `notAttempted`; the stored
+apply summary `cfgd log` reads back does too.
+
+Every generated line names its owner, so a file holding entries from a profile chain,
+several modules and a bootstrapped package manager says where each came from:
+
+```bash
+# managed by cfgd — do not edit
+export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH" # manager:brew
+export PAGER="less" # profile:base
+export EDITOR="nvim" # module:nvim
+alias v="nvim" # module:nvim
+alias catn="cat -n" # profile:base
+```
+
+The owner is the layer whose value survived the merge, so an entry a child profile
+overrides names the child, not the base it came from. A subscribed source's entries name
+the source (`# source:acme`), and the bootstrapped `PATH` line names every manager whose
+directories it carries (`# manager:brew,cargo`).
+
+A file carries exactly **one** `PATH` line, whoever produced it. Declaring `PATH` in
+`spec.env` does not add a second: the declaration and the bootstrapped directories fold
+into one assignment whose comment names both producers, with cfgd's directories spliced
+in where the declaration reaches for the ambient `PATH`.
+
+```bash
+# module:nvim declares PATH: "$HOME/.cargo/bin:$PATH"; brew and npm were bootstrapped
+export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # manager:brew,npm module:nvim
+```
+
+`environment.d` and the macOS LaunchAgent have no trailing-comment grammar, so their lines
+carry no owner.
+
 The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
 a future shell reads, `cfgd:session` pushes the same values into the session manager you are
 already logged into. A host with no live user session reports that group's action as
-unchanged and carries the reason as a warning under it — the files are still correct.
+unchanged and carries the reason as a warning under it; the files are still correct.
 
-To opt out of the broader surfaces, narrow the scope — e.g. `envScope: Interactive` restores the
-classic "interactive shells only" behavior, writing just `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`
+To opt out of the broader surfaces, narrow the scope: `envScope: Interactive` restores the
+classic "interactive shells only" behavior, writing only `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`
 source line.
 
 ## Shell Aliases
@@ -304,6 +362,9 @@ cfgd profile create work-linux \
 ```
 
 ### Updating Profiles via CLI
+
+![authoring a profile from the CLI](../demo/cfgd-author.gif)
+*Explain a field, add a package and an alias, preview, then converge: no editor needed.*
 
 ```sh
 cfgd profile update work \

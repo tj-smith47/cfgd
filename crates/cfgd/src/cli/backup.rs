@@ -6,7 +6,13 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
-use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
+use cfgd_core::state::BackupRunRecord;
+
+/// How a rollback copy comes to exist, read by both the empty-listing hint
+/// and the "nothing to roll back to" error: a `cfgd backup restore` or an
+/// adopting `cfgd apply` is what leaves one beside a source, never the
+/// rollback itself.
+const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
     let hint = if valid.is_empty() {
@@ -27,7 +33,7 @@ fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
         "not_found",
         format!("Backup '{name}' not found"),
         serde_json::json!({ "hint": hint }),
-        vec![hint],
+        vec![hint.into()],
     )
 }
 
@@ -45,16 +51,89 @@ fn find_backup_spec<'a>(
 
 /// The three values every unit-constructing surface needs: where config lives,
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
-fn unit_context(cli: &Cli) -> anyhow::Result<(PathBuf, cfgd_core::state::StateStore, PathBuf)> {
+///
+/// The store is the RUN's, borrowed rather than opened here: every caller has
+/// already built a context to resolve its config through, and a second open of
+/// the same DB in the same command is exactly what that context exists to stop.
+fn unit_context<'a>(
+    ctx: &'a RunContext<'_>,
+) -> anyhow::Result<(PathBuf, &'a cfgd_core::state::StateStore, PathBuf)> {
+    let cli = ctx.cli();
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let state = ctx.state()?;
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
     Ok((config_dir, state, state_dir))
 }
 
+/// What `cfgd backup restore` / `cfgd backup rollback` report under: the
+/// composed sources, the resolved profile's modules for the header row, and the
+/// units to choose from.
+///
+/// A module-resolution failure DEGRADES here rather than refusing. Resolution
+/// clones or fetches every module's git file source, and none of a restore's
+/// actual work depends on it — it is spent on a header row — so an unreachable
+/// module remote would otherwise veto putting data back, plausibly during the
+/// very incident that made it unreachable. The row is dropped and the reason is
+/// stated instead. `cfgd backup run` stays fatal: it executes the profile's own
+/// hooks, so a profile it cannot resolve is a run it cannot make.
+///
+/// A COMPOSITION failure still refuses, as its own error: a source constraint
+/// violation is about the config the run would act under, not about a header
+/// row. Which is why the composition happens HERE and the resolution over it is
+/// a separate step — `compose_with_sources` renders the `Source Conflicts`
+/// section and records every conflict it found, so answering "which half
+/// failed" by composing a second time would print that section twice and write
+/// a duplicate conflict row per attempt.
+fn restoring_verb_state(
+    ctx: &RunContext<'_>,
+    cfg: &config::CfgdConfig,
+    local_resolved: &cfgd_core::config::ResolvedProfile,
+    printer: &Printer,
+) -> anyhow::Result<(
+    Vec<cfgd_core::reconciler::ComposedSource>,
+    Vec<cfgd_core::output::HeaderModule>,
+    Vec<config::BackupSpec>,
+)> {
+    let composition = compose_with_sources(
+        ctx,
+        cfg,
+        local_resolved,
+        printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )?;
+    let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
+    let backups = composition.resolved.merged.backups.clone();
+
+    match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {
+        Ok(desired) => Ok((
+            sources,
+            cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
+            backups,
+        )),
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Modules not resolved — {}",
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            );
+            Ok((sources, Vec::new(), backups))
+        }
+    }
+}
+
 /// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
-/// caller assembles the entries from config + the state store.
-pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
+/// caller assembles the entries from config + the state store and passes `now`,
+/// so a render pins in a test rather than reading a clock inside the builder.
+///
+/// `Status` and `Last Run` are two cells, the way `source list` splits them: one
+/// cell holding a status word AND a timestamp can be tinted by neither, and the
+/// instant it carried answered "when exactly" — the question the `-o json`
+/// payload's `lastRunAt` is for — on the one column a reader scans to learn how
+/// stale the unit is.
+pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Backups");
 
     if entries.is_empty() {
@@ -62,32 +141,64 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
         return doc.with_data(entries);
     }
 
+    // `Snapshots` sits beside `Retention` because the two are one fact read
+    // twice: how many this unit holds, and how many it is allowed to keep.
     let mut t = Table::new([
         "Name",
         "Source",
         "Schedule",
         "Retention",
+        "Snapshots",
+        "Status",
         "Last Run",
         "Next Run",
     ]);
     for e in entries {
-        let last_run = match (&e.last_run_status, &e.last_run_at) {
-            (Some(status), Some(at)) if e.last_run_clean == Some(false) => {
-                format!("{status} (dirty) @ {at}")
+        // TitleCased here and nowhere else: `last_run_status` stays the stored
+        // token every `-o json` reader matches on.
+        let (status, role) = match &e.last_run_status {
+            Some(stored) => {
+                let (word, role) = cfgd_core::state::backup_run_status_display(stored);
+                // A run that wrote its snapshot and then failed a hook is
+                // neither of the stored tokens: the data is there, something
+                // still needs attention.
+                match e.last_run_clean {
+                    Some(false) => (format!("{word} (dirty)"), Some(Role::Warn)),
+                    _ => (word.to_string(), Some(role)),
+                }
             }
-            (Some(status), Some(at)) => format!("{status} @ {at}"),
-            _ => "never".to_string(),
+            None => (cfgd_core::ABSENT.to_string(), None),
         };
-        t = t.row([
-            e.name.clone(),
-            e.source.clone(),
-            e.schedule.clone().unwrap_or_else(|| "-".into()),
-            e.retention.to_string(),
-            last_run,
-            e.next_run_at.clone().unwrap_or_else(|| "-".into()),
+        t = t.row_styled(vec![
+            (e.name.clone(), None),
+            (cfgd_core::fold_home_in_text(&e.source), None),
+            (
+                e.schedule
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.into()),
+                None,
+            ),
+            (e.retention.to_string(), None),
+            (
+                e.snapshots
+                    .map_or_else(|| cfgd_core::ABSENT.to_string(), |n| n.to_string()),
+                None,
+            ),
+            (status, role),
+            (
+                cfgd_core::humanize_age_cell(e.last_run_at.as_deref(), now),
+                None,
+            ),
+            (
+                cfgd_core::humanize_until_cell(e.next_run_at.as_deref(), now),
+                None,
+            ),
         ]);
     }
-    doc = doc.table(t);
+    // `Schedule` on a catalog of unscheduled units, `Status` and `Next Run`
+    // before the first run: a column of `-` pushes `Snapshots` and `Last Run`,
+    // the two cells a reader compares across listings, off to the right.
+    doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
 
@@ -95,11 +206,19 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
 /// assembles the entries from the unit's recorded runs.
 ///
 /// Columns and payload keys are the snapshot analogue of
-/// [`build_backup_list_doc`]: `Created` is the ISO 8601 UTC stamp
-/// `BackupListEntry::last_run_at` uses, and `Size` goes through the CLI's one
-/// byte renderer so it reads the same as `cfgd upgrade`'s asset size.
-pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry]) -> Doc {
-    let mut doc = Doc::new().heading(format!("Snapshots: {name}"));
+/// [`build_backup_list_doc`]: `Created` carries the age, and `Size` goes
+/// through the CLI's one byte renderer so it reads the same as `cfgd
+/// upgrade`'s asset size. The payload keeps the ISO 8601 stamp.
+///
+/// `Created` earns its column only as an age: a snapshot's NAME is its stamp
+/// (`BACKUP_TIMESTAMP_FORMAT`), so the instant restated the row's own first cell
+/// one column later.
+pub fn build_backup_snapshot_list_doc(
+    name: &str,
+    entries: &[BackupSnapshotEntry],
+    now: &str,
+) -> Doc {
+    let mut doc = Doc::new().heading_title("Snapshots", name);
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, format!("Backup '{name}' has no snapshots"));
@@ -110,11 +229,11 @@ pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry
     for e in entries {
         t = t.row([
             e.name.clone(),
-            e.created.clone(),
+            cfgd_core::humanize_age_cell(Some(&e.created), now),
             format_bytes(e.size_bytes),
         ]);
     }
-    doc = doc.table(t);
+    doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
 
@@ -132,7 +251,7 @@ pub fn cmd_backup_list(
             "missing_argument",
             "--snapshots needs a backup name",
             serde_json::json!({ "flag": "--snapshots" }),
-            vec!["cfgd backup list <name> --snapshots".to_string()],
+            vec!["cfgd backup list <name> --snapshots".into()],
         ));
     }
 
@@ -158,15 +277,16 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
     // Enforce because it runs hooks and writes snapshots.
     let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         printer,
         false,
         composition::ConstraintMode::Report,
@@ -180,7 +300,7 @@ pub fn cmd_backup_list(
         Some(n) => {
             let spec = find_backup_spec(&backups, n)?;
             if snapshots {
-                return list_unit_snapshots(cli, printer, spec, &profile_name);
+                return list_unit_snapshots(&ctx, spec, profile_name);
             }
             vec![spec]
         }
@@ -188,7 +308,7 @@ pub fn cmd_backup_list(
     };
 
     if selected.is_empty() {
-        printer.emit(build_backup_list_doc(&[]));
+        printer.emit(build_backup_list_doc(&[], &cfgd_core::utc_now_iso8601()));
         return Ok(());
     }
 
@@ -197,30 +317,43 @@ pub fn cmd_backup_list(
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
     // same failure.
-    let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    let state = match ctx.state() {
         Ok(state) => Some(state),
         Err(e) => {
             printer
-                .status(Role::Warn, "backup history unavailable")
+                .status(Role::Warn, "Backup history unavailable")
                 .detail(cfgd_core::output::collapse_to_subject_line(&e));
             None
         }
     };
+    // Counting a unit's snapshots means resolving its destination, which needs
+    // the state dir as well as the store — so an unreadable state degrades the
+    // count exactly as it degrades the history columns, rather than half-way.
+    let unit_dirs = state.and_then(|_| {
+        cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())
+            .ok()
+            .map(|state_dir| (config_dir(cli), state_dir))
+    });
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
-            let last = state
-                .as_ref()
-                .and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            let snapshots =
+                unit_dirs
+                    .as_ref()
+                    .zip(state)
+                    .and_then(|((config_dir, state_dir), state)| {
+                        let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
+                        cfgd_core::backup::list_snapshots(&unit, state)
+                            .ok()
+                            .map(|s| s.len())
+                    });
             BackupListEntry {
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
                 retention: spec.retention,
-                last_run_status: last.as_ref().map(|r| match r.status {
-                    BackupRunStatus::Success => "success".to_string(),
-                    BackupRunStatus::Failed => "failed".to_string(),
-                }),
+                last_run_status: last.as_ref().map(|r| r.status.as_str().to_string()),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),
                 last_run_clean: last.as_ref().map(BackupRunRecord::is_clean),
                 // Seeded from the same `finished_at` the daemon anchors an
@@ -232,11 +365,15 @@ pub fn cmd_backup_list(
                         last.as_ref().map(|r| r.finished_at.as_str()),
                     )
                 }),
+                snapshots,
             }
         })
         .collect();
 
-    printer.emit(build_backup_list_doc(&entries));
+    printer.emit(build_backup_list_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -246,20 +383,23 @@ pub fn cmd_backup_list(
 /// unreadable: the run records ARE the snapshot list — there is no config half
 /// left to render — so a store failure is the command's failure.
 fn list_unit_snapshots(
-    cli: &Cli,
-    printer: &Printer,
+    ctx: &RunContext<'_>,
     spec: &config::BackupSpec,
     profile_name: &str,
 ) -> anyhow::Result<()> {
-    let (config_dir, state, state_dir) = unit_context(cli)?;
+    let (config_dir, state, state_dir) = unit_context(ctx)?;
     let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
-    let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, &state)?
+    let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, state)?
         .iter()
         .map(BackupSnapshotEntry::from)
         .collect();
 
-    printer.emit(build_backup_snapshot_list_doc(&spec.name, &entries));
+    ctx.printer().emit(build_backup_snapshot_list_doc(
+        &spec.name,
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -302,7 +442,7 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
         kind,
         message,
         serde_json::json!({ "hint": hint }),
-        vec![hint],
+        vec![hint.into()],
     )
 }
 
@@ -331,33 +471,45 @@ pub fn run_backup_restore(
     printer: &Printer,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
-    printer.heading("Restore Backup");
-
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
-    // Enforce, like `backup run`: a restore executes the unit's hooks and
-    // overwrites live data, so a source constraint violation must abort rather
-    // than be recorded and stepped over.
-    let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
-        printer,
-        false,
-        composition::ConstraintMode::Enforce,
-    )?;
-    let backups = composition.resolved.merged.backups;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, args.name)?;
 
-    let (config_dir, state, state_dir) = unit_context(cli)?;
-    let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
-    let snapshots = cfgd_core::backup::list_snapshots(&unit, &state)?;
+    let snapshots = cfgd_core::backup::list_snapshots(&unit, state)?;
     let selected: &SnapshotInfo =
         cfgd_core::backup::select_snapshot(args.name, &snapshots, args.at)
             .map_err(|e| snapshot_selection_error(args.name, e))?;
 
     let target = cfgd_core::backup::restore_target(&unit, args.to);
+
+    // Ahead of the prompt, not after it: the operator agreeing to overwrite
+    // live data is agreeing under a config and a profile, and the header is
+    // where a run states them. `run_ctx`, not a second `ctx` — `cli::RunContext`
+    // is already bound above.
+    // The declared path as `backup list`'s Source column spells it: the run
+    // header states what the unit READS, the action row what the restore
+    // WRITES, so a `--to` or a followed link shows as the two disagreeing.
+    let unit_source = spec.source.posix().to_string();
+    let profile_inherits = local_resolved.inherits_chain();
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Restore,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
+        trigger: None,
+        subject: Some(args.name),
+        unit_source: Some(&unit_source),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
+        .header(printer);
 
     if !args.yes && !confirm_restore(printer, args.name, selected, &target)? {
         printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
@@ -372,39 +524,19 @@ pub fn run_backup_restore(
         return Ok(None);
     }
 
-    let outcome = cfgd_core::backup::restore_backup(&unit, &state, printer, selected, args.to)?;
+    let started = std::time::Instant::now();
+    let outcome = cfgd_core::backup::restore_backup(&unit, state, printer, selected, args.to)?;
 
-    // The same three-way split `backup run` renders: a clean restore is Ok, a
-    // completed restore whose hooks failed is Warn (the data is back, but
-    // something needs attention), and a restore that did not happen is Fail.
-    let role = if outcome.is_clean() {
-        Role::Ok
-    } else if outcome.restored {
-        Role::Warn
-    } else {
-        Role::Fail
-    };
-    let subject = format!(
-        "{} restored from {}",
-        cfgd_core::reconciler::Owner::backup(&outcome.name).token(),
-        outcome.snapshot
+    // The same skeleton `backup run` settles through — owner group, then the
+    // run's own verdict — so the command's two mutating verbs read as one
+    // command rather than two.
+    let tally = cfgd_core::backup::report_restore(printer, &outcome);
+    cfgd_core::reconciler::render_run_rollup(
+        &tally,
+        cfgd_core::reconciler::RunTitle::Restore,
+        printer,
+        Some(started.elapsed()),
     );
-    // `outcome.restored_to`, not the requested target: a symlinked source is
-    // followed, and the operator needs to be told where the bytes actually went.
-    let detail = match &outcome.error {
-        Some(e) => format!(
-            "into {} — {}",
-            outcome.restored_to,
-            cfgd_core::output::collapse_to_subject_line(e)
-        ),
-        None => format!("into {}", outcome.restored_to),
-    };
-    printer.status(role, subject).detail(detail);
-    // `hint`, not `note`: where the overwritten data went is the one thing an
-    // operator needs after a restore they regret, and `note` is Verbose-only.
-    if let Some(safety) = &outcome.safety_snapshot {
-        printer.hint(format!("previous contents saved to {safety}"));
-    }
 
     printer.emit(Doc::new().with_data(BackupRestoreOutput::from(&outcome)));
     Ok(Some(outcome))
@@ -428,11 +560,11 @@ fn confirm_restore(
     let into = if target.was_redirected_by_a_link() {
         format!(
             "{} (via {})",
-            target.resolved_display(),
-            target.requested_display()
+            cfgd_core::fold_home_in_text(&target.resolved_display()),
+            cfgd_core::fold_home_in_text(&target.requested_display())
         )
     } else {
-        target.resolved_display()
+        cfgd_core::fold_home_in_text(&target.resolved_display())
     };
     let question = format!(
         "Restore '{}' from snapshot {} into {}?",
@@ -454,7 +586,232 @@ fn confirm_restore(
             "confirmation_required",
             message,
             serde_json::json!({ "hint": hint, "snapshot": snapshot.name }),
-            vec![hint],
+            vec![hint.into()],
+        )
+    })
+}
+
+/// Turn "nothing displaced this source" into the CLI's structured error shape.
+///
+/// The hint never instructs the destructive write that would create a copy —
+/// an operator with nothing to undo is not told to overwrite live data on
+/// the strength of a rollback error. It states how a copy comes to exist and
+/// points at the read-only surface that shows its snapshots.
+fn no_rollback_copy_error(name: &str, source: &Path) -> anyhow::Error {
+    let hint = format!("{ROLLBACK_COPY_ORIGIN}; see `cfgd backup list {name}` for its snapshots");
+    cli_error_ctx_with_hints(
+        cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::NoRollbackCopy {
+            name: name.to_string(),
+            source_path: source.to_path_buf(),
+        })
+        .into(),
+        name,
+        "no_rollback_copy",
+        format!("Backup '{name}' has no copy to roll back to"),
+        serde_json::json!({ "hint": hint }),
+        vec![hint.into()],
+    )
+}
+
+/// Build the `cfgd backup rollback` listing Doc from a populated entries
+/// vector. Pure; the caller assembles the entries and passes `now`, so a render
+/// pins in a test rather than reading a clock inside the builder.
+///
+/// `Created` is an age for the same reason `build_backup_snapshot_list_doc`'s
+/// is: the reader is choosing whether the copy is the one they want back, and
+/// how long ago it was written is that question. The payload keeps the ISO 8601
+/// stamp.
+pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str) -> Doc {
+    let mut doc = Doc::new().heading("Rollback Copies");
+
+    if entries.is_empty() {
+        doc = doc.status(Role::Info, "Nothing to roll back");
+        doc = doc.hint(ROLLBACK_COPY_ORIGIN);
+        return doc.with_data(entries);
+    }
+
+    let mut t = Table::new(["Name", "Copy", "Created", "Size"]);
+    for e in entries {
+        t = t.row([
+            e.name.clone(),
+            cfgd_core::fold_home_in_text(&e.copy),
+            cfgd_core::humanize_age_cell(Some(&e.created), now),
+            format_bytes(e.size_bytes),
+        ]);
+    }
+    doc = doc.table(t.without_unfillable_columns());
+    doc.with_data(entries)
+}
+
+pub fn cmd_backup_rollback(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let Some(name) = name else {
+        return list_rollback_copies(cli, printer);
+    };
+    // The same split `cmd_backup_restore` uses: the payload Doc is already out
+    // by the time the exit code is decided, so a failed rollback is not
+    // rendered as a SECOND top-level document.
+    match run_backup_rollback(cli, printer, name, yes)? {
+        Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
+        _ => Ok(()),
+    }
+}
+
+/// The no-name arm: what a rollback COULD put back, over every declared unit.
+///
+/// A read surface, so it composes in `Report` alongside `backup list` rather
+/// than in the `Enforce` the two mutating verbs take.
+fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let composition = compose_with_sources(
+        &ctx,
+        cfg,
+        local_resolved,
+        printer,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
+    let backups = composition.resolved.merged.backups;
+
+    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
+    let entries: Vec<BackupRollbackEntry> = backups
+        .iter()
+        .filter_map(|spec| {
+            let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+            cfgd_core::backup::rollback_copy(&unit).map(|copy| BackupRollbackEntry {
+                name: spec.name.clone(),
+                copy: copy.path.posix().to_string(),
+                created: copy.created,
+                size_bytes: copy.size_bytes,
+            })
+        })
+        .collect();
+
+    printer.emit(build_backup_rollback_list_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
+    Ok(())
+}
+
+/// Core of `backup rollback <name>`. `Ok(None)` means the operator declined at
+/// the confirmation prompt — nothing ran, and that is a success.
+///
+/// Kept out of [`cmd_backup_rollback`] so the body stays in-process testable
+/// (`process::exit` would abort the test binary).
+pub fn run_backup_rollback(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    yes: bool,
+) -> anyhow::Result<Option<cfgd_core::backup::RollbackOutcome>> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+
+    let spec = find_backup_spec(&backups, name)?;
+
+    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
+    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+
+    // Resolved before the prompt so the operator is told which copy they are
+    // agreeing to, and so a unit with nothing to put back is refused without
+    // asking. `rollback_backup` looks it up again under the lock.
+    let copy = cfgd_core::backup::rollback_copy(&unit)
+        .ok_or_else(|| no_rollback_copy_error(name, &unit.source()))?;
+
+    let unit_source = spec.source.posix().to_string();
+    let profile_inherits = local_resolved.inherits_chain();
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Rollback,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
+        trigger: None,
+        subject: Some(name),
+        unit_source: Some(&unit_source),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
+        .header(printer);
+
+    let copy_display = copy.path.posix().to_string();
+    let target = cfgd_core::backup::restore_target(&unit, None);
+    if !yes && !confirm_rollback(printer, name, &copy_display, &target)? {
+        printer.emit(Doc::new().status(Role::Info, "Aborted").with_data(
+            &BackupRollbackDeclinedOutput {
+                name: name.to_string(),
+                copy: copy_display,
+                restored_to: target.resolved_display(),
+                restored: false,
+                declined: true,
+            },
+        ));
+        return Ok(None);
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = cfgd_core::backup::rollback_backup(&unit, printer)?;
+
+    let tally = cfgd_core::backup::report_rollback(printer, &outcome);
+    cfgd_core::reconciler::render_run_rollup(
+        &tally,
+        cfgd_core::reconciler::RunTitle::Rollback,
+        printer,
+        Some(started.elapsed()),
+    );
+    if outcome.is_clean() {
+        printer.hint(success_next_step(Mutation::BackupRolledBack { unit: name }));
+    }
+
+    printer.emit(Doc::new().with_data(BackupRollbackOutput::from(&outcome)));
+    Ok(Some(outcome))
+}
+
+/// Ask before overwriting live data, on the terms [`confirm_restore`] asks on:
+/// a session that cannot prompt is an error carrying the `--yes` remedy, never
+/// a silent decline, and the RESOLVED destination is named because that is what
+/// gets overwritten. A symlinked source is named both ways, for the reason
+/// [`confirm_restore`] states.
+fn confirm_rollback(
+    printer: &Printer,
+    name: &str,
+    copy: &str,
+    target: &cfgd_core::backup::RestoreTarget,
+) -> anyhow::Result<bool> {
+    let into = if target.was_redirected_by_a_link() {
+        format!(
+            "{} (via {})",
+            cfgd_core::fold_home_in_text(&target.resolved_display()),
+            cfgd_core::fold_home_in_text(&target.requested_display())
+        )
+    } else {
+        cfgd_core::fold_home_in_text(&target.resolved_display())
+    };
+    let question = format!(
+        "Roll '{name}' back to {into} from {}?",
+        cfgd_core::fold_home_in_text(copy)
+    );
+    printer.prompt_confirm(&question).map_err(|e| {
+        let hint = "pass --yes (or set CFGD_YES=1) to roll back without a prompt".to_string();
+        let message = if printer.can_prompt() {
+            cfgd_core::output::collapse_to_subject_line(&e)
+        } else {
+            format!("Rollback of '{name}' needs confirmation, and this session cannot prompt")
+        };
+        cli_error_with_hints(
+            name,
+            "confirmation_required",
+            message,
+            serde_json::json!({ "hint": hint, "copy": copy }),
+            vec![hint.into()],
         )
     })
 }
@@ -512,21 +869,33 @@ pub fn run_backup_run(
     printer: &Printer,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source
     // violation rather than record it and continue. Only `backup list`, which
     // reads, composes in Report.
-    let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
+    // The whole desired state rather than the composition alone: `spec.backups[]`
+    // is profile-declared, so this run reports under a resolved profile and its
+    // header names that profile's modules like every other run does. One
+    // resolution — `resolve_desired_state` composes internally.
+    let desired = resolve_desired_state(
+        &ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Enforce,
     )?;
-    let backups = composition.resolved.merged.backups;
+    let sources = desired.sources;
+    let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
+    // Read off `.resolved` before the `.merged.backups` move below partially
+    // moves it.
+    let profile_inherits = desired.resolved.inherits_chain();
+    let backups = desired.resolved.merged.backups;
 
     let targets: Vec<&config::BackupSpec> = match name {
         Some(n) => vec![find_backup_spec(&backups, n)?],
@@ -542,21 +911,33 @@ pub fn run_backup_run(
         return Ok(BackupRunOutcome::default());
     }
 
-    let (config_dir, state, state_dir) = unit_context(cli)?;
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
     let units: Vec<BackupUnit<'_>> = targets
         .iter()
-        .map(|spec| BackupUnit::new(spec, &config_dir, &profile_name, &state_dir))
+        .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
 
-    let ctx = cfgd_core::reconciler::RunContext {
+    // A run of ONE named unit is titled and sourced like its restore
+    // (`Backup: docs` / `Source …`); a run over every declared unit names them
+    // in its owner groups and has no one source to state.
+    let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    let unit_source = named.map(|spec| spec.source.posix().to_string());
+    // `run_ctx`, not a second `ctx`: `cli::RunContext` (bound above) and
+    // `reconciler::RunContext` are both in scope in this module, and one name
+    // for both makes the reader check which is which at every use.
+    let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Backup,
         config_path: Some(cli.config.as_path()),
-        profile: Some(profile_name.as_str()),
-        modules: &[],
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
         trigger: None,
+        subject: named.map(|spec| spec.name.as_str()),
+        unit_source: unit_source.as_deref(),
     };
-    let (_status, reports) =
-        cfgd_core::reconciler::ApplyRun::backups(ctx, &units, &state).execute_backups(printer)?;
+    let (_status, reports) = cfgd_core::reconciler::ApplyRun::backups(run_ctx, &units, state)
+        .execute_backups(printer)?;
 
     // One report per unit, in unit order — `render_backups` pushes them as it
     // walks the same slice. A silent `zip` truncation here would drop payload
@@ -569,4 +950,230 @@ pub fn run_backup_run(
         .collect();
     printer.emit(Doc::new().with_data(&outputs));
     Ok(BackupRunOutcome { reports })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::backup::{RestoreOutcome, RollbackOutcome};
+
+    fn outcome(error: Option<&str>, restored: bool) -> RestoreOutcome {
+        RestoreOutcome {
+            name: "docs".to_string(),
+            snapshot: "notes.txt.20260101T000000Z".to_string(),
+            restored_to: "/home/u/notes.txt".to_string(),
+            restored,
+            size_bytes: 12,
+            safety_copy: None,
+            error: error.map(str::to_string),
+        }
+    }
+
+    /// Drive the real renderer: only a successful restore is easy to stage from
+    /// a fixture, so the two trouble arms are reached here rather than through a
+    /// golden that could never go red for them.
+    fn rendered(outcome: &RestoreOutcome) -> (String, cfgd_core::reconciler::RunTally) {
+        let (printer, cap) = Printer::for_test_doc();
+        let tally = cfgd_core::backup::report_restore(&printer, outcome);
+        drop(printer);
+        (cfgd_core::output::strip_ansi(&cap.human()), tally)
+    }
+
+    /// The one line naming the restore itself, out of the group's rows.
+    fn restore_row(human: &str) -> String {
+        human
+            .lines()
+            .find(|l| l.contains("restore /home"))
+            .unwrap_or_else(|| panic!("no restore row in:\n{human}"))
+            .to_string()
+    }
+
+    #[test]
+    fn a_restore_settles_under_its_owner_naming_its_target_in_the_action_row() {
+        let (human, tally) = rendered(&outcome(None, true));
+        assert!(human.contains("backup:docs"), "{human}");
+        let row = restore_row(&human);
+        assert!(
+            row.contains("restore /home/u/notes.txt from notes.txt.20260101T000000Z")
+                && row.contains("12 B"),
+            "{row}"
+        );
+        // The target is IN the subject, the way every file action names what it
+        // writes; a `Destination` row under the action is the shape this pins
+        // against.
+        assert!(
+            !human.contains("Destination"),
+            "the target belongs in the action row, not on a row under it: {human}"
+        );
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Success);
+        assert_eq!(
+            (tally.succeeded, tally.failed, tally.planned_total),
+            (1, 0, 1)
+        );
+    }
+
+    #[test]
+    fn a_restore_whose_hooks_failed_leads_with_the_failure_and_keeps_the_size() {
+        let (human, tally) = rendered(&outcome(Some("hook exited 1"), true));
+        let row = restore_row(&human);
+        assert!(
+            row.contains("hook exited 1") && row.contains("(12 B)"),
+            "{row}"
+        );
+        // The renderer supplies the one " — " between subject and detail; a
+        // second one inside the detail would read as the same separator twice.
+        assert_eq!(row.matches(" — ").count(), 1, "{row}");
+        // Warn, not Fail: the data is back, and something still needs attention
+        // — the same split a dirty `backup run` settles through.
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Partial);
+        assert_eq!(tally.succeeded, 1);
+    }
+
+    #[test]
+    fn a_restore_that_did_not_happen_fails_the_run() {
+        let (_human, tally) = rendered(&outcome(Some("target busy"), false));
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert_eq!((tally.succeeded, tally.failed), (0, 1));
+    }
+
+    fn rollback_outcome(error: Option<&str>, restored: bool) -> RollbackOutcome {
+        RollbackOutcome {
+            name: "docs".to_string(),
+            copy: "/home/u/notes.txt.cfgd-backup".to_string(),
+            restored_to: "/home/u/notes.txt".to_string(),
+            restored,
+            size_bytes: 12,
+            safety_copy: None,
+            error: error.map(str::to_string),
+        }
+    }
+
+    /// The rollback twin of [`rendered`], and for the same reason: the two
+    /// trouble arms cannot be staged from a fixture.
+    fn rendered_rollback(outcome: &RollbackOutcome) -> (String, cfgd_core::reconciler::RunTally) {
+        let (printer, cap) = Printer::for_test_doc();
+        let tally = cfgd_core::backup::report_rollback(&printer, outcome);
+        drop(printer);
+        (cfgd_core::output::strip_ansi(&cap.human()), tally)
+    }
+
+    fn rollback_row(human: &str) -> String {
+        human
+            .lines()
+            .find(|l| l.contains("rollback /home"))
+            .unwrap_or_else(|| panic!("no rollback row in:\n{human}"))
+            .to_string()
+    }
+
+    #[test]
+    fn a_rollback_whose_hooks_failed_leads_with_the_failure_and_keeps_the_size() {
+        let (human, tally) = rendered_rollback(&rollback_outcome(Some("hook exited 1"), true));
+        let row = rollback_row(&human);
+        assert!(
+            row.contains("hook exited 1") && row.contains("(12 B)"),
+            "{row}"
+        );
+        assert_eq!(row.matches(" — ").count(), 1, "{row}");
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Partial);
+        assert_eq!(tally.succeeded, 1);
+    }
+
+    #[test]
+    fn a_rollback_that_did_not_happen_fails_the_run() {
+        let (_human, tally) = rendered_rollback(&rollback_outcome(Some("target busy"), false));
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert_eq!((tally.succeeded, tally.failed), (0, 1));
+    }
+
+    /// The arm where the hint matters most: the copy landed and the overlay
+    /// then failed, which for a directory unit leaves a mixed tree — so the
+    /// line naming the complete copy IS the recovery instruction, and it must
+    /// be on screen beside the failure rather than only beside a success.
+    #[test]
+    fn a_failed_rollback_still_says_where_the_copy_it_took_went() {
+        let mut outcome = rollback_outcome(Some("target busy"), false);
+        outcome.safety_copy = Some(cfgd_core::reconciler::SidecarOutcome {
+            path: std::path::PathBuf::from("/home/u/notes.txt.cfgd-backup.20260101T000000Z"),
+            reused: false,
+        });
+        let (human, tally) = rendered_rollback(&outcome);
+        assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Failed);
+        assert!(rollback_row(&human).contains("target busy"), "{human}");
+        assert!(
+            human.contains(
+                "Previous contents backed up to /home/u/notes.txt.cfgd-backup.20260101T000000Z"
+            ),
+            "{human}"
+        );
+    }
+
+    /// The closing hint is a DISPLAY slot like the rows above it, so a path
+    /// under home folds to `~/` there too — a restore that printed
+    /// `restore ~/notes.md …` and then `backed up to /home/tj/notes.md.cfgd-backup`
+    /// one line below spelled `$HOME` two ways in one report. `-o json` keeps
+    /// the absolute path on both verbs.
+    #[test]
+    fn no_closing_hint_spells_the_home_directory_absolutely() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let home_posix = cfgd_core::to_posix_string(home.path());
+        let target = format!("{home_posix}/notes.txt");
+        let copy = format!("{target}.cfgd-backup");
+        let sidecar = || {
+            Some(cfgd_core::reconciler::SidecarOutcome {
+                path: std::path::PathBuf::from(&copy),
+                reused: false,
+            })
+        };
+
+        let mut restore = outcome(None, true);
+        restore.restored_to = target.clone();
+        restore.safety_copy = sidecar();
+        let (restore_human, _) = rendered(&restore);
+        let restore_payload = serde_json::to_string(&BackupRestoreOutput::from(&restore)).unwrap();
+
+        let mut rollback = rollback_outcome(None, true);
+        rollback.copy = copy.clone();
+        rollback.restored_to = target.clone();
+        rollback.safety_copy = sidecar();
+        let (rollback_human, _) = rendered_rollback(&rollback);
+        let rollback_payload =
+            serde_json::to_string(&BackupRollbackOutput::from(&rollback)).unwrap();
+
+        for (verb, human, payload) in [
+            ("restore", restore_human, restore_payload),
+            ("rollback", rollback_human, rollback_payload),
+        ] {
+            assert!(
+                human.contains("Previous contents backed up to ~/notes.txt.cfgd-backup"),
+                "{verb}'s closing hint folds the home directory:\n{human}"
+            );
+            assert!(
+                !human.contains(&home_posix),
+                "{verb} spells a path under home absolutely somewhere its rows fold it:\n{human}"
+            );
+            assert!(
+                payload.contains(&home_posix),
+                "{verb}'s `-o json` payload keeps the absolute path:\n{payload}"
+            );
+        }
+    }
+
+    /// Where the displaced contents went is the one thing an operator who
+    /// regrets a rollback needs, and the sidecar's own outcome words it.
+    #[test]
+    fn a_rollback_says_where_the_contents_it_displaced_went() {
+        let mut outcome = rollback_outcome(None, true);
+        outcome.safety_copy = Some(cfgd_core::reconciler::SidecarOutcome {
+            path: std::path::PathBuf::from("/home/u/notes.txt.cfgd-backup.20260101T000000Z"),
+            reused: false,
+        });
+        let (human, _tally) = rendered_rollback(&outcome);
+        assert!(
+            human.contains(
+                "Previous contents backed up to /home/u/notes.txt.cfgd-backup.20260101T000000Z"
+            ) && human.contains("cfgd backup rollback docs"),
+            "{human}"
+        );
+    }
 }

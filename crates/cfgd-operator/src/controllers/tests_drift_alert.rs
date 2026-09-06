@@ -12,20 +12,19 @@ use http::Method;
 use kube::ResourceExt;
 use kube::runtime::controller::Action;
 
+use super::ControllerStores;
 use super::drift_alert::{has_active_drift_alerts, reconcile_drift_alert};
 use super::test_fixtures::{
     drift_alert, machine_config, machine_config_owner_ref, machine_config_path,
     machine_config_status_with_drift_detected,
 };
-use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
-use crate::crds::DriftSeverity;
+use super::test_kube_harness::{
+    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
+};
+use crate::crds::{Condition, DriftSeverity};
 use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
-
-fn drift_alerts_path(namespace: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/driftalerts")
-}
 
 fn drift_alert_path(namespace: &str, name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/driftalerts/{name}")
@@ -217,6 +216,73 @@ async fn reconcile_drift_alert_with_existing_owner_ref_skips_owner_patch() {
     assert_eq!(metadata_patch_count, 0);
 }
 
+/// The DriftDetected condition this controller owns is patched back with the
+/// machine's other conditions intact — a merge patch replaces an array
+/// wholesale, so sending only the one condition deletes the rest. Losing
+/// `Compliant` here silently resets the machine's policy verdict.
+#[tokio::test]
+async fn reconcile_drift_alert_preserves_sibling_conditions_on_the_machine() {
+    let mut alert = drift_alert("alert-sib", NS, "mc-sib", DriftSeverity::High);
+    alert
+        .owner_references_mut()
+        .push(machine_config_owner_ref("mc-sib"));
+
+    let mut mc = machine_config("mc-sib", NS);
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        observed_generation: Some(1),
+        conditions: vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "ReconcileSuccess".to_string(),
+                message: "ok".to_string(),
+                last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "Compliant".to_string(),
+                status: "True".to_string(),
+                reason: "PolicyCompliant".to_string(),
+                message: "Compliant with policy p".to_string(),
+                last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+        ],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::get(machine_config_path(NS, "mc-sib")).returning_json(&mc),
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-sib")))
+            .returning_json(&mc),
+        expect_event_post(NS),
+        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-sib")))
+            .returning_json(&alert),
+    ]);
+
+    reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect("drift is recorded on the machine");
+
+    let report = harness.finish().await;
+    let types: Vec<String> = report.captured[1].body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .map(|c| c["type"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "Reconciled".to_string(),
+            "Compliant".to_string(),
+            "DriftDetected".to_string()
+        ],
+        "the patch must carry the machine's existing conditions plus DriftDetected"
+    );
+}
+
 #[tokio::test]
 async fn reconcile_drift_alert_when_drift_already_recorded_skips_drift_status_patch() {
     let mut alert = drift_alert("alert-5", NS, "mc-3", DriftSeverity::Medium);
@@ -382,54 +448,86 @@ async fn reconcile_drift_alert_high_severity_emits_escalated_condition_in_status
 #[tokio::test]
 async fn has_active_drift_alerts_returns_true_when_alert_matches() {
     let alert = drift_alert("alert-active", NS, "mc-x", DriftSeverity::Low);
-    let list = serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "DriftAlertList",
-        "items": [alert],
-        "metadata": {},
-    });
+    let stores = ControllerStores {
+        drift_alerts: seeded_store(vec![alert]),
+        ..empty_stores()
+    };
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path(NS)).returning_raw(serde_json::to_vec(&list).unwrap()),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
 
-    let active = has_active_drift_alerts(&ctx.client, NS, "mc-x").await;
+    let active = has_active_drift_alerts(&ctx.stores, NS, "mc-x")
+        .await
+        .expect("a populated cache answers");
     assert!(active);
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert!(
+        report.captured.is_empty(),
+        "the drift check reads the watch cache — it must make no API call"
+    );
 }
 
 #[tokio::test]
 async fn has_active_drift_alerts_returns_false_when_no_match() {
     let alert = drift_alert("alert-other", NS, "different-mc", DriftSeverity::Low);
-    let list = serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "DriftAlertList",
-        "items": [alert],
-        "metadata": {},
-    });
+    let stores = ControllerStores {
+        drift_alerts: seeded_store(vec![alert]),
+        ..empty_stores()
+    };
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path(NS)).returning_raw(serde_json::to_vec(&list).unwrap()),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
 
-    let active = has_active_drift_alerts(&ctx.client, NS, "mc-x").await;
+    let active = has_active_drift_alerts(&ctx.stores, NS, "mc-x")
+        .await
+        .expect("a populated cache answers");
     assert!(!active);
 
     let _ = harness.finish().await;
 }
 
 #[tokio::test]
-async fn has_active_drift_alerts_returns_false_when_list_fails() {
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path(NS)).returning_server_error(500, "list failed"),
-    ]);
+async fn has_active_drift_alerts_ignores_alerts_in_another_namespace() {
+    let alert = drift_alert("alert-elsewhere", "other-ns", "mc-x", DriftSeverity::Low);
+    let stores = ControllerStores {
+        drift_alerts: seeded_store(vec![alert]),
+        ..empty_stores()
+    };
 
-    let active = has_active_drift_alerts(&ctx.client, NS, "mc-x").await;
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
+
+    let active = has_active_drift_alerts(&ctx.stores, NS, "mc-x")
+        .await
+        .expect("a populated cache answers");
     assert!(
         !active,
-        "list failure must be treated as no-active-drift (best-effort)"
+        "the namespace-scoped read must not see an alert from another namespace"
+    );
+
+    let _ = harness.finish().await;
+}
+
+/// The old LIST-based check answered `false` when the API call failed, which
+/// clears the DriftDetected condition on evidence the operator never had. A
+/// cache that has not completed its initial list is that same "no evidence"
+/// state, and must requeue instead of answering.
+#[tokio::test(start_paused = true)]
+async fn has_active_drift_alerts_errors_when_the_cache_is_not_populated() {
+    // The writer is held for the length of the assertion: dropping it would
+    // resolve the wait with `WriterDropped` instead of timing out.
+    let (drift_alerts, _writer) = unready_store();
+    let stores = ControllerStores {
+        drift_alerts,
+        ..empty_stores()
+    };
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
+
+    let err = has_active_drift_alerts(&ctx.stores, NS, "mc-x")
+        .await
+        .expect_err("an unpopulated cache must not answer 'no drift'");
+    assert!(
+        err.to_string().contains("DriftAlert watch cache"),
+        "error must name the cache that was not ready: {err}"
     );
 
     let _ = harness.finish().await;

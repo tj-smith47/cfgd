@@ -45,14 +45,22 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Pinned so the humanized `Last Sync` column is a fixed string in every
+/// golden — the render reads this, never a clock.
+const NOW: &str = "2026-05-14T12:00:00Z";
+
 fn happy_entries() -> Vec<SourceListEntry> {
     vec![SourceListEntry {
         name: "team-config".into(),
-        url: "https://github.com/team/config".into(),
-        priority: 100,
+        url: Some("https://github.com/team/config".into()),
+        priority: Some(100),
         version: Some("1.0.0".into()),
-        status: "synced".into(),
+        status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
         last_fetched: Some("2026-05-14T10:00:00Z".into()),
+        signed: Some(true),
+        require_signed_commits: Some(true),
+        last_commit: Some("4b8857cd0f1e2a3b4c5d6e7f8091a2b3c4d5e6f7".into()),
+        drift_count: None,
     }]
 }
 
@@ -80,7 +88,7 @@ fn source_list_happy_json() {
     // directly; this exercises the JSON envelope without disk fixtures.
     let entries = happy_entries();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_list_doc(&entries, false));
+    printer.emit(build_source_list_doc(&entries, false, NOW));
     drop(printer);
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_list/happy.json");
 }
@@ -117,16 +125,37 @@ fn source_list_wide_human() {
     // for_test_doc defaults to wide=false; the build helper is the seam.
     let entries = happy_entries();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_list_doc(&entries, true));
+    printer.emit(build_source_list_doc(&entries, true, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_list/wide.txt");
+}
+
+#[test]
+fn source_list_reads_the_recorded_failure_through_the_shared_vocabulary() {
+    // The stored token stays on the wire; only the cell moves. A row rendering
+    // `error` here would mean the table bypassed `source_status_display`.
+    let mut entries = happy_entries();
+    entries[0].status = cfgd_core::state::SOURCE_STATUS_ERROR.into();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_list_doc(&entries, false, NOW));
+    drop(printer);
+    let human = strip_ansi(&cap.human());
+    assert!(
+        human.contains("Failed") && !human.contains("error"),
+        "expected the Failed cell and no stored token on screen, got: {human}"
+    );
+    assert_eq!(
+        cap.json().expect("doc captured json")[0]["status"],
+        "error",
+        "the stored token is the wire value and must not follow the display word"
+    );
 }
 
 #[test]
 fn source_list_payload_carries_with_data() {
     let entries = happy_entries();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_list_doc(&entries, false));
+    printer.emit(build_source_list_doc(&entries, false, NOW));
     drop(printer);
     let payload = cap.json().expect("doc captured json");
     let arr = payload.as_array().expect("array payload");

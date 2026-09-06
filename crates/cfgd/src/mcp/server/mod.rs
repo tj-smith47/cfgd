@@ -71,6 +71,18 @@ pub struct McpServer {
     // terminal, but `PackageManager` methods still require a `PackageContext`.
     printer: cfgd_core::output::Printer,
     state: cfgd_core::state::StateStore,
+    /// What each manager reported installed, kept for the server's life rather
+    /// than for one tool call's. A context is short-lived here — it borrows
+    /// `printer` and `state`, so it cannot be a field beside them — and without
+    /// this every tool call re-ran `brew list`, `npm ls -g` and the rest.
+    ///
+    /// What bounds the staleness here is the memo's AGE ceiling, not the
+    /// resolution generation: no MCP tool installs or uninstalls anything, so
+    /// nothing a session does can move the generation, and the change this host
+    /// actually has to notice is the user installing a package in another
+    /// terminal between two `scan_installed_packages` calls. That is exactly
+    /// what the ceiling is for.
+    enumerations: cfgd_core::providers::InstalledEnumerations,
 }
 
 impl McpServer {
@@ -92,6 +104,7 @@ impl McpServer {
             managers: packages::all_package_managers(),
             printer: cfgd_core::output::Printer::silent(),
             state,
+            enumerations: cfgd_core::providers::InstalledEnumerations::default(),
         })
     }
 
@@ -129,7 +142,7 @@ impl McpServer {
             };
 
             // Notifications (no id) don't require a response per JSON-RPC 2.0,
-            // but MCP expects we handle them silently.
+            // but MCP expects them handled silently.
             if request.id.is_none() {
                 self.handle_notification(&request);
                 continue;
@@ -247,7 +260,11 @@ impl McpServer {
                     );
                 }
 
-                let pkg_cx = cfgd_core::providers::PackageContext::new(&self.printer, &self.state);
+                let pkg_cx = cfgd_core::providers::PackageContext::with_shared_enumerations(
+                    &self.printer,
+                    &self.state,
+                    &self.enumerations,
+                );
                 let result = crate::ai::tools::dispatch_tool_call(
                     dispatch_name,
                     &arguments,

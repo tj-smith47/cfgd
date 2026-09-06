@@ -6,7 +6,7 @@ Phase: Prerequisites
 Phase: Packages
   profile:test
     ✓ brew install jq
-    ✗ apt install curl — package error: apt install failed: simulated install failure
+    ✗ apt install curl              — apt install failed: simulated install failure
 
 Phase: Post-Scripts
   profile:test

@@ -10,6 +10,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use cfgd_core::errors::FileError;
+
 use cfgd_core::config::{
     EncryptionMode, EncryptionSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile,
     ProfileLayer, ProfileSpec, ResolvedProfile,
@@ -70,6 +72,60 @@ fn detect_language_from_extension() {
     assert_eq!(detect_language(Path::new("test.rs")), "rs");
     assert_eq!(detect_language(Path::new("config.yaml")), "yaml");
     assert_eq!(detect_language(Path::new("noext")), "txt");
+}
+
+/// `cfgd decide` describes a withheld `files.*` item by reading the file the
+/// action would write. The two resolutions must therefore be ONE: the file
+/// manager's `resolve_source_path` and `cfgd_core::resolve_managed_file_source`
+/// answer the same path for the same entry, INCLUDING a source-delivered one —
+/// nothing in composition rebases a source-delivered `source:` onto its own
+/// checkout, so a source's entry resolves against the local config directory
+/// exactly as a local entry does, and the decide row is live for both.
+#[test]
+fn a_source_delivered_files_source_resolves_the_same_way_for_the_plan_and_the_decide_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("bashrc"), "one\ntwo\n").unwrap();
+
+    let target = config_dir.join("target").join("bashrc");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/bashrc".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                // Delivered BY a source, which is the case the row is about.
+                origin: Some("team-config".to_string()),
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    assert_eq!(
+        fm.resolve_source_path("files/bashrc").unwrap(),
+        cfgd_core::resolve_managed_file_source("files/bashrc", config_dir).unwrap(),
+        "the plan action and the decide row must name one file"
+    );
+
+    // And they agree on a refusal: a symlink inside the config directory
+    // pointing out of it is caught by canonicalization, not by the input check.
+    let outside = dir.path().parent().unwrap().join("cfgd-escape-probe");
+    fs::write(&outside, "escaped").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, files_dir.join("escape")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&outside, files_dir.join("escape")).unwrap();
+    assert!(fm.resolve_source_path("files/escape").is_err());
+    assert!(cfgd_core::resolve_managed_file_source("files/escape", config_dir).is_none());
+    let _ = fs::remove_file(&outside);
 }
 
 #[test]
@@ -210,10 +266,12 @@ fn template_rendering_with_env() {
         EnvVar {
             name: "editor".into(),
             value: "vim".into(),
+            platforms: vec![],
         },
         EnvVar {
             name: "shell".into(),
             value: "/bin/zsh".into(),
+            platforms: vec![],
         },
     ];
 
@@ -288,6 +346,145 @@ fn apply_creates_files() {
 
     assert!(target.exists());
     assert_eq!(fs::read_to_string(&target).unwrap(), "hello world");
+}
+
+/// `apply`'s loop used to run each `FileAction` under its
+/// own early `?`, so an action that failed mid-loop (here, a target whose
+/// parent is a regular file — `ensure_target_writable` returns `ENOTDIR`)
+/// abandoned the "Applying files" progress bar without a `finish()` call.
+/// `ProgressBar::drop` now settles an abandoned bar as a `Role::Skipped`
+/// "(interrupted)" line (the same rule `Spinner::drop` follows), which made
+/// this specific leak visible for the first time: a leaked bar rendered as a
+/// silent, un-styled line under the OLD `Drop` (no custom impl at all), so
+/// nothing here ever caught it. `apply_one_file_action` now carries the
+/// per-action work, and `apply`'s loop matches its result exactly once,
+/// calling `pb.finish()` on both the success and the failure path.
+#[test]
+fn apply_failure_settles_the_progress_bar_explicitly_never_via_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("test.txt"), "hello world").unwrap();
+
+    // The parent of `target` is a regular file, not a directory:
+    // `ensure_target_writable` hits `fs::create_dir_all` and returns an IO
+    // error — the same shape `apply_with_failures_human` exercises end to
+    // end through the reconciler.
+    let blocker = config_dir.join("blocker");
+    fs::write(&blocker, "i am a file, not a dir").unwrap();
+    let target = blocker.join("test.txt");
+
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/test.txt".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    assert_eq!(actions.len(), 1);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = fm.apply(&actions, &printer);
+    drop(printer);
+
+    assert!(
+        result.is_err(),
+        "a target whose parent is a regular file must fail to apply"
+    );
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        !out.contains("(interrupted)"),
+        "the progress bar must be finished explicitly on the failure path, \
+         never left for Drop to settle: {out:?}"
+    );
+}
+
+/// `apply`'s loop calls `pb.set_message(file_action_target(action)...)` once
+/// per action, so the bar's label tracks whichever file is currently being
+/// processed rather than sitting on the loop's opening "Applying files"
+/// caption for the whole run. Needs [`cfgd_core::output::Printer::for_test_with_live_bars`]
+/// (the constructor that routes indicatif's own paints into the captured
+/// buffer) — the plain `for_test_at` capture used above never draws the bar
+/// at all, so it cannot see a `set_message` that never reached it.
+#[test]
+fn apply_progress_bar_names_the_current_file_being_processed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("first.txt"), "one").unwrap();
+    fs::write(files_dir.join("second.txt"), "two").unwrap();
+
+    let first_target = config_dir.join("out").join("first.txt");
+    let second_target = config_dir.join("out").join("second.txt");
+
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![
+                ManagedFileSpec {
+                    patch: None,
+                    source: "files/first.txt".to_string(),
+                    target: first_target.clone(),
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                },
+                ManagedFileSpec {
+                    patch: None,
+                    source: "files/second.txt".to_string(),
+                    target: second_target.clone(),
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                },
+            ],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    assert_eq!(actions.len(), 2);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_live_bars();
+    let result = fm.apply(&actions, &printer);
+    drop(printer);
+
+    assert!(
+        result.is_ok(),
+        "both actions should apply cleanly: {result:?}"
+    );
+
+    let painted = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        painted.contains(&first_target.display().to_string()),
+        "the bar must have named the first file while it was in flight: {painted:?}"
+    );
+    assert!(
+        painted.contains(&second_target.display().to_string()),
+        "the bar must have named the second file while it was in flight: {painted:?}"
+    );
 }
 
 #[test]
@@ -579,6 +776,7 @@ fn source_template_cannot_access_local_env() {
     let local_env = vec![EnvVar {
         name: "personal_var".into(),
         value: "my-secret".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -607,6 +805,7 @@ fn source_template_cannot_access_local_env() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -647,6 +846,7 @@ fn source_template_sandbox_violation_pins_variant() {
     let local_env = vec![EnvVar {
         name: "personal_var".into(),
         value: "my-secret".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -673,6 +873,7 @@ fn source_template_sandbox_violation_pins_variant() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -726,6 +927,7 @@ fn source_template_can_access_own_env() {
         vec![EnvVar {
             name: "team_name".into(),
             value: "Platform".into(),
+            platforms: vec![],
         }],
     );
     fm.set_source_env(&source_vars);
@@ -894,6 +1096,203 @@ fn symlink_strategy_is_idempotent() {
     );
 }
 
+/// Build a one-entry profile deploying `files/test.txt` to `<config_dir>/output/test.txt`
+/// under `strategy`, apply it, and hand back the manager, the profile and the target.
+fn deployed_one_file(
+    config_dir: &Path,
+    content: &str,
+    strategy: FileStrategy,
+) -> (CfgdFileManager, ResolvedProfile, PathBuf) {
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("test.txt"), content).unwrap();
+
+    let target = config_dir.join("output").join("test.txt");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/test.txt".to_string(),
+                target: target.clone(),
+                strategy: Some(strategy),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    fm.apply(&actions, &test_printer()).unwrap();
+    (fm, resolved, target)
+}
+
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_follows_an_edit_made_through_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        deployed,
+        vec![cfgd_core::providers::LinkDeployedRow {
+            target: target.clone(),
+            hash: cfgd_core::sha256_hex(b"content"),
+            file_hashes: vec![format!(
+                "{}:{}",
+                cfgd_core::to_posix_string(&target),
+                cfgd_core::sha256_hex(b"content")
+            )],
+        }],
+        "a converged symlink reports the bytes its target resolves to"
+    );
+
+    // The edit a user makes in their editor: the path they open is the target,
+    // the file they write is the source.
+    fs::write(&target, "edited through the link").unwrap();
+    assert!(
+        fm.plan(&resolved.merged).unwrap().is_empty(),
+        "an edit through the link is not drift — the link is still intact"
+    );
+    let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        deployed,
+        vec![cfgd_core::providers::LinkDeployedRow {
+            file_hashes: vec![format!(
+                "{}:{}",
+                cfgd_core::to_posix_string(&target),
+                cfgd_core::sha256_hex(b"edited through the link")
+            )],
+            target,
+            hash: cfgd_core::sha256_hex(b"edited through the link"),
+        }],
+        "the reported hash follows the edit, so a stale record can be corrected"
+    );
+}
+
+#[test]
+fn link_deployed_content_ignores_a_copy_deployed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Copy);
+
+    fs::write(&target, "hand-edited").unwrap();
+    assert_eq!(
+        fm.plan(&resolved.merged).unwrap().len(),
+        1,
+        "a Copy target's content edit IS drift, so the plan repairs it"
+    );
+    assert!(
+        fm.link_deployed_content(&resolved.merged)
+            .unwrap()
+            .is_empty(),
+        "a Copy entry owns bytes of its own; its recorded hash is never silently refreshed"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_ignores_a_target_that_is_not_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    fs::remove_file(&target).unwrap();
+    fs::write(&target, "a plain file where the link belongs").unwrap();
+    assert!(
+        fm.link_deployed_content(&resolved.merged)
+            .unwrap()
+            .is_empty(),
+        "an unlinked target is real drift the plan repairs, not a source edit to record"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let state = cfgd_core::state::StateStore::open(&dir.path().join("state.db")).unwrap();
+    let resource_id = cfgd_core::to_posix_string(&target);
+    state
+        .upsert_managed_resource("file", &resource_id, "local", None, None)
+        .unwrap();
+
+    let registry = cfgd_core::providers::ProviderRegistry::new();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
+            .unwrap()
+            .rows,
+        1,
+        "the row recorded no hash at all, so the first refresh writes one"
+    );
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
+            .unwrap()
+            .rows,
+        0,
+        "nothing moved since, so the daemon's next tick writes nothing"
+    );
+
+    fs::write(&target, "edited through the link").unwrap();
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
+            .unwrap()
+            .rows,
+        1,
+        "the edit through the link moves the recorded hash exactly once"
+    );
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
+            .unwrap()
+            .rows,
+        0
+    );
+
+    let recorded = state.managed_resources().unwrap();
+    assert_eq!(
+        recorded
+            .iter()
+            .find(|r| r.resource_id == resource_id)
+            .and_then(|r| r.last_hash.clone()),
+        Some(cfgd_core::sha256_hex(b"edited through the link")),
+        "the recorded hash describes the bytes the deployed file now holds"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn refresh_link_deployed_hashes_never_mints_a_row_for_an_untracked_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, _target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let state = cfgd_core::state::StateStore::open(&dir.path().join("state.db")).unwrap();
+    let registry = cfgd_core::providers::ProviderRegistry::new();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
+            .unwrap()
+            .rows,
+        0
+    );
+    assert!(
+        state.managed_resources().unwrap().is_empty(),
+        "a run that only looked at a file must not start claiming it"
+    );
+}
+
 #[test]
 fn hardlink_strategy_creates_hardlink() {
     let dir = tempfile::tempdir().unwrap();
@@ -951,6 +1350,7 @@ fn template_auto_upgrades_to_copy() {
     let env = vec![EnvVar {
         name: "val".into(),
         value: "hello".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -1195,7 +1595,7 @@ fn diff_detects_content_difference() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("test.txt"),
         "diff output should reference the changed file, got: {output}"
@@ -1238,7 +1638,7 @@ fn diff_new_file_shown() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("new.txt"),
         "diff output should reference the new file, got: {output}"
@@ -1268,6 +1668,7 @@ fn render_template_for_display_basic() {
     let env = vec![EnvVar {
         name: "name".into(),
         value: "world".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(env, FilesSpec::default());
@@ -1410,7 +1811,7 @@ fn ensure_target_writable_creates_parent() {
 #[test]
 fn format_tera_error_basic() {
     // Create a tera error by trying to render invalid template
-    let mut tera = Tera::default();
+    let mut tera = tera::Tera::default();
     let err = tera.add_raw_template("bad", "{{ invalid %}").unwrap_err();
     let formatted = format_tera_error(&err);
     assert!(!formatted.is_empty());
@@ -1525,7 +1926,7 @@ sops:
 "#,
     )
     .unwrap();
-    assert!(is_file_encrypted(&file, "sops").unwrap());
+    assert!(cfgd_core::is_file_encrypted(&file, "sops").unwrap());
 }
 
 #[test]
@@ -1542,7 +1943,7 @@ other: data
 "#,
     )
     .unwrap();
-    assert!(!is_file_encrypted(&file, "sops").unwrap());
+    assert!(!cfgd_core::is_file_encrypted(&file, "sops").unwrap());
 }
 
 #[test]
@@ -1555,7 +1956,7 @@ fn is_file_encrypted_detects_age_header() {
         "age-encryption.org/v1\n-> X25519 abc123\n--- abc\nbinarydata\n",
     )
     .unwrap();
-    assert!(is_file_encrypted(&file, "age").unwrap());
+    assert!(cfgd_core::is_file_encrypted(&file, "age").unwrap());
 }
 
 #[test]
@@ -1563,7 +1964,7 @@ fn is_file_encrypted_rejects_plaintext_for_age() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("plain.txt");
     fs::write(&file, "this is not age encrypted\n").unwrap();
-    assert!(!is_file_encrypted(&file, "age").unwrap());
+    assert!(!cfgd_core::is_file_encrypted(&file, "age").unwrap());
 }
 
 #[test]
@@ -1571,7 +1972,7 @@ fn is_file_encrypted_unknown_backend_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("file.txt");
     fs::write(&file, "content").unwrap();
-    let result = is_file_encrypted(&file, "gpg");
+    let result = cfgd_core::is_file_encrypted(&file, "gpg");
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, FileError::UnknownEncryptionBackend { .. }));
@@ -2022,6 +2423,7 @@ fn render_template_for_display_with_custom_functions() {
 }
 
 #[test]
+#[serial_test::serial]
 fn render_template_for_display_env_function_reads_real_env() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();
@@ -2031,16 +2433,16 @@ fn render_template_for_display_env_function_reads_real_env() {
     let tpl = files_dir.join("envfn.txt.tera");
     fs::write(&tpl, "val={{ env(name=\"CFGD_TEST_RENDER_VAR\") }}").unwrap();
 
-    // SAFETY: test environment
-    unsafe { std::env::set_var("CFGD_TEST_RENDER_VAR", "render_test_value") };
+    // The guard restores the prior value on unwind too, so a failing assertion
+    // below cannot leave the variable set for the next test in this binary.
+    let _var =
+        cfgd_core::test_helpers::EnvVarGuard::set("CFGD_TEST_RENDER_VAR", "render_test_value");
 
     let resolved = make_resolved_profile(vec![], FilesSpec::default());
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
 
     let rendered = fm.render_template_for_display(&tpl).unwrap();
     assert_eq!(rendered, "val=render_test_value");
-
-    unsafe { std::env::remove_var("CFGD_TEST_RENDER_VAR") };
 }
 
 #[test]
@@ -2060,6 +2462,7 @@ fn render_template_for_display_multiline_and_whitespace() {
     let env = vec![EnvVar {
         name: "greeting".into(),
         value: "hi".into(),
+        platforms: vec![],
     }];
     let resolved = make_resolved_profile(env, FilesSpec::default());
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -2219,6 +2622,7 @@ fn global_symlink_strategy_overridden_for_template() {
     let env = vec![EnvVar {
         name: "port".into(),
         value: "8080".into(),
+        platforms: vec![],
     }];
 
     let resolved = make_resolved_profile(
@@ -3910,7 +4314,7 @@ fn diff_permissions_changed_ignored_when_either_side_is_none() {
     let mut target = FileTree {
         files: BTreeMap::new(),
     };
-    // Different None permissions — hashes match so we enter the permissions arm,
+    // Different None permissions — hashes match, entering the permissions arm,
     // but `if let (Some, Some)` fails and Unchanged is emitted.
     target.files.insert(
         target_path.clone(),
@@ -4118,7 +4522,9 @@ fn file_drift_one_missing_source_reports_non_matching() {
 
     let missing_source = config_dir.join("files").join("does-not-exist.txt");
     let target = config_dir.join("target").join("out.txt");
-    let result = fm.file_drift_one(&missing_source, &target, None).unwrap();
+    let result = fm
+        .file_drift_one(&missing_source, &target, None, None)
+        .unwrap();
 
     assert!(!result.matches, "missing source must be non-matching");
     assert!(
@@ -4127,4 +4533,105 @@ fn file_drift_one_missing_source_reports_non_matching() {
         result.actual
     );
     assert_eq!(result.expected, "managed source present");
+}
+
+// --- template registration ---
+
+#[test]
+fn a_repeated_render_reuses_the_registration_it_already_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    let tpl = files_dir.join("greeting.txt.tera");
+    fs::write(&tpl, "Hello {{ name }}!").unwrap();
+
+    let env = vec![EnvVar {
+        name: "name".into(),
+        value: "world".into(),
+        platforms: vec![],
+    }];
+    let resolved = make_resolved_profile(env, FilesSpec::default());
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    // A run renders the same file repeatedly: the plan previews it, the apply
+    // writes it, a diff shows it again.
+    for _ in 0..3 {
+        assert_eq!(
+            fm.render_template_for_display(&tpl).unwrap(),
+            "Hello world!"
+        );
+    }
+    assert_eq!(fm.tera.lock().unwrap().registrations(), 1);
+
+    // A body that changed under the same name — a `preApply` hook rewriting a
+    // source template — is registered again rather than rendered stale.
+    fs::write(&tpl, "Goodbye {{ name }}!").unwrap();
+    assert_eq!(
+        fm.render_template_for_display(&tpl).unwrap(),
+        "Goodbye world!"
+    );
+    assert_eq!(fm.tera.lock().unwrap().registrations(), 2);
+}
+
+/// The profile half of the recorded-hash refresh, over a directory entry:
+/// `spec.files.managed` deploys whole trees by symlink too, and a row whose
+/// hash could never move is the same fiction a module's aggregate was.
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_covers_every_file_under_a_directory_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let files_dir = dir.path().join("files/lua/config");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("options.lua"), "opt.number = true\n").unwrap();
+
+    let target = dir.path().join("output/lua");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/lua".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Symlink),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    fm.apply(&actions, &test_printer()).unwrap();
+    assert!(target.is_symlink(), "the tree is deployed as one link");
+
+    let before = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        before.len(),
+        1,
+        "the directory entry has one row: {before:?}"
+    );
+    assert_eq!(before[0].target, target);
+    assert_eq!(
+        before[0].file_hashes,
+        vec![format!(
+            "{}/config/options.lua:{}",
+            cfgd_core::to_posix_string(&target),
+            cfgd_core::sha256_hex(b"opt.number = true\n")
+        )],
+        "one file under the tree, keyed on the deployed target: {before:?}"
+    );
+
+    fs::write(
+        files_dir.join("options.lua"),
+        "opt.number = true\nopt.relativenumber = true\n",
+    )
+    .unwrap();
+    let after = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_ne!(
+        before[0].hash, after[0].hash,
+        "an edit two levels under the entry moves its recorded digest"
+    );
 }

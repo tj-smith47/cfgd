@@ -9,7 +9,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
 
     // Scan for profiles and modules
     let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    let module_names = scan_module_names(&config_dir.join("modules"), printer)?;
+    let module_names = scan_module_names(&cfgd_core::declared_modules_dir(&config_dir), printer)?;
 
     let default_branch =
         cfgd_core::detect_default_branch(&config_dir).unwrap_or_else(|| "master".to_string());
@@ -37,7 +37,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         && !printer
             .prompt_confirm(&format!(
                 "Workflow already exists at {} — overwrite?",
-                workflow_path.posix()
+                cfgd_core::fold_home_in_text(&workflow_path.posix().to_string())
             ))
             .unwrap_or(false)
     {
@@ -79,6 +79,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
                 Role::Ok,
                 format!("Generated release workflow at {}", workflow_path.posix()),
             )
+            // modules-row-ok: a COUNT of what the generated workflow covers, not the names
             .kv("Modules", module_names.len().to_string())
             .kv("Profiles", profile_names.len().to_string())
             .with_data(serde_json::json!({
@@ -145,7 +146,7 @@ pub(super) fn generate_release_workflow_yaml(
     let collisions: Vec<String> = folded
         .into_iter()
         .filter(|(_, sources)| sources.len() > 1)
-        .map(|(key, sources)| format!("{} <- {}", key, sources.join(", ")))
+        .map(|(key, sources)| format!("{} from {}", key, sources.join(", ")))
         .collect();
     if !collisions.is_empty() {
         anyhow::bail!(

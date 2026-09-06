@@ -10,7 +10,7 @@
 //!   paths are covered E2E by `tests/cli_integration.rs` and the cluster
 //!   smoke tests.
 //!
-//!   What we DO snapshot here are the deterministic validation/error
+//!   What this DOES snapshot here are the deterministic validation/error
 //!   branches that never touch kube/kubectl: missing-module, command-required,
 //!   and invalid-resource-format. These all exit via the `error_doc(...)`
 //!   path so the JSON payload carries a stable `error` kind even on failure.
@@ -85,6 +85,53 @@ fn plugin_debug_module_required_json() {
     assert_eq!(meta.error_kind, "module_required");
     assert_eq!(meta.extras["pod"], "mypod");
     assert_eq!(meta.extras["namespace"], "default");
+}
+
+// --- the success renders, built without a cluster ---
+
+#[test]
+fn plugin_debug_created_human() {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(plugin::build_debug_doc(
+        "demo",
+        "app",
+        &["nettools:v1".to_string(), "tracing:v2".to_string()],
+        "ubuntu:22.04",
+        &[
+            "/cfgd-modules/nettools".to_string(),
+            "/cfgd-modules/tracing".to_string(),
+        ],
+        "/cfgd-modules/nettools/bin:/cfgd-modules/tracing/bin",
+    ));
+    drop(printer);
+
+    let stripped = strip_ansi(&cap.human());
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plugin_debug/created.txt",
+        &stripped,
+    );
+}
+
+#[test]
+fn plugin_exec_running_human() {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(plugin::build_exec_doc(
+        "demo",
+        "app",
+        &["nettools:v1".to_string()],
+        &["dig".to_string(), "example.com".to_string()],
+        &["/cfgd-modules/nettools".to_string()],
+        "/cfgd-modules/nettools/bin",
+    ));
+    drop(printer);
+
+    let stripped = strip_ansi(&cap.human());
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plugin_exec/running.txt",
+        &stripped,
+    );
 }
 
 // --- cmd_exec error branches ---

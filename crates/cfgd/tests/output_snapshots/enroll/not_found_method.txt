@@ -1,3 +1,4 @@
-✗ This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>
+✗ This server uses bootstrap token enrollment, not key-based enrollment
 
-→ This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>
+→ Re-run with a bootstrap token:
+  $ cfgd enroll --server-url <url> --token <token>

@@ -1,14 +1,19 @@
-source:locked-source
+Show source:locked-source
   URL                 https://github.com/corp/locked
   Branch              main
   Priority            50
-  Accept Recommended  false
+  Accept Recommended  no
   Sync Interval       1h
-  Auto Apply          false
+  Auto Apply          no
 
 Manifest
-  Name  locked-source
-  Policy Summary
-    Locked
-      Count  1
-      ⊙ env: CORP_PROXY
+  Name     locked-source
+  Version  1.0.0
+
+Policy
+  Require Signed Commits  no
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
+  Locked
+    ◉ env: CORP_PROXY

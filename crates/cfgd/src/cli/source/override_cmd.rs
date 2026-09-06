@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_override(
     cli: &Cli,
@@ -39,9 +39,10 @@ pub fn cmd_source_override(
                         format!(
                             "Rejected '{}' from {}",
                             path,
-                            cfgd_core::reconciler::Owner::source(source_name).token()
+                            OwnerLabel::new("source", source_name).plain()
                         ),
                     )
+                    .hint(super::success_next_step(super::Mutation::SourceOverridden))
                     .with_data(serde_json::json!({
                         "sourceName": source_name,
                         "path": path,
@@ -67,12 +68,13 @@ pub fn cmd_source_override(
                     .status(
                         Role::Ok,
                         format!(
-                            "Override set: {} = {} for {}",
+                            "Set override: {} = {} for {}",
                             path,
                             val,
-                            cfgd_core::reconciler::Owner::source(source_name).token()
+                            OwnerLabel::new("source", source_name).plain()
                         ),
                     )
+                    .hint(super::success_next_step(super::Mutation::SourceOverridden))
                     .with_data(serde_json::json!({
                         "sourceName": source_name,
                         "path": path,

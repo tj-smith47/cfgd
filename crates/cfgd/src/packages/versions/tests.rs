@@ -435,7 +435,12 @@ fn dnf_aliases_returns_correct_mappings() {
     }
 }
 
-#[cfg(unix)]
+/// The half of the version surface driven through a [`ToolShim`] stand-in for
+/// the real tool. Cross-platform but for the four whole-listing cells: a
+/// listing argv carries its record separator as a literal `\n`
+/// (`dpkg-query -f=${Package}\t${Version}\n`, `rpm --queryformat
+/// "%{NAME}\t%{VERSION}\n"`), and a newline is what `Command` refuses to hand
+/// a `.cmd` shim, a newline being able to truncate a `cmd.exe` command line.
 mod shim_tests {
     use serial_test::serial;
 
@@ -742,6 +747,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_apt_with_versions_parses_dpkg_query_output() {
         let _shim = ToolShim::install(
             DPKG_QUERY_BIN_ENV,
@@ -767,6 +773,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_apt_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 1, "", "dpkg-query failed");
         let err = list_apt_with_versions("apt").unwrap_err();
@@ -800,6 +807,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_dnf_with_versions_parses_rpm_output() {
         let _shim = ToolShim::install(
             RPM_BIN_ENV,
@@ -825,6 +833,7 @@ mod shim_tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)] // see the module doc: a `\n` in the listing argv
     fn list_dnf_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(RPM_BIN_ENV, 1, "", "rpm query failed");
         let err = list_dnf_with_versions("dnf").unwrap_err();
@@ -855,4 +864,100 @@ mod shim_tests {
             "expected CommandFailed{{manager:\"dnf\"}}; got: {err:?}"
         );
     }
+}
+
+/// A distro package version names its upstream release, then the packaging's
+/// own fields — a leading `<epoch>:` and a trailing `-<revision>`. Only the
+/// upstream part is what a `minVersion` declaration is written against, so it
+/// is the only part the floor is compared on.
+#[test]
+fn a_distro_version_compares_on_its_upstream_part() {
+    // The shapes `dpkg-query ${Version}`, `pacman -Q` and `apk list` really
+    // print. Each satisfies the floor its upstream part clears.
+    for (installed, floor) in [
+        ("1:2.34-0ubuntu3.4", "2"),
+        ("8.2.3995-1ubuntu2", "8"),
+        ("1.2.3-2", "1.2"),
+        ("3.0.0-r0", "2"),
+        ("1.2.3", "1.2.3"),
+    ] {
+        assert!(
+            distro_version_meets_minimum(installed, floor),
+            "{installed} clears a minVersion of {floor}"
+        );
+    }
+    assert!(
+        !distro_version_meets_minimum("1.2.3-2", "2"),
+        "the upstream part is still what decides: 1.2.3 is below 2"
+    );
+    assert!(
+        distro_comparable("1:2.34-0ubuntu3.4"),
+        "an epoch-and-revision version is comparable, not unreadable"
+    );
+    assert!(
+        !distro_comparable("git-20240101"),
+        "a version with no numeric upstream part cannot be compared"
+    );
+}
+
+/// The epoch is the dominant term: a lower epoch never clears a higher-epoch
+/// floor, whatever the upstream numbers read as. Comparing only the upstream
+/// part (the pre-fix behavior) said `1:9.0` clears a `2:1.0` floor because
+/// 9.0 >= 1.0 — wrong, because the floor's epoch of 2 outranks the
+/// available package's epoch of 1 outright.
+#[test]
+fn a_distro_versions_epoch_outranks_its_upstream_part() {
+    assert!(
+        !distro_version_meets_minimum("1:9.0", "2:1.0"),
+        "epoch 1 never clears an epoch-2 floor, even with a larger upstream number"
+    );
+    assert!(
+        distro_version_meets_minimum("2:1.0", "1:9.0"),
+        "epoch 2 clears an epoch-1 floor even with a smaller upstream number"
+    );
+    assert!(
+        distro_version_meets_minimum("1:2.0", "1:1.0"),
+        "equal epochs still fall through to the upstream comparison"
+    );
+}
+
+/// The must-not-regress half: the shared loose-semver comparator keeps
+/// PRERELEASE semantics, because a semver-native manager's `-rc1` really is
+/// below its release. Only the distro families read the suffix as packaging.
+#[test]
+fn a_prerelease_still_loses_to_its_release_under_the_shared_comparator() {
+    assert!(
+        !cfgd_core::version_satisfies("1.2.3-rc1", ">=1.2.3"),
+        "a prerelease is below its own release under semver"
+    );
+}
+
+/// A winget-listed four-part version clears a shorter declared floor: the
+/// pre-fix semver comparator refused every four-part version outright,
+/// turning every winget `minVersion` into a permanent check error.
+#[test]
+fn a_fourpart_version_clears_a_shorter_declared_floor() {
+    assert!(fourpart_comparable("133.0.6943.98"));
+    assert!(fourpart_version_meets_minimum("133.0.6943.98", "133"));
+    assert!(!fourpart_version_meets_minimum("132.9.9999.99", "133"));
+    assert!(!fourpart_comparable(">=1.2"));
+}
+
+/// A fifth dot-separated component is refused outright — the boundary the
+/// `.take(5).count()` length check has to hold without ever collecting a
+/// component past the fourth.
+#[test]
+fn a_fifth_version_component_is_not_comparable() {
+    assert!(!fourpart_comparable("1.2.3.4.5"));
+}
+
+/// `fourpart_components` strips a leading `v` through the shared
+/// `declared_floor_version`, the ONE place a version's `v` prefix is
+/// stripped — not its own `trim_start_matches('v')`, which answered
+/// `floor_comparable("V1.2.3.4") == false` where every semver family answers
+/// `true`, and accepted a REPEATED `v` (`vv1.2`) the shared strip refuses.
+#[test]
+fn fourpart_comparable_strips_a_leading_v_through_the_shared_strip() {
+    assert!(fourpart_comparable("V1.2.3.4"));
+    assert!(!fourpart_comparable("vv1.2"));
 }

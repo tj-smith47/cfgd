@@ -1,1 +1,3 @@
 ✓ Encrypted <CONFIG_DIR>/secret.enc.yaml via sops
+
+→ Reference it with `cfgd profile update <profile> --secret <file>:<target>`

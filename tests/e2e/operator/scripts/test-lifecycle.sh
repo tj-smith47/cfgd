@@ -240,9 +240,9 @@ spec:
     name: e2e-lc-mc-${E2E_RUN_ID}
   severity: High
   driftDetails:
-    - field: packages.wget
-      expected: installed
-      actual: missing
+    - field: sysctl.net.ipv4.ip_forward
+      expected: "1"
+      actual: "0"
 EOF
 
 # Wait for controller to set status conditions

@@ -83,6 +83,14 @@ impl LiveScreen {
     pub(crate) fn contents(&self) -> String {
         self.0.contents()
     }
+
+    /// Every write and cursor move the screen took since the last call, in
+    /// order, one per line in the screen model's own debug spelling. The one
+    /// view that sees an escape the screen CONSUMED — a cursor hide/show never
+    /// lands in a cell, so `contents()` is blind to it by construction.
+    pub(crate) fn moves(&self) -> String {
+        self.0.moves_since_last_check()
+    }
 }
 
 /// The printer sink behind [`Printer::for_test_live_terminal`]: permanent lines
@@ -105,6 +113,17 @@ impl Writer for TermSink {
     /// line counted once in the fixture would be two rows on the screen.
     fn wrap_columns(&self) -> Option<usize> {
         Some(usize::from(indicatif::TermLike::width(&self.0)))
+    }
+
+    /// The escape a real terminal would take, written into the screen model
+    /// as bytes so the fixture's move log records it beside the paints it
+    /// brackets. The model consumes it as a mode change, so `contents()` is
+    /// unaffected — exactly the relationship a tty has to it.
+    fn set_cursor_visible(&self, visible: bool) {
+        // style-gate-ok: a fixture emulating a terminal's own mode change, not
+        // a painter — cursor visibility carries no styling.
+        let seq = if visible { "\x1b[?25h" } else { "\x1b[?25l" };
+        let _ = indicatif::TermLike::write_str(&self.0, seq);
     }
 }
 
@@ -206,6 +225,51 @@ impl Printer {
         (p, buf)
     }
 
+    /// Like `for_test_with_theme` but also pins the output format, for a test
+    /// proving a structured payload is byte-identical across themes/presets —
+    /// `for_test_with_theme` alone always answers `Table`, so the JSON branch
+    /// a `-o json` command takes is unreachable through it.
+    pub fn for_test_with_theme_and_format(
+        theme: Theme,
+        format: OutputFormat,
+    ) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let p = build_test_printer(
+            buf.clone(),
+            theme,
+            Verbosity::Quiet,
+            format,
+            false,
+            None,
+            None,
+        );
+        (p, buf)
+    }
+
+    /// Split-stream capture: stdout and stderr land in SEPARATE buffers —
+    /// `(printer, stdout, stderr)` — the relationship the two sinks have in
+    /// production. The one constructor that can state a stdout-purity claim
+    /// directly: with a merged capture, a test asking "what did the DATA
+    /// channel carry" has to filter status glyphs back out, and then the
+    /// filter, not the printer, decides what counts as stdout.
+    pub fn for_test_split_streams(
+        verbosity: Verbosity,
+    ) -> (Self, Arc<Mutex<String>>, Arc<Mutex<String>>) {
+        let stdout = Arc::new(Mutex::new(String::new()));
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let mut p = build_test_printer(
+            stderr.clone(),
+            Theme::default(),
+            verbosity,
+            OutputFormat::Table,
+            false,
+            None,
+            None,
+        );
+        p.sink_stdout = Arc::new(StringSink(stdout.clone()));
+        (p, stdout, stderr)
+    }
+
     pub fn for_test_with_format(format: OutputFormat) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(
@@ -257,7 +321,12 @@ impl Printer {
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            Self::live_capture(
+                multi,
+                Arc::new(StringSink(buf.clone())),
+                Verbosity::Normal,
+                Theme::default().with_colors(false),
+            ),
             buf,
         )
     }
@@ -272,13 +341,30 @@ impl Printer {
     /// constructor builds a bar-less renderer, where routing never happens and
     /// the question cannot be asked.
     pub fn for_test_with_live_bars() -> (Self, Arc<Mutex<String>>) {
+        Self::for_test_with_live_bars_themed(Theme::default().with_colors(false))
+    }
+
+    /// The same capture painting in a THEME that carries colour, for a claim
+    /// about the escapes a LIVE row emits — which of a row's two slots the
+    /// live painter dims is decided inside `LiveRow::set_action_status`, and
+    /// no bar-less capture reaches it.
+    ///
+    /// The colour decision is the theme's, exactly as production makes it, so
+    /// this is the same constructor rather than a fourth kind: where indicatif
+    /// draws is unchanged.
+    pub fn for_test_with_live_bars_themed(theme: Theme) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
                 Box::new(RecordingTerm { drawn: buf.clone() }),
             ));
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            Self::live_capture(
+                multi,
+                Arc::new(StringSink(buf.clone())),
+                Verbosity::Normal,
+                theme,
+            ),
             buf,
         )
     }
@@ -303,12 +389,32 @@ impl Printer {
     /// exactly as they do on a tty.
     #[cfg(test)]
     pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, LiveScreen) {
+        Self::for_test_live_terminal_at(Verbosity::Normal, rows, cols)
+    }
+
+    /// The same emulated screen at a chosen verbosity — the only capture that
+    /// can state what a `Quiet` run leaves on a terminal that really does have
+    /// a live region. Every other capture pins `live_region: false`, so a bar
+    /// built through one is hidden whatever the verbosity says, and a test
+    /// asserting `Quiet` painted nothing would pass with the verbosity gate
+    /// removed entirely.
+    #[cfg(test)]
+    pub(crate) fn for_test_live_terminal_at(
+        verbosity: Verbosity,
+        rows: u16,
+        cols: u16,
+    ) -> (Self, LiveScreen) {
         let term = indicatif::InMemoryTerm::new(rows, cols);
         let multi = indicatif::MultiProgress::with_draw_target(
             indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
         );
         (
-            Self::live_capture(multi, Arc::new(TermSink(term.clone()))),
+            Self::live_capture(
+                multi,
+                Arc::new(TermSink(term.clone())),
+                verbosity,
+                Theme::default().with_colors(false),
+            ),
             LiveScreen(term),
         )
     }
@@ -318,14 +424,20 @@ impl Printer {
     /// once so a new field cannot be added to one of them and forgotten in the
     /// others — they would then disagree about `colors` or `live_region` and
     /// the tests reading them would be describing different printers.
-    fn live_capture(multi: indicatif::MultiProgress, sink: Arc<dyn Writer>) -> Self {
+    fn live_capture(
+        multi: indicatif::MultiProgress,
+        sink: Arc<dyn Writer>,
+        verbosity: Verbosity,
+        theme: Theme,
+    ) -> Self {
         Printer {
             // Stamped explicitly, like every theme a Printer renders through:
             // the field below and the theme must never be able to disagree.
             renderer: Arc::new(Renderer::with_bars(
-                Theme::default().with_colors(false),
-                Verbosity::Normal,
+                theme,
+                verbosity,
                 multi.clone(),
+                sink.clone(),
             )),
             output_format: OutputFormat::Table,
             sink_stderr: sink.clone(),
@@ -476,13 +588,22 @@ pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
 pub use crate::output::strip_ansi;
 
 /// Strip ` (N.Ns)` spinner finish-duration markers so snapshots survive
-/// runtime variance. Matches ` (` + digits + `.` + digits + `s)`.
+/// runtime variance. Matches ` (` + digits + `.` + digits + `s)`, and takes
+/// the alignment padding in front of it with it — the renderer pads a short
+/// subject out to the duration column, so leaving that run behind writes the
+/// column's width into the golden as trailing whitespace on some lines and
+/// not others.
+///
+/// ` (<0.1s)` — the renderer's below-the-resolution floor — is the same marker
+/// and strips the same way: whether an action lands under the floor is exactly
+/// the runtime variance this exists to remove.
 pub fn strip_spinner_duration(s: String) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s.as_str();
     while let Some(idx) = rest.find(" (") {
         out.push_str(&rest[..idx]);
-        let after = &rest[idx + 2..];
+        let raw_after = &rest[idx + 2..];
+        let after = raw_after.strip_prefix('<').unwrap_or(raw_after);
         let digit_end = after
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(after.len());
@@ -497,12 +618,13 @@ pub fn strip_spinner_duration(s: String) -> String {
                 && after.as_bytes().get(total).copied() == Some(b's')
                 && after.as_bytes().get(total + 1).copied() == Some(b')')
             {
+                out.truncate(out.trim_end_matches(' ').len());
                 rest = &after[total + 2..];
                 continue;
             }
         }
         out.push_str(" (");
-        rest = after;
+        rest = raw_after;
     }
     out.push_str(rest);
     out
@@ -518,7 +640,7 @@ mod tests {
         p.heading("Hi");
         p.flush();
         // Buffer access compiles; contents depend on verbosity defaults.
-        let _contents = buf.lock().unwrap().clone();
+        let _contents = crate::test_helpers::captured_text(&buf);
     }
 
     #[test]
@@ -614,9 +736,11 @@ mod tests {
 
         let _globals = crate::output::printer::ColorGlobalOn::set();
 
-        // `Role::Ok` against slots that spend colour and nothing else: an
-        // attribute-carrying slot would legitimately emit SGR with colour off
-        // (NO_COLOR governs colour only), and could not tell the two apart.
+        // `Role::Ok` against slots that spend colour and nothing else. Every
+        // slot is colourless once the printer decides against colour, so the
+        // claim would still hold for an attribute-carrying one — these keep the
+        // reported condition (a colour global flipped on) as the ONLY thing
+        // that could have styled the capture.
         let flat: Vec<(&str, Arc<Mutex<String>>)> = vec![
             ("for_test_at", {
                 let (p, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -679,6 +803,7 @@ mod tests {
         };
 
         for (name, buf) in flat {
+            // raw-capture-ok: proving where the colour DECISION was made — captured_text would strip the escapes this test exists to check
             let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             check(name, &raw);
         }
@@ -692,6 +817,7 @@ mod tests {
             Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
         p.status_simple(Role::Ok, "wrote /etc/hosts");
         p.flush();
+        // raw-capture-ok: proving this ONE constructor really does carry colour — captured_text would strip the escapes this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
             raw.contains('\u{1b}'),

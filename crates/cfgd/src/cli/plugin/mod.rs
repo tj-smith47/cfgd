@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use cfgd_core::output::{Doc, Printer, Role, Verbosity};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, Verbosity};
 
 use crate::cli::{ColorWhen, OutputFormatArg};
 
@@ -38,6 +38,16 @@ struct PluginCli {
     )]
     color: ColorWhen,
 
+    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        env = "CFGD_THEME",
+        value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+    )]
+    theme: Option<String>,
+
     #[command(subcommand)]
     command: PluginCommand,
 }
@@ -58,9 +68,9 @@ enum PluginCommand {
         /// Module(s) to inject (format: name:version, repeatable)
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
         /// Container image for ephemeral container
         #[arg(long, default_value = "ubuntu:22.04")]
         image: String,
@@ -78,9 +88,9 @@ enum PluginCommand {
         /// Module(s) to load
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
         /// Command to execute (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -98,17 +108,27 @@ enum PluginCommand {
         /// Module(s) to inject
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
     },
     /// Show fleet module status
     #[command(
-        long_about = "Show per-node module status across the cluster (cache hits, pull errors, staged versions).\n\n\
+        long_about = "Show the registered modules and the pods asking for them.\n\n\
+                      Modules are cluster-scoped, so every one is listed. Pods are read from a \
+                      single namespace: the one --namespace names, else the kubeconfig current \
+                      context's, else \"default\".\n\n\
                       Examples:\n  \
-                      kubectl cfgd status"
+                      kubectl cfgd status\n  \
+                      kubectl cfgd status --namespace demo\n  \
+                      kubectl cfgd -o json status"
     )]
-    Status,
+    Status {
+        /// Namespace to list module-requesting pods from (defaults to the
+        /// kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
+    },
     /// Show client, server, operator, and CSI versions
     #[command(
         long_about = "Print the client plugin version, the Kubernetes apiserver version, and the \
@@ -149,13 +169,49 @@ enum PluginCommand {
         /// Apply the rewritten manifests via `kubectl apply` instead of printing
         #[arg(long)]
         apply: bool,
-        /// Namespace passed to `kubectl apply` (only used with --apply)
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace passed to `kubectl apply` (only used with --apply); defaults to
+        /// the kubeconfig current context's namespace, then "default"
+        #[arg(long, short)]
+        namespace: Option<String>,
     },
 }
 
 const MODULE_REQUIRED: &str = "at least one --module is required";
+
+/// Resolve a namespace-taking subcommand's effective namespace. An explicit
+/// `--namespace`/`-n` always wins; when it is omitted, resolve the
+/// kubeconfig current context's namespace — the same source plain `kubectl`
+/// reads for the same omission — falling back to `"default"` only when the
+/// context names none.
+fn resolve_namespace(explicit: Option<String>) -> String {
+    explicit.unwrap_or_else(current_context_namespace)
+}
+
+/// The kubeconfig current context's namespace, via `kube`'s own config
+/// loader — the same crate `cmd_debug`/`cmd_status`/`cmd_version` already
+/// trust for every other kubeconfig question (it honors `KUBECONFIG`), so a
+/// `KUBECONFIG`-fixture test needs no real `kubectl` binary on PATH and no
+/// new controlled-command-layer entry. `Config::infer` itself falls back to
+/// `"default"` when the context names no namespace; this wrapper does the
+/// same when no kubeconfig or in-cluster config can be found at all (a
+/// devbox with nothing configured), so resolution never fails — a broken or
+/// absent kubeconfig surfaces as a normal connection error later, at the
+/// point the command actually contacts the cluster, not as a namespace
+/// resolution failure here.
+fn current_context_namespace() -> String {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return "default".to_string();
+    };
+    rt.block_on(async {
+        kube::Config::infer()
+            .await
+            .map(|c| c.default_namespace)
+            .unwrap_or_else(|_| "default".to_string())
+    })
+}
 
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
     arg.split_once(':')
@@ -166,8 +222,67 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
     let safe = cfgd_core::sanitize_k8s_name(name);
     serde_json::json!({
         "name": format!("cfgd-module-{safe}"),
-        "mountPath": format!("/cfgd-modules/{name}"),
+        "mountPath": module_mount_dir(name),
         "readOnly": true
+    })
+}
+
+/// Where a module is mounted inside the target container. The `bin/`
+/// directory under it is what goes on `PATH`, so a caller composing the PATH
+/// prefix appends `/bin` here rather than spelling the root a second time:
+/// `debug` writes the mount into the pod patch while `exec` writes it into an
+/// `export PATH=`, and a byte of divergence puts a module on a path nothing
+/// mounted.
+fn module_mount_dir(name: &str) -> String {
+    format!("/cfgd-modules/{name}")
+}
+
+/// The mount roots and the `PATH` prefix for the modules a caller named, in
+/// the order they named them.
+fn module_mounts(parsed: &[(&str, &str)]) -> (Vec<String>, String) {
+    let dirs: Vec<String> = parsed
+        .iter()
+        .map(|(name, _)| module_mount_dir(name))
+        .collect();
+    let path_prefix = dirs
+        .iter()
+        .map(|dir| format!("{dir}/bin"))
+        .collect::<Vec<_>>()
+        .join(":");
+    (dirs, path_prefix)
+}
+
+/// The ephemeral container `kubectl cfgd debug` adds to the pod: an
+/// interactive `sh` with every requested module mounted read-only under
+/// `/cfgd-modules/<name>` and each module's `bin/` ahead of the image's own
+/// `PATH`.
+///
+/// Its `PS1` names the mounted modules with LITERAL brackets
+/// (`[cfgd:nettools:v1] \w $ `). The bash escapes `\[` / `\]` are not
+/// brackets: they mark a span as non-printing, so wrapping visible text in
+/// them makes bash miscount the prompt's width and redraw long command lines
+/// over themselves, while busybox `ash` drops the markers and draws no
+/// brackets at all.
+fn debug_ephemeral_container(parsed: &[(&str, &str)], image: &str) -> serde_json::Value {
+    let volume_mounts: Vec<_> = parsed
+        .iter()
+        .map(|(name, _version)| build_volume_mount(name))
+        .collect();
+    let (_, path_prefix) = module_mounts(parsed);
+    let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+    let ps1 = format!("[cfgd:{}] \\w $ ", module_names.join(","));
+
+    serde_json::json!({
+        "name": "cfgd-debug",
+        "image": image,
+        "command": ["sh"],
+        "stdin": true,
+        "tty": true,
+        "env": [
+            {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
+            {"name": "PS1", "value": ps1}
+        ],
+        "volumeMounts": volume_mounts
     })
 }
 
@@ -197,18 +312,39 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // rustls CryptoProvider is already installed by main() before dispatching here
     let cli = PluginCli::parse();
 
-    // Tracing to stderr; stdout is reserved for `-o` machine output.
+    // Tracing to stderr; stdout is reserved for `-o` machine output. Through
+    // the same live-region writer the primary CLI installs: this entry point
+    // builds a real `Printer` too, and an event written straight at stderr
+    // strands whatever bar that printer has on screen.
+    let tracing_writer = cfgd_core::output::LiveTracingWriter::new();
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter("warn"))
         .with_target(false)
-        .without_time()
-        .with_writer(std::io::stderr)
+        // Same dialect as the primary CLI: one binary, one stamp.
+        .with_timer(cfgd_core::output::LocalTimeOfDay)
+        // Same reason as the primary CLI: the writer folds every event, and the
+        // fold strips ANSI.
+        .with_ansi(false)
+        .with_writer(tracing_writer.clone())
         .init();
 
     // Same precedence as the primary CLI (main.rs), via the one shared
     // resolution both entry points call.
     let color_choice = crate::cli::resolve_color_choice(cli.no_color, cli.color);
-    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0, color_choice);
+    // The plugin carries no `--config` flag of its own, so it honours the rest
+    // of the primary CLI's precedence: the environment override first, then the
+    // default location.
+    let config_path = std::env::var_os("CFGD_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(crate::cli::default_config_file);
+    let theme_config = crate::cli::resolve_theme_config(&config_path, cli.theme.as_deref());
+    let printer = Printer::with_theme_config(
+        Verbosity::Normal,
+        theme_config.as_ref(),
+        cli.output.0,
+        color_choice,
+    );
+    tracing_writer.attach(&printer);
 
     let result = match cli.command {
         PluginCommand::Debug {
@@ -216,26 +352,41 @@ pub fn plugin_main() -> anyhow::Result<()> {
             module,
             namespace,
             image,
-        } => cmd_debug(&printer, &pod, &module, &namespace, &image),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_debug(&printer, &pod, &module, &namespace, &image)
+        }
         PluginCommand::Exec {
             pod,
             module,
             namespace,
             command,
-        } => cmd_exec(&printer, &pod, &module, &namespace, &command),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_exec(&printer, &pod, &module, &namespace, &command)
+        }
         PluginCommand::Inject {
             resource,
             module,
             namespace,
-        } => cmd_inject(&printer, &resource, &module, &namespace),
-        PluginCommand::Status => cmd_status(&printer),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_inject(&printer, &resource, &module, &namespace)
+        }
+        PluginCommand::Status { namespace } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_status(&printer, &namespace)
+        }
         PluginCommand::Version { namespace } => cmd_version(&printer, &namespace),
         PluginCommand::Deploy {
             filename,
             lock,
             apply,
             namespace,
-        } => cmd_deploy(&printer, &filename, &lock, apply, &namespace),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_deploy(&printer, &filename, &lock, apply, &namespace)
+        }
     };
 
     // The plugin has its OWN entry (main.rs returns here directly, never reaching the
@@ -297,30 +448,9 @@ pub(crate) async fn cmd_debug_async(
     };
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
 
-    let mut volume_mounts = Vec::new();
-    let mut path_extensions = Vec::new();
-
-    for (name, _version) in parsed {
-        volume_mounts.push(build_volume_mount(name));
-        path_extensions.push(format!("/cfgd-modules/{name}/bin"));
-    }
-
-    let path_prefix = path_extensions.join(":");
     let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
-    let ps1 = format!("\\[cfgd:{}\\] \\w $ ", module_names.join(","));
-
-    let ec = serde_json::json!({
-        "name": "cfgd-debug",
-        "image": image,
-        "command": ["sh"],
-        "stdin": true,
-        "tty": true,
-        "env": [
-            {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
-            {"name": "PS1", "value": ps1}
-        ],
-        "volumeMounts": volume_mounts
-    });
+    let (mount_dirs, path_prefix) = module_mounts(parsed);
+    let ec = debug_ephemeral_container(parsed, image);
 
     let patch = serde_json::json!({
         "spec": {
@@ -343,26 +473,52 @@ pub(crate) async fn cmd_debug_async(
         )
     })?;
 
-    printer.emit(
-        Doc::new()
-            .status(
-                Role::Ok,
-                format!("Ephemeral debug container created on pod {namespace}/{pod}"),
-            )
-            .kv("Modules", module_names.join(", "))
-            .hint(format!(
-                "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
-            ))
-            .with_data(serde_json::json!({
-                "namespace": namespace,
-                "pod": pod,
-                "modules": &module_names,
-                "image": image,
-                "verified": true,
-            })),
-    );
+    printer.emit(build_debug_doc(
+        namespace,
+        pod,
+        &module_names,
+        image,
+        &mount_dirs,
+        &path_prefix,
+    ));
 
     Ok(())
+}
+
+/// The render `kubectl cfgd debug` settles on: what was created, and the three
+/// facts a reader needs to use it — which modules went in, where they landed,
+/// and what the container's `PATH` now leads with.
+pub fn build_debug_doc(
+    namespace: &str,
+    pod: &str,
+    module_names: &[String],
+    image: &str,
+    mount_dirs: &[String],
+    path_prefix: &str,
+) -> Doc {
+    Doc::new()
+        .status(
+            Role::Ok,
+            format!("Created ephemeral debug container on pod {namespace}/{pod}"),
+        )
+        .kv_block([
+            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
+            ("Modules", module_names.join(", ")),
+            ("Mount Path", mount_dirs.join(", ")),
+            // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
+            ("PATH Entry", path_prefix.to_string()),
+        ])
+        .hint(format!(
+            "Attach with `kubectl attach -n {namespace} {pod} -c cfgd-debug -it`"
+        ))
+        .with_data(serde_json::json!({
+            "namespace": namespace,
+            "pod": pod,
+            "modules": module_names,
+            "image": image,
+            "mountPath": mount_dirs,
+            "pathPrefix": path_prefix,
+        }))
 }
 
 pub fn cmd_exec(
@@ -394,11 +550,7 @@ pub fn cmd_exec(
         .map(|m| parse_module_arg(m))
         .collect::<Result<_, _>>()?;
 
-    let path_extensions: Vec<_> = parsed
-        .iter()
-        .map(|(name, _)| format!("/cfgd-modules/{name}/bin"))
-        .collect();
-    let path_prefix = path_extensions.join(":");
+    let (mount_dirs, path_prefix) = module_mounts(&parsed);
 
     // Wrap in sh -c so $PATH is expanded by the container's shell
     let inner_cmd = command
@@ -420,26 +572,53 @@ pub fn cmd_exec(
 
     let module_names: Vec<String> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
 
-    printer.emit(
-        Doc::new()
-            .status(
-                Role::Info,
-                format!("Executing in {namespace}/{pod} with modules"),
-            )
-            .kv("Modules", module_names.join(", "))
-            .with_data(serde_json::json!({
-                "namespace": namespace,
-                "pod": pod,
-                "modules": &module_names,
-                "command": command,
-            })),
-    );
+    printer.emit(build_exec_doc(
+        namespace,
+        pod,
+        &module_names,
+        command,
+        &mount_dirs,
+        &path_prefix,
+    ));
 
     let code = super::kubectl::run_argv_inherit(&exec_args)?;
     if code != 0 {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// The render `kubectl cfgd exec` settles on before handing the terminal to
+/// `kubectl`: the same three module facts `debug` reports, so a reader moving
+/// between the two commands reads one shape.
+pub fn build_exec_doc(
+    namespace: &str,
+    pod: &str,
+    module_names: &[String],
+    command: &[String],
+    mount_dirs: &[String],
+    path_prefix: &str,
+) -> Doc {
+    Doc::new()
+        .status(
+            Role::Info,
+            format!("Executing in {namespace}/{pod} with modules"),
+        )
+        .kv_block([
+            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
+            ("Modules", module_names.join(", ")),
+            ("Mount Path", mount_dirs.join(", ")),
+            // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
+            ("PATH Entry", path_prefix.to_string()),
+        ])
+        .with_data(serde_json::json!({
+            "namespace": namespace,
+            "pod": pod,
+            "modules": module_names,
+            "command": command,
+            "mountPath": mount_dirs,
+            "pathPrefix": path_prefix,
+        }))
 }
 
 pub fn cmd_inject(
@@ -513,7 +692,11 @@ pub fn cmd_inject(
                     module_names.join(", ")
                 ),
             )
-            .hint("Pods will receive modules on next rollout")
+            // The patch rewrote the pod template, so the controller is
+            // already rolling; name the command that watches it land.
+            .hint(format!(
+                "Run `kubectl rollout status {kind}/{name} -n {namespace}` to watch the pods pick them up"
+            ))
             .with_data(serde_json::json!({
                 "namespace": namespace,
                 "resource": resource,
@@ -698,9 +881,14 @@ pub fn cmd_deploy(
         })));
     } else {
         // Human/table mode: stdout must stay a clean pipe (pipeable to kubectl),
-        // so the rewrite summary goes to STDERR via tracing, never stdout.
+        // so the rewrite summary goes to STDERR — through the Printer, which is
+        // the human channel, rather than through tracing, whose default filter
+        // means nobody reads it.
         for (old, new) in &rewrites {
-            tracing::info!(reference = %old, pinned = %new, "pinned image reference");
+            printer.status_simple(
+                Role::Info,
+                format!("Pinned {old} {} {new}", printer.arrow()),
+            );
         }
         printer.data_line(&yaml_out);
     }
@@ -708,14 +896,86 @@ pub fn cmd_deploy(
     Ok(())
 }
 
-pub fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_status(printer: &Printer, namespace: &str) -> anyhow::Result<()> {
+    let context = current_context_name();
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(cmd_status_async(printer, None))
+    rt.block_on(cmd_status_async(printer, None, &context, namespace))
+}
+
+/// The kubeconfig's current-context NAME, which `kube::Config` does not carry
+/// (it resolves a context into a connection and keeps no label for it). Read
+/// from the kubeconfig directly so the fact block names the same context
+/// `kubectl config current-context` would; an in-cluster or absent kubeconfig
+/// has no context to name.
+fn current_context_name() -> String {
+    kube::config::Kubeconfig::read()
+        .ok()
+        .and_then(|kc| kc.current_context)
+        .unwrap_or_else(|| "in-cluster".to_string())
+}
+
+/// The JSON pointer of the field the plugin's signature word is read from —
+/// the same `.status.signature` the CRD's `Signature` printer column binds
+/// to, so the two surfaces read one field and cannot disagree about one
+/// Module.
+const MODULE_SIGNATURE_POINTER: &str = "/status/signature";
+
+/// One module row: the facts both the human render and `-o json` answer from.
+struct ModuleRow {
+    name: String,
+    artifact: String,
+    verified: bool,
+    signature: String,
+}
+
+impl ModuleRow {
+    fn from_object(module: &kube::core::DynamicObject) -> Self {
+        let verified = module
+            .data
+            .pointer("/status/verified")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Self {
+            name: module.metadata.name.clone().unwrap_or_else(|| "?".into()),
+            artifact: module
+                .data
+                .pointer("/spec/ociArtifact")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(cfgd_core::ABSENT)
+                .to_string(),
+            verified,
+            // The controller writes the verdict. Without one, the raw bool can
+            // assert exactly one thing on its own — `true` is a check that
+            // passed (an operator predating the word wrote only the bool) —
+            // and everything else is a check that has not run: `unknown` by
+            // the CRD's own vocabulary, never a word derived from the spec.
+            // Deriving `unverified` from a declared key claimed cosign had
+            // rejected an artifact nothing had looked at.
+            signature: module
+                .data
+                .pointer(MODULE_SIGNATURE_POINTER)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(if verified {
+                    cfgd_crd::SIGNATURE_VERIFIED
+                } else {
+                    cfgd_crd::SIGNATURE_UNKNOWN
+                })
+                .to_string(),
+        }
+    }
+}
+
+/// One pod row: which cfgd modules the pod's annotation asks for.
+struct PodRow {
+    name: String,
+    modules: Vec<String>,
 }
 
 pub(crate) async fn cmd_status_async(
     printer: &Printer,
     client: Option<kube::Client>,
+    context: &str,
+    namespace: &str,
 ) -> anyhow::Result<()> {
     let client = match client {
         Some(c) => c,
@@ -724,13 +984,13 @@ pub(crate) async fn cmd_status_async(
                 "cluster",
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
-                serde_json::json!({}),
+                serde_json::json!({ "namespace": namespace }),
             )
         })?,
     };
 
     let modules: kube::Api<kube::core::DynamicObject> = kube::Api::all_with(
-        client,
+        client.clone(),
         &kube::discovery::ApiResource {
             group: "cfgd.io".into(),
             version: "v1alpha1".into(),
@@ -748,60 +1008,82 @@ pub(crate) async fn cmd_status_async(
                 "modules",
                 "list_failed",
                 format!("failed to list modules: {e}"),
-                serde_json::json!({}),
+                serde_json::json!({ "namespace": namespace }),
             )
         })?;
+    let module_rows: Vec<ModuleRow> = list.items.iter().map(ModuleRow::from_object).collect();
 
-    let entries: Vec<serde_json::Value> = list
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
+    let pod_list = pods
+        .list(&kube::api::ListParams::default())
+        .await
+        .map_err(|e| {
+            crate::cli::cli_error(
+                "pods",
+                "list_failed",
+                format!("failed to list pods: {e}"),
+                serde_json::json!({ "namespace": namespace }),
+            )
+        })?;
+    let pod_rows: Vec<PodRow> = pod_list
         .items
         .iter()
-        .map(|module| {
-            let name = module.metadata.name.as_deref().unwrap_or("?");
-            let verified = module
-                .data
-                .pointer("/status/verified")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let artifact = module
-                .data
-                .pointer("/spec/ociArtifact")
-                .and_then(|v| v.as_str())
-                .unwrap_or("-");
-            serde_json::json!({
-                "name": name,
-                "artifact": artifact,
-                "verified": verified,
+        .filter_map(|pod| {
+            let annotation = pod
+                .metadata
+                .annotations
+                .as_ref()?
+                .get(cfgd_core::MODULES_ANNOTATION)?;
+            Some(PodRow {
+                name: pod.metadata.name.clone().unwrap_or_else(|| "?".into()),
+                modules: annotation
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
         })
         .collect();
 
-    let doc = Doc::new().section_or_collapse("Modules", |sb| {
-        if list.items.is_empty() {
-            sb.status(Role::Info, "No modules found")
-        } else {
-            let mut sb = sb;
-            for module in &list.items {
-                let name = module.metadata.name.as_deref().unwrap_or("?");
-                let verified = module
-                    .data
-                    .pointer("/status/verified")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let artifact = module
-                    .data
-                    .pointer("/spec/ociArtifact")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let status_icon = if verified { "verified" } else { "unverified" };
-                sb = sb.kv(name, format!("{artifact} ({status_icon})"));
+    let doc = Doc::new()
+        .heading("Status")
+        .kv_block([("Context", context), ("Namespace", namespace)])
+        .section_or_collapse("Modules", |sb| {
+            if module_rows.is_empty() {
+                sb.status(Role::Info, "No modules found")
+            } else {
+                module_rows.iter().fold(sb, |sb, row| {
+                    sb.kv_rows([KvPair::annotated(&row.name, &row.artifact, &row.signature)])
+                })
             }
-            sb
-        }
-    });
+        })
+        .section_or_collapse("Pods", |sb| {
+            if pod_rows.is_empty() {
+                sb.status(Role::Info, "No pods requesting modules")
+            } else {
+                pod_rows
+                    .iter()
+                    .fold(sb, |sb, row| sb.kv(&row.name, row.modules.join(", ")))
+            }
+        });
 
     printer.emit(doc.with_data(serde_json::json!({
-        "modules": entries,
-        "pods": Vec::<serde_json::Value>::new(),
+        "context": context,
+        "namespace": namespace,
+        "modules": module_rows
+            .iter()
+            .map(|row| serde_json::json!({
+                "name": row.name,
+                "artifact": row.artifact,
+                "verified": row.verified,
+                "signature": row.signature,
+            }))
+            .collect::<Vec<_>>(),
+        "pods": pod_rows
+            .iter()
+            .map(|row| serde_json::json!({ "name": row.name, "modules": row.modules }))
+            .collect::<Vec<_>>(),
     })));
 
     Ok(())
@@ -1035,6 +1317,10 @@ pub(crate) async fn cmd_version_async(
                 "cfgd": env!("CARGO_PKG_VERSION"),
                 "operator": operator_label,
                 "csi": csi_label,
+                // Which namespace the operator/CSI labels above describe: a
+                // reader comparing two runs cannot tell "not deployed" from
+                // "not deployed THERE" without it.
+                "namespace": namespace,
             })),
     );
 

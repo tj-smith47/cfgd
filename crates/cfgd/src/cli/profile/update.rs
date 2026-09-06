@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 pub fn cmd_profile_update(
     cli: &Cli,
@@ -25,7 +25,7 @@ pub fn cmd_profile_update(
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
     let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Update Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Update Profile", name));
 
     let config_dir = config_dir(cli);
     let profiles_dir = config_dir.join("profiles");
@@ -43,7 +43,9 @@ pub fn cmd_profile_update(
         }
         ensure_parent_profile_exists(&profiles_dir, name, parent)?;
         doc.spec.inherits.push(parent.clone());
-        printer.status_simple(Role::Ok, format!("Added inherits: {}", parent));
+        printer
+            .status(Role::Ok, "Added inherits")
+            .qualifier(parent.clone());
         changes += 1;
     }
 
@@ -52,7 +54,9 @@ pub fn cmd_profile_update(
         let before = doc.spec.inherits.len();
         doc.spec.inherits.retain(|x| x != parent);
         if doc.spec.inherits.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed inherits: {}", parent));
+            printer
+                .status(Role::Ok, "Removed inherits")
+                .qualifier(parent.clone());
             changes += 1;
         } else {
             printer.status_simple(
@@ -63,7 +67,7 @@ pub fn cmd_profile_update(
     }
 
     // Add modules — detect remote references and handle accordingly
-    let modules_dir = config_dir.join("modules");
+    let modules_dir = cfgd_core::declared_modules_dir(&config_dir);
     for m in &add_modules {
         if doc.spec.modules.contains(m) {
             continue;
@@ -83,16 +87,14 @@ pub fn cmd_profile_update(
             changes += 1;
         } else {
             if !modules_dir.join(m).join("module.yaml").exists() {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "Module '{}' not found locally — make sure it exists or is a remote module",
-                        m
-                    ),
-                );
+                printer
+                    .status(Role::Warn, format!("Module '{}' not found locally", m))
+                    .detail("make sure it exists or is a remote module");
             }
             doc.spec.modules.push(m.clone());
-            printer.status_simple(Role::Ok, format!("Added module: {}", m));
+            printer
+                .status(Role::Ok, "Added module")
+                .qualifier(m.clone());
             changes += 1;
         }
     }
@@ -118,13 +120,9 @@ pub fn cmd_profile_update(
                     let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
                     if cache_dir.exists() {
                         if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            printer.status_simple(
-                                Role::Warn,
-                                format!(
-                                    "Failed to clean cache: {}",
-                                    cfgd_core::output::collapse_to_subject_line(&e),
-                                ),
-                            );
+                            printer
+                                .status(Role::Warn, "Failed to clean cache")
+                                .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
                         } else {
                             printer.status_simple(Role::Info, "Cleaned cached checkout");
                         }
@@ -163,22 +161,20 @@ pub fn cmd_profile_update(
                     if let Err(e) = state.delete_module_files(m) {
                         printer.status_simple(
                             Role::Warn,
-                            format!("rollback: failed to clean module files for {}: {}", m, e),
+                            format!("Rollback: failed to clean module files for {}: {}", m, e),
                         );
                     }
                 }
 
                 if let Err(e) = state.remove_module_state(m) {
-                    printer.status_simple(
-                        Role::Warn,
-                        format!(
-                            "Failed to clean module state: {}",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                        ),
-                    );
+                    printer
+                        .status(Role::Warn, "Failed to clean module state")
+                        .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
                 }
             }
-            printer.status_simple(Role::Ok, format!("Removed module: {}", m));
+            printer
+                .status(Role::Ok, "Removed module")
+                .qualifier(m.clone());
             changes += 1;
 
             // Check for .cfgd-backup files at module file targets and offer to restore
@@ -188,30 +184,59 @@ pub fn cmd_profile_update(
         }
     }
 
-    // Add packages
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-    let default_mgr = Platform::detect().native_manager().to_string();
+    // Add and remove packages. Both directions take the SAME parser, so a
+    // prefix that is legal to add is legal to remove and the two can never
+    // disagree about where a name lives.
+    let default_mgr = Platform::current().native_manager().to_string();
+    let custom_managers: Vec<String> = doc
+        .spec
+        .packages
+        .as_ref()
+        .map(|p| p.custom.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default();
     for pkg_str in &add_packages {
-        let (mgr_opt, pkg) = super::parse_package_flag(pkg_str, &known_refs);
-        let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());
+        let pkg = super::parse_package_flag(pkg_str, &custom_managers, &default_mgr)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-        packages::add_package(&mgr, &pkg, pkgs)?;
-        printer.status_simple(Role::Ok, format!("Added package: {} ({})", pkg, mgr));
+        packages::add_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)?;
+        printer
+            .status(Role::Ok, format!("Added {}", pkg.noun()))
+            .qualifier(pkg.display(&default_mgr));
         changes += 1;
     }
 
-    // Remove packages
     for pkg_str in &remove_packages {
-        let (mgr, pkg) = parse_manager_package(pkg_str)?;
+        let pkg = super::parse_package_flag(pkg_str, &custom_managers, &default_mgr)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-        if packages::remove_package(&mgr, &pkg, pkgs)? {
-            printer.status_simple(Role::Ok, format!("Removed package: {} ({})", pkg, mgr));
+        if packages::remove_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)? {
+            printer
+                .status(Role::Ok, format!("Removed {}", pkg.noun()))
+                .qualifier(pkg.display(&default_mgr));
             changes += 1;
         } else {
+            // A BARE token searched the native manager alone. When the name
+            // sits under another one, silence would report "not there" about a
+            // package the file plainly holds — name the token that works.
+            let elsewhere = if pkg.schema_path.is_none() {
+                super::removal_tokens_for(&pkg.name, pkgs)
+            } else {
+                Vec::new()
+            };
+            if !elsewhere.is_empty() {
+                anyhow::bail!(
+                    "'{}' is not in {default_mgr}, but is declared elsewhere in this \
+                     profile; use {}",
+                    pkg.name,
+                    elsewhere.join(" or ")
+                );
+            }
             printer.status_simple(
                 Role::Warn,
-                format!("Package '{}' not found in {}", pkg, mgr),
+                format!(
+                    "{} '{}' not found in {}",
+                    pkg.noun_capitalized(),
+                    pkg.name,
+                    pkg.schema_path.as_deref().unwrap_or(&default_mgr)
+                ),
             );
         }
     }
@@ -240,7 +265,9 @@ pub fn cmd_profile_update(
                     encryption: None,
                     permissions: None,
                 });
-                printer.status_simple(Role::Ok, format!("Added file: {}", basename));
+                printer
+                    .status(Role::Ok, "Added file")
+                    .qualifier(basename.clone());
                 changes += 1;
             }
         }
@@ -268,7 +295,9 @@ pub fn cmd_profile_update(
                         std::fs::remove_file(&source_path)?;
                     }
                 }
-                printer.status_simple(Role::Ok, format!("Removed file: {}", target));
+                printer
+                    .status(Role::Ok, "Removed file")
+                    .qualifier(target.clone());
                 changes += 1;
             } else {
                 printer.status_simple(
@@ -283,7 +312,9 @@ pub fn cmd_profile_update(
     for v in &add_env {
         let ev = cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
-        printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
+        printer
+            .status(Role::Ok, "Set env")
+            .qualifier(crate::cli::helpers::quoted_assignment(&ev.name, &ev.value));
         changes += 1;
     }
 
@@ -292,7 +323,9 @@ pub fn cmd_profile_update(
         let before = doc.spec.env.len();
         doc.spec.env.retain(|e| e.name != *key);
         if doc.spec.env.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed env: {}", key));
+            printer
+                .status(Role::Ok, "Removed env")
+                .qualifier(key.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
@@ -303,10 +336,12 @@ pub fn cmd_profile_update(
     for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
-        printer.status_simple(
-            Role::Ok,
-            format!("Set alias: {}={}", alias.name, alias.command),
-        );
+        printer
+            .status(Role::Ok, "Set alias")
+            .qualifier(crate::cli::helpers::quoted_assignment(
+                &alias.name,
+                &alias.command,
+            ));
         changes += 1;
     }
 
@@ -315,7 +350,9 @@ pub fn cmd_profile_update(
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *alias_name);
         if doc.spec.aliases.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed alias: {}", alias_name));
+            printer
+                .status(Role::Ok, "Removed alias")
+                .qualifier(alias_name.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Alias '{}' not found", alias_name));
@@ -331,14 +368,18 @@ pub fn cmd_profile_update(
             key.to_string(),
             serde_yaml::Value::String(value.to_string()),
         );
-        printer.status_simple(Role::Ok, format!("Set system: {}={}", key, value));
+        printer
+            .status(Role::Ok, "Set system")
+            .qualifier(format!("{key}={value}"));
         changes += 1;
     }
 
     // Remove system settings
     for key in &remove_system {
         if doc.spec.system.remove(key.as_str()).is_some() {
-            printer.status_simple(Role::Ok, format!("Removed system setting: {}", key));
+            printer
+                .status(Role::Ok, "Removed system setting")
+                .qualifier(key.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("System setting '{}' not found", key));
@@ -367,10 +408,12 @@ pub fn cmd_profile_update(
             );
             continue;
         }
-        printer.status_simple(
-            Role::Ok,
-            format!("Added secret: {} → {}", secret.source, target.posix()),
-        );
+        printer.status(Role::Ok, "Added secret").qualifier(format!(
+            "{} {} {}",
+            secret.source,
+            printer.arrow(),
+            target.posix()
+        ));
         doc.spec.secrets.push(secret);
         changes += 1;
     }
@@ -383,7 +426,9 @@ pub fn cmd_profile_update(
             s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) != Some(target.clone())
         });
         if doc.spec.secrets.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed secret: {}", target_str));
+            printer
+                .status(Role::Ok, "Removed secret")
+                .qualifier(target_str.clone());
             changes += 1;
         } else {
             printer.status_simple(
@@ -460,12 +505,17 @@ pub fn cmd_profile_update(
         Doc::new()
             .status(
                 Role::Ok,
+                // The heading above already names the profile; a footer
+                // respelling it makes the reader check whether two subjects
+                // are in play.
                 format!(
-                    "Updated profile '{}' ({})",
-                    name,
+                    "{} written",
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )
+            .hint(crate::cli::success_next_step(
+                crate::cli::Mutation::ProfileUpdated,
+            ))
             .with_data(serde_json::json!({
                 "name": name,
                 "changes": changes,

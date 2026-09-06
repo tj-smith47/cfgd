@@ -80,6 +80,34 @@ pub fn git_cmd_local() -> std::process::Command {
     cmd
 }
 
+/// Refuse a revision operand that git would read as an OPTION, naming the value.
+///
+/// The documented guard for this is `--end-of-options`, and it is the one guard
+/// `git reset` and `git checkout` did not honour on the gits still in the field:
+/// both REFUSE the whole invocation when it appears (`fatal: option
+/// '--end-of-options' must come before non-option arguments`; `fatal: git
+/// checkout: --detach does not take a path argument '--end-of-options'`).
+/// Probed: refused by 2.34.1, 2.39.5 and 2.43.0 (upstream and the
+/// `1:2.43.0-1ubuntu7.3` Ubuntu 24.04 LTS ships alike), accepted from 2.43.7 on
+/// — the fix landed in the 2.43.x maintenance line, and no release note names
+/// it. So on the commonest Linux host every such invocation failed before it
+/// ran, which cost the source cache its verify-then-publish rollback, the one
+/// thing standing between a refused fetch and a discarded checkout. A revision
+/// argv therefore carries a TRAILING `--` (which separates a revision from a
+/// pathspec on every git) and this refusal. The refusal is narrower than the
+/// option it replaces — `--end-of-options` would have PERMITTED a ref literally
+/// named `-foo`, which no git will mint through `tag` or `branch` — and that is
+/// the whole of the difference. `clone`, `fetch` and `ls-remote` accept the
+/// option on every probed git and keep it.
+pub fn refuse_option_like_revision(revision: &str) -> std::result::Result<(), String> {
+    if revision.starts_with('-') {
+        return Err(format!(
+            "refusing to run git against revision '{revision}': a revision must not begin with '-'"
+        ));
+    }
+    Ok(())
+}
+
 /// Try a git CLI command via [`git_cmd_safe`], returning `true` on success.
 /// On failure, logs the stderr via `tracing::debug` and returns `false`.
 pub fn try_git_cmd(
@@ -114,7 +142,7 @@ pub fn try_git_cmd(
     }
 }
 
-/// Env-var seam name for the cosign binary path. See [`tool_binary_name`].
+/// Env-var seam name for the cosign binary path. See [`crate::tool_binary_name`].
 pub const COSIGN_BIN_ENV: &str = "CFGD_COSIGN_BIN";
 
 /// Build a base `cosign` `Command` — the shared factory for signature / attestation
@@ -126,7 +154,7 @@ pub const COSIGN_BIN_ENV: &str = "CFGD_COSIGN_BIN";
 /// future env / timeout hardening) uniform and lets the module-boundary audit
 /// point at one place instead of tracking every caller.
 ///
-/// The binary name honors `CFGD_COSIGN_BIN` for tests via [`tool_cmd`].
+/// The binary name honors `CFGD_COSIGN_BIN` for tests via [`crate::tool_cmd`].
 ///
 /// Callers add their own subcommand (`sign`, `verify-blob`, `verify-attestation`,
 /// `attest`, etc.) and any additional flags.
@@ -135,7 +163,7 @@ pub fn cosign_cmd() -> std::process::Command {
 }
 
 /// Verify cosign is available, honoring the `CFGD_COSIGN_BIN` test seam.
-/// Delegates to [`require_tool_with_seam`] to share the env-var-override logic
+/// Delegates to [`crate::require_tool_with_seam`] to share the env-var-override logic
 /// with every other shimmable tool in cfgd-core.
 pub fn require_cosign() -> std::result::Result<(), String> {
     super::process::require_tool_with_seam(COSIGN_BIN_ENV, "cosign", None)
@@ -368,6 +396,173 @@ mod tests {
     use serial_test::serial;
     use std::fs;
 
+    /// A `git reset` / `git checkout` argv ends its revision with a trailing
+    /// `--`.
+    ///
+    /// The two verbs did not honour `--end-of-options` on the gits still in the
+    /// field: refused by 2.34.1, 2.39.5 and 2.43.0 (the git Ubuntu 24.04 LTS
+    /// ships), accepted only from 2.43.7 on. On the commonest Linux host every
+    /// such argv failed before it ran — which is how a refused source fetch lost
+    /// its verify-then-publish rollback (`reset_checkout_to`) and every
+    /// `pinVersion` lost its detached checkout. `clone`, `fetch` and `ls-remote`
+    /// accept the option on every probed git and keep it.
+    ///
+    /// Pinned as the INVARIANT rather than the retired spelling: an argv naming
+    /// either verb must carry a `--` element, so a revision written without one
+    /// trips the walk whether or not it reaches for the option that failed.
+    #[test]
+    fn no_revision_verb_argv_spells_end_of_options() {
+        let mut offenders = Vec::new();
+        let mut seen = 0usize;
+        for path in workspace_rust_files() {
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Prose says the words on purpose — the rule is documented where it
+            // is enforced, and a comment spawns no process.
+            let code = body
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (argv, verb) in revision_verb_argvs(&code) {
+                seen += 1;
+                if !argv.contains("\"--\"") {
+                    offenders.push(format!(
+                        "{}: git {verb} argv carries no `\"--\"` element",
+                        path.display()
+                    ));
+                }
+                if argv.contains("\"--end-of-options\"") {
+                    offenders.push(format!(
+                        "{}: git {verb} argv names --end-of-options",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        assert!(
+            seen > 0,
+            "no reset/checkout argv found: the walk stopped seeing its population"
+        );
+        assert!(
+            offenders.is_empty(),
+            "a git reset/checkout revision argv ends its revision with a trailing \
+             `--`, and never names --end-of-options, which those verbs refuse on \
+             git 2.43.0 and older (accepted only from 2.43.7; Ubuntu 24.04 LTS \
+             ships 2.43.0). Guard an attacker-influenced revision with \
+             refuse_option_like_revision instead:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The guard refuses exactly a revision git would read as an option.
+    #[test]
+    fn refuse_option_like_revision_refuses_only_an_option_shaped_revision() {
+        for ok in ["HEAD", "v1.2.3", "4e0c5e63", "feature/-dash", "main"] {
+            assert!(
+                refuse_option_like_revision(ok).is_ok(),
+                "{ok} is a revision"
+            );
+        }
+        let refused = refuse_option_like_revision("--upload-pack=touch /tmp/pwn")
+            .expect_err("an option-shaped revision is refused");
+        assert!(
+            refused.contains("--upload-pack=touch /tmp/pwn"),
+            "the refusal names the value it refused: {refused}"
+        );
+    }
+
+    /// Every `reset` / `checkout` argv in `code`, with the verb it names — the
+    /// bracketed list form and the `Command` builder chain alike.
+    ///
+    /// A verb literal that is neither is a word, not an argv — an enum arm
+    /// rendering the stage name of a libgit2 pull spells `"checkout"` and runs
+    /// nothing — so the chain arm is gated on `.arg(` / `.args(`, the only way
+    /// a statement with no list can still hand git a revision. Both forms are
+    /// bounded by their own statement, so a distant `[` cannot be read as the
+    /// argv's opening and a neighbouring chain cannot lend this one its `--`.
+    fn revision_verb_argvs(code: &str) -> Vec<(&str, &str)> {
+        let mut out = Vec::new();
+        for verb in ["\"reset\"", "\"checkout\""] {
+            let mut rest = code;
+            while let Some(at) = rest.find(verb) {
+                let before = &rest[..at];
+                let stmt_start = before.rfind([';', '{', '}']).map_or(0, |o| o + 1);
+                let stmt_end = rest[at..].find(';').map_or(rest.len(), |o| at + o);
+                match before[stmt_start..].rfind('[') {
+                    Some(open) => {
+                        let from = stmt_start + open;
+                        if let Some(close) = rest[from..].find(']') {
+                            out.push((&rest[from..from + close], verb));
+                        }
+                    }
+                    None => {
+                        let stmt = &rest[stmt_start..stmt_end];
+                        if stmt.contains(".arg(") || stmt.contains(".args(") {
+                            out.push((stmt, verb));
+                        }
+                    }
+                }
+                rest = &rest[at + verb.len()..];
+            }
+        }
+        out
+    }
+
+    /// The walk judges a builder chain, and still leaves a bare verb WORD alone.
+    ///
+    /// Read for bracketed lists only, a `Command::new("git").arg("reset")…`
+    /// chain was invisible: the very shape a caller reaches for when the argv
+    /// is built conditionally, and the one no reviewer would think to spell as
+    /// an array.
+    #[test]
+    fn the_argv_walk_judges_a_builder_chain_with_no_array() {
+        let chain = revision_verb_argvs(
+            "let mut cmd = git_cmd_local();\ncmd.arg(\"reset\").arg(\"--hard\").arg(rev);",
+        );
+        assert_eq!(chain.len(), 1, "the chain is one argv: {chain:?}");
+        assert!(
+            !chain[0].0.contains("\"--\""),
+            "and it carries no trailing separator, which is what the walk fails on: {chain:?}"
+        );
+        assert_eq!(
+            revision_verb_argvs("cmd.args([\"reset\", \"--hard\", \"--\", rev]);").len(),
+            1,
+            "the bracketed form still reads as one argv"
+        );
+        assert!(
+            revision_verb_argvs("PullStage::Checkout => \"checkout\",").is_empty(),
+            "a verb WORD spawns nothing and is left alone"
+        );
+    }
+
+    /// Every `.rs` file under every crate's `src/`.
+    fn workspace_rust_files() -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("crates"),
+        ];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        assert!(!out.is_empty(), "found no sources under crates/");
+        out
+    }
+
     /// Saves and restores the `CFGD_COSIGN_BIN` env var so tests stay isolated
     /// even when one panics. Pairs with `serial_test::serial` since env-var
     /// mutation is process-global.
@@ -579,7 +774,7 @@ mod tests {
             "init",
         ]);
         git(&["clone", up, wk]);
-        git(&["-C", wk, "checkout", "--detach", "HEAD"]);
+        git(&["-C", wk, "checkout", "--detach", "HEAD", "--"]);
         assert_eq!(
             detect_default_branch(&work).as_deref(),
             Some("trunk"),

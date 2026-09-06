@@ -1,2 +1,2 @@
 Doctor
-  — macos-defaults — not applicable on Linux
+  ∅ macos-defaults — not applicable on Linux

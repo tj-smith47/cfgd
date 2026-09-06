@@ -1,4 +1,11 @@
-Restore Backup
-✓ backup:docs restored from notes.txt.<TIMESTAMP> — into <SOURCE>
+Restore: docs
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Source   <SOURCE>
+  Actions  1 planned
 
-→ previous contents saved to <STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>
+backup:docs
+  ✓ restore <SOURCE> from notes.txt.<TIMESTAMP> — 12 B
+  → Previous contents backed up to <SOURCE>.cfgd-backup; put them back with `cfgd backup rollback docs`
+
+✓ Restore complete — 1 action succeeded (XXs wall)

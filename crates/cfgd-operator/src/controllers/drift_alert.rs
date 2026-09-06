@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::EventType;
-use kube::{Client, Resource, ResourceExt};
+use kube::{Resource, ResourceExt};
 use tracing::{info, warn};
 
 use crate::crds::{DriftAlert, DriftAlertStatus, MachineConfig};
@@ -12,8 +12,9 @@ use crate::errors::OperatorError;
 use crate::metrics::DriftLabels;
 
 use super::{
-    ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS, build_drift_alert_conditions,
-    emit_event, namespaced_api, record_reconcile_metrics, record_reconcile_success,
+    ControllerContext, ControllerStores, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS,
+    build_condition, build_drift_alert_conditions, emit_event, namespaced_api,
+    record_reconcile_metrics, record_reconcile_success, upsert_condition,
 };
 pub(super) async fn reconcile_drift_alert(
     obj: Arc<DriftAlert>,
@@ -160,23 +161,32 @@ pub(super) async fn reconcile_drift_alert(
                     .inc();
 
                 let now = cfgd_core::utc_now_iso8601();
-                let mc_generation = mc.meta().generation;
+                let mc_existing_conditions = mc
+                    .status
+                    .as_ref()
+                    .map(|s| s.conditions.as_slice())
+                    .unwrap_or(&[]);
+                let drift_condition = build_condition(
+                    mc_existing_conditions,
+                    "DriftDetected",
+                    "True",
+                    "DriftActive",
+                    // The condition TYPE is the API's word; the message is what a
+                    // reader sees, and a device reports its system settings alone.
+                    &format!(
+                        "Device {} reported {}",
+                        obj.spec.device_id,
+                        cfgd_core::pluralize(
+                            obj.spec.drift_details.len(),
+                            "drifted system setting"
+                        )
+                    ),
+                    &now,
+                    mc.meta().generation,
+                );
                 let mc_status = serde_json::json!({
                     "status": {
-                        "conditions": [
-                            {
-                                "type": "DriftDetected",
-                                "status": "True",
-                                "reason": "DriftActive",
-                                "message": format!(
-                                    "Drift detected on device {} — {}",
-                                    obj.spec.device_id,
-                                    cfgd_core::pluralize(obj.spec.drift_details.len(), "detail")
-                                ),
-                                "lastTransitionTime": now.clone(),
-                                "observedGeneration": mc_generation,
-                            }
-                        ]
+                        "conditions": upsert_condition(mc_existing_conditions, drift_condition)
                     }
                 });
 
@@ -189,12 +199,13 @@ pub(super) async fn reconcile_drift_alert(
                     .await
                     .map_err(|e| {
                         OperatorError::Reconciliation(format!(
-                            "failed to update drift status for MachineConfig {mc_name}: {e}"
+                            "failed to update the DriftDetected condition of MachineConfig {mc_name}: {e}"
                         ))
                     })?;
 
                 info!(
                     machine_config = %mc_name,
+                    // fleet-drift-ok: a journal line naming the condition it patched
                     "machineConfig drift condition set"
                 );
 
@@ -204,9 +215,12 @@ pub(super) async fn reconcile_drift_alert(
                     EventType::Warning,
                     "DriftDetected",
                     format!(
-                        "Drift detected from device {} — {} details",
+                        "Device {} reported {}",
                         obj.spec.device_id,
-                        obj.spec.drift_details.len()
+                        cfgd_core::pluralize(
+                            obj.spec.drift_details.len(),
+                            "drifted system setting"
+                        )
                     ),
                     "DriftCheck",
                 )
@@ -267,29 +281,21 @@ pub(super) async fn reconcile_drift_alert(
 /// Check whether any active DriftAlerts exist for a MachineConfig.
 /// Matches by spec.machineConfigRef.name since labels may not be set.
 ///
-/// The caller must treat this single list as the only view of alert state:
-/// a follow-up list to act on "no alerts" races with alert creation and can
+/// Read from the DriftAlert watch cache the DriftAlert controller already
+/// maintains — a LIST here is a LIST per MachineConfig per reconcile sweep,
+/// which is quadratic across a fleet.
+///
+/// The caller must treat this single snapshot as the only view of alert state:
+/// a follow-up read to act on "no alerts" races with alert creation and can
 /// delete a freshly created alert before its first reconcile.
 pub(super) async fn has_active_drift_alerts(
-    client: &Client,
+    stores: &ControllerStores,
     namespace: &str,
     mc_name: &str,
-) -> bool {
-    let alerts: Api<DriftAlert> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), namespace)
-    };
-
-    // List all DriftAlerts and filter by machineConfigRef.name since labels are not guaranteed
-    match alerts.list(&ListParams::default()).await {
-        Ok(list) => list
-            .items
-            .iter()
-            .any(|da| da.spec.machine_config_ref.name == mc_name),
-        Err(e) => {
-            warn!(error = %e, mc_name = %mc_name, "failed to list DriftAlerts for drift check");
-            false
-        }
-    }
+) -> Result<bool, OperatorError> {
+    Ok(stores
+        .drift_alerts_in(namespace)
+        .await?
+        .iter()
+        .any(|da| da.spec.machine_config_ref.name == mc_name))
 }

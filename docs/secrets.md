@@ -1,40 +1,43 @@
 # Secrets
 
-Secrets in config repos are a common problem: you want API keys, tokens, and certificates version-controlled alongside your config, but you can't commit them in plaintext. External providers like 1Password solve storage but don't solve deployment — you still need to get the secret to the right file on the right machine.
+Secrets in config repos are a common problem: you want API keys, tokens, and certificates version-controlled alongside your config, but you can't commit them in plaintext. External providers like 1Password solve storage but not deployment: you still need to get the secret to the right file on the right machine.
 
-cfgd handles both: encrypted secrets live in your git repo (safe to commit), and external provider references are resolved at apply time and placed at their target paths. You declare where secrets come from and where they go; cfgd handles the rest.
+cfgd handles both. Encrypted secrets live in your git repo (safe to commit), and external provider references are resolved at apply time and placed at their target paths.
 
 ## Encryption Backends
 
-cfgd supports two encryption backends. Use both — they serve different purposes.
+cfgd supports two encryption backends. They serve different purposes.
 
-### SOPS (primary) — for structured config files
+### SOPS (primary): for structured config files
 
-[SOPS](https://github.com/getsops/sops) encrypts individual values within YAML/JSON files while leaving keys in plaintext. This means `git diff` shows which keys changed (even though values are opaque), and you can review the structure of encrypted files without decrypting them.
+[SOPS](https://github.com/getsops/sops) encrypts individual values within YAML/JSON files while leaving keys in plaintext. `git diff` shows which keys changed (values stay opaque), and you can review the structure of encrypted files without decrypting them.
 
-Best for: API key files, environment configs, credential YAML — anything where you want meaningful diffs.
+Best for: API key files, environment configs, credential YAML, anything where you want meaningful diffs.
 
-### age (fallback) — for opaque files
+### age (fallback): for opaque files
 
-[age](https://age-encryption.org/) encrypts entire files as opaque blobs. You can't see what's inside without the key.
+[age](https://age-encryption.org/) encrypts entire files as opaque blobs.
 
 Best for: binary files (TLS certs, keystores), or files where SOPS's structured encryption doesn't apply.
 
-cfgd doesn't automatically fall back from SOPS to age. You choose per-file via the `backend` field in your profile. The default backend is SOPS.
+cfgd doesn't automatically fall back from SOPS to age. The default backend is SOPS; override per file via the `backend` field in your profile.
 
 ## External Providers
 
-External providers let you reference secrets stored in password managers or vaults. cfgd resolves the reference at apply time, fetches the value, and places it at the target path. The secret value is never written to your config repo.
+External providers reference secrets stored in password managers or vaults. cfgd resolves the reference at apply time, fetches the value, and places it at the target path. The secret value is never written to your config repo.
 
 | Provider | Reference Format | CLI Required |
 |---|---|---|
 | 1Password | `1password://Vault/Item/Field` or `op://Vault/Item/Field` | [`op`](https://developer.1password.com/docs/cli/) |
 | Bitwarden | `bitwarden://folder/item` or `bw://folder/item` | [`bw`](https://bitwarden.com/help/cli/) |
+| LastPass | `lastpass://folder/item/field`, `lpass://folder/item/field`, or `lp://folder/item/field` | [`lpass`](https://github.com/lastpass/lastpass-cli) |
 | HashiCorp Vault | `vault://secret/path#key` | [`vault`](https://developer.hashicorp.com/vault/docs/commands) |
 
-You can use external providers alongside encryption backends. For example, most secrets can be SOPS-encrypted in the repo, while a few high-sensitivity tokens are fetched from 1Password at apply time.
+Providers and encryption backends combine freely: most secrets SOPS-encrypted in the repo, a few high-sensitivity tokens fetched from 1Password at apply time.
 
-Secret references can be used in templates with `${secret:ref}` syntax.
+Secret references also work inside deployed file content with `${secret:ref}` syntax (see [Secret References](templates.md#secret-references)).
+
+`cfgd doctor` reports which provider CLIs are installed, along with sops/age key and `.sops.yaml` status.
 
 ## Configuration
 
@@ -65,6 +68,8 @@ secrets:
     target: /etc/ssl/certs/my-cert.pem
     backend: age                           # per-file backend override
 ```
+
+`template` wraps a provider-resolved value before it is written: `${secret:value}` is replaced with the resolved secret and everything else is written verbatim, so a bare token can be delivered as the config line a tool expects. It applies to `target` and `envs` alike (each variable receives the rendered string). Two rules are enforced at parse time: the template must contain `${secret:value}`, and it is only accepted on a provider reference (`1password://`, `bitwarden://`, `lastpass://`, `vault://` and their aliases), never on an encrypted file, whose contents are already the file to write.
 
 ## Environment Variable Injection
 
@@ -98,11 +103,11 @@ secrets:
       - AWS_SECRET_ACCESS_KEY
 ```
 
-The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source — the value is never stored or logged.
+The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source; the value is never stored or logged.
 
 ## CLI Commands
 
-`cfgd secret init` sets up encryption for your config repo — generates an [age](https://age-encryption.org/) key pair and creates a `.sops.yaml` configuration file that tells SOPS which files to encrypt and with which key.
+`cfgd secret init` sets up encryption for your config repo: it generates an [age](https://age-encryption.org/) key pair and creates a `.sops.yaml` configuration file that tells SOPS which files to encrypt and with which key.
 
 ```sh
 cfgd secret init                    # generate age key + .sops.yaml

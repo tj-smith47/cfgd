@@ -4,12 +4,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -44,11 +44,21 @@ impl PackageManager for CargoManager {
         "cargo"
     }
 
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `cargo install <crate>` replaces an already-held package with the
+        // requested version — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(cargo_cmd().arg("--version"))
+    }
+
     fn is_available(&self) -> bool {
         cargo_available()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         Some(
             BootstrapPlan::new("rustup")
                 .requiring(["curl"])
@@ -67,6 +77,7 @@ impl PackageManager for CargoManager {
             .collect()
     }
 
+    // bootstrap-arm-ok: rustup's installer is the only route to cargo
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
             cx,
@@ -124,13 +135,10 @@ impl PackageManager for CargoManager {
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         // cargo search <pkg> --limit 1 → "package_name = \"version\""
-        let output = cargo_cmd()
-            .args(["search", package, "--limit", "1"])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "cargo".into(),
-                source: e,
-            })?;
+        let output = run_pkg_query(
+            "cargo",
+            cargo_cmd().args(["search", package, "--limit", "1"]),
+        )?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -199,7 +207,7 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
             Some(cfgd_core::providers::PackageInfo {
                 name: name.to_string(),
                 version: if version.is_empty() {
-                    "unknown".to_string()
+                    cfgd_core::providers::UNKNOWN_PACKAGE_VERSION.to_string()
                 } else {
                     version.to_string()
                 },
@@ -211,6 +219,7 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
 #[cfg(test)]
 mod tests {
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::*;
 
@@ -591,7 +600,7 @@ tokei v12.1.2:
 
         /// Point the seam env-var at a non-existent path so the spawned
         /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
-        /// arm in `available_version` (which calls `.output()` directly).
+        /// arm in `available_version` (which prices through `run_pkg_query`).
         #[test]
         #[serial]
         fn cargo_available_version_spawn_failure_maps_to_command_failed() {
@@ -601,7 +610,7 @@ tokei v12.1.2:
                 .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
-                    PackageError::CommandFailed { ref manager, .. }) if manager == "cargo"),
+                    cfgd_core::errors::PackageError::CommandFailed { ref manager, .. }) if manager == "cargo"),
                 "spawn failure must be PackageError::CommandFailed{{manager:\"cargo\"}}, got: {err:?}"
             );
         }

@@ -44,7 +44,7 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
     let device_id = match generate_device_id() {
         Ok(id) => id,
         Err(e) => {
-            tracing::warn!(error = %e, "server check-in failed");
+            tracing::warn!(error = %e, "daemon: server check-in failed to derive a device id");
             return false;
         }
     };
@@ -52,7 +52,7 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
     let host = match hostname::get() {
         Ok(h) => h.to_string_lossy().to_string(),
         Err(e) => {
-            tracing::warn!(error = %e, "server check-in: failed to get hostname");
+            tracing::warn!(error = %e, "daemon: server check-in failed to get hostname");
             return false;
         }
     };
@@ -60,7 +60,7 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
     let config_hash = match compute_config_hash(resolved) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!(error = %e, "server check-in failed");
+            tracing::warn!(error = %e, "daemon: server check-in failed to hash the profile");
             return false;
         }
     };
@@ -78,16 +78,13 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
     let body = match serde_json::to_string(&payload) {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(error = %e, "server check-in: failed to serialize payload");
+            tracing::warn!(error = %e, "daemon: server check-in failed to serialize payload");
             return false;
         }
     };
 
-    tracing::info!(
-        url = %url,
-        device_id = %payload.device_id,
-        "checking in with server"
-    );
+    tracing::debug!(url = %url, device_id = %payload.device_id, "daemon: check-in request");
+    tracing::info!("daemon: checking in with {url}");
 
     match ureq::post(&url)
         .header("Content-Type", "application/json")
@@ -98,9 +95,17 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
             match response.body_mut().read_to_string() {
                 Ok(resp_body) => match serde_json::from_str::<CheckinServerResponse>(&resp_body) {
                     Ok(resp) => {
-                        tracing::info!(
+                        tracing::debug!(
                             config_changed = resp.config_changed,
-                            "server check-in successful"
+                            "daemon: check-in response"
+                        );
+                        tracing::info!(
+                            "daemon: server check-in succeeded — config {}",
+                            if resp.config_changed {
+                                "changed"
+                            } else {
+                                "unchanged"
+                            }
                         );
                         resp.config_changed
                     }
@@ -108,19 +113,19 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
                         tracing::warn!(
                             status = status,
                             error = %e,
-                            "server check-in: failed to parse response"
+                            "daemon: server check-in failed to parse response"
                         );
                         false
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(error = %e, "server check-in: failed to read response body");
+                    tracing::warn!(error = %e, "daemon: server check-in failed to read response body");
                     false
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "server check-in failed");
+            tracing::warn!(error = %e, "daemon: server check-in request failed");
             false
         }
     }

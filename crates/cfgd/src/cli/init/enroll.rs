@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, HintCommands, KvPair, Printer, Role};
 use serde::Serialize;
 
 use super::*;
@@ -38,16 +38,22 @@ pub struct EnrollOutput {
 /// Remediation hint for an enrollment error `kind`, rendered in human mode.
 /// Shared by [`build_enroll_error`] and the `signing_failed` ctx carrier so the
 /// hint text stays in one place.
-fn enroll_error_hint(kind: &str) -> Option<&'static str> {
+pub(in crate::cli) fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
     match kind {
-        "method_mismatch" => Some(
-            "This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>",
-        ),
-        "no_key" => Some(
-            "Provide --ssh-key <path> or --gpg-key <id>. Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
-        ),
+        // The failure itself is the message's to state; a hint says only what
+        // the reader does about it, so neither one restates the other.
+        "method_mismatch" => Some(HintCommands::new(
+            "Re-run with a bootstrap token:",
+            ["cfgd enroll --server-url <url> --token <token>"],
+        )),
+        // Two flags, one re-run: the reader picks a key kind, not a command,
+        // so the alternatives collapse into the one line they differ inside.
+        "no_key" => Some(HintCommands::new(
+            "Re-run naming a key:",
+            ["cfgd enroll [--ssh-key <path> | --gpg-key <id>]"],
+        )),
         "signing_failed" => {
-            Some("Verify the signing key is accessible and the signing tool is installed.")
+            Some("Verify the signing key is accessible and the signing tool is installed.".into())
         }
         _ => None,
     }
@@ -55,12 +61,8 @@ fn enroll_error_hint(kind: &str) -> Option<&'static str> {
 
 /// Hints for an enrollment error `kind` as a `Vec`, suitable for the
 /// `cli_error*_with_hints` carriers.
-fn enroll_error_hints(kind: &str) -> Vec<String> {
-    enroll_error_hint(kind)
-        .map(|h| vec![h.to_string()])
-        .into_iter()
-        .flatten()
-        .collect()
+fn enroll_error_hints(kind: &str) -> Vec<HintCommands> {
+    enroll_error_hint(kind).into_iter().collect()
 }
 
 /// Build an enrollment error carrying the structured payload (`error: <kind>`,
@@ -107,7 +109,7 @@ pub(crate) fn cmd_enroll(
         printer.heading("Token Enrollment");
         printer.status_simple(
             Role::Info,
-            "Exchanging bootstrap token for device credential...",
+            "Exchanging bootstrap token for device credential",
         );
 
         let resp = client
@@ -128,7 +130,7 @@ pub(crate) fn cmd_enroll(
         return Err(build_enroll_error(
             server_url,
             "method_mismatch",
-            "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
+            "This server uses bootstrap token enrollment, not key-based enrollment",
             serde_json::json!({
                 "serverUrl": server_url,
                 "serverMethod": info.method,
@@ -148,8 +150,8 @@ pub(crate) fn cmd_enroll(
                 return Err(build_enroll_error(
                     &device_id,
                     "no_key",
-                    "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
-                     Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
+                    "no signing key found — checked the SSH agent, ~/.ssh/id_ed25519, \
+                     ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
                     serde_json::json!({
                         "checked": [
                             "ssh-agent",
@@ -163,18 +165,16 @@ pub(crate) fn cmd_enroll(
         }
     };
 
-    printer.kv(
+    printer.kv_rows([KvPair::annotated(
         "Signing with",
-        format!("{} ({})", key_type.as_str().to_uppercase(), key_ref),
-    );
+        key_type.as_str().to_uppercase(),
+        &key_ref,
+    )]);
 
     // Challenge-response
     let challenge = client
         .request_challenge(&username, printer)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    printer.kv("Challenge ID", &challenge.challenge_id);
-    printer.kv("Expires", &challenge.expires_at);
 
     let signature = match key_type {
         KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
@@ -190,13 +190,20 @@ pub(crate) fn cmd_enroll(
             serde_json::json!({
                 "keyType": key_type.as_str(),
                 "keyRef": key_ref,
+                "challengeId": challenge.challenge_id,
                 "message": message,
             }),
             enroll_error_hints("signing_failed"),
         )
     })?;
 
-    printer.status_simple(Role::Ok, "Challenge signed");
+    // The challenge's identity and expiry are what the signing step PRODUCED
+    // a signature over, so they ride on its row rather than sitting as kv rows
+    // between the challenge request's verdict and this one.
+    printer.status(Role::Ok, "Signed challenge").detail(format!(
+        "challenge {}, expires {}",
+        challenge.challenge_id, challenge.expires_at
+    ));
 
     let resp = client
         .submit_verification(
@@ -218,17 +225,22 @@ fn finish_enrollment(
     device_id: &str,
     resp: cfgd_core::server_client::EnrollResponse,
 ) -> anyhow::Result<()> {
-    printer.status_simple(Role::Ok, format!("Enrolled as user '{}'", resp.username));
-    if let Some(ref team) = resp.team {
-        printer.kv("Team", team);
-    }
-    printer.kv("Device", &resp.device_id);
+    // The team and device id are what the enrollment PRODUCED, so they are
+    // this row's detail; as kv rows they split this verdict from the
+    // credential save's.
+    let produced = match resp.team {
+        Some(ref team) => format!("team {team}, device {}", resp.device_id),
+        None => format!("device {}", resp.device_id),
+    };
+    printer
+        .status(Role::Ok, format!("Enrolled as user '{}'", resp.username))
+        .detail(produced);
 
     let credential = build_device_credential(server_url, device_id, &resp);
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
-            printer.status_simple(Role::Ok, format!("Credential saved to {}", path.posix()));
+            printer.status_simple(Role::Ok, format!("Saved credential to {}", path.posix()));
         }
         Err(e) => {
             printer.status_simple(
@@ -248,11 +260,10 @@ fn finish_enrollment(
     if let Some(ref desired) = resp.desired_config {
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
-                printer.status_simple(
-                    Role::Info,
-                    format!("Server pushed desired config — saved to {}", path.posix()),
-                );
-                printer.status_simple(Role::Info, MSG_RUN_APPLY);
+                printer
+                    .status(Role::Info, "Server pushed desired config")
+                    .detail(format!("saved to {}", path.posix()));
+                printer.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");
@@ -275,10 +286,9 @@ fn finish_enrollment(
 /// `EnrollOutput` payload. Pure builder so snapshot tests can drive it
 /// without standing up a mock server.
 pub fn build_enroll_final_doc(output: &EnrollOutput) -> Doc {
-    let lines = next_steps_lines();
     Doc::new()
         .section("Next Steps", |s| {
-            lines.iter().fold(s, |s, line| s.bullet(*line))
+            s.command_list(next_steps_lines().to_vec())
         })
         .with_data(output)
 }
@@ -309,14 +319,15 @@ pub(super) fn build_device_credential(
 /// Pinned as a pure helper so the line set is testable and stable — the
 /// CLI's "what do I do next?" affordance must not silently drop or reorder
 /// these as the codebase evolves; doing so degrades the first-run UX.
-/// Lines are bare command strings — the "Next Steps" section bullets supply
-/// their own indent and `- ` prefix.
-pub(super) fn next_steps_lines() -> &'static [&'static str] {
+/// `(command, description)` pairs, rendered as a `command_list` — the
+/// section's own alignment, not a hand-padded column of trailing spaces
+/// baked into the command string.
+pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
     &[
-        "cfgd checkin --server-url <url>  — report status to server",
-        "cfgd apply --dry-run             — preview configuration",
-        "cfgd apply                       — apply configuration",
-        "cfgd daemon install              — start background sync",
+        ("cfgd checkin --server-url <url>", "report status to server"),
+        ("cfgd plan", "preview configuration"),
+        ("cfgd apply", "apply configuration"),
+        ("cfgd daemon install", "start background sync"),
     ]
 }
 
@@ -352,7 +363,9 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
 
     // Fall back to on-disk keys
     if let Some(key) = first_existing_ssh_key(&ssh_dir) {
-        printer.status_simple(Role::Info, format!("Using SSH key: {}", key.posix()));
+        printer
+            .status(Role::Info, "Using SSH key")
+            .qualifier(key.posix().to_string());
         return Some(key.to_string_lossy().to_string());
     }
 
@@ -441,10 +454,10 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     std::fs::write(&data_path, nonce)?;
 
     // Sign with the user's own GnuPG keyring (default GNUPGHOME, or ~/.gnupg) — that
-    // is where the requested secret key actually lives. We must NOT redirect --homedir
+    // is where the requested secret key actually lives. --homedir must NOT redirect
     // to a private dir: a fresh homedir holds no secret key, so signing always failed
     // with "no secret key". gpg reuses the user's running gpg-agent for any passphrase
-    // pinentry, and we deliberately do not kill that agent afterward — it belongs to
+    // pinentry, and that agent is deliberately left running afterward — it belongs to
     // the user's session, not to this process.
     // `--batch` makes gpg fail rather than prompt on its own stdin, but a
     // misconfigured gpg-agent/pinentry can still block. Close stdin and bound

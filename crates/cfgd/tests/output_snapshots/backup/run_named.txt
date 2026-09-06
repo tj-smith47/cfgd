@@ -1,10 +1,10 @@
-Backup
+Backup: docs
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  withbackups
+  Source   <SOURCE>
   Actions  1 planned
 
-Backups
-  backup:docs
-    ✓ snapshot notes.txt.<TIMESTAMP> — 12 B
+backup:docs
+  ✓ snapshot notes.txt.<TIMESTAMP> — 12 B
 
-✓ Backup complete — 1 action succeeded (XXs)
+✓ Backup complete — 1 action succeeded (XXs wall)

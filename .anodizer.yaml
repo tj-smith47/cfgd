@@ -232,10 +232,14 @@ workspaces:
         # either the current version or deliberately frozen. The one frozen case
         # — the historical cosign-identity note in docs/installation.md — opts out
         # by backslash-escaping its digits, and carries the reason inline.
+        # docs/bootstrap.md is deliberately NOT enrolled: its Windows section
+        # links installation.md instead of carrying its own download URL, so it
+        # holds no version literal and enrolment could only ever report
+        # "nothing rewritten". Re-enroll it if it ever names a version again.
         version_files:
           - docs/installation.md
-          - docs/bootstrap.md
           - docs/skill.md
+          - docs/team-config.md
           - chart/cfgd/Chart.yaml
         builds:
           # gnu build → tarballs / binstall / homebrew cask / makeself installer
@@ -726,6 +730,14 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
+        # The `kubectl cfgd version` sample in docs/installation.md prints the
+        # operator's own version; the cfgd crate's sweep above covers the
+        # client line, this one the operator line. The chart pins the operator
+        # image to this crate's version rather than to the chart's appVersion
+        # (which tracks the agent), so the pin is swept from here too.
+        version_files:
+          - docs/installation.md
+          - chart/cfgd/values.yaml
         builds:
           - binary: cfgd-operator
             features: []
@@ -792,6 +804,13 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
+        # Same sample as the operator's enrollment: the CSI line, plus the
+        # chart's CSI image pin. The two crates currently share a version
+        # literal, so a bump of one rewrites both lines and the other crate's
+        # sweep then warns "did not contain version" until it catches up.
+        version_files:
+          - docs/installation.md
+          - chart/cfgd/values.yaml
         builds:
           - binary: cfgd-csi
             features: []
@@ -875,13 +894,6 @@ workspaces:
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
 schemastore:
-  # Skip the SchemaStore publisher while the initial catalog PR
-  # (SchemaStore/schemastore#5908) is still under maintainer review: a release
-  # publish opens a second, version-suffixed PR that would compete with the one
-  # in review. Re-publishing is idempotent and self-healing (see the note
-  # below), so clearing this skip on a later release backfills the registration
-  # with no loss. Alias: `disable`.
-  skip: true
   # Retain the SchemaStore registration even if a downstream required publisher
   # fails and the release rolls back. Safe because the publisher is idempotent
   # and self-healing: the next release's pre-clone probe re-renders the catalog,

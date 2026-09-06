@@ -1,3 +1,5 @@
 ✗ Profile 'default' has errors: invalid type: string "not valid", expected struct ProfileDocument
 
 ✓ Profile 'default' is valid
+
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

@@ -10,7 +10,7 @@ use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
 use crate::platform::Platform;
-use crate::providers::{PackageContext, ProviderRegistry};
+use crate::providers::{PackageContext, ProviderRegistry, SystemDrift};
 use crate::state::StateStore;
 use crate::to_posix_string;
 
@@ -58,13 +58,33 @@ pub struct ComplianceCheck {
     pub value: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComplianceStatus {
     #[default]
     Compliant,
     Warning,
     Violation,
 }
+
+impl ComplianceStatus {
+    /// The word a person reads for this status, WITH the role that colours it.
+    ///
+    /// One producer of both halves, for the same reason `ApplyStatus` has one:
+    /// a slot taking the pair cannot render a title-cased status word colour-
+    /// less, and no call site has to match on the word to recover its severity.
+    pub fn human_display(self) -> (&'static str, crate::output::Role) {
+        match self {
+            Self::Compliant => ("Compliant", crate::output::Role::Ok),
+            Self::Warning => ("Warning", crate::output::Role::Warn),
+            Self::Violation => ("Violation", crate::output::Role::Fail),
+        }
+    }
+}
+
+// No `Display`, and no word-alone accessor: the whole point of the pair is
+// that a call site cannot reach the word without its role, and `{status}` /
+// `.to_string()` is exactly the roleless spelling the defect this type
+// replaced was written in.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceSummary {
@@ -90,6 +110,19 @@ pub struct ComplianceSummary {
 /// file present on disk but whose bytes drifted from its rendered source is a
 /// violation, matching the live drift paths. When no file manager is wired, file
 /// checks degrade to existence + permissions only.
+///
+/// `system_diffs` is for a caller that already asked every configurator for its
+/// drift and needs the answers for something else too — `cfgd checkin` reports
+/// them to the gateway — so the machine is diffed once per command rather than
+/// once per consumer. `None` collects them here.
+///
+/// Pass what a caller ALREADY has, never a collection made for this call: the
+/// diff shells out to every configurator the profile declares, so a caller that
+/// collects eagerly to fill this argument has paid for a scan whose second
+/// consumer may never run. `cmd_checkin` holds the collection in a `OnceCell`
+/// and hands it over only when compliance is enabled, because its other
+/// consumer — the drift report — runs after the gateway answers and not at all
+/// when that call fails.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_snapshot(
     profile_name: &str,
@@ -101,8 +134,9 @@ pub fn collect_snapshot(
     sources: &[String],
     printer: &Printer,
     state: &StateStore,
+    system_diffs: Option<&[SystemDiff]>,
 ) -> Result<ComplianceSnapshot> {
-    let platform = Platform::detect();
+    let platform = Platform::current();
     let hostname = crate::hostname_string();
 
     let machine = MachineInfo {
@@ -128,7 +162,10 @@ pub fn collect_snapshot(
         checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
     }
     if scope.system {
-        checks.extend(collect_system_checks(profile, modules, registry)?);
+        match system_diffs {
+            Some(collected) => checks.extend(system_checks_from_diffs(collected)),
+            None => checks.extend(collect_system_checks(profile, modules, registry)?),
+        }
     }
     if scope.secrets {
         checks.extend(collect_secret_checks(profile));
@@ -192,7 +229,7 @@ pub fn compute_summary(checks: &[ComplianceCheck]) -> ComplianceSummary {
 const VOLATILE_SNAPSHOT_FIELDS: &[&str] = &["timestamp"];
 
 /// Digest an already-serialized snapshot's CONTENT, ignoring
-/// [`VOLATILE_SNAPSHOT_FIELDS`].
+/// `VOLATILE_SNAPSHOT_FIELDS`.
 ///
 /// Takes the serialized form rather than the struct so the state migration that
 /// re-derives `content_hash` from a stored `snapshot_json` reaches the same
@@ -298,6 +335,15 @@ pub fn collect_file_checks(
     registry: &ProviderRegistry,
 ) -> Vec<ComplianceCheck> {
     let mut checks = Vec::new();
+    // The RESOLVED strategy for every declared target, so an entry that names
+    // none is judged against the profile-wide default here exactly as it is on
+    // the apply path.
+    let strategies = crate::effective::effective_file_strategies(
+        profile,
+        modules,
+        config_dir,
+        registry.default_file_strategy,
+    );
 
     for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
@@ -309,7 +355,11 @@ pub fn collect_file_checks(
                 category: "file".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
-                detail: Some(format!("managed file missing{}", suffix)),
+                detail: Some(format!(
+                    "managed file {}{}",
+                    crate::Absence::Missing,
+                    suffix
+                )),
                 ..Default::default()
             });
             continue;
@@ -369,6 +419,7 @@ pub fn collect_file_checks(
                 Path::new(&file.source),
                 &file.target,
                 file.tera_origin.as_deref(),
+                Some(strategies.for_target(&target)),
             ) {
                 Ok(drift) => {
                     if drift.matches {
@@ -498,6 +549,13 @@ pub fn collect_file_checks(
 /// host is skipped (consistent with the verify path), and a manager that cannot
 /// be queried yields a single per-manager warning. Module packages now appear,
 /// attributed to their module in the check detail.
+///
+/// An installed package's declared `minVersion` floor is judged by the same
+/// engine every live surface reads
+/// ([`package_version_floor`](crate::reconciler::package_version_floor)); only
+/// the VOCABULARY is compliance's own — a missed floor is a violation naming
+/// both operands, and a version nothing can compare is a warning rather than a
+/// finding against the host.
 pub fn collect_package_checks(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
@@ -509,12 +567,16 @@ pub fn collect_package_checks(
     let mut checks = Vec::new();
 
     // Group desired packages by manager, preserving origin for attribution.
-    let mut by_manager: HashMap<String, Vec<(String, Origin)>> = HashMap::new();
-    for ep in crate::effective::effective_desired_packages(profile, modules) {
+    let mut by_manager: HashMap<String, Vec<(String, Origin, Option<String>)>> = HashMap::new();
+    for ep in crate::effective::effective_desired_packages(
+        profile,
+        modules,
+        Some(&registry.manager_map()),
+    ) {
         by_manager
             .entry(ep.manager)
             .or_default()
-            .push((ep.name, ep.origin));
+            .push((ep.name, ep.origin, ep.min_version));
     }
 
     for pm in registry.available_package_managers() {
@@ -525,7 +587,7 @@ pub fn collect_package_checks(
             continue;
         }
 
-        let installed = match pm.installed_packages(cx) {
+        let installed = match cx.installed_for(pm) {
             Ok(set) => set,
             Err(e) => {
                 // Cannot query this manager — report as warning
@@ -540,17 +602,34 @@ pub fn collect_package_checks(
             }
         };
 
-        for (pkg, origin) in desired {
+        for (pkg, origin, min_version) in desired {
             let suffix = origin_suffix(origin);
             // package_identity: match case-insensitive managers (choco/scoop/winget)
             // and name-remapping ones (go) like with like against installed_packages.
             if installed.contains(&pm.package_identity(pkg)) {
+                let (status, detail) = match crate::reconciler::package_version_floor(
+                    pm,
+                    &installed,
+                    pkg,
+                    min_version.as_deref(),
+                ) {
+                    crate::reconciler::VersionFloor::Met => {
+                        (ComplianceStatus::Compliant, format!("installed{}", suffix))
+                    }
+                    crate::reconciler::VersionFloor::Below { floor, installed } => (
+                        ComplianceStatus::Violation,
+                        format!("installed {installed}, below minVersion {floor}{suffix}"),
+                    ),
+                    crate::reconciler::VersionFloor::Unreadable { detail } => {
+                        (ComplianceStatus::Warning, format!("{detail}{suffix}"))
+                    }
+                };
                 checks.push(ComplianceCheck {
                     category: "package".into(),
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
-                    status: ComplianceStatus::Compliant,
-                    detail: Some(format!("installed{}", suffix)),
+                    status,
+                    detail: Some(detail),
                     ..Default::default()
                 });
             } else {
@@ -559,7 +638,7 @@ pub fn collect_package_checks(
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
                     status: ComplianceStatus::Violation,
-                    detail: Some(format!("not installed{}", suffix)),
+                    detail: Some(format!("{}{}", crate::Absence::NotInstalled, suffix)),
                     ..Default::default()
                 });
             }
@@ -573,71 +652,143 @@ pub fn collect_package_checks(
 // System checks
 // ---------------------------------------------------------------------------
 
-/// Check system configurator state for drift across the effective desired state
-/// (profile system settings deep-merged with every module's), so module system
-/// tweaks surface in compliance exactly as they do on the write path.
-pub fn collect_system_checks(
+/// One configurator's answer for the effective system map.
+///
+/// The system diff is asked for TWICE in one `cfgd checkin` — once to fill the
+/// compliance snapshot's system checks and once to build the drift report — and
+/// each ask spawns whatever the configurator spawns. Collecting it once and
+/// deriving both from the result is what keeps a checkin from diffing the whole
+/// machine twice.
+pub struct SystemDiff {
+    /// The configurator's registered name, as `system_resource_key` composes it.
+    pub configurator: String,
+    pub outcome: SystemDiffOutcome,
+}
+
+/// What asking one configurator for its drift produced.
+pub enum SystemDiffOutcome {
+    /// The profile declares settings for a configurator the registry has none
+    /// available for.
+    Unavailable,
+    /// The configurator answered; the vec is empty when nothing has drifted.
+    Drifts(Vec<SystemDrift>),
+    /// The configurator failed to answer, with its already-rendered reason.
+    Failed(String),
+}
+
+/// Ask every configurator named by the effective desired state (profile system
+/// settings deep-merged with every module's, so module system tweaks surface
+/// exactly as they do on the write path) for its drift, ONCE.
+pub fn collect_system_diffs(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     registry: &ProviderRegistry,
-) -> Result<Vec<ComplianceCheck>> {
-    let mut checks = Vec::new();
+) -> Vec<SystemDiff> {
     let available = registry.available_system_configurators();
     let system = crate::effective::effective_system_map(profile, modules);
 
-    for (key, desired) in &system {
-        let configurator = available.iter().find(|c| c.name() == key);
+    system
+        .iter()
+        .map(|(key, desired)| {
+            let outcome = match available.iter().find(|c| c.name() == key) {
+                None => SystemDiffOutcome::Unavailable,
+                Some(configurator) => match configurator.diff(desired) {
+                    Ok(drifts) => SystemDiffOutcome::Drifts(drifts),
+                    Err(e) => SystemDiffOutcome::Failed(e.to_string()),
+                },
+            };
+            SystemDiff {
+                configurator: key.clone(),
+                outcome,
+            }
+        })
+        .collect()
+}
 
-        let Some(configurator) = configurator else {
-            checks.push(ComplianceCheck {
+/// Every drift the collected answers carry, each paired with the configurator
+/// that reported it, in the order they were collected.
+///
+/// The pairing is what makes the walk's output identifiable. A
+/// [`SystemDrift::key`] names a setting only WITHIN its own configurator, so
+/// two configurators declaring the same key (a shared `default.exists`) answer
+/// with two indistinguishable drifts. Flattening the configurator away here
+/// once left the device gateway holding one row where the machine had two, and
+/// the DriftAlert CRD merges `driftDetails` by `field` — so the collision was
+/// silent and lossy. Every consumer composes the qualified identity from the
+/// pair through [`crate::reconciler::system_resource_key`].
+pub fn system_drifts(diffs: &[SystemDiff]) -> Vec<(&str, &SystemDrift)> {
+    diffs
+        .iter()
+        .filter_map(|d| match &d.outcome {
+            SystemDiffOutcome::Drifts(drifts) => {
+                Some(drifts.iter().map(|drift| (d.configurator.as_str(), drift)))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// Render collected answers as compliance checks.
+pub fn system_checks_from_diffs(diffs: &[SystemDiff]) -> Vec<ComplianceCheck> {
+    let mut checks = Vec::new();
+
+    for diff in diffs {
+        let key = &diff.configurator;
+        match &diff.outcome {
+            SystemDiffOutcome::Unavailable => checks.push(ComplianceCheck {
                 category: "system".into(),
                 key: Some(key.clone()),
                 status: ComplianceStatus::Warning,
                 detail: Some(format!("no configurator available for '{}'", key)),
                 ..Default::default()
-            });
-            continue;
-        };
-
-        match configurator.diff(desired) {
-            Ok(drifts) => {
-                if drifts.is_empty() {
-                    checks.push(ComplianceCheck {
-                        category: "system".into(),
-                        key: Some(key.clone()),
-                        status: ComplianceStatus::Compliant,
-                        detail: Some("no drift".into()),
-                        ..Default::default()
-                    });
-                } else {
-                    for drift in &drifts {
-                        checks.push(ComplianceCheck {
-                            category: "system".into(),
-                            key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
-                            status: ComplianceStatus::Violation,
-                            detail: Some(format!(
-                                "expected {}, actual {}",
-                                drift.expected, drift.actual
-                            )),
-                            value: Some(drift.actual.clone()),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            Err(e) => {
+            }),
+            SystemDiffOutcome::Drifts(drifts) if drifts.is_empty() => {
                 checks.push(ComplianceCheck {
                     category: "system".into(),
                     key: Some(key.clone()),
-                    status: ComplianceStatus::Warning,
-                    detail: Some(format!("diff failed: {}", e)),
+                    status: ComplianceStatus::Compliant,
+                    detail: Some("no drift".into()),
                     ..Default::default()
-                });
+                })
             }
+            SystemDiffOutcome::Drifts(drifts) => {
+                for drift in drifts {
+                    checks.push(ComplianceCheck {
+                        category: "system".into(),
+                        key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
+                        status: ComplianceStatus::Violation,
+                        detail: Some(format!(
+                            "expected {}, actual {}",
+                            drift.expected, drift.actual
+                        )),
+                        value: Some(drift.actual.clone()),
+                        ..Default::default()
+                    });
+                }
+            }
+            SystemDiffOutcome::Failed(reason) => checks.push(ComplianceCheck {
+                category: "system".into(),
+                key: Some(key.clone()),
+                status: ComplianceStatus::Warning,
+                detail: Some(format!("diff failed: {}", reason)),
+                ..Default::default()
+            }),
         }
     }
 
-    Ok(checks)
+    checks
+}
+
+/// Check system configurator state for drift, collecting the answers first.
+pub fn collect_system_checks(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    registry: &ProviderRegistry,
+) -> Result<Vec<ComplianceCheck>> {
+    Ok(system_checks_from_diffs(&collect_system_diffs(
+        profile, modules, registry,
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +820,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                 category: "secret".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
-                detail: Some("target file missing".into()),
+                detail: Some(format!("target file {}", crate::Absence::Missing)),
                 ..Default::default()
             });
         }
@@ -759,7 +910,10 @@ fn collect_watched_package_manager_checks(
         }]);
     };
 
-    let installed = match pm.installed_packages(cx) {
+    // The same context the declared-package checks above read, so a snapshot
+    // that both watches a manager and declares packages under it enumerates it
+    // once rather than once per section.
+    let installed = match cx.installed_for(pm) {
         Ok(set) => set,
         Err(e) => {
             return Ok(vec![ComplianceCheck {
@@ -773,10 +927,11 @@ fn collect_watched_package_manager_checks(
     };
 
     let mut checks: Vec<ComplianceCheck> = installed
-        .into_iter()
+        .identities()
+        .iter()
         .map(|pkg| ComplianceCheck {
             category: "watchPackage".into(),
-            name: Some(pkg),
+            name: Some(pkg.clone()),
             manager: Some(manager_name.to_owned()),
             status: ComplianceStatus::Compliant,
             detail: Some("installed".into()),

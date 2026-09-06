@@ -1,24 +1,92 @@
 use std::fmt::Write as _;
+use std::io::Read as _;
+use std::path::Path;
 
 use sha2::Digest as _;
 
-/// Compute SHA256 hash of data and return as lowercase hex string.
-pub fn sha256_hex(data: &[u8]) -> String {
-    // sha2 0.11's digest output is a `hybrid_array::Array` (derefs to `[u8]`)
-    // that no longer implements `LowerHex`; encode the bytes ourselves so the
-    // lowercase-hex output stays byte-identical to the `{:x}` formatting used
-    // before the bump.
-    let digest = sha2::Sha256::digest(data);
+/// Render a finished SHA-256 digest as lowercase hex.
+///
+/// sha2 0.11's digest output is a `hybrid_array::Array` (derefs to `[u8]`) that
+/// no longer implements `LowerHex`; encoding the bytes here keeps the
+/// lowercase-hex output byte-identical to the `{:x}` formatting used before the
+/// bump, for both the one-shot and the streaming spelling.
+fn hex_of(digest: &[u8]) -> String {
     let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest.iter() {
+    for byte in digest {
         let _ = write!(out, "{byte:02x}");
     }
     out
 }
 
+/// Compute SHA256 hash of data and return as lowercase hex string.
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex_of(&sha2::Sha256::digest(data))
+}
+
 /// Compute an OCI-style `sha256:<hex>` digest string from data.
 pub fn sha256_digest(data: &[u8]) -> String {
     format!("sha256:{}", sha256_hex(data))
+}
+
+/// How much of a file is held in memory at once while it is being hashed.
+const SHA256_STREAM_CHUNK: usize = 64 * 1024;
+
+/// SHA-256 over a sequence of pieces, none of which has to be held in memory.
+///
+/// The one streaming counterpart to [`sha256_hex`] / [`sha256_digest`], for a
+/// digest taken over a whole directory tree: buffering every file's bytes and
+/// then concatenating them into a second buffer costs twice the tree's size in
+/// resident memory to produce a 32-byte answer, and the tree is user content
+/// with no size bound (a module may ship a font, a binary, a tarball).
+///
+/// Feeding `update(a); update(b)` is defined to equal hashing `a` followed by
+/// `b` as one slice, so a caller replacing a buffered concatenation with this
+/// type produces the SAME digest — which is what lets an existing
+/// `modules.lock` integrity hash keep verifying.
+pub struct Sha256Stream {
+    hasher: sha2::Sha256,
+}
+
+impl Default for Sha256Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256Stream {
+    pub fn new() -> Self {
+        Self {
+            hasher: sha2::Sha256::new(),
+        }
+    }
+
+    /// Append `bytes` to the hashed sequence.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+
+    /// Append the whole contents of `path`, read in fixed-size chunks.
+    pub fn absorb_file(&mut self, path: &Path) -> std::io::Result<()> {
+        let mut file = std::fs::File::open(path)?;
+        let mut buf = vec![0u8; SHA256_STREAM_CHUNK];
+        loop {
+            let read = file.read(&mut buf)?;
+            if read == 0 {
+                return Ok(());
+            }
+            self.hasher.update(&buf[..read]);
+        }
+    }
+
+    /// Finish and render as lowercase hex.
+    pub fn finish_hex(self) -> String {
+        hex_of(&self.hasher.finalize())
+    }
+
+    /// Finish and render as an OCI-style `sha256:<hex>` digest string.
+    pub fn finish_digest(self) -> String {
+        format!("sha256:{}", self.finish_hex())
+    }
 }
 
 /// Strip the `sha256:` prefix from a digest string, returning the hex body.
@@ -27,11 +95,21 @@ pub fn strip_sha256_prefix(s: &str) -> &str {
     s.strip_prefix("sha256:").unwrap_or(s)
 }
 
+/// The display form of a commit id: enough to identify it, short enough for
+/// two of them to sit on one line. Every human surface that names a commit
+/// (`source show`, `sync`, the daemon's sync log) renders through it; a
+/// persisted or `-o json` id stays full-length.
+pub fn short_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0", "1" → "1.0.0", and a leading `v`/`V` prefix
-/// (`v1.10.0` → `1.10.0`) so callers can feed git/OCI tag names directly.
+/// (`v1.10.0` → `1.10.0`, stripped through [`declared_floor_version`] so
+/// callers can feed git/OCI tag names directly) — the one strip both
+/// functions share.
 pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
-    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
+    let s = declared_floor_version(s);
     if let Ok(ver) = semver::Version::parse(s) {
         return Some(ver);
     }
@@ -48,6 +126,82 @@ pub fn parse_loose_version(s: &str) -> Option<semver::Version> {
     None
 }
 
+/// A declared floor as a comparator can read it: the value somebody AUTHORED,
+/// less the leading `v` that only the VERSION side of the comparison tolerates.
+///
+/// A `minVersion`, or a module's declared requirement, arrives in the
+/// spellings [`parse_loose_version`] accepts — `v1.2.0` among them — while
+/// `semver`'s RANGE parser and FreeBSD's `pkg version -t` both refuse the
+/// prefix: the range fails to parse, and pkg compares the alphabetic `v`
+/// against a digit and answers `<`. Either way the floor is one nothing ever
+/// clears, so the package reports as below it on a converged machine and is
+/// re-planned as an upgrade forever. The strip lives here rather than at
+/// config read because every display surface echoes the value the user
+/// declared, prefix and all; [`parse_loose_version`] reaches through this
+/// function for the identical strip on the VERSION side, so the two can never
+/// disagree about where the `v` ends.
+pub fn declared_floor_version(floor: &str) -> &str {
+    floor.strip_prefix(['v', 'V']).unwrap_or(floor)
+}
+
+/// Whether a declared floor is shaped like a RANGE EXPRESSION rather than like
+/// a version — the check no version grammar can disagree with.
+///
+/// A `minVersion` names one version; a caller who writes `>=1.2`, `^1`, `1.*`
+/// or `1.2 || 2.0` has written a constraint into a field that holds an operand,
+/// and no packaging scheme in the world spells a version with those characters.
+/// The twin of
+/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable),
+/// split by WHO can say so: this one refuses what NO grammar allows and is
+/// therefore safe where no manager is in hand, while `floor_comparable` refuses
+/// what THIS family cannot read and is the stricter of the two wherever a
+/// manager is available. A letter suffix is deliberately not a tell: FreeBSD
+/// orders `1.2.x` by collation and pkg reads it as a version.
+pub fn declared_floor_is_range_shaped(floor: &str) -> bool {
+    // A comma is NOT a tell: FreeBSD spells PORTEPOCH `1.2.0,1` and a brew cask
+    // its build `1.2.3,4567`, both legitimate floors for their own family.
+    declared_floor_version(floor)
+        .chars()
+        .any(|c| matches!(c, '>' | '<' | '=' | '~' | '^' | '*' | '|') || c.is_whitespace())
+}
+
+/// Whether the shared loose-semver parser can read a declared floor at all.
+///
+/// The weakest of the three floor questions, and the only one a seam holding
+/// no manager can honestly ask: it says nothing about whether some family's
+/// comparator could read the string, only whether the SHARED parser can.
+/// [`declared_floor_is_range_shaped`] refuses what no grammar allows;
+/// [`floor_comparable`](crate::providers::PackageManager::floor_comparable)
+/// refuses what one family cannot read; this one carries DOUBT — a `false`
+/// means "ask the manager", never "reject".
+pub fn declared_floor_parses(floor: &str) -> bool {
+    parse_loose_version(floor).is_some()
+}
+
+/// Whether `version` clears a declared `>=` floor.
+///
+/// Every floor comparison in the workspace reads the declaration through
+/// [`declared_floor_version`]: the semver families compose their requirement
+/// here, and a comparator owned by a manager's own tool strips through that
+/// helper before handing the floor over.
+///
+/// Compares parsed [`semver::Version`] ORDER directly (`version >= floor`)
+/// rather than composing a `VersionReq` and calling `matches`: semver's
+/// default matching EXCLUDES a prerelease from any requirement whose
+/// comparator carries none, so `>=1.9` never matched `2.0.0-rc1` even though
+/// 2.0.0 is well past 1.9 — a real release candidate reported as failing to
+/// clear a floor it had long since cleared. `Version`'s `Ord` is
+/// prerelease-aware per the semver spec: it orders on `(major, minor,
+/// patch)` first, and only a TIE in those falls to comparing the prerelease
+/// tag, where a build's own prerelease still ranks below its own release
+/// (`1.2.3-beta` is below `1.2.3`).
+pub fn version_meets_floor(version: &str, floor: &str) -> bool {
+    let (Some(v), Some(f)) = (parse_loose_version(version), parse_loose_version(floor)) else {
+        return false;
+    };
+    v >= f
+}
+
 /// Check whether `version_str` satisfies `requirement_str` (semver range).
 pub fn version_satisfies(version_str: &str, requirement_str: &str) -> bool {
     let req = match semver::VersionReq::parse(requirement_str) {
@@ -57,4 +211,232 @@ pub fn version_satisfies(version_str: &str, requirement_str: &str) -> bool {
     parse_loose_version(version_str)
         .map(|ver| req.matches(&ver))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A declared floor is authored by hand and reaches the comparator in the
+    /// spellings a version takes, `v1.2.0` included. `semver`'s range parser
+    /// refuses the prefix the version parser strips, so a floor composed
+    /// straight into `>={floor}` was satisfied by nothing at all.
+    #[test]
+    fn a_declared_floor_clears_in_every_spelling_a_version_takes() {
+        for floor in ["1.2.0", "v1.2.0", "V1.2.0", "1.2", "v1.2"] {
+            assert!(
+                version_meets_floor("1.2.3", floor),
+                "1.2.3 clears a floor written {floor}"
+            );
+            assert!(
+                !version_meets_floor("1.1.9", floor),
+                "1.1.9 does not clear a floor written {floor}"
+            );
+        }
+        assert!(version_meets_floor("v0.16.2", "v0.16.2"));
+    }
+
+    /// `version_meets_floor` compares `Version` ORDER, prerelease-aware per
+    /// semver's `Ord` — not `VersionReq::matches`, which excludes a
+    /// prerelease from any comparator carrying none and would call a real
+    /// `2.0.0-rc1` release candidate below a `1.9` floor it had long cleared.
+    #[test]
+    fn a_prerelease_clears_a_floor_its_normal_version_outranks() {
+        assert!(
+            version_meets_floor("2.0.0-rc1", "1.9"),
+            "2.0.0-rc1's normal version (2.0.0) is well past a 1.9 floor"
+        );
+        assert!(
+            version_meets_floor("1.2.4-beta", "1.2.3"),
+            "1.2.4-beta's normal version (1.2.4) already clears 1.2.3"
+        );
+        assert!(
+            !version_meets_floor("1.2.3-beta", "1.2.3"),
+            "same normal version: a prerelease build ranks below its own release"
+        );
+    }
+
+    /// The three floor questions are ordered by strength, and the ordering is
+    /// what lets the dedup ask only the weakest one: a range expression fails
+    /// the shared parse too, so carrying doubt forward at a seam holding no
+    /// manager loses nothing the tells check would have caught.
+    #[test]
+    fn a_range_shaped_floor_also_fails_the_shared_parse() {
+        for floor in [">=1.2", "^1", "1.*", "1.2 || 2.0", "~1.2.3", "1.2 "] {
+            assert!(
+                declared_floor_is_range_shaped(floor),
+                "{floor} carries a range tell"
+            );
+            assert!(
+                !declared_floor_parses(floor),
+                "{floor} is unreadable to the shared parser as well"
+            );
+        }
+        // The floors a family reads and the shared parser does not: doubt, not
+        // refusal — these must reach the manager to be compared.
+        for floor in ["1:2.30", "0.12.5_1", "1.2.3,4567", "1..2"] {
+            assert!(!declared_floor_is_range_shaped(floor));
+            assert!(!declared_floor_parses(floor));
+        }
+        assert!(declared_floor_parses("v1.2"));
+    }
+
+    /// No caller composes its own `>=` requirement out of a declared floor:
+    /// the one that did turned a `v`-prefixed `minVersion` into invented
+    /// drift, and every family comparator would have to remember the same
+    /// leniency on its own.
+    #[test]
+    fn every_floor_comparison_composes_its_requirement_in_one_place() {
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate sits under crates/");
+        let mut files = Vec::new();
+        rust_files(crates, &mut files);
+        assert!(
+            files.len() > 100,
+            "the walk found {} files, so it proves nothing",
+            files.len()
+        );
+        let offenders: Vec<String> = files
+            .iter()
+            .filter_map(|path| {
+                let src = std::fs::read_to_string(path).ok()?;
+                let body = crate::test_helpers::production_slice(&src);
+                body.lines()
+                    .find(|line| {
+                        line.contains("format!(\">=") && !line.contains("floor-composer-ok:")
+                    })
+                    .map(|line| format!("{}: {}", path.display(), line.trim()))
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a floor comparison composes through `version_meets_floor`:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The type's whole contract: the seam between two `update` calls adds
+    /// nothing to the digest, so a caller that replaced a buffered
+    /// concatenation with the stream produces the same bytes it always did.
+    /// Every existing `modules.lock` entry verifies against a digest taken
+    /// the old way.
+    #[test]
+    fn a_seam_between_updates_is_not_part_of_the_digest() {
+        let whole = b"module.yaml\0kind: Module\0files/init.lua\0vim.opt\0";
+        for split in 0..=whole.len() {
+            let mut stream = Sha256Stream::new();
+            stream.update(&whole[..split]);
+            stream.update(&whole[split..]);
+            assert_eq!(
+                stream.finish_hex(),
+                sha256_hex(whole),
+                "the seam at byte {split} changed the digest"
+            );
+        }
+    }
+
+    /// A file part hashes as its bytes and nothing else — no length prefix, no
+    /// path, no separator of its own. The caller supplies every delimiter, so
+    /// an in-memory part and a file part are interchangeable at the same
+    /// position in the sequence.
+    #[test]
+    fn a_file_part_hashes_as_its_bytes_in_the_callers_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = b"kind: Module\nmetadata:\n  name: nvim\n";
+        let path = tmp.path().join("module.yaml");
+        std::fs::write(&path, body).unwrap();
+
+        let mut stream = Sha256Stream::new();
+        stream.update(b"module.yaml");
+        stream.update(&[0]);
+        stream.absorb_file(&path).unwrap();
+        stream.update(&[0]);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"module.yaml");
+        expected.push(0);
+        expected.extend_from_slice(body);
+        expected.push(0);
+        assert_eq!(stream.finish_hex(), sha256_hex(&expected));
+    }
+
+    /// The chunked read is a read, not a framing: a file larger than one chunk
+    /// hashes as one uninterrupted sequence, and the parts around it keep
+    /// their places.
+    #[test]
+    fn a_file_larger_than_one_chunk_hashes_as_one_sequence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = vec![b'x'; SHA256_STREAM_CHUNK + 7];
+        let path = tmp.path().join("big.bin");
+        std::fs::write(&path, &body).unwrap();
+
+        let mut stream = Sha256Stream::new();
+        stream.update(b"head");
+        stream.absorb_file(&path).unwrap();
+        stream.update(b"tail");
+
+        assert_eq!(
+            stream.finish_hex(),
+            "98227d8ab8add3942a886765921db6d32df6bf4c158897d9e250a0390a4674a0"
+        );
+    }
+
+    /// `finish_digest` is `finish_hex` under the same `sha256:` prefix
+    /// [`sha256_digest`] uses — the form `hash_module_contents` stores in
+    /// `modules.lock`.
+    #[test]
+    fn the_digest_form_matches_the_one_shot_spelling() {
+        let mut stream = Sha256Stream::new();
+        stream.update(b"alpha");
+        stream.update(b"beta");
+        let digest = stream.finish_digest();
+        assert_eq!(digest, sha256_digest(b"alphabeta"));
+        assert_eq!(strip_sha256_prefix(&digest), sha256_hex(b"alphabeta"));
+    }
+
+    /// One literal digest over the exact seam shape `hash_module_contents`
+    /// builds (`<rel-path>\0<contents>\0`, files in sorted order). The tests
+    /// above are all self-consistent — they would stay green if the seam
+    /// order or a delimiter changed on both sides at once. This one pins the
+    /// VALUE, so a reframing has to be a deliberate edit here rather than a
+    /// silent re-hash of every user's lockfile.
+    #[test]
+    fn the_lockfile_seam_shape_has_a_pinned_digest() {
+        let mut stream = Sha256Stream::new();
+        for (name, body) in [("a.txt", "alpha"), ("b.txt", "beta")] {
+            stream.update(name.as_bytes());
+            stream.update(&[0]);
+            stream.update(body.as_bytes());
+            stream.update(&[0]);
+        }
+        assert_eq!(
+            stream.finish_digest(),
+            "sha256:44e330d3f44895307cdc6c23a01e6c001f9db1a5ed49b5ad2553206d1adbf105"
+        );
+    }
+
+    /// An absent file is reported, not silently absorbed as nothing — a tree
+    /// walk that lost a file between listing and hashing must not produce a
+    /// digest that looks like a successful one.
+    #[test]
+    fn absorbing_a_missing_file_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stream = Sha256Stream::new();
+        let err = stream.absorb_file(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }

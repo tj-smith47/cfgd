@@ -41,9 +41,14 @@ spec:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -54,12 +59,19 @@ spec:
                 x-kubernetes-list-type: map
               packages:
                 default: []
+                description: |-
+                  Packages every selected MachineConfig must declare, each optionally
+                  version-pinned.
                 items:
                   description: Reference to a package with optional version pin.
                   properties:
                     name:
+                      description: Package name as the machine's own package manager knows it.
                       type: string
                     version:
+                      description: |-
+                        Exact version to pin to. Omitted, whatever the manager currently offers
+                        is installed and left alone once present.
                       nullable: true
                       type: string
                   required:
@@ -71,13 +83,21 @@ spec:
                 x-kubernetes-list-type: map
               requiredModules:
                 default: []
+                description: |-
+                  Modules every selected MachineConfig must carry. A machine missing one
+                  is counted non-compliant.
                 items:
                   description: Reference to a module that should be installed on the machine.
                   properties:
                     name:
+                      description: Name of the cluster-scoped `Module` resource to install.
                       type: string
                     required:
                       default: false
+                      description: |-
+                        Whether a failure to resolve or install this module fails the whole
+                        reconcile. Default: `false`, so a missing module is reported and the
+                        rest of the machine still converges.
                       type: boolean
                   required:
                   - name
@@ -89,21 +109,33 @@ spec:
               settings:
                 additionalProperties: true
                 default: {}
+                description: |-
+                  System settings every selected MachineConfig must declare, keyed the
+                  same way as `MachineConfig.spec.systemSettings`.
                 type: object
               targetSelector:
                 default:
                   matchExpressions: []
                   matchLabels: {}
-                description: Kubernetes-style label selector with match_labels and match_expressions.
+                description: |-
+                  Which MachineConfigs in this namespace the policy applies to. Empty,
+                  it applies to all of them.
                 properties:
                   matchExpressions:
                     default: []
+                    description: |-
+                      Set-based requirements a resource must satisfy, evaluated alongside
+                      `matchLabels`. Every requirement must hold.
                     items:
                       description: A single requirement for label selector expressions.
                       properties:
                         key:
+                          description: Label key this requirement tests.
                           type: string
                         operator:
+                          description: |-
+                            How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+                            `DoesNotExist`.
                           enum:
                           - In
                           - NotIn
@@ -112,6 +144,9 @@ spec:
                           type: string
                         values:
                           default: []
+                          description: |-
+                            Values the key is tested against. Required for `In` and `NotIn`, and
+                            must be empty for `Exists` and `DoesNotExist`.
                           items:
                             type: string
                           type: array
@@ -127,6 +162,9 @@ spec:
                     additionalProperties:
                       type: string
                     default: {}
+                    description: |-
+                      Labels a resource must carry verbatim to match. Every entry must match;
+                      an empty map matches everything.
                     type: object
                 type: object
             type: object
@@ -170,6 +208,19 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              nonCompliantMachines:
+                default: []
+                description: |-
+                  `namespace/name` of the MachineConfigs currently violating this policy,
+                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+                  `PolicyViolation` event fires on the transition into violation rather
+                  than once per observation — an in-process memory would re-announce every
+                  machine after an operator restart. `nonCompliantCount` is the exact
+                  total and is never capped.
+                items:
+                  type: string
+                maxItems: 500
+                type: array
             required:
             - compliantCount
             - nonCompliantCount

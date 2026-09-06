@@ -507,7 +507,7 @@ pub(super) fn verify_gpg_signature(
 
         // Verify the signature against THIS iteration's single-key keyring.
         // Success here means the signature verifies under exactly `key`,
-        // so the `fingerprint = %key.fingerprint` we log below is truthful.
+        // so the `fingerprint = %key.fingerprint` logged below is truthful.
         let verify = std::process::Command::new("gpg")
             .args([
                 "--homedir",

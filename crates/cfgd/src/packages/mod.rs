@@ -14,8 +14,8 @@
 //!   and `resolve_manifest_packages`.
 //! - The provider registry (`all_package_managers`).
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
@@ -95,7 +95,8 @@ fn uninstall_for_manager(
     installed
         .iter()
         .filter(|pkg| {
-            !desired_identities.contains(*pkg) && cfgd_installed.contains(&format!("{name}/{pkg}"))
+            !desired_identities.contains(*pkg)
+                && cfgd_installed.contains(&cfgd_core::state::package_resource_id(name, pkg))
         })
         .cloned()
         .collect()
@@ -123,12 +124,14 @@ pub fn plan_packages(
 }
 
 /// The observation's version for one listed package: the version the manager
-/// reported, unless it reported none. `"unknown"` is the
+/// reported, unless it reported none. [`UNKNOWN_PACKAGE_VERSION`] is the
 /// [`PackageManager::installed_packages_with_versions`] contract's sentinel
 /// for "this manager does not know", and an empty string is the same answer.
+///
+/// [`UNKNOWN_PACKAGE_VERSION`]: cfgd_core::providers::UNKNOWN_PACKAGE_VERSION
 fn known_version(pkg: &cfgd_core::providers::PackageInfo) -> Option<String> {
     let v = pkg.version.trim();
-    if v.is_empty() || v == "unknown" {
+    if v.is_empty() || v == cfgd_core::providers::UNKNOWN_PACKAGE_VERSION {
         None
     } else {
         Some(v.to_string())
@@ -159,29 +162,75 @@ pub fn plan_packages_observed(
     // so this planner sees exactly what every other read/write surface does.
     // With `modules` empty this equals the profile's own desired packages, so
     // the profile-scoped write path is unchanged.
-    let effective = effective_desired_packages(profile, modules);
+    // Keyed off the available slice rather than `ProviderRegistry::manager_map`
+    // because no registry reaches this planner; the key space is the REGISTERED
+    // name either way, which is what the dedup looks a floor's manager up by.
+    let manager_map: HashMap<String, &dyn PackageManager> = managers
+        .iter()
+        .map(|m| (m.name().to_string(), *m))
+        .collect();
+    let effective = effective_desired_packages(profile, modules, Some(&manager_map));
+    // Grouped once, ahead of both passes: each pass asks every manager what it
+    // wants, and a per-manager filter over the whole effective list walks it
+    // twice per manager — quadratic in a config whose modules declare a few
+    // hundred packages across a dozen managers.
+    let mut desired_by_manager: HashMap<&str, Vec<String>> = HashMap::new();
+    for pkg in &effective {
+        desired_by_manager
+            .entry(pkg.manager.as_str())
+            .or_default()
+            .push(pkg.name.clone());
+    }
     let desired_for = |manager_name: &str| -> Vec<String> {
-        effective
-            .iter()
-            .filter(|p| p.manager == manager_name)
-            .map(|p| p.name.clone())
-            .collect()
+        desired_by_manager
+            .get(manager_name)
+            .cloned()
+            .unwrap_or_default()
     };
+
+    // Asked once per manager, ahead of both passes: `is_available()` is a PATH
+    // probe (and for some managers a shell-out), and the two passes below ask
+    // the same managers the same question with nothing between them that could
+    // change the answer.
+    let availability: Vec<bool> = managers.iter().map(|m| m.is_available()).collect();
 
     // Pass 1: determine which managers will be bootstrapped
     let mut bootstrapping: HashSet<String> = HashSet::new();
-    for manager in managers {
-        let desired = desired_for(manager.name());
-        if desired.is_empty() {
+    for (manager, available) in managers.iter().zip(&availability) {
+        if !desired_by_manager.contains_key(manager.name()) {
             continue;
         }
-        if !manager.is_available() && manager.can_bootstrap() {
+        if !available && manager.can_bootstrap() {
             bootstrapping.insert(manager.name().to_string());
         }
     }
 
-    // Pass 2: generate actions
-    for manager in managers {
+    // Pass 2: generate actions. A source-registering manager (`brew-tap`)
+    // goes ahead of its OWN family — its entries are the repositories the
+    // family's other installs may resolve from — and no further: a tap has
+    // nothing to say about another family's packages, so hoisting it globally
+    // would reorder managers it cannot affect. Families keep the order of
+    // their first registry appearance, so the list stays deterministic.
+    let mut family_rank: HashMap<&str, usize> = HashMap::new();
+    for (i, manager) in managers.iter().enumerate() {
+        family_rank
+            .entry(cfgd_core::manager_family(manager.name()))
+            .or_insert(i);
+    }
+    let mut order: Vec<usize> = (0..managers.len()).collect();
+    order.sort_by_key(|&i| {
+        (
+            // Populated from this same slice one loop up, so every family is
+            // present — but a sort key must not be able to panic mid-plan, so
+            // an absent family sorts last instead of unwinding.
+            family_rank
+                .get(cfgd_core::manager_family(managers[i].name()))
+                .copied()
+                .unwrap_or(usize::MAX),
+            !managers[i].registers_family_sources(),
+        )
+    });
+    for (manager, available) in order.iter().map(|&i| (&managers[i], &availability[i])) {
         let desired = desired_for(manager.name());
 
         // A manager with no desired packages AND no cfgd-tracked installs has
@@ -202,28 +251,26 @@ pub fn plan_packages_observed(
         // package from a manager still removes its cfgd-tracked installs.
         // Only available managers can read installed state to confirm the
         // package is still present before pruning.
-        if manager.is_available() {
+        if *available {
             // ONE enumeration serves both the install/prune diff and the
-            // source-decision observation: `installed_packages_with_versions`
-            // reads the same manager database as `installed_packages` and
-            // additionally carries the version the satisfies-gate judges a
-            // pinned source item against. Listed names fold through
-            // `listed_identity` — NOT `package_identity`, which maps declared
-            // entries and need not be a fixed point over listed names — so
-            // the diff below still compares the exact identity space it
-            // always has (a case-insensitive manager's display-case listing
-            // folds to its lowercase identity form; everyone else's listing
-            // already reports identities and passes through untouched).
-            // Managers whose enumeration reports no version record `None`,
-            // and a pinned item under them stays pending (fail-closed).
-            let listed = manager.installed_packages_with_versions(cx)?;
-            let installed: HashSet<String> = listed
-                .iter()
-                .map(|pkg| manager.listed_identity(&pkg.name))
-                .collect();
+            // source-decision observation, and the context's memo is what
+            // makes it one for the whole command: the version half the
+            // satisfies-gate judges a pinned source item against comes from
+            // the same read the diff below compares against. Listed names fold
+            // through `listed_identity` — NOT `package_identity`, which maps
+            // declared entries and need not be a fixed point over listed names
+            // — so the diff still compares the exact identity space it always
+            // has (a case-insensitive manager's display-case listing folds to
+            // its lowercase identity form; everyone else's listing already
+            // reports identities and passes through untouched). Managers whose
+            // enumeration reports no version record `None`, and a pinned item
+            // under them stays pending (fail-closed).
+            let enumerated = cx.installed_for(*manager)?;
+            let installed = enumerated.identities();
             actual.record_enumeration(
                 manager.name(),
-                listed
+                enumerated
+                    .listed()
                     .iter()
                     .map(|pkg| (manager.listed_identity(&pkg.name), known_version(pkg))),
             );
@@ -259,8 +306,7 @@ pub fn plan_packages_observed(
                 });
             }
 
-            let to_uninstall =
-                uninstall_for_manager(*manager, &desired, &installed, cfgd_installed);
+            let to_uninstall = uninstall_for_manager(*manager, &desired, installed, cfgd_installed);
             if !to_uninstall.is_empty() {
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
@@ -392,6 +438,15 @@ pub fn add_package(
                 snap.packages.push(package_name.to_string());
             }
         }
+        // Not a registered manager: `snap` installs both lists and retries with
+        // `--classic`. The key exists so `--package snap.classic:code` reaches
+        // the sub-list the schema splits out, and it is never persisted.
+        "snap-classic" => {
+            let snap = packages.snap.get_or_insert_with(Default::default);
+            if !snap.classic.contains(&package_name.to_string()) {
+                snap.classic.push(package_name.to_string());
+            }
+        }
         "flatpak" => {
             let flatpak = packages.flatpak.get_or_insert_with(Default::default);
             if !flatpak.packages.contains(&package_name.to_string()) {
@@ -455,6 +510,15 @@ pub fn remove_package(
                 let before = brew.casks.len();
                 brew.casks.retain(|p| p != package_name);
                 brew.casks.len() < before
+            } else {
+                false
+            }
+        }
+        "snap-classic" => {
+            if let Some(ref mut snap) = packages.snap {
+                let before = snap.classic.len();
+                snap.classic.retain(|p| p != package_name);
+                snap.classic.len() < before
             } else {
                 false
             }
@@ -530,6 +594,36 @@ pub fn remove_package(
     Ok(removed)
 }
 
+/// How a `SimpleManager` family installs a package list, for a surface that
+/// EMITS the commands rather than running them.
+///
+/// `cfgd module export` wrote its own `apt-get install -y --no-install-recommends`
+/// while the apply path ran the family's `install_cmd` (`apt-get install -y`), so
+/// one `module.yaml` resolved two different package sets depending on which of
+/// cfgd's own commands you asked. The family owns HOW it installs; a surface that
+/// emits an install composes from here, and a hand-written install verb in a
+/// `format!` is the bug this exists to make unwritable.
+///
+/// `sudo` is stripped unconditionally (`SimpleManager::export_cmd`): the
+/// consumers are container build scripts, which already run as root, so the
+/// privilege of the host composing the script says nothing about it.
+pub struct ManagerInstallScript {
+    /// The index refresh the family declares, if it has one.
+    pub update: Option<String>,
+    /// The install itself, with `packages` appended.
+    pub install: String,
+}
+
+/// [`ManagerInstallScript`] for a family name, or `None` for a manager that is
+/// not one of the data-driven system families.
+pub fn manager_install_script(manager: &str, packages: &[String]) -> Option<ManagerInstallScript> {
+    let mgr = simple::simple_manager(manager)?;
+    Some(ManagerInstallScript {
+        update: mgr.update_cmd.map(|cmd| mgr.export_cmd(cmd, &[])),
+        install: mgr.export_cmd(mgr.install_cmd, packages),
+    })
+}
+
 /// Build the default provider registry with all workstation package managers.
 pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
     vec![
@@ -561,7 +655,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
 /// that were uninstalled successfully, for the caller to GC. Groups by manager so
 /// a batch template runs once; a failed uninstall leaves its row intact (warned)
 /// so a later run can retry. Rows with no persisted command are reported via the
-/// printer and skipped (cannot remove what we have no script for).
+/// printer and skipped (cannot remove what has no persisted script).
 pub fn prune_orphaned_packages(
     orphans: &[OrphanedPackage],
     cx: &PackageContext<'_>,
@@ -593,7 +687,13 @@ pub fn prune_orphaned_packages(
 
     for ((manager, uninstall_cmd), packages) in groups {
         let mgr = ScriptedManager::from_uninstall_only(&manager, uninstall_cmd);
-        match mgr.uninstall(&packages, cx) {
+        let outcome = mgr.uninstall(&packages, cx);
+        // A persisted uninstall script takes binaries off the machine exactly
+        // as a manager's own uninstall does, and a partial failure has already
+        // removed whatever it removed — so the memos describing what resolves
+        // and what is installed are retired either way.
+        cfgd_core::invalidate_command_resolution();
+        match outcome {
             Ok(()) => {
                 for pkg in packages {
                     removed.push((manager.clone(), pkg));
@@ -744,16 +844,112 @@ fn parse_cargo_toml(path: &Path) -> Result<Vec<String>> {
     Ok(packages)
 }
 
+/// What one manifest file parsed to, as stored in a [`ManifestCache`].
+#[derive(Clone)]
+enum ParsedManifest {
+    /// A Brewfile's `(taps, formulae, casks)`.
+    Brew(Vec<String>, Vec<String>, Vec<String>),
+    /// Every other manifest shape: a flat list of package names.
+    Names(Vec<String>),
+}
+
+/// The identity of the bytes a cached parse describes: modification time and
+/// length. A manifest a lifecycle hook rewrote mid-run changes at least one of
+/// them, so the next lookup re-reads instead of merging what the file used to
+/// say.
+type ManifestStamp = (Option<std::time::SystemTime>, u64);
+
+/// One cached manifest parse: the identity of the bytes it describes, and what
+/// they parsed to.
+type CachedManifest = (ManifestStamp, ParsedManifest);
+
+/// The manifest files already parsed during one run, keyed by path and kind.
+///
+/// [`resolve_manifest_packages`] runs twice on a `status` / `diff` / `plan`
+/// invocation — once over the composed profile and once over the local-only
+/// profile the source-decision scope is classified against — and both passes
+/// read and parse the SAME Brewfile, `package.json` and `Cargo.toml` off disk.
+/// The cache is keyed on the FILE rather than on the spec being filled, so the
+/// second pass is one `metadata()` call whichever spec it is merging into.
+///
+/// Deliberately not process-global: a manifest is only stable for the length of
+/// one run, and a cache outliving the run would hand a daemon tick the contents
+/// the file had an interval ago.
+#[derive(Default)]
+pub struct ManifestCache {
+    entries: std::cell::RefCell<HashMap<(PathBuf, &'static str), CachedManifest>>,
+}
+
+impl ManifestCache {
+    fn stamp(path: &Path) -> ManifestStamp {
+        match std::fs::metadata(path) {
+            Ok(meta) => (meta.modified().ok(), meta.len()),
+            Err(_) => (None, 0),
+        }
+    }
+
+    /// The parse of `path` under `kind`, reusing this run's result when the file
+    /// has not changed since it was read.
+    fn get_or_parse(
+        &self,
+        path: &Path,
+        kind: &'static str,
+        parse: impl FnOnce(&Path) -> Result<ParsedManifest>,
+    ) -> Result<ParsedManifest> {
+        let stamp = Self::stamp(path);
+        let key = (path.to_path_buf(), kind);
+        if let Some((cached_stamp, parsed)) = self.entries.borrow().get(&key)
+            && *cached_stamp == stamp
+        {
+            return Ok(parsed.clone());
+        }
+        let parsed = parse(path)?;
+        self.entries
+            .borrow_mut()
+            .insert(key, (stamp, parsed.clone()));
+        Ok(parsed)
+    }
+
+    fn names(
+        &self,
+        path: &Path,
+        kind: &'static str,
+        parse: fn(&Path) -> Result<Vec<String>>,
+    ) -> Result<Vec<String>> {
+        match self.get_or_parse(path, kind, |p| parse(p).map(ParsedManifest::Names))? {
+            ParsedManifest::Names(names) => Ok(names),
+            ParsedManifest::Brew(..) => Ok(Vec::new()),
+        }
+    }
+}
+
 /// Resolve manifest files referenced in package specs and merge their contents
 /// into the inline package lists. Paths are relative to `config_dir`.
+///
+/// Every parse is fresh. A caller that resolves manifests more than once in a
+/// run reaches [`resolve_manifest_packages_cached`] with the run's
+/// [`ManifestCache`] instead.
 pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
+    resolve_manifest_packages_cached(packages, config_dir, &ManifestCache::default())
+}
+
+/// [`resolve_manifest_packages`], reading each manifest at most once per run.
+pub fn resolve_manifest_packages_cached(
+    packages: &mut PackagesSpec,
+    config_dir: &Path,
+    cache: &ManifestCache,
+) -> Result<()> {
     // Brew: parse Brewfile, merge taps/formulae/casks
     if let Some(ref mut brew) = packages.brew
         && let Some(ref file) = brew.file
     {
         let path = config_dir.join(file);
-        if path.exists() {
-            let (taps, formulae, casks) = parse_brewfile(&path)?;
+        if path.exists()
+            && let ParsedManifest::Brew(taps, formulae, casks) =
+                cache.get_or_parse(&path, "brew", |p| {
+                    parse_brewfile(p).map(|(t, f, c)| ParsedManifest::Brew(t, f, c))
+                })?
+        {
             cfgd_core::union_extend(&mut brew.taps, &taps);
             cfgd_core::union_extend(&mut brew.formulae, &formulae);
             cfgd_core::union_extend(&mut brew.casks, &casks);
@@ -766,7 +962,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_apt_manifest(&path)?;
+            let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
             cfgd_core::union_extend(&mut apt.packages, &pkgs);
         }
     }
@@ -777,7 +973,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_npm_package_json(&path)?;
+            let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
             cfgd_core::union_extend(&mut npm.global, &pkgs);
         }
     }
@@ -788,7 +984,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_cargo_toml(&path)?;
+            let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
             cfgd_core::union_extend(&mut cargo.packages, &pkgs);
         }
     }

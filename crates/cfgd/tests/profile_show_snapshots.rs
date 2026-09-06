@@ -2,8 +2,8 @@
 //!
 //! Three cases:
 //!   - `profile_show/happy.{txt,json}` — multi-layer profile with env,
-//!     packages (brew + cargo + simple lists), files, system keys, and secrets
-//!     all populated. Exercises every section + the with_data(&ResolvedProfile)
+//!     packages (brew + cargo + simple lists), aliases, files, system keys, and
+//!     secrets all populated. Exercises every section + the with_data(&ResolvedProfile)
 //!     payload round-trip.
 //!   - `profile_show/empty.txt` — single-layer profile with no env / packages /
 //!     files / system / secrets. Exercises section_if_nonempty skipping every
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use cfgd::cli::profile::show::build_profile_show_doc;
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile,
-    PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile, SecretSpec,
+    PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile, SecretSpec, ShellAlias,
 };
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
@@ -54,14 +54,27 @@ fn happy_resolved() -> ResolvedProfile {
                 EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 },
                 EnvVar {
                     name: "LANG".into(),
                     value: "en_US.UTF-8".into(),
+                    platforms: vec![],
                 },
             ],
             env_scope: cfgd_core::config::EnvScope::All,
-            aliases: Vec::new(),
+            aliases: vec![
+                ShellAlias {
+                    name: "gs".into(),
+                    command: "git status".into(),
+                    platforms: vec![],
+                },
+                ShellAlias {
+                    name: "ll".into(),
+                    command: "ls -lah".into(),
+                    platforms: vec![],
+                },
+            ],
             packages: PackagesSpec {
                 brew: Some(BrewSpec {
                     file: None,
@@ -124,6 +137,7 @@ fn happy_resolved() -> ResolvedProfile {
             ],
             scripts: Default::default(),
             backups: Vec::new(),
+            entry_owners: Default::default(),
         },
     }
 }
@@ -143,6 +157,8 @@ fn profile_show_happy_human() {
         &resolved,
         "workstation",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/happy.txt");
@@ -156,6 +172,8 @@ fn profile_show_happy_json() {
         &resolved,
         "workstation",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
     ));
     drop(printer);
     let expected = serde_json::json!({
@@ -178,6 +196,8 @@ fn profile_show_empty_human() {
         &resolved,
         "default",
         Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/empty.txt");

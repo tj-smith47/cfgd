@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel, condense_script_label};
 
 pub fn cmd_rollback(
     printer: &Printer,
@@ -12,7 +12,21 @@ pub fn cmd_rollback(
     let state = open_state_store(state_dir, scope)?;
 
     if state.get_apply(apply_id)?.is_none() {
-        anyhow::bail!("no apply found with ID {}", apply_id);
+        // Typed StateError::ApplyNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6), uniform with every other named-resource miss
+        // (backup name, snapshot, module, profile) and so `-o json` gets the
+        // stable `{"error":"not_found",...}` payload instead of nothing.
+        let e = cfgd_core::errors::CfgdError::State(cfgd_core::errors::StateError::ApplyNotFound {
+            apply_id,
+        });
+        let message = e.to_string();
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
+            apply_id.to_string(),
+            "not_found",
+            message,
+            serde_json::json!({}),
+        ));
     }
 
     let target_backups = state.get_apply_backups(apply_id)?;
@@ -36,16 +50,13 @@ pub fn cmd_rollback(
         .collect();
     let non_file_count = non_file_actions.len();
 
-    printer.heading("Rollback");
-    let mut kv_pairs: Vec<(String, String)> = vec![
-        ("Target apply ID".to_string(), apply_id.to_string()),
-        (
-            "File backups to restore".to_string(),
-            file_count.to_string(),
-        ),
-    ];
+    printer.heading_title(&TitleLabel::new("Rollback", format!("#{apply_id}")));
+    let mut kv_pairs: Vec<(String, String)> = vec![(
+        "File backups to restore".to_string(),
+        file_count.to_string(),
+    )];
     if non_file_count > 0 {
-        kv_pairs.push(("Non-file actions".to_string(), non_file_count.to_string()));
+        kv_pairs.push(("Non-File Actions".to_string(), non_file_count.to_string()));
     }
     printer.kv_block(kv_pairs);
 
@@ -86,6 +97,8 @@ pub fn cmd_rollback(
     }
 
     let registry = ProviderRegistry::new();
+    // recorded-scope-ok: a rollback restores a recorded file set and writes no
+    // `applies` row of its own
     let reconciler = Reconciler::new(&registry, &state);
     // A rollback restores a file set, so it reports under the phase name file
     // work carries everywhere else in cfgd.
@@ -141,11 +154,11 @@ pub fn cmd_rollback(
         let nf_sec = printer.section("Actions");
         for (action_type, resource_id) in &result.non_file_actions {
             // A "script" resource_id is the raw journal-recorded run_str
-            // body — condense only for this bullet, never the payload below.
+            // body — condense only for this row, never the payload below.
             if action_type == "script" {
-                nf_sec.bullet(condense_script_label(resource_id));
+                nf_sec.kv(action_type, condense_script_label(resource_id));
             } else {
-                nf_sec.bullet(resource_id);
+                nf_sec.kv(action_type, resource_id);
             }
         }
     }
@@ -167,10 +180,18 @@ pub fn cmd_rollback(
 /// Sole place the Rollback final Role/subject is decided. Inline emits at
 /// every callsite would fork the rule; route through this helper instead.
 pub fn build_rollback_doc(output: &RollbackOutput) -> Doc {
-    let (role, subject) = if output.files_restored == 0 && output.files_removed == 0 {
-        (Role::Info, "No files were changed during rollback")
-    } else {
-        (Role::Ok, "Rollback complete")
-    };
-    Doc::new().status(role, subject).with_data(output)
+    if output.files_restored == 0 && output.files_removed == 0 {
+        return Doc::new()
+            .status(Role::Info, "No files were changed during rollback")
+            .with_data(output);
+    }
+    // A rollback is the one mutation that moves the MACHINE away from the
+    // declared config, so it closes on the command that reads the divergence
+    // it just created — never on the apply, which would undo it.
+    Doc::new()
+        .status(Role::Ok, "Rolled back")
+        .hint(crate::cli::success_next_step(
+            crate::cli::Mutation::RolledBack,
+        ))
+        .with_data(output)
 }

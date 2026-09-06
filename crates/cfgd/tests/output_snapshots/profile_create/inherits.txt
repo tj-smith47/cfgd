@@ -1,11 +1,11 @@
 Create Profile: child
 ⚠ Module 'nvim' not found locally — make sure it exists or is a remote module
 
-✓ Created profile 'child' at <CONFIG_DIR>/profiles/child/profile.yaml
+✓ Created at <CONFIG_DIR>/profiles/child/profile.yaml
 
 Inherits  default
 Modules   nvim
 
-→ Activate with: cfgd profile switch child
+→ Activate it with `cfgd profile switch child`
 
 ✓ Generated .github/workflows/cfgd-release.yml

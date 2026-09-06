@@ -1,0 +1,65 @@
+---
+name: cfgd-clusterconfigpolicy
+description: Author a complete, validated cfgd ClusterConfigPolicy; use whenever creating or reworking a ClusterConfigPolicy YAML.
+user-invocable: true
+cfgd-version: <CFGD_VERSION>
+cfgd-min-version: <CFGD_MIN_VERSION>
+---
+
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
+
+# Author a high-quality cfgd ClusterConfigPolicy
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>; if it is older than <CFGD_MIN_VERSION>, warn that its field list may be incomplete and say so in the summary.
+1. **Enumerate every field.** Run `cfgd explain clusterconfigpolicy -o json` once. The payload is the complete field list step 3 walks: every field, nested ones under `children`, each with `type`, `description` and `required`; its `location` is the path the finished file goes to. `cfgd explain clusterconfigpolicy.<field>` (no `-o`) prints one field's docs readably.
+2. **Research THIS subject before choosing values.** Check the subject's own docs, the package managers that ship it (for a tool), and community conventions. On the target machine, `<tool> --version` and the manager's own query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what you verified, and where, in the field's WHY comment; where you could not confirm a claim, say so there and in your reply.
+3. **Decide include or omit for EVERY field from step 1, and write the WHY as a comment beside each included one.** Omit a field the subject does not use or whose value would equal the default; note a non-obvious omission in a comment too.
+4. **Draft.** Declare every dependency the subject needs at run time, transitive ones included. Set a version floor only where a feature needs it, and say which. Gate platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` / `unless` / `creates` where the kind offers them, or a command that is itself idempotent), give it a `timeout`, and set `continueOnError: true` only where a failure must not abort the apply. Never write a credential into a value; a secret belongs in the profile's `spec.secrets`. No placeholders, no stub comments.
+5. **Validate:** `cfgd clusterconfigpolicy validate <file>` (`-` reads stdin; add `-o json` for a parseable report). A non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is valid`.
+6. **Self-critique.** For each field in the step-1 list, name the evidence behind its value or its omission; a field you cannot account for goes back to step 2.
+
+## Ground-truth examples
+
+Validated resources of this kind, shown for shape and depth. A value like `you@example.com` is the example's placeholder; your draft carries the real one.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: ClusterConfigPolicy
+metadata:
+  name: org-baseline
+spec:
+  # Cluster-scoped, so the selector is what bounds it: a namespace opts in by
+  # carrying this label rather than being enrolled here by name.
+  namespaceSelector:
+    matchLabels:
+      cfgd.io/managed: "true"
+  requiredModules:
+    # The audit baseline every machine carries, whatever else its team's own
+    # ConfigPolicy adds on top.
+    - name: compliance-tools
+      required: true
+    - name: corp-certs
+      required: true
+  packages:
+    - name: osquery
+    # Floored rather than pinned: the rule is "new enough to carry the current
+    # detection rules", not one exact build.
+    - name: falco
+      version: ">=0.37"
+  settings:
+    # Hides kernel pointers from unprivileged readers; the baseline the
+    # compliance scan checks for.
+    kernel.kptr_restrict: "2"
+  security:
+    # replace with your own registries — images from anywhere else are refused
+    trustedRegistries:
+      - ghcr.io/acme-corp/
+      - registry.acme.internal/
+    # An unsigned image cannot be attributed to a build, so it never runs.
+    allowUnsigned: false
+```
+

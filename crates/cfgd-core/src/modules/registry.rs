@@ -106,7 +106,7 @@ pub fn fetch_remote_module(
 
     let local_path = fetch_git_source(&git_src, cache_base, "remote", printer)?;
 
-    // The repo root is the cache dir (before subdir), we need it for commit hash
+    // The repo root is the cache dir (before subdir), needed for the commit hash
     let repo_dir = git_cache_dir(cache_base, &git_src.repo_url);
     let commit = get_head_commit_sha(&repo_dir)?;
 
@@ -182,7 +182,7 @@ pub fn fetch_registry_modules(
         clone_repo(&cache_dir, &git_src, &registry.name, printer)?;
     }
 
-    let modules_dir = cache_dir.join("modules");
+    let modules_dir = crate::declared_modules_dir(&cache_dir);
     if !modules_dir.is_dir() {
         return Err(ModuleError::SourceFetchFailed {
             url: registry.url.clone(),
@@ -304,7 +304,7 @@ pub fn latest_module_version(
 /// a remote repo, without relying on a local cache being fully populated.
 ///
 /// Module versions are published as git tags named `<module>/<version>` (e.g.
-/// `tmux/v2.0.0`). The version part is sorted with [`group_module_tags`]
+/// `tmux/v2.0.0`). The version part is sorted with `group_module_tags`
 /// (loose-semver), so the returned value is the highest version (e.g.
 /// `v2.0.0`). Returns `Ok(None)` when no `<module>/<version>` tag exists for
 /// the module.

@@ -42,7 +42,7 @@ impl SkillProvider for ClaudeCodeProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
         let contents = frontmatter_envelope(
             model,
@@ -51,7 +51,7 @@ impl SkillProvider for ClaudeCodeProvider {
                 format!("description: {}", model.description),
                 "user-invocable: true".to_string(),
             ],
-            &render_skill_body(model),
+            &render_skill_body(model, scope),
         );
         Ok(RenderedSkill {
             relative_path: relative_skill_path(token),
@@ -70,7 +70,7 @@ mod tests {
     fn claude_code_renders_valid_skill_md() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = ClaudeCodeProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module/SKILL.md"));
         assert!(r.contents.starts_with("---\n"));
@@ -83,7 +83,7 @@ mod tests {
     fn frontmatter_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = ClaudeCodeProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.contents.contains(&format!(
             "cfgd-version: {}",

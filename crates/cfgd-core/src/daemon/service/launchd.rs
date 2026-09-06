@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::PathDisplayExt;
+use crate::output::Role;
 
 /// Generate launchd plist content for the daemon service.
 ///
@@ -125,7 +126,10 @@ pub(crate) fn install_launchd_service(
         }
     })?;
 
-    tracing::info!(path = %plist_path.posix(), "installed launchd service");
+    tracing::info!(
+        "daemon: installed launchd service at {}",
+        plist_path.posix()
+    );
     Ok(())
 }
 
@@ -179,11 +183,13 @@ pub(crate) fn launchd_enable_argv(uid: u32, scope: crate::Scope) -> Vec<String> 
 #[cfg(unix)]
 pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
     if !crate::command_available("launchctl") {
-        printer.status_simple(
-            Role::Warn,
-            "launchctl not found — daemon installed but not started",
+        printer
+            .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
+            .detail(super::INSTALLED_NOT_STARTED);
+        printer.hint_commands(
+            "Start it later from a GUI login session with:",
+            &["cfgd daemon install"],
         );
-        printer.hint("Start it later from a GUI login session with: cfgd daemon install");
         return Ok(false);
     }
 
@@ -204,24 +210,30 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootstrap failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
                 ),
             );
-            printer.hint("Run from a GUI login session, or start later with: cfgd daemon install");
+            printer.hint_commands(
+                "Run from a GUI login session, or start later with:",
+                &["cfgd daemon install"],
+            );
             return Ok(false);
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootstrap failed: {}",
                     crate::output::collapse_to_subject_line(&e)
                 ),
             );
-            printer.hint("Run from a GUI login session, or start later with: cfgd daemon install");
+            printer.hint_commands(
+                "Run from a GUI login session, or start later with:",
+                &["cfgd daemon install"],
+            );
             return Ok(false);
         }
     }
@@ -234,7 +246,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl enable failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
@@ -244,7 +256,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl enable failed: {}",
                     crate::output::collapse_to_subject_line(&e)
@@ -299,16 +311,20 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         return;
     }
     if !crate::command_available("launchctl") {
-        printer.status_simple(
-            Role::Warn,
-            "launchctl not found — plist removed but daemon may still be running",
-        );
-        let hint = if scope == crate::Scope::System {
-            "Stop it later with: launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist".to_string()
+        printer
+            .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
+            .detail("plist removed but daemon may still be running");
+        if scope == crate::Scope::System {
+            printer.hint_commands(
+                "Stop it later:",
+                &["launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist"],
+            );
         } else {
-            "Stop it later from a GUI login session with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string()
-        };
-        printer.hint(hint);
+            printer.hint_commands(
+                "Stop it later, from a GUI login session:",
+                &["launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist"],
+            );
+        }
         return;
     }
 
@@ -329,7 +345,7 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         Ok(output) => {
             let detail = crate::stderr_lossy_trimmed(&output);
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootout failed: {}",
                     crate::output::collapse_to_subject_line(&detail)
@@ -338,7 +354,7 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         }
         Err(e) => {
             printer.status_simple(
-                Role::Warn,
+                Role::Warn, // name-row-ok: the init system's own tool name, which is lowercase
                 format!(
                     "launchctl bootout failed: {}",
                     crate::output::collapse_to_subject_line(&e)
@@ -366,7 +382,7 @@ pub(crate) fn uninstall_launchd_service(printer: &Printer, scope: crate::Scope) 
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove plist: {}", e),
         })?;
-        tracing::info!(path = %plist_path.posix(), "removed launchd service");
+        tracing::info!("daemon: removed launchd service at {}", plist_path.posix());
     }
 
     Ok(())
@@ -575,6 +591,7 @@ mod tests {
             &DaemonDirOverrides {
                 state_dir: Some(PathBuf::from("/Users/t/state")),
                 runtime_dir: Some(PathBuf::from("/Users/t/run")),
+                ..Default::default()
             },
         );
         assert!(plist.contains("<string>--state-dir</string>"), "{plist}");

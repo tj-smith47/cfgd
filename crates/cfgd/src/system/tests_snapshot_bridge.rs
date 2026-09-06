@@ -8,16 +8,18 @@
 //! would keep passing while the shape users actually see drifted.
 //!
 //! So the capture is assembled from the REAL derivations: the action subject
-//! from [`action_display_subject`], the attached lines from
-//! [`emit_action_notes`]. Nothing here formats a status line of its own, and a
-//! configurator that reached the printer directly would show up in the golden
-//! above its own action line rather than under it.
+//! from [`action_display_subject`], the notes it produced from
+//! [`render_caveats`] — the run-wide `Caveats` section production renders
+//! after the closing summary, not attached under the action line. Nothing
+//! here formats a status line of its own, and a configurator that reached the
+//! printer directly would show up in the golden above its own action line
+//! rather than under it.
 
 use cfgd_core::output::test_capture::strip_ansi;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 use cfgd_core::providers::{NoteSink, SystemConfigurator, SystemContext};
 use cfgd_core::reconciler::{
-    Action, PhaseName, SystemAction, action_display_subject, emit_action_notes,
+    Action, Owner, PhaseName, SystemAction, action_display_subject, render_caveats,
 };
 
 /// One configurator apply, described the way the plan would describe it.
@@ -52,10 +54,11 @@ pub(crate) fn capture_attached_apply<D: serde::Serialize>(
 ) -> String {
     let notes = NoteSink::default();
     let (printer, cap) = Printer::for_test_doc();
+    let owner = Owner::profile("snapshot");
 
     {
         let phase = printer.section_phase(&PhaseName::System.section_label());
-        let owner = phase.section_owner(&OwnerLabel::new("profile", "snapshot"));
+        let owner_section = phase.section_owner(&OwnerLabel::new("profile", "snapshot"));
 
         apply
             .configurator
@@ -69,8 +72,10 @@ pub(crate) fn capture_attached_apply<D: serde::Serialize>(
             current: apply.current.to_string(),
             origin: String::new(),
         });
-        drop(owner.action_status(Role::Ok, action_display_subject(&action).to_string()));
-        emit_action_notes(&owner, &notes.take());
+        drop(owner_section.action_status(
+            Role::Ok,
+            action_display_subject(&action, printer.arrow()).to_string(),
+        ));
     }
 
     printer.emit(
@@ -78,6 +83,7 @@ pub(crate) fn capture_attached_apply<D: serde::Serialize>(
             .status(apply.summary_role, apply.summary)
             .with_data(data),
     );
+    render_caveats(&printer, &[(owner, notes.take())]);
     drop(printer);
 
     strip_ansi(&cap.human())

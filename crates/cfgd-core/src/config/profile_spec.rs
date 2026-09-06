@@ -121,13 +121,6 @@ where
 {
     use serde::de;
 
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct PackagesMap {
-        #[serde(default)]
-        packages: Vec<String>,
-    }
-
     struct ListOrPackagesVisitor;
 
     impl<'de> de::Visitor<'de> for ListOrPackagesVisitor {
@@ -161,12 +154,77 @@ where
         where
             M: de::MapAccess<'de>,
         {
-            let m = PackagesMap::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let m = PackageListSpec::deserialize(de::value::MapAccessDeserializer::new(map))?;
             Ok(m.packages)
         }
     }
 
     deserializer.deserialize_any(ListOrPackagesVisitor)
+}
+
+/// The schema of a [`list_or_packages_vec`] field: the two shapes the
+/// deserializer accepts, stated as the union it IS.
+///
+/// The derive reflects the field's Rust type (`Vec<String>`) and cannot see
+/// `deserialize_with`, so without this the published SchemaStore schema
+/// rejected `apk: {packages: [foo]}` and `cfgd explain` never named the map
+/// form. The deserializer and the schema are two statements of one grammar;
+/// `every_list_or_map_package_field_declares_both_shapes_in_its_schema`
+/// fails a field that carries one without the other.
+///
+/// The map arm is the NAMED [`PackageListSpec`], never an inline object: an
+/// anonymous arm renders as `object` in `cfgd explain`'s type span, so
+/// thirteen of nineteen `packages.*` rows read `<([]string | object)>` and
+/// said nothing a reader could look up.
+fn list_or_packages_vec_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let spec = generator.subschema_for::<PackageListSpec>();
+    schemars::json_schema!({
+        "anyOf": [
+            {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Package names, as a bare list.",
+            },
+            spec,
+            { "type": "null" },
+        ],
+    })
+}
+
+/// The map form of a bare-list manager (`pipx`, `dnf`, `apk`, …): the same
+/// list under a `packages` key.
+// Every line of this block is the schema `description`, on `cfgd explain`,
+// in `-o json`, in the SchemaStore schema and in every generated agent skill.
+// The pairing with `list_or_packages_vec` / `list_or_packages_vec_schema` is
+// documented on the latter, where a maintainer reads it.
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageListSpec {
+    /// Package names.
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+/// The schema of a [`list_or_struct`] field: the manager spec `T`, the bare
+/// list [`FromPackageList`] folds into it, or null. The twin of
+/// [`list_or_packages_vec_schema`] for the struct-backed managers; the
+/// SchemaStore-published `BrewSpec` was a bare `"type": "object"` whose own
+/// description documented the list form the schema rejected.
+fn list_or_struct_schema<T: schemars::JsonSchema>(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    let spec = generator.subschema_for::<T>();
+    schemars::json_schema!({
+        "anyOf": [
+            {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Package names, as a bare list.",
+            },
+            spec,
+            { "type": "null" },
+        ],
+    })
 }
 
 /// Accept either a YAML sequence (→ `T::from_package_list`) or a map (→ derived
@@ -244,60 +302,92 @@ where
 }
 // --- Profile ---
 
+/// A `profile.yaml` document: a named, inheritable bundle of everything cfgd
+/// reconciles for a machine — packages, files, env, aliases, system settings,
+/// scripts, and backups.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: Profile
+/// metadata:
+///   name: work
+/// spec:
+///   modules: [nvim, zsh]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileDocument {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`.
     pub api_version: String,
+    /// Document kind. Always `Profile` for this file.
     pub kind: String,
+    /// Identifying metadata for this profile.
     pub metadata: ProfileMetadata,
+    /// The profile's declared surface.
     pub spec: ProfileSpec,
 }
 
+/// `metadata`: identifying information for a profile.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileMetadata {
+    /// The profile's name, referenced by `spec.profile` in `cfgd.yaml` and by
+    /// `inherits:` in another profile.
     pub name: String,
 }
 
+/// `spec`: the declared surface of a profile.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSpec {
+    /// Names of base profiles to merge under this one. Later fields in this
+    /// profile override an inherited base's; lists are unioned.
     #[serde(default)]
     pub inherits: Vec<String>,
 
+    /// Names of modules this profile includes.
     #[serde(default)]
     pub modules: Vec<String>,
 
+    /// Environment variables this profile sets.
     #[serde(default)]
     pub env: Vec<EnvVar>,
 
     /// How far `spec.env` exports reach across the current user's environment.
     /// Omitted means "inherit" (a parent layer's value survives); the resolved
-    /// default when no layer sets it is [`EnvScope::All`] — every standard user
-    /// entry point cfgd can safely touch. Narrow it to `Login` or `Interactive`
-    /// to opt out of the broader session surfaces.
+    /// default when no layer sets it is `All` — every standard user entry point
+    /// cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out
+    /// of the broader session surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_scope: Option<EnvScope>,
 
+    /// Shell aliases this profile sets.
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
 
+    /// Packages this profile installs, grouped by manager.
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
 
+    /// Files this profile deploys.
     #[serde(default)]
     pub files: Option<FilesSpec>,
 
+    /// System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …),
+    /// keyed by configurator name.
     #[serde(default)]
     #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub system: SystemSettings,
 
+    /// Secrets this profile resolves into files or environment variables.
     #[serde(default)]
     pub secrets: Vec<SecretSpec>,
 
+    /// Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.
     #[serde(default)]
     pub scripts: Option<ScriptSpec>,
 
+    /// Declarative backup jobs this profile schedules.
     #[serde(default)]
     pub backups: Vec<BackupSpec>,
 }
@@ -329,45 +419,96 @@ case_insensitive_enum!(EnvScope {
     "Interactive" => EnvScope::Interactive,
 });
 
+/// `spec.packages`: packages to install, grouped by package manager.
+///
+/// Every manager field accepts either a bare list of names or (for the
+/// managers with options of their own) a mapping:
+///
+/// ```yaml
+/// packages:
+///   brew:
+///     formulae: [ripgrep, fzf]
+///     casks: [alacritty]
+///   apt: [curl, git]
+///   cargo: [ripgrep]
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
+    /// Homebrew packages (macOS/Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<BrewSpec>")]
     pub brew: Option<BrewSpec>,
+    /// APT packages (Debian/Ubuntu).
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<AptSpec>")]
     pub apt: Option<AptSpec>,
+    /// Cargo packages (`cargo install`).
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<CargoSpec>")]
     pub cargo: Option<CargoSpec>,
+    /// npm global packages.
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<NpmSpec>")]
     pub npm: Option<NpmSpec>,
+    /// pipx-installed Python applications.
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub pipx: Vec<String>,
+    /// DNF packages (Fedora/RHEL).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub dnf: Vec<String>,
+    /// APK packages (Alpine).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub apk: Vec<String>,
+    /// Pacman packages (Arch).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub pacman: Vec<String>,
+    /// Zypper packages (openSUSE).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub zypper: Vec<String>,
+    /// Yum packages (legacy RHEL/CentOS).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub yum: Vec<String>,
+    /// pkg packages (FreeBSD).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub pkg: Vec<String>,
+    /// Snap packages (Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<SnapSpec>")]
     pub snap: Option<SnapSpec>,
+    /// Flatpak packages (Linux).
     #[serde(default, deserialize_with = "list_or_struct")]
+    #[schemars(schema_with = "list_or_struct_schema::<FlatpakSpec>")]
     pub flatpak: Option<FlatpakSpec>,
+    /// Nix packages (`nix-env` / `nix profile`).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub nix: Vec<String>,
+    /// Go packages (`go install`).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub go: Vec<String>,
+    /// Winget packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub winget: Vec<String>,
+    /// Chocolatey packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub chocolatey: Vec<String>,
+    /// Scoop packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
+    #[schemars(schema_with = "list_or_packages_vec_schema")]
     pub scoop: Vec<String>,
+    /// User-defined package managers not built into cfgd, each with its own
+    /// check/install/uninstall commands.
     #[serde(default)]
     pub custom: Vec<CustomManagerSpec>,
 }
@@ -462,15 +603,22 @@ impl PackagesSpec {
     }
 }
 
+/// The object form of `brew`: taps, formulae and casks, or a Brewfile. A bare
+/// list of names folds into `formulae`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
+    /// Path to a Brewfile to apply instead of (or alongside) `taps`,
+    /// `formulae` and `casks`.
     #[serde(default)]
     pub file: Option<String>,
+    /// Third-party taps to add before installing formulae/casks.
     #[serde(default)]
     pub taps: Vec<String>,
+    /// Homebrew formulae (CLI packages) to install.
     #[serde(default)]
     pub formulae: Vec<String>,
+    /// Homebrew casks (GUI applications) to install.
     #[serde(default)]
     pub casks: Vec<String>,
 }
@@ -486,11 +634,15 @@ impl FromPackageList for BrewSpec {
     }
 }
 
+/// The object form of `apt`: a package list, a file listing packages, or both.
+/// A bare list of names folds into `packages`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
+    /// Path to a package-list file to install from, one name per line.
     #[serde(default)]
     pub file: Option<String>,
+    /// APT package names to install.
     #[serde(default)]
     pub packages: Vec<String>,
 }
@@ -504,11 +656,15 @@ impl FromPackageList for AptSpec {
     }
 }
 
+/// The object form of `npm`: global packages, a `package.json` to install
+/// from, or both. A bare list of names folds into `global`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NpmSpec {
+    /// Path to a `package.json` to install dependencies from.
     #[serde(default)]
     pub file: Option<String>,
+    /// Package names to install globally (`npm install -g`).
     #[serde(default)]
     pub global: Vec<String>,
 }
@@ -523,14 +679,15 @@ impl FromPackageList for NpmSpec {
     }
 }
 
-/// Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)
-/// and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the
-/// shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.
+/// The object form of `cargo`: crates to install, a `Cargo.toml` to install
+/// from, or both. A bare list of names folds into `packages`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
+    /// Path to a `Cargo.toml` whose binaries to install instead of `packages`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Crate names to install (`cargo install`).
     #[serde(default)]
     pub packages: Vec<String>,
 }
@@ -544,11 +701,15 @@ impl FromPackageList for CargoSpec {
     }
 }
 
+/// The object form of `snap`: strict and classic-confinement snaps. A bare
+/// list of names folds into `packages`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SnapSpec {
+    /// Snap names installed with default (strict) confinement.
     #[serde(default)]
     pub packages: Vec<String>,
+    /// Snap names installed with `--classic` confinement.
     #[serde(default)]
     pub classic: Vec<String>,
 }
@@ -562,11 +723,16 @@ impl FromPackageList for SnapSpec {
     }
 }
 
+/// The object form of `flatpak`: application ids and the remote to install
+/// them from. A bare list of ids folds into `packages`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlatpakSpec {
+    /// Flatpak application ids to install.
     #[serde(default)]
     pub packages: Vec<String>,
+    /// Remote to install from (e.g. `flathub`). Falls back to Flatpak's
+    /// configured default remote when omitted.
     #[serde(default)]
     pub remote: Option<String>,
 }
@@ -580,25 +746,58 @@ impl FromPackageList for FlatpakSpec {
     }
 }
 
+/// A user-defined package manager under `spec.packages.custom[]`, driven
+/// entirely by shell commands.
+///
+/// ```yaml
+/// custom:
+///   - name: asdf
+///     check: "command -v asdf"
+///     listInstalled: "asdf list"
+///     install: "asdf install {package}"
+///     uninstall: "asdf uninstall {package}"
+///     packages: [nodejs]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomManagerSpec {
+    /// Manager name, used in `prefer:`/`deny:` lists and status output.
     pub name: String,
+    /// Command that exits zero when this manager is available on the machine.
     pub check: String,
+    /// Command whose stdout lists installed package names, one per line.
     pub list_installed: String,
+    /// Command template to install a package; `{package}` is substituted.
     pub install: String,
+    /// Command template to uninstall a package; `{package}` is substituted.
     pub uninstall: String,
+    /// Command to refresh the manager's own package index/cache before installs.
     #[serde(default)]
     pub update: Option<String>,
+    /// Package names to install with this manager.
     #[serde(default)]
     pub packages: Vec<String>,
 }
 
+/// `spec.files`: files this profile deploys and their permission overrides.
+///
+/// ```yaml
+/// files:
+///   managed:
+///     - source: files/gitconfig
+///       target: ~/.gitconfig
+///   permissions:
+///     ~/.ssh/id_ed25519: "0600"
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilesSpec {
+    /// Files this profile deploys, each pairing a source in the config
+    /// directory with a target on the machine. Empty, no files are managed.
     #[serde(default)]
     pub managed: Vec<ManagedFileSpec>,
+    /// Octal permission strings (`"0600"`) keyed by target path, applied after
+    /// deployment.
     #[serde(default)]
     pub permissions: HashMap<String, String>,
 }
@@ -639,6 +838,33 @@ impl FileStrategy {
     pub fn valid_as_global_default(self) -> bool {
         !matches!(self, FileStrategy::Patch)
     }
+
+    /// The lowercase word a report names this strategy by — a deploy row's
+    /// child method, and the status table's Method column. Distinct from
+    /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this
+    /// is the ONE display spelling, so the two surfaces naming a resolved
+    /// strategy cannot drift on casing the way an inline
+    /// `.as_str().to_lowercase()` at each call site would invite.
+    pub fn method_label(self) -> &'static str {
+        match self {
+            FileStrategy::Symlink => "symlink",
+            FileStrategy::Copy => "copy",
+            FileStrategy::Template => "template",
+            FileStrategy::Hardlink => "hardlink",
+            FileStrategy::Patch => "patch",
+        }
+    }
+
+    /// The strategy a `module_file_manifest.strategy` column records, read
+    /// back — the inverse of [`Self::as_str`], which is what the manifest
+    /// writer persists. `None` for a value no variant spells, so a corrupt
+    /// column degrades to an absent cell rather than a guessed method.
+    pub fn from_recorded(recorded: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|s| recorded.eq_ignore_ascii_case(s.as_str()))
+    }
 }
 
 /// File format used to interpret and re-serialize a `Patch`-strategy target.
@@ -650,7 +876,7 @@ pub enum PatchFormat {
     Json,
     /// YAML; comments are NOT preserved across a merge (see docs for the caveat).
     Yaml,
-    /// TOML, edited via `toml_edit` to preserve comments and layout.
+    /// TOML, edited in place to preserve comments and layout.
     Toml,
 }
 
@@ -739,15 +965,27 @@ pub struct EncryptionConstraint {
     pub mode: Option<EncryptionMode>,
 }
 
+/// One entry of `spec.files.managed[]`: a file this profile deploys.
+///
+/// ```yaml
+/// files:
+///   managed:
+///     - source: files/gitconfig
+///       target: ~/.gitconfig
+///       permissions: "644"
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
-    /// Not required when `strategy` is `Patch`; required otherwise
-    /// (enforced by `validate_managed_file_specs`, not the JSON schema).
+    /// Path to the source file. Not required when `strategy` is `Patch`;
+    /// required otherwise.
     #[serde(default)]
     pub source: String,
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory.
     pub target: PathBuf,
-    /// Per-file deployment strategy override. If None, uses the global default.
+    /// Per-file deployment strategy override. Omitted, the profile-wide
+    /// default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<FileStrategy>,
     /// When true, the source file is local-only: auto-added to .gitignore,
@@ -765,28 +1003,54 @@ pub struct ManagedFileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
     /// Structured merge or script configuration for `strategy: Patch`.
-    /// Required when `strategy` is `Patch`, rejected otherwise (enforced by
-    /// `validate_managed_file_specs`, not the JSON schema).
+    /// Required when `strategy` is `Patch`, rejected otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<PatchSpec>,
 }
 
-// `target` XOR `envs` (at least one required) is enforced at runtime by
+// "At least one of `target` / `envs`" is enforced at runtime by
 // `validate_secret_specs`, not in the JSON schema: both are plain `Option`
-// fields, so the generated schema marks them optional. Expressing the XOR
-// would require a hand-written `oneOf`, which would drift from this struct —
-// the by-construction generation is the priority, runtime validation is the
-// backstop.
+// fields, so the generated schema marks them optional. Expressing the
+// constraint would require a hand-written `anyOf`, which would drift from
+// this struct — the by-construction generation is the priority, runtime
+// validation is the backstop.
+/// One entry of `spec.secrets[]`: a secret resolved into a file, into
+/// environment variables, or both. At least one of `target` / `envs` must be
+/// set; an entry carrying both writes the file AND exports the variables from
+/// one resolution.
+///
+/// ```yaml
+/// secrets:
+///   - source: op://Personal/GitHub/token
+///     envs: [GITHUB_TOKEN]
+///   - source: ssh_key
+///     target: ~/.ssh/id_ed25519
+///   - source: vault://secret/data/api#key
+///     target: ~/.config/api-key
+///     envs: [API_KEY]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretSpec {
+    /// Backend-specific reference to the secret (a 1Password `op://` URI, a
+    /// Vault path, a sops-encrypted file key, …).
     pub source: String,
+    /// File path to write the decrypted secret to. May be combined with `envs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<PathBuf>,
+    /// Template rendered around the resolved value before it is written to
+    /// `target` or exported under `envs`: every `${secret:value}` in it is
+    /// replaced by the value (`template: "token: ${secret:value}"`). Only a
+    /// provider reference (`op://`, `vault://`, …) resolves to a single value,
+    /// so `template` is rejected on a sops-encrypted file source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// Secret backend name to resolve `source` with. Falls back to
+    /// `spec.secrets.backend` from `cfgd.yaml` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Environment variable names to export the decrypted value under. May be
+    /// combined with `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envs: Option<Vec<String>>,
 }
@@ -872,7 +1136,7 @@ pub(crate) fn validate_file_patch_shape(
 }
 
 /// Validate the `patch` strategy shape of every managed file
-/// (`spec.files.managed`). See [`validate_file_patch_shape`].
+/// (`spec.files.managed`). See `validate_file_patch_shape`.
 pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
     for spec in specs {
         validate_file_patch_shape(
@@ -887,7 +1151,11 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
     Ok(())
 }
 
-/// Validate that each secret has at least one delivery target (`target` or `envs`).
+/// Validate that each secret has at least one delivery target (`target` or
+/// `envs`), and that a `template` names a value it can wrap: it must sit on a
+/// provider reference (a sops file decrypts to content, not a value) and must
+/// contain the `${secret:value}` placeholder, or the resolved secret would be
+/// silently dropped on the floor.
 pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     for spec in specs {
         if spec.target.is_none() && spec.envs.as_ref().is_none_or(|e| e.is_empty()) {
@@ -899,25 +1167,98 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
             }
             .into());
         }
+        if let Some(template) = &spec.template {
+            if crate::providers::parse_secret_reference(&spec.source).is_none() {
+                return Err(ConfigError::Invalid {
+                    message: format!(
+                        "secret '{}': 'template' applies only to a provider reference ({}), not to an encrypted file",
+                        spec.source,
+                        crate::providers::SECRET_REFERENCE_SCHEMES
+                            .iter()
+                            .map(|(scheme, _)| *scheme)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+                .into());
+            }
+            if !template.contains(crate::providers::SECRET_TEMPLATE_PLACEHOLDER) {
+                return Err(ConfigError::Invalid {
+                    message: format!(
+                        "secret '{}': 'template' must contain {} where the value goes",
+                        spec.source,
+                        crate::providers::SECRET_TEMPLATE_PLACEHOLDER
+                    ),
+                }
+                .into());
+            }
+        }
     }
     Ok(())
 }
 
+/// `spec.scripts`: lifecycle hooks run at specific points in the reconcile cycle.
+///
+/// ```yaml
+/// scripts:
+///   preApply: "echo starting apply"
+///   postApply:
+///     - run: brew cleanup
+///       continueOnError: true
+///   onDrift: "notify-send 'cfgd: drift detected'"
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptSpec {
+    /// Run once before any action in an apply.
     #[serde(default)]
     pub pre_apply: Vec<ScriptEntry>,
+    /// Run once after every action in an apply completes.
     #[serde(default)]
     pub post_apply: Vec<ScriptEntry>,
+    /// Run once before a daemon reconcile tick begins.
     #[serde(default)]
     pub pre_reconcile: Vec<ScriptEntry>,
+    /// Run once after a daemon reconcile tick completes.
     #[serde(default)]
     pub post_reconcile: Vec<ScriptEntry>,
+    /// Run when the daemon detects drift, before any auto-apply decision.
     #[serde(default)]
     pub on_drift: Vec<ScriptEntry>,
+    /// Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
     #[serde(default)]
     pub on_change: Vec<ScriptEntry>,
+}
+
+impl ScriptSpec {
+    /// Every lifecycle hook paired with the entries declared for it, in the
+    /// canonical hook order: each context's `pre` before its `post` (apply,
+    /// then reconcile), then the event hooks. An apply and a reconcile are
+    /// separate runs, so no single run reaches all six.
+    ///
+    /// The ONE enumeration of the hook set: a surface that lists, counts or
+    /// names hooks reads from here, so none of them can miss a hook the YAML
+    /// accepts or disagree about the order they are reported in.
+    pub fn hooks(&self) -> [(&'static str, &[ScriptEntry]); 6] {
+        // Destructured, so a seventh hook field does not compile until it is
+        // listed here — the mechanism behind "no surface can miss a hook".
+        let Self {
+            pre_apply,
+            post_apply,
+            pre_reconcile,
+            post_reconcile,
+            on_drift,
+            on_change,
+        } = self;
+        [
+            ("preApply", pre_apply),
+            ("postApply", post_apply),
+            ("preReconcile", pre_reconcile),
+            ("postReconcile", post_reconcile),
+            ("onDrift", on_drift),
+            ("onChange", on_change),
+        ]
+    }
 }
 
 /// A declarative backup: snapshot `source` (a file or directory) into
@@ -1268,6 +1609,20 @@ mod tests {
                 .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
             assert_eq!(parsed, expected, "token {token}");
         }
+    }
+
+    /// The manifest column round-trips: what `record_module_file` persists
+    /// (`as_str`, and historically the identical `Debug` spelling) reads back
+    /// as the variant that wrote it, and a value no variant spells reads back
+    /// as nothing rather than as a guessed strategy.
+    #[test]
+    fn file_strategy_reads_back_what_the_manifest_records() {
+        for s in FileStrategy::ALL.iter().copied() {
+            assert_eq!(FileStrategy::from_recorded(s.as_str()), Some(s));
+            assert_eq!(FileStrategy::from_recorded(&format!("{s:?}")), Some(s));
+        }
+        assert_eq!(FileStrategy::from_recorded("Sideload"), None);
+        assert_eq!(FileStrategy::from_recorded(""), None);
     }
 
     #[test]

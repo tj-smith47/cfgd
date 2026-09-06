@@ -50,13 +50,24 @@ pub(super) struct DecideListOutput {
 pub(super) fn cmd_decide(
     cli: &Cli,
     printer: &Printer,
-    action: DecideAction,
+    action: Option<DecideAction>,
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
 ) -> anyhow::Result<()> {
-    let resolution = action.resolution();
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    // A target without a verb is unanswerable: nothing says which way the
+    // named decision(s) should go, and guessing either way resolves rows the
+    // operator never asked to resolve. The bare form (no verb, no target) is
+    // the read-only listing below.
+    let resolution = match action {
+        Some(action) => Some(action.resolution()),
+        None if all || source.is_some() || resource.is_some() => {
+            anyhow::bail!("specify an action (accept or reject) to resolve pending decisions")
+        }
+        None => None,
+    };
+    let ctx = RunContext::new(cli, printer);
+    let state = ctx.state()?;
 
     // A resolution is inherently a write, so an item `cfgd plan` classified
     // that nothing has recorded yet becomes a real row HERE, through the same
@@ -87,41 +98,46 @@ pub(super) fn cmd_decide(
         }
         _ => plan_ops::DecisionWrites::ReadOnly,
     };
-    let classification = source_classification(cli, printer, &state, writes);
+    let classification = source_classification(&ctx, state, writes);
 
-    if all {
-        let count = state.resolve_all_decisions(resolution)?;
-        if count == 0
-            && let Err(e) = classification
-        {
-            return Err(e.context("no recorded decisions, and the unrecorded items could not be classified to answer them"));
+    // A verb with no target falls through to the same listing the bare form
+    // renders: there is nothing to resolve, and showing what could be is more
+    // useful than refusing.
+    if let Some(resolution) = resolution {
+        if all {
+            let count = state.resolve_all_decisions(resolution)?;
+            if count == 0
+                && let Err(e) = classification
+            {
+                return Err(e.context("no recorded decisions, and the unrecorded items could not be classified to answer them"));
+            }
+            printer.emit(build_decide_bulk_doc(resolution, count, None));
+            return Ok(());
         }
-        printer.emit(build_decide_bulk_doc(resolution, count, None));
-        return Ok(());
-    }
 
-    if let Some(source_name) = source {
-        let count = state.resolve_decisions_for_source(source_name, resolution)?;
-        if count == 0
-            && let Err(e) = classification
-        {
-            return Err(e.context(format!(
-                "no recorded decisions for source '{source_name}', and its unrecorded items could not be classified to answer them"
-            )));
+        if let Some(source_name) = source {
+            let count = state.resolve_decisions_for_source(source_name, resolution)?;
+            if count == 0
+                && let Err(e) = classification
+            {
+                return Err(e.context(format!(
+                    "no recorded decisions for source '{source_name}', and its unrecorded items could not be classified to answer them"
+                )));
+            }
+            printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
+            return Ok(());
         }
-        printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
-        return Ok(());
-    }
 
-    if let Some(resource_path) = resource {
-        let resolved = state.resolve_decision(resource_path, resolution)?;
-        if !resolved && let Err(e) = classification {
-            return Err(e.context(format!(
-                "no recorded decision matches '{resource_path}', and the unrecorded items could not be classified to answer it"
-            )));
+        if let Some(resource_path) = resource {
+            let resolved = state.resolve_decision(resource_path, resolution)?;
+            if !resolved && let Err(e) = classification {
+                return Err(e.context(format!(
+                    "no recorded decision matches '{resource_path}', and the unrecorded items could not be classified to answer it"
+                )));
+            }
+            printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
+            return Ok(());
         }
-        printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
-        return Ok(());
     }
 
     // Only rows this machine can still act on. A config that will not parse
@@ -146,10 +162,15 @@ pub(super) fn cmd_decide(
         String,
     )> = None;
     let mut warnings: Vec<String> = Vec::new();
+    let mut composed: Option<(
+        cfgd_core::config::ResolvedProfile,
+        cfgd_core::config::EntryOwners,
+    )> = None;
     match classification {
-        Ok((withheld, _)) => {
+        Ok((withheld, _, resolved)) => {
             warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
             decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+            composed = resolved;
         }
         Err(e) => {
             let code = super::output_types::ClassificationDegradedCode::from_error(&e);
@@ -161,10 +182,20 @@ pub(super) fn cmd_decide(
             classification_degraded = Some((code, reason));
         }
     }
+    let contents = match &composed {
+        Some((resolved, entry_owners)) => super::DecisionContents::for_decisions(
+            resolved,
+            &decisions,
+            &super::config_dir(cli),
+            entry_owners,
+        ),
+        None => Default::default(),
+    };
     printer.emit(build_decide_list_doc(
         &decisions,
         &warnings,
         classification_degraded,
+        &contents,
     ));
     Ok(())
 }
@@ -187,46 +218,66 @@ pub(super) fn cmd_decide(
 /// config with zero sources has no source items either way — both answer
 /// "nothing unrecorded" instead of running composition, so a local manifest
 /// typo on a sourceless machine cannot disable answering the store's rows.
-fn source_classification(
-    cli: &Cli,
-    printer: &Printer,
-    state: &cfgd_core::state::StateStore,
-    writes: plan_ops::DecisionWrites<'_>,
-) -> anyhow::Result<(
+///
+/// The resolved profile travels back out with the verdict because the listing
+/// renders each pending row's CONTENT, and this is the one composition the
+/// command performs — deriving it again at the render would be a second
+/// config parse per invocation. `None` is a run with nothing to classify.
+type Classification = (
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
-)> {
+    Option<(
+        cfgd_core::config::ResolvedProfile,
+        cfgd_core::config::EntryOwners,
+    )>,
+);
+
+fn source_classification(
+    ctx: &RunContext<'_>,
+    state: &cfgd_core::state::StateStore,
+    writes: plan_ops::DecisionWrites<'_>,
+) -> anyhow::Result<Classification> {
+    let cli = ctx.cli();
     if !cli.config.exists() {
         return Ok(Default::default());
     }
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)
+    let (cfg, _profile_name, local_resolved) = ctx
+        .config_and_profile()
         .with_context(|| format!("config {} is unreadable", cli.config.posix()))?;
     if cfg.spec.sources.is_empty() {
         return Ok(Default::default());
     }
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
-        None,
-        printer,
+        ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        ctx.printer(),
         false,
         composition::ConstraintMode::Report,
     )
     .context("source composition failed")?;
+    // Built before the classification so both halves — the withheld rows and
+    // the contents rendered beside them — read one ownership record.
+    let entry_owners = reconciler::merged_entry_owners(&desired.resolved, &desired.modules);
     // Decide enumerates no package state (it stays offline), so the
     // classification auto-accepts nothing here — installed-but-undecided items
     // keep listing until a run that enumerates (plan/apply/tick) releases them.
-    plan_ops::withheld_for_run(
+    let (withheld, review) = plan_ops::withheld_for_run(
+        ctx,
         state,
-        &cfg,
-        &desired.resolved,
-        &config_dir(cli),
+        cfg,
+        plan_ops::DesiredOwnership {
+            resolved: &desired.resolved,
+            entry_owners: &entry_owners,
+        },
         true,
         writes,
         &reconciler::ActualPackages::default(),
     )
-    .context("source classification failed")
+    .context("source classification failed")?;
+    Ok((withheld, review, Some((desired.resolved, entry_owners))))
 }
 
 /// Pure builder: bulk-resolution Doc (`accept --all` / `accept --source`).
@@ -239,15 +290,17 @@ pub fn build_decide_bulk_doc(resolution: &str, count: usize, source: Option<&str
         };
         doc = doc.status(Role::Info, msg);
     } else {
-        let plural = if count == 1 { "" } else { "s" };
-        let verb = resolution.to_uppercase();
+        let verb = cfgd_core::sentence_case(resolution);
+        let items = cfgd_core::pluralize(count, "item");
         let msg = match source {
-            None => format!("{verb} {count} item{plural}"),
-            Some(name) => format!("{verb} {count} item{plural} from {name}"),
+            None => format!("{verb} {items}"),
+            Some(name) => format!("{verb} {items} from {name}"),
         };
-        doc = doc
-            .status(Role::Ok, msg)
-            .hint("Changes will take effect on next reconcile");
+        // The item moved out of Pending and into (or out of) the plan; the
+        // reader has not seen that plan yet. Nothing here runs a reconcile,
+        // and on a machine without a daemon "the next reconcile" is the one
+        // they start themselves.
+        doc = doc.status(Role::Ok, msg).hint(super::MSG_RUN_APPLY);
     }
     doc.with_data(DecideBulkOutput {
         resolution: resolution.to_string(),
@@ -260,20 +313,21 @@ pub fn build_decide_bulk_doc(resolution: &str, count: usize, source: Option<&str
 pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: bool) -> Doc {
     let mut doc = Doc::new();
     if resolved {
-        let verb = if resolution == "accepted" {
-            "be applied"
+        // One fact, one shape: the detail names the same `cfgd apply` the
+        // hint points at, never a "next reconcile" a daemon-less machine
+        // never runs on its own.
+        let detail = if resolution == "accepted" {
+            "included in the next `cfgd apply`"
         } else {
-            "not be applied"
+            "withheld from the next `cfgd apply`"
         };
-        doc = doc.status(
-            Role::Ok,
-            format!(
-                "{}: {} will {} on next reconcile",
-                resolution.to_uppercase(),
-                resource_path,
-                verb
-            ),
-        );
+        doc = doc
+            .status_with(
+                Role::Ok,
+                format!("{} {resource_path}", cfgd_core::sentence_case(resolution)),
+                |f| f.detail(detail),
+            )
+            .hint(super::MSG_RUN_APPLY);
     } else {
         doc = doc.status(
             Role::Warn,
@@ -297,6 +351,7 @@ pub fn build_decide_list_doc(
     decisions: &[PendingDecision],
     warnings: &[String],
     classification_degraded: Option<(super::output_types::ClassificationDegradedCode, String)>,
+    contents: &super::DecisionContents,
 ) -> Doc {
     let payload = DecideListOutput {
         decisions: decisions.to_vec(),
@@ -312,12 +367,12 @@ pub fn build_decide_list_doc(
             .with_data(payload);
     }
 
-    warn_lines(Doc::new().section("Pending Decisions", |s| {
-        build_pending_decisions_table_section(s, decisions)
-    }))
-    .hint("Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve")
-    .hint(
-        "Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
-    )
+    warn_lines(Doc::new().section(
+        reconciler::pending_decisions_title(
+            decisions.len(),
+            reconciler::DecisionsTitleScope::Listing,
+        ),
+        |s| build_pending_decisions_table_section(s, decisions, contents),
+    ))
     .with_data(payload)
 }

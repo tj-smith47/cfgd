@@ -717,7 +717,7 @@ fn absolutize_path_relative_input_resolves_against_cwd() {
     std::env::set_current_dir(original_cwd).unwrap();
 
     assert!(result.is_absolute(), "must be absolute: {result:?}");
-    // Canonicalize the handle we chdir'd through before deriving the
+    // Canonicalize the handle chdir'd through before deriving the
     // expectation, so both sides of the comparison sit on the same
     // (resolved) side of the symlink `getcwd(3)` already walked past.
     let expected_dir = link_dir.canonicalize().unwrap();
@@ -796,5 +796,54 @@ fn strip_windows_verbatim_is_a_noop_without_the_prefix() {
     assert_eq!(
         super::strip_windows_verbatim("/etc/cfgd/cfgd.yaml"),
         "/etc/cfgd/cfgd.yaml"
+    );
+}
+
+/// A run's wall-clock total keeps its word through the normalizer, so a
+/// golden pins that the closing line says `wall` and a row does not.
+#[test]
+fn normalize_snapshot_durations_keeps_the_wall_clock_word() {
+    assert_eq!(
+        super::normalize_snapshot_durations(
+            "✓ brew install jq (35.9s)\n✓ Apply complete — 21 actions succeeded (278.2s wall)\n"
+        ),
+        "✓ brew install jq (XXs)\n✓ Apply complete — 21 actions succeeded (XXs wall)\n"
+    );
+    assert_eq!(
+        super::normalize_snapshot_durations("— Backup did not run — 3 not attempted (<0.1s wall)"),
+        "— Backup did not run — 3 not attempted (XXs wall)"
+    );
+    assert_eq!(
+        super::normalize_snapshot_durations("(1.0s wal)"),
+        "(1.0s wal)",
+        "a near miss is not a duration"
+    );
+}
+
+/// Windows paths are case-insensitive, so two spellings of one directory
+/// differing only in case must fold to the same `PATH` entry on Windows —
+/// asserted through [`super::fold_path_case_windows`] directly, which is
+/// compiled on every host under test, so the claim is checked without a
+/// Windows runner.
+#[test]
+fn fold_path_case_windows_folds_two_spellings_of_one_directory_to_one() {
+    assert_eq!(
+        super::fold_path_case_windows(r"C:\Tools".to_string()),
+        super::fold_path_case_windows(r"c:\tools".to_string()),
+        "Windows paths are case-insensitive: two spellings of one directory must compare equal"
+    );
+}
+
+/// On every OTHER host a `PATH` entry's case is significant (POSIX
+/// filesystems are case-sensitive by default), so [`super::normalize_path_entry`]
+/// must leave case alone there — the Windows fold is the exception, not the
+/// rule.
+#[test]
+#[cfg(not(windows))]
+fn normalize_path_entry_leaves_case_alone_off_windows() {
+    let home = std::path::Path::new("/home/u");
+    assert_eq!(
+        super::normalize_path_entry("/opt/Tools", home),
+        "/opt/Tools"
     );
 }

@@ -1,22 +1,27 @@
-source:full-pkg-source
+Show source:full-pkg-source
   URL                 https://github.com/team/full-pkg
   Branch              main
   Priority            300
-  Accept Recommended  true
+  Accept Recommended  yes
   Sync Interval       1h
-  Auto Apply          false
+  Auto Apply          no
 
 Manifest
   Name         full-pkg-source
   Description  All package manager types
-  Policy Summary
-    Required
-      Count  8
-      ⊙ brew formula: git
-      ⊙ brew formula: ripgrep
-      ⊙ brew cask: iterm2
-      ⊙ apt: build-essential
-      ⊙ cargo: cargo-edit
-      ⊙ pipx: black
-      ⊙ dnf: gcc
-      ⊙ npm: typescript
+  Version      1.0.0
+
+Policy
+  Require Signed Commits  no
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
+  Required
+    ◉ brew formula: git
+    ◉ brew formula: ripgrep
+    ◉ brew cask: iterm2
+    ◉ apt: build-essential
+    ◉ cargo: cargo-edit
+    ◉ pipx: black
+    ◉ dnf: gcc
+    ◉ npm: typescript

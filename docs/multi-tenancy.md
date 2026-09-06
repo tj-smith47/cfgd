@@ -12,29 +12,20 @@ Each team gets a dedicated namespace. Resources are scoped as follows:
 | ConfigPolicy | Namespaced | Applies only to MachineConfigs in the same namespace |
 | DriftAlert | Namespaced | Associated with a MachineConfig in the same namespace |
 | ClusterConfigPolicy | Cluster | Applies across all namespaces matching its `namespaceSelector` |
-| Module | Cluster | Shared across all namespaces (Tier 2) |
+| Module | Cluster | Shared across all namespaces |
 
-The operator watches all namespaces (`Api::all()`). Namespace-level RBAC controls which teams can create, view, or modify resources.
+The operator watches all namespaces. Namespace-level RBAC controls which teams can create, view, or modify resources.
 
 ## RBAC Roles
 
-The Helm chart includes optional RBAC example templates (enable with `rbacExamples.enabled: true`). Four personas are provided:
+The Helm chart includes optional RBAC example templates (enable with `rbacExamples.enabled: true`). Role names are prefixed with the release fullname (`cfgd-team-lead` for a release named `cfgd`). Four personas:
 
-### Platform Admin
-
-Full control over all cfgd resources cluster-wide. Manages ClusterConfigPolicies, approves modules, and oversees all namespaces.
-
-### Team Lead
-
-Full CRUD within their namespace. Can create MachineConfigs, set ConfigPolicies, and manage DriftAlerts for their team.
-
-### Team Member
-
-Read-only access within their namespace. Can view MachineConfigs and DriftAlerts but cannot modify them.
-
-### Module Publisher
-
-Cluster-scoped role for publishing Module CRDs (available in Tier 2). Cannot modify MachineConfigs or policies.
+| Role | Scope | Access |
+|---|---|---|
+| `platform-admin` | Cluster | Full control over all cfgd resources; manages ClusterConfigPolicies, approves modules |
+| `team-lead` | Namespace | Full CRUD on MachineConfigs, ConfigPolicies, and DriftAlerts in the team's namespace |
+| `team-member` | Namespace | Read-only on MachineConfigs and DriftAlerts |
+| `module-publisher` | Cluster | Publish Modules; cannot modify MachineConfigs or policies |
 
 ## Policy Merge Semantics
 
@@ -42,10 +33,10 @@ When both a ClusterConfigPolicy and a namespace-scoped ConfigPolicy apply to the
 
 | Field | Merge Rule |
 |---|---|
-| `packages` | Union -- both policies' packages are required; ClusterConfigPolicy version constraints override namespace ConfigPolicy for the same package |
-| `requiredModules` | Union -- both policies' modules are required |
-| `settings` | Cluster wins -- ClusterConfigPolicy values override namespace ConfigPolicy |
-| `trustedRegistries` | Cluster is canonical -- namespace policies cannot expand the trusted list |
+| `packages` | Union: both policies' packages are required; ClusterConfigPolicy version constraints override namespace ConfigPolicy for the same package |
+| `requiredModules` | Union: both policies' modules are required |
+| `settings` | Cluster wins: ClusterConfigPolicy values override namespace ConfigPolicy |
+| `trustedRegistries` | Cluster is canonical: namespace policies cannot expand the trusted list |
 
 ## Binding Teams to Namespaces
 

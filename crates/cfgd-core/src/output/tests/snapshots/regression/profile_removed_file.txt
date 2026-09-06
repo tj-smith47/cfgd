@@ -1,2 +1,2 @@
 Removed
-  — /home/tj/.old-rc
+  ∅ /home/tj/.old-rc

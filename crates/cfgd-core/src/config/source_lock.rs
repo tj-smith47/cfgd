@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourcesLockfile {
+    /// Every locked source entry, one per subscribed `spec.sources[]` name.
     #[serde(default)]
     pub sources: Vec<SourceLockEntry>,
 }

@@ -170,3 +170,30 @@ fn search_happy_human() {
 
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_search/happy.json");
 }
+
+/// `cmd_module_search`'s per-source loop used to run a bare
+/// top-level spinner with no owner to attribute a search to when several
+/// registries run in sequence. It now opens a `registry:<name>` owner group
+/// per source (the same idiom `cli/sync.rs` uses per source), so the settled
+/// line nests one level deeper than the owner header instead of sitting
+/// flush with it.
+#[test]
+#[serial]
+fn search_settle_line_nests_under_the_registry_owner_header() {
+    let (config_dir, _state_dir) = search_test_setup();
+    let _home = cfgd_core::with_test_home_guard(config_dir.path());
+    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let src_root = tempfile::tempdir().unwrap();
+    let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
+    let reg_url = cfgd_core::to_file_url(&src);
+    write_registry_config(config_dir.path(), &reg_url);
+
+    let cli = cli_for(config_dir.path(), config_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    drop(printer);
+
+    let human = strip_ansi(&cap.human());
+    common::assert_nests_under(&human, "registry:myreg", "Searched myreg");
+}

@@ -125,20 +125,67 @@ pub(super) fn resolve_npm_prefix(state: &dyn PackageStateStore) -> Result<NpmPre
 /// Absent or unreadable state is treated the same way — "nothing usable is
 /// persisted" rather than an error — persistence is a stability optimization,
 /// not something a caller should fail over.
+///
+/// A FALLBACK decision is additionally probed the other way: revalidation of
+/// the fallback path alone can only ever notice the fallback getting worse,
+/// so a machine whose configured prefix was later fixed (permissions granted
+/// on `/usr/local`, or a second node arriving on `PATH` under a prefix its
+/// owner can write) would stay on `~/.npm-global` forever. When the row says
+/// `is_fallback` AND the fallback holds no packages, npm is re-asked for its
+/// configured prefix and that prefix is write-probed; a writable answer
+/// discards the row so the caller re-derives — promoting to the configured
+/// prefix and re-persisting with `is_fallback: false`. Asking npm is a spawn,
+/// but it is paid only while the machine is in the degraded state, on
+/// operations that are about to spawn npm anyway. A probe that errors or
+/// answers unwritable keeps the fallback: "could not check" must not discard
+/// a decision that still works.
+///
+/// The emptiness condition is what keeps promotion from undoing convergence.
+/// Moving the prefix does not move the packages under it, so promoting away
+/// from a fallback that already holds installs makes every one of them
+/// invisible to `installed_packages()`: the next plan re-queues packages that
+/// are installed, the apply re-runs the install and every post-script the
+/// module owns, and the machine reports drift it can never settle. An EMPTY
+/// fallback orphans nothing, so healing stays available exactly where it is
+/// free.
 fn persisted_npm_prefix_decision(state: &dyn PackageStateStore) -> Option<NpmPrefixDecision> {
+    persisted_npm_prefix_decision_with(state, npm_prefix_is_writable, npm_configured_prefix)
+}
+
+/// [`persisted_npm_prefix_decision`] with the write-probe and the
+/// configured-prefix query injected, so tests can drive the promotion and
+/// keep-fallback branches deterministically — the same seam shape
+/// [`resolve_npm_prefix_with`] carries for the same reason.
+fn persisted_npm_prefix_decision_with(
+    state: &dyn PackageStateStore,
+    is_writable: impl Fn(&Path) -> bool,
+    configured_prefix: impl Fn() -> Result<Option<PathBuf>>,
+) -> Option<NpmPrefixDecision> {
     let (prefix, is_fallback) = match state.resolved_prefix(NPM_PREFIX_STATE_MANAGER) {
         Ok(Some(record)) => record,
         Ok(None) => return None,
         Err(e) => {
+            // tracing-ok: a state read that degrades to re-resolving; no row states it
             tracing::warn!(error = %e, "cannot read persisted npm prefix");
             return None;
         }
     };
     let prefix = PathBuf::from(prefix);
-    if !npm_prefix_is_writable(&prefix) {
+    if !is_writable(&prefix) {
         tracing::debug!(
             prefix = %prefix.display(), // native-ok: log line, not a persisted key
             "persisted npm prefix is no longer writable; discarding cached decision"
+        );
+        return None;
+    }
+    if is_fallback
+        && !npm_prefix_holds_packages(&prefix)
+        && let Ok(Some(configured)) = configured_prefix()
+        && is_writable(&configured)
+    {
+        tracing::debug!(
+            prefix = %configured.display(), // native-ok: log line, not a persisted key
+            "npm's configured prefix is writable again; discarding fallback decision"
         );
         return None;
     }
@@ -163,6 +210,7 @@ fn persist_npm_prefix_decision(state: &dyn PackageStateStore, decision: &NpmPref
         &cfgd_core::to_posix_fs_key(prefix),
         decision.is_fallback,
     ) {
+        // tracing-ok: the write half of the same cache
         tracing::warn!(error = %e, "cannot persist resolved npm prefix");
     }
 }
@@ -381,6 +429,20 @@ pub(super) fn npm_prefix_is_writable(prefix: &Path) -> bool {
         && probe_npm_dir_writable(&npm_bin_dir(prefix))
 }
 
+/// Whether any globally installed package lives under `prefix` — the question
+/// that decides whether abandoning it is free. Dot-prefixed entries
+/// (`.package-lock.json`, `.bin`) are npm's own bookkeeping, not packages, and
+/// a modules directory that cannot be read at all answers `false`: nothing is
+/// known to be there.
+pub(super) fn npm_prefix_holds_packages(prefix: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(npm_global_modules_dir(prefix)) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+}
+
 /// The fallback prefix used when npm's own configured prefix isn't
 /// user-writable: `$HOME/.npm-global`. Resolution only — does not create the
 /// directory, so a read path (`installed_packages`, `path_dirs`) can name
@@ -478,6 +540,7 @@ pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
         }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
         Ok(NpmPrefixDecision { prefix: None, .. }) => Vec::new(),
         Err(e) => {
+            // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             Vec::new()
         }
@@ -491,6 +554,7 @@ fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecisio
     match resolve_npm_prefix(state) {
         Ok(decision) => Some(decision),
         Err(e) => {
+            // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             None
         }
@@ -500,6 +564,16 @@ fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecisio
 impl PackageManager for NpmManager {
     fn name(&self) -> &str {
         "npm"
+    }
+
+    fn upgrade_verb(&self) -> Option<&'static str> {
+        // `npm install -g <pkg>` installs latest, replacing an already-held
+        // package — install itself is the raise, as for `go`.
+        Some("install")
+    }
+
+    fn tool_version(&self) -> Option<String> {
+        super::shared::tool_version_from(npm_cmd().arg("--version"))
     }
 
     fn is_available(&self) -> bool {
@@ -532,11 +606,11 @@ impl PackageManager for NpmManager {
             .unwrap_or_default()
     }
 
-    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
-        match detect_brew_system_method(NPM_FALLBACK_METHOD) {
+        match detect_brew_system_method(NPM_FALLBACK_METHOD, delivered) {
             NPM_FALLBACK_METHOD => {
                 Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
             }
@@ -586,7 +660,7 @@ impl PackageManager for NpmManager {
 
         Err(PackageError::BootstrapFailed {
             manager: "npm".into(),
-            message: "no installation method available".into(),
+            message: "no method available to install npm".into(),
         }
         .into())
     }
@@ -616,12 +690,16 @@ impl PackageManager for NpmManager {
             // directory under this prefix is reported through
             // `created_path_dirs` and written into the generated env file, so
             // an instruction to add it by hand would be stale the moment the
-            // env layer runs.
+            // env layer runs. `Warn`, not `Info`: the configured prefix was
+            // refused and the install went somewhere else, which is a
+            // degraded fallback whatever the packages did afterwards.
+            // The tag already says npm; a body opening on it would print the
+            // same fact twice (`[npm] npm has no writable …`).
             cx.report(
-                Role::Info,
+                Role::Warn,
                 "npm",
                 format!(
-                    "npm has no writable global prefix; installing into {}",
+                    "no writable global prefix; installing into {}",
                     prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
                 ),
             );
@@ -711,7 +789,7 @@ pub(super) fn parse_npm_list_versions(
             let version = info
                 .get("version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+                .unwrap_or(cfgd_core::providers::UNKNOWN_PACKAGE_VERSION)
                 .to_string();
             packages.push(cfgd_core::providers::PackageInfo {
                 name: name.clone(),
@@ -726,6 +804,7 @@ pub(super) fn parse_npm_list_versions(
 mod tests {
     use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::PackageManagerExt;
 
     use super::super::shared::brew_available;
     use super::*;
@@ -1078,6 +1157,132 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // Fallback-promotion revalidation, driven through the injectable seam so
+    // every branch is deterministic on any platform: no real npm spawn, no
+    // real permission bits.
+    // ---------------------------------------------------------------------
+
+    /// A persisted FALLBACK row whose configured prefix has become writable
+    /// again is discarded, so the caller re-derives and promotes off the
+    /// degraded `~/.npm-global` path automatically.
+    #[test]
+    fn a_fallback_row_is_discarded_when_the_configured_prefix_is_writable_again() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let configured = PathBuf::from("/usr/local");
+        let decision =
+            persisted_npm_prefix_decision_with(&state, |_| true, || Ok(Some(configured.clone())));
+
+        assert_eq!(
+            decision, None,
+            "a writable configured prefix must discard the fallback row so \
+             re-derivation promotes onto it"
+        );
+    }
+
+    /// The configured prefix still failing its write-probe keeps the fallback:
+    /// the machine is still in the degraded state the row records.
+    #[test]
+    fn a_fallback_row_survives_while_the_configured_prefix_stays_unwritable() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let fallback = PathBuf::from("/home/u/.npm-global");
+        let decision = persisted_npm_prefix_decision_with(
+            &state,
+            |p| p == fallback, // the fallback probes writable; everything else does not
+            || Ok(Some(PathBuf::from("/usr/local"))),
+        );
+
+        assert_eq!(
+            decision,
+            Some(NpmPrefixDecision {
+                prefix: Some(fallback),
+                is_fallback: true,
+            }),
+            "an unwritable configured prefix must keep the persisted fallback"
+        );
+    }
+
+    /// "Could not check" is not "check failed": a configured-prefix query that
+    /// errors, or that answers nothing at all, keeps the fallback rather than
+    /// discarding a decision that still works.
+    #[test]
+    fn a_fallback_row_survives_when_the_configured_prefix_cannot_be_asked() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let expected = Some(NpmPrefixDecision {
+            prefix: Some(PathBuf::from("/home/u/.npm-global")),
+            is_fallback: true,
+        });
+
+        let on_error = persisted_npm_prefix_decision_with(
+            &state,
+            |_| true,
+            || {
+                Err(PackageError::CommandFailed {
+                    manager: "npm".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                }
+                .into())
+            },
+        );
+        assert_eq!(
+            on_error, expected,
+            "a probe error must keep the fallback, never discard it"
+        );
+
+        let on_empty = persisted_npm_prefix_decision_with(&state, |_| true, || Ok(None));
+        assert_eq!(
+            on_empty, expected,
+            "npm answering no prefix at all must keep the fallback"
+        );
+    }
+
+    /// The promotion probe is the spawn the doc comment prices: it is paid
+    /// only while the machine is in the degraded state. A non-fallback row
+    /// never asks npm anything.
+    #[test]
+    fn a_non_fallback_row_never_pays_the_configured_prefix_spawn() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/usr/local", false)
+            .expect("seed a non-fallback decision");
+
+        let asked = std::cell::Cell::new(0u32);
+        let decision = persisted_npm_prefix_decision_with(
+            &state,
+            |_| true,
+            || {
+                asked.set(asked.get() + 1);
+                Ok(Some(PathBuf::from("/usr/local")))
+            },
+        );
+
+        assert_eq!(
+            decision,
+            Some(NpmPrefixDecision {
+                prefix: Some(PathBuf::from("/usr/local")),
+                is_fallback: false,
+            }),
+        );
+        assert_eq!(
+            asked.get(),
+            0,
+            "a healthy (non-fallback) row must not spawn npm to re-ask its \
+             configured prefix"
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_NPM_BIN ToolShim.
     // ---------------------------------------------------------------------
 
@@ -1201,11 +1406,13 @@ mod tests {
                 canonical_name: "typescript".to_string(),
                 resolved_name: "typescript".to_string(),
                 manager: "npm".to_string(),
+                manager_declared: false,
                 version: None,
                 script: None,
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }];
             module
         }
@@ -1236,7 +1443,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             reconciler
@@ -1301,7 +1508,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             let plan = Plan {
@@ -1339,7 +1546,7 @@ mod tests {
                 .lines()
                 .map(str::trim_start)
                 .filter(|l| {
-                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
+                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{25C9}']
                         .iter()
                         .any(|g| l.starts_with(*g))
                 })
@@ -1847,24 +2054,27 @@ mod tests {
                  not merely equal to itself"
             );
 
-            let captured = buf.lock().unwrap().clone();
+            let captured = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
-                captured.contains("npm has no writable global prefix"),
+                // The tag says npm; the body must not (`no_provider_note_repeats_its_own_tag`).
+                captured.contains("no writable global prefix"),
                 "install()'s fallback-notice branch must have executed: {captured}"
             );
         }
 
-        /// The stability guarantee persistence exists for: once
-        /// `resolve_npm_prefix` records a decision against `state`, a LATER
-        /// call with the SAME `state` must return that decision unchanged
-        /// even when the live inputs that produced it have since changed for
-        /// the better. Without this, a package `install()`-ed under the
-        /// first decision could become invisible to a later
-        /// `installed_packages()` that re-derived a different (now-writable)
-        /// prefix from the shim's updated answer.
+        /// The two halves of the persistence contract, through the real shim:
+        /// while the configured prefix stays unwritable a fallback decision is
+        /// REUSED unchanged across calls (stability — packages installed under
+        /// it must stay visible), and the moment the configured prefix probes
+        /// writable an EMPTY fallback is DISCARDED and the resolve promotes
+        /// onto it, re-persisting `is_fallback: false`. The promoted decision
+        /// then enjoys the same stability, without re-asking npm. The home
+        /// here is a fresh tempdir, so the fallback holds nothing and
+        /// promotion costs nothing — the sibling below covers the fallback
+        /// that does hold packages.
         #[test]
         #[serial]
-        fn resolve_npm_prefix_reuses_the_persisted_decision_across_calls() {
+        fn resolve_npm_prefix_reuses_a_fallback_until_the_configured_prefix_heals() {
             let _clear = clear_npm_env_prefix();
             let _elevated = with_test_elevated_guard(false);
             let home = tempfile::tempdir().expect("tempdir");
@@ -1880,24 +2090,103 @@ mod tests {
                 "the unwritable configured prefix must resolve to the fallback branch first"
             );
 
-            // Flip the shim to answer a genuinely writable prefix. If
-            // persistence-reuse were broken, the second call would pick this
-            // up and diverge from `first`.
+            let second = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("second resolve must succeed");
+            assert_eq!(
+                second, first,
+                "while the configured prefix stays unwritable, the fallback \
+                 decision must be reused unchanged"
+            );
+
+            // The machine heals: the shim now answers a genuinely writable
+            // configured prefix. The revalidation probe must notice and
+            // promote off the fallback.
             let writable_dir = tempfile::tempdir().expect("tempdir");
             let _second_shim = NpmShim::install(writable_dir.path(), 0, "", "");
 
-            let second = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
-                .expect("second resolve must succeed");
-
+            let promoted = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("promoting resolve must succeed");
             assert_eq!(
-                second, first,
-                "a second resolve_npm_prefix() call must return the cached decision \
-                 unchanged, even though the live inputs now point to a writable prefix"
+                promoted,
+                NpmPrefixDecision {
+                    prefix: Some(writable_dir.path().to_path_buf()),
+                    is_fallback: false,
+                },
+                "a configured prefix that probes writable again must be \
+                 promoted onto automatically"
+            );
+
+            let (persisted_prefix, persisted_is_fallback) = state
+                .package_manager_prefix("npm")
+                .expect("read back")
+                .expect("the promotion must overwrite the fallback row");
+            assert_eq!(
+                persisted_prefix,
+                cfgd_core::to_posix_fs_key(writable_dir.path()),
+                "the promoted decision must be persisted, not merely returned"
+            );
+            assert!(!persisted_is_fallback);
+
+            let steady = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("steady-state resolve must succeed");
+            assert_eq!(
+                steady, promoted,
+                "the promoted decision must be reused unchanged on later calls"
+            );
+        }
+
+        /// The convergence guarantee across a healing machine, end to end
+        /// through the production methods: `install()` puts packages under the
+        /// fallback, npm's configured prefix then becomes writable, and
+        /// `installed_packages()` must STILL ask the fallback. Promoting there
+        /// would report every package installed under it as missing, so the
+        /// next plan re-queues work that is already done and the module's
+        /// post-scripts re-run on a converged machine — which is exactly what
+        /// a `--prefix`-less second invocation in the argv log would mean.
+        #[test]
+        #[serial]
+        fn installed_packages_keeps_asking_a_fallback_prefix_that_holds_packages() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let home = tempfile::tempdir().expect("tempdir");
+            let state = cfgd_core::test_helpers::test_state();
+            let (printer, _buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let cx = PackageContext::new(&printer, &state);
+
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let first_shim = NpmShim::install(&unwritable, 0, "{}", "");
+            cfgd_core::with_test_home(home.path(), || {
+                NpmManager.install(&["yarn".to_string()], &cx)
+            })
+            .expect("install must resolve through the fallback composition");
+            let fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix);
+            assert!(
+                first_shim
+                    .argv_log()
+                    .contains(&format!("--prefix {}", fallback.display())),
+                "install must have targeted the fallback: {}",
+                first_shim.argv_log()
+            );
+            // The shim spawns no real npm, so stand in for what the install
+            // just claimed to do: a package now lives under the fallback.
+            std::fs::create_dir_all(npm_global_modules_dir(&fallback).join("yarn"))
+                .expect("seed the installed package");
+
+            // The machine heals — a writable configured prefix appears.
+            let (second_shim, writable_dir) = NpmShim::with_writable_prefix(0, "{}", "");
+            cfgd_core::with_test_home(home.path(), || NpmManager.installed_packages(&cx))
+                .expect("installed_packages must succeed");
+
+            let log = second_shim.argv_log();
+            assert!(
+                log.contains(&format!("--prefix {}", fallback.display())),
+                "the query must still ask the prefix the install wrote to: {log}"
             );
             assert!(
-                second.is_fallback,
-                "the cached decision must remain the original fallback, not the \
-                 newly writable configured prefix"
+                !log.contains(&writable_dir.path().display().to_string()),
+                "promoting onto the healed prefix would orphan every package \
+                 already installed under the fallback: {log}"
             );
         }
 
@@ -2144,7 +2433,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             let plan = Plan {

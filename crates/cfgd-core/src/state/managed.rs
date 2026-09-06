@@ -1,11 +1,49 @@
 use std::collections::HashSet;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::StateStore;
 use super::types::ManagedResource;
 use crate::errors::Result;
 use crate::providers::OrphanedPackage;
+
+/// What [`StateStore::refresh_managed_resource_hash`] did to the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HashRefresh {
+    /// The recorded hash already described the bytes; nothing written.
+    Unchanged,
+    /// The hash agreed but the row carried no per-file breakdown; the
+    /// breakdown was stored so the next move can be counted. Not news.
+    Backfilled,
+    /// The hash moved. `previous_files` is the breakdown the row held before,
+    /// `None` when it had none to compare against.
+    Moved { previous_files: Option<String> },
+}
+
+/// The `managed_resources` package row id: `<manager>/<package>`.
+///
+/// Every package tracking row's `resource_id` is minted here — the apply path
+/// composes through this before calling
+/// [`StateStore::upsert_package_resource`] — so a reader parsing one back uses
+/// [`split_package_resource_id`] and can never disagree with the producer
+/// about the separator. (The DRIFT writers spell a package finding
+/// `<manager>:<pkg>` — a different id in a different table; this pair owns
+/// only the tracking-row grammar.)
+pub fn package_resource_id(manager: &str, package: &str) -> String {
+    format!("{manager}/{package}")
+}
+
+/// The inverse of [`package_resource_id`], kept beside it so the two
+/// spellings cannot drift. Splits on the FIRST `/`, so a package name
+/// containing `/` keeps its tail intact; `None` for an id missing either
+/// half — a row cfgd cannot read degrades to unparsed rather than to a pair
+/// claiming a manager it never named.
+pub fn split_package_resource_id(id: &str) -> Option<(&str, &str)> {
+    // module-id-ok: the package TRACKING grammar `<manager>/<package>`, which
+    // this pair owns; a `module` drift row is a different id in another table.
+    id.split_once('/')
+        .filter(|(manager, package)| !manager.is_empty() && !package.is_empty())
+}
 
 impl StateStore {
     /// Upsert a managed resource record.
@@ -32,6 +70,9 @@ impl StateStore {
     }
 
     /// Upsert a package tracking row, persisting the manager's uninstall command.
+    ///
+    /// `resource_id` is [`package_resource_id`]'s composition — callers mint
+    /// through it, never a hand-built `format!`.
     ///
     /// Like [`upsert_managed_resource`](Self::upsert_managed_resource) but fixed to
     /// `resource_type = "package"` with a NULL `last_hash`, and it records
@@ -63,8 +104,8 @@ impl StateStore {
     /// Package tracking rows whose `<manager>` is not in `known_managers` — i.e.
     /// rows for a custom/scripted manager whose definition has left the config.
     ///
-    /// The manager is parsed from `resource_id` by splitting on the first `/`
-    /// (matching [`managed_package_ids`](Self::managed_package_ids)). Built-in
+    /// The manager is parsed from `resource_id` through
+    /// [`split_package_resource_id`]. Built-in
     /// managers are always present in the registry, so they never appear here; the
     /// only orphans are custom-manager packages. Each row carries its persisted
     /// `uninstall_cmd` (`None` for rows tracked before the column existed) so the
@@ -85,7 +126,7 @@ impl StateStore {
         Ok(rows
             .into_iter()
             .filter_map(|(id, uninstall_cmd)| {
-                id.split_once('/').and_then(|(mgr, pkg)| {
+                split_package_resource_id(&id).and_then(|(mgr, pkg)| {
                     (!known_managers.contains(mgr)).then(|| OrphanedPackage {
                         manager: mgr.to_string(),
                         package: pkg.to_string(),
@@ -94,6 +135,53 @@ impl StateStore {
                 })
             })
             .collect())
+    }
+
+    /// Refresh a tracked resource's recorded content hash and the per-file
+    /// breakdown behind it, leaving every other column alone, and report what
+    /// the row did.
+    ///
+    /// An `UPDATE` rather than an upsert: a resource cfgd has never applied has
+    /// no row, and minting one here would claim management of something this run
+    /// only looked at. A row whose recorded hash already describes the bytes on
+    /// disk costs no write at all — the daemon asks this on every tick — unless
+    /// it carries no breakdown yet, in which case the breakdown is stored once
+    /// ([`HashRefresh::Backfilled`]) so the NEXT move can be counted. The
+    /// previous breakdown comes back with a move, because the caller counts the
+    /// entries that differ and the row is the only place it was kept.
+    pub fn refresh_managed_resource_hash(
+        &self,
+        resource_type: &str,
+        resource_id: &str,
+        hash: &str,
+        file_hashes: &str,
+    ) -> Result<HashRefresh> {
+        let previous: Option<(Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT last_hash, file_hashes FROM managed_resources
+                     WHERE resource_type = ?1 AND resource_id = ?2",
+                params![resource_type, resource_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((last_hash, previous_files)) = previous else {
+            return Ok(HashRefresh::Unchanged);
+        };
+        let moved = last_hash.as_deref() != Some(hash);
+        if !moved && previous_files.is_some() {
+            return Ok(HashRefresh::Unchanged);
+        }
+        self.conn.execute(
+            "UPDATE managed_resources SET last_hash = ?3, file_hashes = ?4
+                 WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource_type, resource_id, hash, file_hashes],
+        )?;
+        Ok(if moved {
+            HashRefresh::Moved { previous_files }
+        } else {
+            HashRefresh::Backfilled
+        })
     }
 
     /// Remove a managed resource record. Idempotent: deleting a row that is not
@@ -109,9 +197,9 @@ impl StateStore {
 
     /// Tracked cfgd-installed packages as `(manager, package)` pairs.
     ///
-    /// Rows have `resource_type = "package"` and `resource_id = "<manager>/<package>"`;
-    /// the id is split on the first `/` so package names containing `/` (none today,
-    /// but defensive) keep their tail intact. Rows whose id has no `/` are skipped.
+    /// Rows have `resource_type = "package"` and `resource_id` minted by
+    /// [`package_resource_id`]; each is read back through
+    /// [`split_package_resource_id`], and a row it cannot read is skipped.
     pub fn managed_package_ids(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT resource_id FROM managed_resources WHERE resource_type = 'package' ORDER BY resource_id",
@@ -122,8 +210,7 @@ impl StateStore {
         Ok(rows
             .into_iter()
             .filter_map(|id| {
-                id.split_once('/')
-                    .map(|(mgr, pkg)| (mgr.to_string(), pkg.to_string()))
+                split_package_resource_id(&id).map(|(mgr, pkg)| (mgr.to_string(), pkg.to_string()))
             })
             .collect())
     }

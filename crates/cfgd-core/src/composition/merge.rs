@@ -42,8 +42,28 @@ pub(super) fn merge_with_policy(
             backups,
         } = &layer.spec;
 
-        // Env: later overrides earlier by name (respecting priority ordering)
-        crate::merge_env(&mut merged.env, env);
+        let layer_owner = layer.owner_token();
+        // Platform-gated entries are filtered BEFORE the fold, for the same
+        // reason `config::merge_layers` filters before its own: an entry that
+        // does not apply here must not displace one that does.
+        let platform = crate::platform::Platform::current();
+        let env: Vec<crate::config::EnvVar> = crate::platform::applicable_here(env, platform)
+            .cloned()
+            .collect();
+        let aliases: Vec<crate::config::ShellAlias> =
+            crate::platform::applicable_here(aliases, platform)
+                .cloned()
+                .collect();
+        // Env: later overrides earlier by name (respecting priority ordering);
+        // `PATH` concatenates.
+        crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
+        merged.entry_owners.claim(&layer_owner, &env, &aliases);
+        for secret in secrets {
+            merged.entry_owners.claim_env_names(
+                &layer_owner,
+                secret.envs.iter().flatten().map(String::as_str),
+            );
+        }
 
         // EnvScope: last layer that *specifies* it wins, exactly as the
         // local-only merge resolves it. Composing sources must not change how
@@ -55,7 +75,7 @@ pub(super) fn merge_with_policy(
         }
 
         // Aliases: later overrides earlier by name
-        crate::merge_aliases(&mut merged.aliases, aliases);
+        crate::merge_aliases(&mut merged.aliases, &aliases);
 
         // Packages: union
         if let Some(pkgs) = packages {

@@ -1,0 +1,25 @@
+{
+  "cache": {
+    "dir": "/home/you/.cache/cfgd",
+    "modules": "/home/you/.cache/cfgd/modules",
+    "source": "default",
+    "sources": "/home/you/.cache/cfgd/sources"
+  },
+  "config": {
+    "dir": "/home/you/.config/cfgd",
+    "file": "/home/you/.config/cfgd/cfgd.yaml",
+    "source": "default"
+  },
+  "runtime": {
+    "dir": "/run/user/1000/cfgd",
+    "socket": "/run/user/1000/cfgd/cfgd.sock",
+    "source": "default"
+  },
+  "scope": "user",
+  "state": {
+    "applyLock": "/home/you/.local/state/cfgd/apply.lock",
+    "db": "/home/you/.local/state/cfgd/state.db",
+    "dir": "/home/you/.local/state/cfgd",
+    "source": "default"
+  }
+}

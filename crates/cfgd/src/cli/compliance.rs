@@ -6,12 +6,13 @@ use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
 /// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
-pub(super) fn collect_and_store_compliance_snapshot(
-    cli: &Cli,
-    printer: &Printer,
-) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
+pub(super) fn collect_and_store_compliance_snapshot<'a>(
+    ctx: &'a RunContext<'_>,
+) -> anyhow::Result<(&'a CfgdConfig, ComplianceSnapshot)> {
+    let cli = ctx.cli();
+    let printer = ctx.printer();
+    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let config_dir = ctx.config_dir();
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the compliance
@@ -20,25 +21,28 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // Report mode: a source security-constraint violation surfaces as a compliance
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
-    let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
-        None,
+    let mut desired = resolve_desired_state(
+        ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
         &quiet_printer,
         false,
         composition::ConstraintMode::Report,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    let mut registry = desired.take_registry(cfg);
     let constraint_violations = desired.constraint_violations;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
-    let mut registry = build_registry_with_profile(&resolved.merged.packages);
+    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        &config_dir,
+        config_dir,
         &resolved,
-        Some((printer, &cli.config)),
+        Some(ctx),
     )?));
 
     let profile_name = cli
@@ -55,18 +59,26 @@ pub(super) fn collect_and_store_compliance_snapshot(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let mut snapshot = cfgd_core::compliance::collect_snapshot(
-        profile_name,
-        &resolved.merged,
-        &resolved_modules,
-        &config_dir,
-        &registry,
-        &scope,
-        &sources,
-        &quiet_printer,
-        &state,
-    )?;
+    let state = ctx.state()?;
+    // Narrated through the OWNING printer, not `quiet_printer`: the quiet one
+    // exists to keep the collection's own chatter out of the snapshot run, and
+    // routing the wait through it would suppress the wait too — while a real
+    // `-o json` or `--quiet` invocation still shows nothing, because the owning
+    // printer suppresses spinners at that verbosity itself.
+    let mut snapshot = printer.narrate("Collecting compliance checks", |_| {
+        cfgd_core::compliance::collect_snapshot(
+            profile_name,
+            &resolved.merged,
+            &resolved_modules,
+            config_dir,
+            &registry,
+            &scope,
+            &sources,
+            &quiet_printer,
+            state,
+            None,
+        )
+    })?;
 
     // Fold the Report-mode source-constraint violations into the snapshot as
     // Violation checks so they appear in the `checks` array and bump
@@ -124,14 +136,20 @@ fn append_constraint_violation_checks(
 
 /// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
-    printer.emit(build_compliance_summary_doc(&snapshot));
+    let ctx = RunContext::new(cli, printer);
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
+    printer.emit(build_compliance_summary_doc(
+        &snapshot,
+        &cfgd_core::utc_now_iso8601(),
+        printer.arrow(),
+    ));
     Ok(())
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
 
     let export = cfg
         .spec
@@ -163,7 +181,10 @@ pub(super) fn cmd_compliance_history(
         .transpose()?;
 
     let entries = state.compliance_history(since_ts.as_deref(), 100)?;
-    printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(
+        &entries,
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -183,7 +204,14 @@ pub(super) fn cmd_compliance_diff(
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
 
     let diff = compute_compliance_diff(&snap1, &snap2);
-    printer.emit(build_compliance_diff_doc(id1, id2, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        id1,
+        id2,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     Ok(())
 }
 
@@ -197,6 +225,14 @@ pub(super) fn check_key(c: &ComplianceCheck) -> String {
         .or(c.path.as_deref())
         .unwrap_or("(unknown)");
     format!("{}:{}", c.category, id)
+}
+
+/// [`check_key`] in a DISPLAY slot: the same identity, with the home
+/// directory folded the way every other report row spells a path. The
+/// identity itself stays absolute — it is what the two snapshots are matched
+/// on and what `-o json` carries.
+fn check_subject(c: &ComplianceCheck) -> String {
+    cfgd_core::fold_home_in_text(&check_key(c))
 }
 
 #[derive(Debug)]
@@ -251,8 +287,8 @@ pub fn compute_compliance_diff(
             if check1.status != check2.status {
                 changed.push(ComplianceCheckChange {
                     key: key.clone(),
-                    old_status: format!("{:?}", check1.status),
-                    new_status: format!("{:?}", check2.status),
+                    old_status: check1.status,
+                    new_status: check2.status,
                     detail: check2.detail.clone(),
                 });
             }
@@ -283,54 +319,63 @@ pub fn build_compliance_diff_doc(
     snap1: &ComplianceSnapshot,
     snap2: &ComplianceSnapshot,
     diff: &ComplianceDiff,
+    arrow: &str,
 ) -> Doc {
+    // The frame names both operands as SNAPSHOTS, and names them the way the
+    // arguments do (base, then target): this command reads the state store's
+    // history and never touches the machine, so a heading a word away from
+    // `cfgd diff` has to say which two records it compared.
     let mut doc = Doc::new()
-        .heading(format!("Compliance Diff #{} → #{}", id1, id2))
-        .kv_block([
-            ("Snapshot 1", snap1.timestamp.clone()),
-            ("Snapshot 2", snap2.timestamp.clone()),
+        .heading_title("Compliance Snapshot Diff", format!("#{id1} {arrow} #{id2}"))
+        .kv_rows([
+            cfgd_core::output::KvPair::annotated(
+                "Base Snapshot",
+                format!("#{id1}"),
+                snap1.timestamp.clone(),
+            ),
+            cfgd_core::output::KvPair::annotated(
+                "Target Snapshot",
+                format!("#{id2}"),
+                snap2.timestamp.clone(),
+            ),
         ]);
 
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
+        // verdict-row-ok: a comparison verdict, not an act cfgd performed
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
-        doc = doc.section_if_nonempty(
-            format!(
-                "Added ({})",
-                cfgd_core::pluralize(diff.added.len(), "check")
-            ),
-            &diff.added,
-            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
-        );
-        doc = doc.section_if_nonempty(
-            format!(
-                "Removed ({})",
-                cfgd_core::pluralize(diff.removed.len(), "check")
-            ),
-            &diff.removed,
-            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
-        );
-        doc = doc.section_if_nonempty(
-            format!(
-                "Changed ({})",
-                cfgd_core::pluralize(diff.changed.len(), "check")
-            ),
-            &diff.changed,
-            |s, items| {
-                items.iter().fold(s, |s, c| {
-                    let role = match c.new_status.as_str() {
-                        "Violation" => Role::Fail,
-                        "Warning" => Role::Warn,
-                        _ => Role::Ok,
-                    };
-                    s.status_with(
-                        role,
-                        format!("{} ({} → {})", c.key, c.old_status, c.new_status),
-                        |sf| sf.detail_opt(c.detail.as_deref()),
-                    )
-                })
-            },
-        );
+        doc = doc.section_if_nonempty("Added", &diff.added, |s, items| {
+            items.iter().fold(s, |s, c| s.bullet(check_subject(c)))
+        });
+        doc = doc.section_if_nonempty("Removed", &diff.removed, |s, items| {
+            items.iter().fold(s, |s, c| s.bullet(check_subject(c)))
+        });
+        doc = doc.section_if_nonempty("Changed", &diff.changed, |s, items| {
+            items.iter().fold(s, |s, c| {
+                // Each word in its own vocabulary's role, and the row's role
+                // is the new status's — never a match on a rendered word.
+                s.status_transition_with(
+                    cfgd_core::fold_home_in_text(&c.key),
+                    c.old_status.human_display(),
+                    c.new_status.human_display(),
+                    arrow,
+                    |sf| sf.detail_opt(c.detail.as_deref()),
+                )
+            })
+        });
+        // The per-section titles carry no count, and unlike the module-review
+        // sections above them a diff between two large snapshots can scroll
+        // past the screen — this is the surface where the total IS the
+        // headline, so it closes with one rather than making the reader
+        // count rows.
+        doc = doc.status_with(Role::Info, "Compliance diff", |f| {
+            f.detail(format!(
+                "{} added, {} removed, {} changed",
+                diff.added.len(),
+                diff.removed.len(),
+                diff.changed.len()
+            ))
+        });
     }
 
     doc.with_data(ComplianceDiffOutput {
@@ -343,15 +388,53 @@ pub fn build_compliance_diff_doc(
 }
 
 /// Pure builder: compliance snapshot summary Doc.
-pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
+///
+/// `now` is a parameter, not a clock read, so the `Age` row pins in a golden.
+pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str, arrow: &str) -> Doc {
     let overall = overall_status(&snapshot.summary);
 
-    let mut doc = Doc::new().heading("Compliance Summary").kv_block([
-        ("Timestamp", snapshot.timestamp.clone()),
-        ("Machine", snapshot.machine.hostname.clone()),
-        ("Profile", snapshot.profile.clone()),
-        ("Status", overall.to_string()),
-    ]);
+    // The snapshot's own facts around the two header rows it can fill: a
+    // recorded snapshot carries the profile it was taken under and the sources
+    // it was composed from, and neither the config path nor the modules.
+    let mut rows = vec![
+        // `Age`, not the stored instant: `-o json` carries `timestamp` for a
+        // consumer that needs the exact moment, and a person reading the
+        // summary is asking how fresh it is.
+        cfgd_core::output::KvPair::new(
+            "Age",
+            cfgd_core::humanize_age_magnitude_cell(Some(&snapshot.timestamp), now),
+        ),
+        cfgd_core::output::KvPair::new("Machine", snapshot.machine.hostname.clone()),
+    ];
+    // The wire shape is a name list, so a subscribed profile is not on the
+    // record to be named back.
+    let sources: Vec<_> = snapshot
+        .sources
+        .iter()
+        .map(|name| cfgd_core::reconciler::ComposedSource {
+            name: name.clone(),
+            profile: None,
+        })
+        .collect();
+    rows.extend(cfgd_core::output::config_header_rows(
+        &cfgd_core::output::ConfigHeader {
+            config_path: None,
+            sources: &sources,
+            profile: Some(&snapshot.profile),
+            // The snapshot's wire shape records the profile's NAME only — no
+            // `inherits:` chain was captured when it was taken.
+            profile_inherits: &[],
+            modules: &[],
+            arrow,
+        },
+    ));
+    let (overall_word, overall_role) = overall.human_display();
+    rows.push(cfgd_core::output::KvPair::role_valued(
+        "Status",
+        overall_word,
+        overall_role,
+    ));
+    let mut doc = Doc::new().heading("Compliance Summary").kv_rows(rows);
 
     doc = doc.kv_block([
         ("Compliant", snapshot.summary.compliant.to_string()),
@@ -373,7 +456,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
         .collect();
     doc = doc.section_if_nonempty("Violations", &violations, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Fail, check_key(c), |sf| {
+            s.status_with(Role::Fail, check_subject(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })
@@ -386,7 +469,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
         .collect();
     doc = doc.section_if_nonempty("Warnings", &warnings, |s, items| {
         items.iter().fold(s, |s, c| {
-            s.status_with(Role::Warn, check_key(c), |sf| {
+            s.status_with(Role::Warn, check_subject(c), |sf| {
                 sf.detail_opt(c.detail.as_deref())
             })
         })
@@ -411,6 +494,9 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
         )
     };
     doc = doc.status(role, summary_line);
+    if snapshot.summary.violation > 0 {
+        doc = doc.hint(crate::cli::heal_drift_hint(None));
+    }
 
     doc.with_data(ComplianceSnapshotOutput {
         snapshot: snapshot.clone(),
@@ -426,7 +512,10 @@ pub fn build_compliance_export_doc(
         .heading("Compliance Export")
         .status(
             Role::Ok,
-            format!("Compliance snapshot written to {}", export_path.posix()),
+            format!(
+                "Wrote compliance snapshot to {}",
+                cfgd_core::fold_home_in_text(&export_path.posix().to_string())
+            ),
         )
         .section("Summary", |s| {
             s.kv("Compliant", snapshot.summary.compliant.to_string())
@@ -439,36 +528,41 @@ pub fn build_compliance_export_doc(
 }
 
 /// Pure builder: compliance history Doc (table or empty-state).
-pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow]) -> Doc {
+pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Compliance History");
     if entries.is_empty() {
         doc = doc.status(Role::Info, "No compliance snapshots recorded yet");
     } else {
-        let mut table = Table::new(["ID", "Timestamp", "Compliant", "Warning", "Violation"]);
+        // `Age`, not `Timestamp`: the `ID` column beside it is the correlation
+        // key `compliance diff` takes, and the payload keeps the instant.
+        let mut table = Table::new(["ID", "Age", "Compliant", "Warning", "Violation"]);
         for row in entries {
             table = table.row([
                 row.id.to_string(),
-                row.timestamp.clone(),
+                cfgd_core::humanize_age_magnitude_cell(Some(&row.timestamp), now),
                 row.compliant.to_string(),
                 row.warning.to_string(),
                 row.violation.to_string(),
             ]);
         }
-        doc = doc.table(table);
+        doc = doc.table(table.without_unfillable_columns());
     }
     doc.with_data(ComplianceHistoryOutput {
         entries: entries.to_vec(),
     })
 }
 
-/// Derive an overall-status label from a `ComplianceSummary`.
-fn overall_status(summary: &cfgd_core::compliance::ComplianceSummary) -> &'static str {
+/// Derive an overall status from a `ComplianceSummary`.
+///
+/// Typed, so the row rendering it takes the word and its role from the one
+/// producer rather than colouring a string it recognized.
+fn overall_status(summary: &cfgd_core::compliance::ComplianceSummary) -> ComplianceStatus {
     if summary.violation > 0 {
-        "Violation"
+        ComplianceStatus::Violation
     } else if summary.warning > 0 {
-        "Warning"
+        ComplianceStatus::Warning
     } else {
-        "Compliant"
+        ComplianceStatus::Compliant
     }
 }
 
@@ -479,6 +573,10 @@ mod tests {
         ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
     };
     use cfgd_core::output::OutputFormat;
+
+    /// A day after every fixture snapshot's stamp, so a rendered `Age` reads a
+    /// fixed `1d ago` rather than moving with the suite's clock.
+    const NOW: &str = "2026-05-13T00:00:00Z";
 
     fn sample_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
         let summary = cfgd_core::compliance::compute_summary(&checks);
@@ -516,7 +614,10 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            no_hints: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: Some(state_dir.to_path_buf()),
             config_dir: None,
             cache_dir: None,
@@ -540,7 +641,11 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Compliant),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -565,7 +670,11 @@ mod tests {
             check("system", "sysctl.x", ComplianceStatus::Warning),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -587,7 +696,11 @@ mod tests {
             check("package", "ripgrep", ComplianceStatus::Violation),
         ]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -605,7 +718,11 @@ mod tests {
     fn build_compliance_summary_doc_empty_checks() {
         let snapshot = sample_snapshot(vec![]);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_compliance_summary_doc(&snapshot));
+        printer.emit(build_compliance_summary_doc(
+            &snapshot,
+            NOW,
+            printer.arrow(),
+        ));
         drop(printer);
 
         let output = cap.human();
@@ -680,15 +797,15 @@ mod tests {
 
         let output = cap.human();
         assert!(
-            output.contains("Added (1 check)") && output.contains("file:/c"),
+            output.contains("Added") && output.contains("file:/c"),
             "should report added check file:/c, got: {output}"
         );
         assert!(
-            output.contains("Removed (1 check)") && output.contains("file:/b"),
+            output.contains("Removed") && output.contains("file:/b"),
             "should report removed check file:/b, got: {output}"
         );
         assert!(
-            output.contains("Changed (1 check)") && output.contains("file:/a"),
+            output.contains("Changed") && output.contains("file:/a"),
             "should report changed check file:/a, got: {output}"
         );
         assert!(
@@ -727,7 +844,7 @@ mod tests {
              second pair (Compliant -> Compliant) is unchanged: {diff:?}"
         );
         assert_eq!(diff.changed[0].key, "file:/a");
-        assert_eq!(diff.changed[0].new_status, "Violation");
+        assert_eq!(diff.changed[0].new_status, ComplianceStatus::Violation);
     }
 
     #[test]
@@ -842,9 +959,21 @@ mod tests {
             output.contains("Compliance History"),
             "should print history heading, got: {output}"
         );
+        // The column reads as a bare magnitude under its `Age` header — the
+        // header is the dimension, so the cell carries no `ago` — and never
+        // as the stored instant, which stays in `-o json`.
+        let age_row = output
+            .lines()
+            .find(|l| l.trim_start().starts_with("1 "))
+            .unwrap_or_else(|| panic!("no row for the seeded snapshot: {output}"));
+        let age_cell = age_row.split_whitespace().nth(1).unwrap_or_default();
         assert!(
-            output.contains("2026-05-12T00:00:00Z"),
-            "should include seeded timestamp, got: {output}"
+            age_cell.ends_with('d') && age_cell[..age_cell.len() - 1].parse::<u64>().is_ok(),
+            "should age the seeded timestamp as a magnitude, got: {output}"
+        );
+        assert!(
+            !output.contains(" ago") && !output.contains("2026-05-12T00:00:00Z"),
+            "an `Age` column neither restates its header nor prints the instant, got: {output}"
         );
     }
 
@@ -958,6 +1087,97 @@ mod tests {
             snapshot.checks.len(),
             n,
             "empty violations must not add checks"
+        );
+    }
+
+    /// `cfgd compliance diff` compares two RECORDED snapshots out of the state
+    /// store's history. It reads nothing off the machine — unlike `cfgd diff`,
+    /// which it sits one word away from — so every slot framing the comparison
+    /// says which two snapshots are being compared, on both the empty and the
+    /// populated branch, and the subcommand's own help says it before the reader
+    /// has run anything.
+    #[test]
+    fn the_compliance_diff_frame_names_the_snapshots_it_compares() {
+        use clap::CommandFactory;
+
+        let render = |diff: &ComplianceDiff| {
+            let snap = sample_snapshot(vec![check(
+                "file",
+                "/etc/hosts",
+                ComplianceStatus::Compliant,
+            )]);
+            let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            printer.emit(build_compliance_diff_doc(42, 47, &snap, &snap, diff, "->"));
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+
+        let empty = render(&ComplianceDiff {
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: Vec::new(),
+        });
+        let heading = empty
+            .lines()
+            .find(|l| l.contains("#42"))
+            .unwrap_or_else(|| panic!("no heading rendered: {empty}"))
+            .to_string();
+        assert!(
+            heading.to_ascii_lowercase().contains("snapshot"),
+            "the heading must name what it compares: {heading}"
+        );
+        for key in ["Base Snapshot", "Target Snapshot"] {
+            assert!(
+                empty.contains(key),
+                "the header rows name the base and the target snapshot, not an \
+                 unlabelled pair — `{key}` is missing from: {empty}"
+            );
+        }
+        assert!(
+            empty
+                .lines()
+                .any(|l| l.contains("No differences") && l.contains("snapshot")),
+            "the empty verdict names snapshots, never the machine: {empty}"
+        );
+
+        let populated = render(&ComplianceDiff {
+            added: vec![check("file", "/etc/motd", ComplianceStatus::Compliant)],
+            removed: Vec::new(),
+            changed: Vec::new(),
+        });
+        assert!(
+            populated
+                .lines()
+                .find(|l| l.contains("#42"))
+                .is_some_and(|l| l.to_ascii_lowercase().contains("snapshot")),
+            "the populated branch takes the same frame: {populated}"
+        );
+
+        let root = Cli::command();
+        let compliance = root
+            .get_subcommands()
+            .find(|c| c.get_name() == "compliance")
+            .expect("compliance subcommand");
+        let diff = compliance
+            .get_subcommands()
+            .find(|c| c.get_name() == "diff")
+            .expect("compliance diff subcommand");
+        let help = format!(
+            "{} {}",
+            diff.get_about().map(|s| s.to_string()).unwrap_or_default(),
+            diff.get_long_about()
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        )
+        .to_ascii_lowercase();
+        assert!(
+            help.contains("snapshot"),
+            "`compliance diff --help` must say it compares recorded snapshots: {help}"
+        );
+        assert!(
+            help.contains("`cfgd diff`"),
+            "`compliance diff --help` must point at the command that DOES read \
+             the machine: {help}"
         );
     }
 }

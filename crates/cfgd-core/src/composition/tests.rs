@@ -13,6 +13,7 @@ fn make_local_profile() -> ResolvedProfile {
                 env: vec![EnvVar {
                     name: "editor".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 }],
                 packages: Some(PackagesSpec {
                     cargo: Some(CargoSpec {
@@ -28,6 +29,7 @@ fn make_local_profile() -> ResolvedProfile {
             env: vec![EnvVar {
                 name: "editor".into(),
                 value: "vim".into(),
+                platforms: vec![],
             }],
             packages: PackagesSpec {
                 cargo: Some(CargoSpec {
@@ -67,6 +69,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code --wait".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -476,6 +479,47 @@ fn validate_constraints_blocks_a_patch_filter_script() {
 }
 
 /// One profile layer contributed by source `acme`, carrying `spec`.
+/// A composed entry names the SOURCE it arrived from, and a local one the
+/// subscriber's own profile. Composition is a SECOND merge: an owner it failed
+/// to record would leave a subscribed source's env line either uncommented or
+/// silently attributed to the local profile.
+#[test]
+fn composition_records_which_layer_declared_each_env_entry() {
+    let local = make_local_profile();
+    let mut src = make_source_input("acme", 500);
+    src.layers = vec![source_layer(ProfileSpec {
+        env: vec![EnvVar {
+            name: "TEAM".into(),
+            value: "platform".into(),
+            platforms: vec![],
+        }],
+        aliases: vec![ShellAlias {
+            name: "k".into(),
+            command: "kubectl".into(),
+            platforms: vec![],
+        }],
+        ..Default::default()
+    })];
+
+    let composed = compose(&local, &[src], ConstraintMode::Enforce).unwrap();
+    let owners = &composed.resolved.merged.entry_owners;
+    assert_eq!(
+        owners.env.get("TEAM").map(String::as_str),
+        Some("source:acme"),
+        "a subscribed source's env var names the source: {owners:?}"
+    );
+    assert_eq!(
+        owners.aliases.get("k").map(String::as_str),
+        Some("source:acme"),
+        "a subscribed source's alias names the source: {owners:?}"
+    );
+    assert_eq!(
+        owners.env.get("editor").map(String::as_str),
+        Some("profile:default"),
+        "the operator's own entry names their profile layer: {owners:?}"
+    );
+}
+
 fn source_layer(spec: ProfileSpec) -> ProfileLayer {
     ProfileLayer {
         source: "acme".to_string(),
@@ -824,6 +868,7 @@ fn filter_rejected_noop_on_null() {
         env: vec![EnvVar {
             name: "EDITOR".into(),
             value: "code".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -843,6 +888,7 @@ fn multiple_sources_priority_ordering() {
                 env: vec![EnvVar {
                     name: "theme".into(),
                     value: "dark".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -864,6 +910,7 @@ fn multiple_sources_priority_ordering() {
                 env: vec![EnvVar {
                     name: "theme".into(),
                     value: "light".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1384,6 +1431,7 @@ fn compose_deterministic_with_multiple_sources() {
                         env: vec![EnvVar {
                             name: "PAGER".into(),
                             value: "less".into(),
+                            platforms: vec![],
                         }],
                         ..Default::default()
                     },
@@ -1412,6 +1460,7 @@ fn compose_deterministic_with_multiple_sources() {
                         env: vec![EnvVar {
                             name: "PAGER".into(),
                             value: "bat".into(),
+                            platforms: vec![],
                         }],
                         ..Default::default()
                     },
@@ -1457,6 +1506,7 @@ fn higher_priority_source_wins_env_var() {
                 env: vec![EnvVar {
                     name: "THEME".into(),
                     value: "solarized".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1478,6 +1528,7 @@ fn higher_priority_source_wins_env_var() {
                 env: vec![EnvVar {
                     name: "THEME".into(),
                     value: "dracula".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1516,6 +1567,7 @@ fn local_env_wins_over_source_env_at_same_name() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "nvim".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1524,6 +1576,7 @@ fn local_env_wins_over_source_env_at_same_name() {
             env: vec![EnvVar {
                 name: "EDITOR".into(),
                 value: "nvim".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1536,6 +1589,7 @@ fn local_env_wins_over_source_env_at_same_name() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code --wait".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1717,6 +1771,7 @@ fn single_source_merges_correctly() {
                 env: vec![EnvVar {
                     name: "FZF_DEFAULT_OPTS".into(),
                     value: "--height 40%".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1874,6 +1929,7 @@ fn source_env_tracks_per_source_env_vars() {
                 env: vec![EnvVar {
                     name: "CORP_VAR".into(),
                     value: "corp-value".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1889,6 +1945,7 @@ fn source_env_tracks_per_source_env_vars() {
                 env: vec![EnvVar {
                     name: "LAYER_VAR".into(),
                     value: "from-layer".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1935,6 +1992,7 @@ fn higher_priority_source_wins_alias() {
                 aliases: vec![ShellAlias {
                     name: "ll".into(),
                     command: "ls -la".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -1943,6 +2001,7 @@ fn higher_priority_source_wins_alias() {
             aliases: vec![ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             }],
             ..Default::default()
         },
@@ -1955,6 +2014,7 @@ fn higher_priority_source_wins_alias() {
                 aliases: vec![ShellAlias {
                     name: "ll".into(),
                     command: "exa -la".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -2004,6 +2064,7 @@ fn has_content_with_env() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -2016,6 +2077,7 @@ fn has_content_with_aliases() {
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         ..Default::default()
     };
@@ -2081,10 +2143,12 @@ fn policy_items_to_spec_converts_all_fields() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         modules: vec!["nvim".into()],
         secrets: vec![crate::config::SecretSpec {
@@ -2373,10 +2437,12 @@ fn count_policy_tier_items_comprehensive() {
         env: vec![EnvVar {
             name: "A".into(),
             value: "1".into(),
+            platforms: vec![],
         }],
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         system: BTreeMap::from([("shell".into(), serde_yaml::Value::Null)]),
         modules: vec!["mod1".into(), "mod2".into()],
@@ -2395,10 +2461,12 @@ fn filter_rejected_removes_env() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "code".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "PAGER".into(),
                 value: "less".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -2416,10 +2484,12 @@ fn filter_rejected_removes_aliases() {
             ShellAlias {
                 name: "vim".into(),
                 command: "nvim".into(),
+                platforms: vec![],
             },
             ShellAlias {
                 name: "ll".into(),
                 command: "ls -la".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -2909,6 +2979,7 @@ fn record_policy_conflicts_secrets_and_aliases() {
         aliases: vec![ShellAlias {
             name: "g".into(),
             command: "git".into(),
+            platforms: vec![],
         }],
         secrets: vec![crate::config::SecretSpec {
             source: "vault://test".into(),
@@ -3011,6 +3082,7 @@ fn build_source_layers_optional_opt_in() {
                 env: vec![EnvVar {
                     name: "EXTRA".into(),
                     value: "yes".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -3533,7 +3605,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
 fn composition_error_variant_template_sandbox_violation() {
     // The variant is produced by the binary crate's template renderer when a
     // source template references a variable outside its sandbox. The variant
-    // itself is constructed in production code; here we directly instantiate
+    // itself is constructed in production code; this directly instantiates
     // and `matches!`-pin so a rename or signature change trips the test. The
     // production code path is exercised in
     // `crates/cfgd/src/files/tests.rs::source_template_sandbox_violation_pins_variant`.
@@ -3554,10 +3626,12 @@ fn record_policy_conflicts_env_vars() {
             EnvVar {
                 name: "EDITOR".into(),
                 value: "vim".into(),
+                platforms: vec![],
             },
             EnvVar {
                 name: "PAGER".into(),
                 value: "less".into(),
+                platforms: vec![],
             },
         ],
         ..Default::default()
@@ -3662,6 +3736,7 @@ fn override_test_input(priority: u32, overrides_yaml: &str) -> CompositionInput 
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "vim".into(),
+                    platforms: vec![],
                 }],
                 packages: Some(PackagesSpec {
                     npm: Some(NpmSpec {
@@ -3719,6 +3794,7 @@ fn override_env_stays_below_local_config() {
                 env: vec![EnvVar {
                     name: "EDITOR".into(),
                     value: "code".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -4082,6 +4158,7 @@ fn compose_accepts_compliant_source() {
                 env: vec![EnvVar {
                     name: "CORP".into(),
                     value: "1".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },
@@ -4119,6 +4196,7 @@ fn compose_max_priority_source_no_overflow_and_correct_rank() {
                 env: vec![EnvVar {
                     name: "REQUIRED_VAR".into(),
                     value: "enforced".into(),
+                    platforms: vec![],
                 }],
                 ..Default::default()
             },

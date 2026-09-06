@@ -18,11 +18,14 @@ spec:
     - jsonPath: .spec.ociArtifact
       name: Artifact
       type: string
-    - jsonPath: .status.verified
-      name: Verified
-      type: boolean
-    - jsonPath: .status.availablePlatforms
+    - jsonPath: .status.signature
+      name: Signature
+      type: string
+    - jsonPath: .status.platformsSummary
       name: Platforms
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Available")].status
+      name: Available
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -36,21 +39,41 @@ spec:
             properties:
               depends:
                 default: []
+                description: Names of other `Module` resources that must be applied first.
                 items:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
               env:
                 default: []
+                description: |-
+                  Environment variables this module contributes to containers that mount
+                  it.
                 items:
                   description: An environment variable set by a Module.
                   properties:
                     append:
                       default: false
+                      description: |-
+                        Append to the variable's existing value with the platform's path
+                        separator instead of replacing it. Default: `false`.
                       type: boolean
                     name:
+                      description: Variable name, as exported into the container or shell environment.
                       type: string
+                    platforms:
+                      description: |-
+                        Platform tags gating this entry alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
+                        Linux container, so the pod-mutating webhook injects an entry only when
+                        this is empty or names `linux` — nothing about a pod can answer a
+                        distro or arch tag.
+                      items:
+                        type: string
+                      type: array
                     value:
+                      description: Value assigned to the variable.
                       type: string
                   required:
                   - name
@@ -62,12 +85,17 @@ spec:
                 x-kubernetes-list-type: map
               files:
                 default: []
+                description: Files this module deploys out of its artifact.
                 items:
                   description: A file managed by a Module.
                   properties:
                     source:
+                      description: Path to the file inside the module artifact.
                       type: string
                     target:
+                      description: |-
+                        Destination path the file is deployed to inside the pod or on the
+                        machine.
                       type: string
                   required:
                   - source
@@ -89,14 +117,24 @@ spec:
                 - Debug
                 type: string
               ociArtifact:
+                description: |-
+                  OCI reference the module's content is pulled from
+                  (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content
+                  inline and nothing is fetched.
                 nullable: true
                 type: string
               packages:
                 default: []
+                description: |-
+                  Packages this module installs, each with optional per-platform name
+                  overrides.
                 items:
                   description: An entry in a Module's package list with optional per-platform overrides.
                   properties:
                     name:
+                      description: |-
+                        Default package name, used on every platform `platforms` names no
+                        override for.
                       type: string
                     platforms:
                       additionalProperties:
@@ -112,18 +150,25 @@ spec:
                 x-kubernetes-list-type: map
               scripts:
                 default: {}
-                description: Scripts that run during module lifecycle.
+                description: Lifecycle commands run around the module's deployment.
                 properties:
                   postApply:
+                    description: |-
+                      Command run once after the module's files and packages are in place.
+                      Omitted, nothing runs.
                     nullable: true
                     type: string
                 type: object
               signature:
-                description: Signature configuration for a Module's OCI artifact.
+                description: |-
+                  How the artifact's provenance is verified before it is admitted.
+                  Omitted, verification is governed by the cluster policy alone.
                 nullable: true
                 properties:
                   cosign:
-                    description: Cosign configuration for OCI artifact signature verification.
+                    description: |-
+                      How the artifact's cosign signature is verified. Omitted, no signature
+                      is required of this module.
                     nullable: true
                     properties:
                       certificateIdentity:
@@ -187,7 +232,39 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  The `metadata.generation` every other field here was computed from. A
+                  status whose `observedGeneration` is behind `metadata.generation`
+                  describes the PREVIOUS spec, which is what lets a caller wait for a
+                  verdict about the spec it just applied instead of reading the one it
+                  replaced.
+                format: int64
+                nullable: true
+                type: integer
+              platformsSummary:
+                description: |-
+                  `availablePlatforms` rendered as one comma-joined string for the
+                  `Platforms` printer column, and the only field that column may be bound
+                  to: a column resolving to an array prints the Go rendering of the
+                  slice, so an empty one reads as the literal `[]` where an absent value
+                  leaves the cell empty. Absent when no platform is known, so the
+                  JSONPath resolves to nothing and the cell stays blank.
+                nullable: true
+                type: string
               resolvedArtifact:
+                nullable: true
+                type: string
+              signature:
+                description: |-
+                  The signature verdict as ONE word (`verified` / `unverified` /
+                  `unsigned` / `unknown`), and the only field the `Signature` printer
+                  column may be bound to. `verified` is the same verdict as a raw bool,
+                  which reads as
+                  `true` in a column beside a `kubectl cfgd status` row saying
+                  `(verified)` about the same module — one fact, two vocabularies. Absent
+                  when no reconcile has written it, so the JSONPath resolves to nothing
+                  and the cell stays blank.
                 nullable: true
                 type: string
               signatureDigest:

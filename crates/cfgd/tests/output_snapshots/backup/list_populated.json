@@ -2,6 +2,7 @@
   {
     "name": "docs",
     "retention": 3,
+    "snapshots": 0,
     "source": "<SOURCE>"
   },
   {
@@ -9,6 +10,7 @@
     "nextRunAt": "<NEXT_RUN>",
     "retention": 3,
     "schedule": "0 3 * * *",
+    "snapshots": 0,
     "source": "<SOURCE>"
   }
 ]

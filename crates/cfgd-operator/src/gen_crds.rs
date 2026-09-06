@@ -202,6 +202,106 @@ mod tests {
         assert_eq!(yaml.matches("---\n").count(), 4);
     }
 
+    /// Split a printer-column jsonPath into `(field, is_indexed)` segments,
+    /// dropping whatever sits inside `[...]`: a filter or an index only says
+    /// the field it follows is a list, and the schema walk descends into that
+    /// list's `items` for the segment after it.
+    fn path_segments(json_path: &str) -> Vec<(String, bool)> {
+        let mut segments = Vec::new();
+        let mut current = String::new();
+        let mut indexed = false;
+        let mut depth = 0usize;
+        for ch in json_path.chars() {
+            match ch {
+                '[' => {
+                    depth += 1;
+                    indexed = true;
+                }
+                ']' => depth = depth.saturating_sub(1),
+                _ if depth > 0 => {}
+                '.' => {
+                    if !current.is_empty() {
+                        segments.push((std::mem::take(&mut current), indexed));
+                        indexed = false;
+                    }
+                }
+                c => current.push(c),
+            }
+        }
+        if !current.is_empty() {
+            segments.push((current, indexed));
+        }
+        segments
+    }
+
+    /// The OpenAPI `type` a printer column's jsonPath resolves to, or `None`
+    /// when the schema does not describe that path at all.
+    fn schema_type_at(schema: &Value, json_path: &str) -> Option<String> {
+        let mut node = schema;
+        for (field, indexed) in path_segments(json_path) {
+            node = node.get("properties")?.get(&field)?;
+            if indexed {
+                node = node.get("items")?;
+            }
+        }
+        node.get("type").and_then(Value::as_str).map(str::to_string)
+    }
+
+    /// Walk every `additionalPrinterColumns` entry on every CRD and refuse any
+    /// column bound to a list. The API server's table converter hands the
+    /// column's raw JSON value to `fmt.Sprintf("%v", …)`, so an array renders
+    /// as the Go slice syntax — `[]` for the empty case, where an absent value
+    /// leaves the cell empty. A column showing a list shows a
+    /// string the controller derived from it (`Module.status.platformsSummary`
+    /// is the worked example).
+    #[test]
+    fn no_printer_column_is_bound_to_a_list() {
+        let docs = super::render_each().expect("render CRDs");
+        let mut checked = 0usize;
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let version = &crd["spec"]["versions"][0];
+            let schema = &version["schema"]["openAPIV3Schema"];
+            let columns = version["additionalPrinterColumns"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                !columns.is_empty(),
+                "{} declares no printer columns",
+                doc.name
+            );
+            for column in &columns {
+                let path = column["jsonPath"].as_str().expect("jsonPath is a string");
+                let name = column["name"].as_str().unwrap_or_default();
+                match schema_type_at(schema, path) {
+                    Some(kind) => {
+                        assert!(
+                            kind != "array" && kind != "object",
+                            "{}: column {name} ({path}) resolves to a {kind}; \
+                             bind it to a scalar the controller derives",
+                            doc.name
+                        );
+                        checked += 1;
+                    }
+                    // `metadata` is rendered as an opaque object by kube, so
+                    // nothing under it can be resolved — and nothing under it
+                    // is a list either. Any OTHER unresolvable path is a
+                    // column pointing at a field that does not exist.
+                    None => assert!(
+                        path.starts_with(".metadata."),
+                        "{}: column {name} ({path}) resolves to no schema field",
+                        doc.name
+                    ),
+                }
+            }
+        }
+        assert!(
+            checked >= docs.len(),
+            "the walk resolved almost nothing ({checked} columns) — it is passing vacuously"
+        );
+    }
+
     // Build a fully-populated CRD-shaped serde_json::Value that exercises every
     // pointer_mut path in inject_smd_annotations + inject_cel_rules. Each
     // top-level test below mutates a clone of the result so the assertions

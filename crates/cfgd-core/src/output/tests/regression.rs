@@ -25,13 +25,13 @@ golden_doc!(regression, sync_change, |p, cap| {
 
 // BEFORE: cli/module/registry.rs:281  printer.info(&format!("  {}", change));
 golden_doc!(regression, registry_change, |p, cap| {
-    let s = p.section("Registry changes");
+    let s = p.section("Registry Changes");
     s.bullet("module foo @ 1.2.3 → 1.2.4");
 });
 
 // BEFORE: cli/module/registry.rs:352  printer.info(&format!("  + {}{}", pkg.name, ver));
 golden_doc!(regression, registry_added_pkg, |p, cap| {
-    let s = p.section_or_collapse("Added packages");
+    let s = p.section_or_collapse("Added Packages");
     s.bullet("nodejs@20");
 });
 
@@ -43,36 +43,38 @@ golden_doc!(regression, registry_file_map, |p, cap| {
 
 // BEFORE: cli/module/registry.rs:373  printer.warning(&format!("  $ {}", script));
 golden_doc!(regression, registry_script, |p, cap| {
-    let s = p.section_or_collapse("Scripts (will run)");
+    let s = p.section_or_collapse("Scripts (Will Run)");
     s.bullet("./post-install.sh");
 });
 
 // BEFORE: cli/compliance.rs:230  printer.success(&format!("  + {}", check_key(check)));
 golden_doc!(regression, compliance_added, |p, cap| {
-    let s = p.section_or_collapse("Added (1 check)");
+    let s = p.section_or_collapse("Added");
     s.bullet("hardening.firewall.enabled");
 });
 
 // BEFORE: cli/compliance.rs:238  printer.warning(&format!("  - {}", check_key(check)));
 golden_doc!(regression, compliance_removed, |p, cap| {
-    let s = p.section_or_collapse("Removed (1 check)");
+    let s = p.section_or_collapse("Removed");
     s.bullet("legacy.telnet.disabled");
 });
 
 // BEFORE: cli/compliance.rs:258  printer.info(&format!("    {}", detail));
 //         (4-space indent — was nested inside a Status, not a Section)
 golden_doc!(regression, compliance_changed_with_detail, |p, cap| {
-    let s = p.section_or_collapse("Changed (1)");
+    let s = p.section_or_collapse("Changed");
     s.status(Role::Fail, "ssh.password-auth (Pass → Violation)")
         .detail("sshd_config sets PasswordAuthentication=yes");
 });
 
 // BEFORE: cli/init/cmd_init.rs:288-290  three printer.info("  cfgd ...") lines
 golden_doc!(regression, init_next_steps, |p, cap| {
-    let s = p.section("Next steps");
-    s.bullet("cfgd module create <name>");
-    s.bullet("cfgd profile create <name>");
-    s.bullet("cfgd apply");
+    let s = p.section("Next Steps");
+    s.command_list([
+        ("cfgd module create <name>", "create a module"),
+        ("cfgd profile create <name>", "create a profile"),
+        ("cfgd apply", "apply configuration"),
+    ]);
 });
 
 // BEFORE: cli/config_cmd.rs:28  printer.key_value("  Branch", &origin.branch);
@@ -93,8 +95,8 @@ golden_doc!(regression, config_reconcile_settings, |p, cap| {
     let doc = Doc::new().heading("Configuration").section("Daemon", |s| {
         s.subsection("Reconcile", |r| {
             r.kv("Interval", "5m")
-                .kv("On change", "yes")
-                .kv("Auto apply", "yes")
+                .kv("On Change", "yes")
+                .kv("Auto Apply", "yes")
         })
         .subsection("Sync", |y| y.kv("Interval", "10m"))
     });
@@ -103,7 +105,7 @@ golden_doc!(regression, config_reconcile_settings, |p, cap| {
 
 // BEFORE: cli/profile/update.rs:137  printer.info(&format!("  {}", f.file_path));
 golden_doc!(regression, profile_update_file, |p, cap| {
-    let s = p.section_or_collapse("Updated files");
+    let s = p.section_or_collapse("Updated Files");
     s.bullet("/home/tj/.zshrc");
 });
 
@@ -134,7 +136,7 @@ golden_doc!(regression, doctor_check_failed, |p, cap| {
 
 // BEFORE: cli/source/update.rs:61  printer.warning(&format!("  - {}", change.description));
 golden_doc!(regression, source_update_change, |p, cap| {
-    let s = p.section_or_collapse("Source updates");
+    let s = p.section_or_collapse("Source Updates");
     s.bullet("dotfiles repo updated");
 });
 
@@ -177,7 +179,7 @@ golden_doc!(regression, apply_results_stay_indented, |p, cap| {
 
 // BEFORE: glyph zoo — `~ tmux (Pass → Warning)` was warning-styled
 golden_doc!(regression, compliance_changed_with_role_status, |p, cap| {
-    let s = p.section_or_collapse("Changed (1)");
+    let s = p.section_or_collapse("Changed");
     s.status(Role::Warn, "tmux (Pass → Warning)");
 });
 
@@ -237,16 +239,17 @@ golden_doc!(regression, worked_example_status, |p, cap| {
         .section("Modules", |s| {
             // Subject is the owner token — the same string the module's group
             // is headed with in an apply tree — and the detail is the producer's
-            // own `{pkgs}, {files}, {state}` order (`cli/status.rs`), so the
-            // worked example cannot model a line the command does not emit.
+            // own `{packages}, {files}, {scripts}, {state}` order
+            // (`cli/status.rs`), so the worked example cannot model a line the
+            // command does not emit.
             s.status_with(Role::Ok, "module:base", |sf| {
-                sf.detail("5 pkgs, 3 files, installed")
+                sf.detail("5 packages, 3 files, 0 scripts, installed")
             })
             .status_with(Role::Ok, "module:dev-tools", |sf| {
-                sf.detail("18 pkgs, 12 files, installed")
+                sf.detail("18 packages, 12 files, 3 scripts, installed")
             })
             .status_with(Role::Warn, "module:shell-config", |sf| {
-                sf.detail("0 pkgs, 4 files, error")
+                sf.detail("0 packages, 4 files, 0 scripts, error")
             })
         });
     p.emit(doc);
@@ -287,12 +290,12 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
             ("Snapshot 1", "2026-05-13 10:14:02 UTC"),
             ("Snapshot 2", "2026-05-14 09:02:11 UTC"),
         ])
-        .section_or_collapse("Added (2 checks)", |s| {
+        .section_or_collapse("Added", |s| {
             s.bullet("hardening.firewall.enabled")
                 .bullet("hardening.audit.enabled")
         })
-        .section_or_collapse("Removed (1 check)", |s| s.bullet("legacy.telnet.disabled"))
-        .section_or_collapse("Changed (1 check)", |s| {
+        .section_or_collapse("Removed", |s| s.bullet("legacy.telnet.disabled"))
+        .section_or_collapse("Changed", |s| {
             s.status_with(Role::Fail, "ssh.password-auth (Pass → Violation)", |sf| {
                 sf.detail("sshd_config sets PasswordAuthentication=yes")
             })
@@ -301,12 +304,15 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
 });
 
 // BEFORE: `cfgd init` worked example (the orphan-indent fix). Streaming
-// Section + bullets.
+// Section + command_list — the composer aligns the glue column itself, so
+// no fixture ever hand-pads a key or hand-types the " — " glue.
 golden_doc!(regression, worked_example_init_next_steps, |p, cap| {
-    let next = p.section("Next steps");
-    next.bullet("cfgd module create <name>   — create a module");
-    next.bullet("cfgd profile create <name>  — create a profile");
-    next.bullet("cfgd apply                  — apply configuration");
+    let next = p.section("Next Steps");
+    next.command_list([
+        ("cfgd module create <name>", "create a module"),
+        ("cfgd profile create <name>", "create a profile"),
+        ("cfgd apply", "apply configuration"),
+    ]);
 });
 
 // `cfgd module list` table — per-cell roles. The `Source` value "remote" and
@@ -357,8 +363,9 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 // with what the run wrote, and a bullet would read as information rather than
 // something left to do.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
-    let s = p.section("Shell environment changed");
-    s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+    let s = p.section_caveats();
+    let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
+    owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -370,8 +377,9 @@ golden_doc!(
     |p, cap| {
         p.status(Role::Ok, "Applied 4 of 4 actions")
             .duration(Duration::from_millis(820));
-        let s = p.section("Shell environment changed");
-        s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+        let s = p.section_caveats();
+        let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
+        owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
     }
 );
 

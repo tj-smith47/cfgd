@@ -1,29 +1,38 @@
 {
   "apiVersion": "cfgd.io/v1alpha1",
   "description": "A reusable unit of packages, files, scripts, and environment.",
+  "docs": "docs/spec/module.md#fields",
+  "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/module.md#fields",
   "fields": [
     {
       "children": [
         {
-          "description": "",
+          "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
           "name": "command",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Alias name, as typed at the shell prompt.",
           "name": "name",
           "required": true,
           "type": "string"
+        },
+        {
+          "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+          "name": "platforms",
+          "required": false,
+          "type": "[]string"
         }
       ],
-      "description": "",
+      "description": "Shell aliases this module contributes.",
       "name": "aliases",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ShellAlias"
     },
     {
-      "description": "",
+      "description": "Names of other modules this one requires; cfgd resolves and applies them first.",
       "name": "depends",
       "required": false,
       "type": "[]string"
@@ -31,22 +40,29 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
           "name": "name",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Platform tags gating this entry alone. Empty means every platform the declaring module or profile is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS. An entry gated off this host is not part of its desired state at all: it appears on no surface, exactly as a platform-filtered package does.",
+          "name": "platforms",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "Value assigned to the variable, exported verbatim into the shell environment.",
           "name": "value",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Environment variables this module contributes.",
       "name": "env",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "EnvVar"
     },
     {
       "children": [
@@ -60,15 +76,21 @@
             },
             {
               "description": "When encryption must be enforced. Defaults to `InRepo`.",
+              "enum": [
+                "InRepo",
+                "Always"
+              ],
               "name": "mode",
               "required": false,
-              "type": "string"
+              "type": "string",
+              "typeName": "EncryptionMode"
             }
           ],
           "description": "Encryption settings for this module file.",
           "name": "encryption",
           "required": false,
-          "type": "object"
+          "type": "object",
+          "typeName": "EncryptionSpec"
         },
         {
           "children": [
@@ -80,9 +102,16 @@
             },
             {
               "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+              "enum": [
+                "Ini",
+                "Json",
+                "Yaml",
+                "Toml"
+              ],
               "name": "format",
               "required": false,
-              "type": "string"
+              "type": "string",
+              "typeName": "PatchFormat"
             },
             {
               "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -91,10 +120,11 @@
               "type": "string"
             }
           ],
-          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
           "name": "patch",
           "required": false,
-          "type": "object"
+          "type": "object",
+          "typeName": "PatchSpec"
         },
         {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -109,33 +139,42 @@
           "type": "boolean"
         },
         {
-          "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise.",
           "name": "source",
           "required": false,
           "type": "string"
         },
         {
-          "description": "Per-file deployment strategy override. If None, uses the global default.",
+          "description": "Per-file deployment strategy override. Omitted, the module-wide default applies.",
+          "enum": [
+            "Symlink",
+            "Copy",
+            "Template",
+            "Hardlink",
+            "Patch"
+          ],
           "name": "strategy",
           "required": false,
-          "type": "string"
+          "type": "string",
+          "typeName": "FileStrategy"
         },
         {
-          "description": "",
+          "description": "Destination path on the machine. A leading `~` expands to the home directory.",
           "name": "target",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Files this module deploys.",
       "name": "files",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ModuleFileEntry"
     },
     {
       "children": [
         {
-          "description": "",
+          "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew: \"neovim\"}`) for a package named differently across managers.",
           "name": "aliases",
           "required": false,
           "type": "object"
@@ -147,19 +186,19 @@
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Package managers to never use for this package, even if otherwise available and preferred by the profile.",
           "name": "deny",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`). A version below this is treated as not satisfying the module.",
           "name": "minVersion",
           "required": false,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "The package name as the chosen manager knows it.",
           "name": "name",
           "required": false,
           "type": "string"
@@ -171,19 +210,19 @@
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Platform tags gating this package alone. Empty means install on every platform the module itself is not already gated off of.",
           "name": "platforms",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force this entry's own `script`).",
           "name": "prefer",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Shell script to run instead of a manager install, selected via `prefer: [script]`.",
           "name": "script",
           "required": false,
           "type": "string"
@@ -195,13 +234,14 @@
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Packages this module installs.",
       "name": "packages",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ModulePackageEntry"
     },
     {
-      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
       "name": "platforms",
       "required": false,
       "type": "[]string"
@@ -209,13 +249,14 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "name": "onChange",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -223,7 +264,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -253,19 +294,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -283,21 +333,23 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
         {
-          "description": "",
+          "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "name": "onDrift",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -305,7 +357,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -335,19 +387,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -365,21 +426,23 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
         {
-          "description": "",
+          "description": "Run once after every action in an apply completes.",
           "name": "postApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -387,7 +450,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -417,19 +480,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -447,21 +519,23 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
         {
-          "description": "",
+          "description": "Run once after a daemon reconcile tick completes.",
           "name": "postReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -469,7 +543,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -499,19 +573,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -529,21 +612,23 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
         {
-          "description": "",
+          "description": "Run once before any action in an apply.",
           "name": "preApply",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -551,7 +636,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -581,19 +666,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -611,21 +705,23 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         },
         {
-          "description": "",
+          "description": "Run once before a daemon reconcile tick begins.",
           "name": "preReconcile",
           "required": false,
-          "type": "[](string | object)",
+          "type": "[](string | ScriptCommand)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -633,7 +729,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -663,19 +759,28 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -693,18 +798,20 @@
                   "type": "string"
                 }
               ],
-              "description": "",
-              "name": "object",
+              "description": "The mapping form, carrying the body and its knobs.",
+              "name": "ScriptCommand",
               "required": false,
-              "type": "object"
+              "type": "object",
+              "typeName": "ScriptCommand"
             }
           ]
         }
       ],
-      "description": "",
+      "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs.",
       "name": "scripts",
       "required": false,
-      "type": "object"
+      "type": "object",
+      "typeName": "ScriptSpec"
     },
     {
       "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",

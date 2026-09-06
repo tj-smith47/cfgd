@@ -47,6 +47,47 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Build a tempdir-backed profile that resolves to more modules than it
+/// declares: `editor` is the only name in `spec.modules`, and it `depends` on
+/// `core`.
+///
+/// The declared list and the resolved one differ in membership AND order
+/// (`resolve_dependency_order` returns dependencies first), which is what lets
+/// a golden tell the two apart.
+///
+/// Returns `(config_dir, state_dir)`.
+pub fn profile_with_module_dependency_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let module = |name: &str, body: &str| {
+        let dir = config_dir.path().join("modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{body}"
+            ),
+        )
+        .unwrap();
+    };
+    module("core", "  packages: []\n");
+    module("editor", "  depends:\n    - core\n  packages: []\n");
+
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - editor\n",
+    )
+    .unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir)
+}
+
 /// Build a tempdir-backed profile whose plan carries every shape the phase
 /// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
 /// serially-applied file write.
@@ -92,7 +133,7 @@ pub fn profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir
     let state_dir = tempfile::tempdir().unwrap();
 
     // Both source files exist (plan stage hard-errors on missing source
-    // for non-private files; we need the failure to surface at apply time).
+    // for non-private files; the failure needs to surface at apply time).
     let files_dir = config_dir.path().join("files");
     std::fs::create_dir_all(&files_dir).unwrap();
     std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
@@ -135,7 +176,10 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        no_hints: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: Some(state_dir.to_path_buf()),
         config_dir: None,
         // Keep source/module caches inside the state tempdir (which snapshots
@@ -145,7 +189,9 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         scope_arg: cfgd::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }
@@ -160,7 +206,8 @@ pub fn apply_args() -> ApplyArgs {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -177,7 +224,8 @@ pub fn apply_args_dry_run() -> ApplyArgs {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -223,6 +271,7 @@ pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::Temp
             "permission",
             "add",
             "team-config wants to install ripgrep",
+            None,
         )
         .unwrap();
 
@@ -236,7 +285,8 @@ pub fn plan_args() -> PlanArgs {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }
@@ -249,7 +299,8 @@ pub fn plan_args_module(name: &str) -> PlanArgs {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some(name.to_string()),
+        module: vec![name.to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }
@@ -480,6 +531,37 @@ pub fn two_source_setup() -> (
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     (workspace, config_dir, state_dir, branch_a, branch_b)
+}
+
+/// The `backup_profile_setup` fixture plus a subscribed source whose manifest
+/// LOCKS one env var, so composing it records exactly one conflict — the
+/// section a composition renders and the row it persists.
+///
+/// Returns `(workspace, config_dir, state_dir, source_file)`; the workspace owns
+/// the bare repo behind the `file://` URL and must outlive the config dir.
+/// Requires `CFGD_ALLOW_LOCAL_SOURCES=1`.
+pub fn backup_profile_with_conflicting_source_setup() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    PathBuf,
+) {
+    let (config_dir, state_dir, source_file) = backup_profile_setup();
+    let workspace = tempfile::tempdir().unwrap();
+
+    let manifest = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: locked-team\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    locked:\n      env:\n        - name: EDITOR\n          value: nvim\n";
+    let bare = write_manifest_to_bare(workspace.path(), "locked-team", manifest);
+    let branch = detect_branch(&bare);
+    let url = file_url(&bare);
+
+    let config_path = config_dir.path().join("cfgd.yaml");
+    let config = format!(
+        "{}  sources:\n    - name: locked-team\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n",
+        std::fs::read_to_string(&config_path).unwrap()
+    );
+    std::fs::write(&config_path, config).unwrap();
+
+    (workspace, config_dir, state_dir, source_file)
 }
 
 /// Config with one source whose URL points at an unreachable path. Returns
@@ -1031,6 +1113,8 @@ pub fn source_add_args(url: impl Into<String>) -> SourceAddArgs {
         auto_apply: false,
         pin_version: None,
         yes: true,
+        require_signed_commits: false,
+        allow_scripts: false,
     }
 }
 
@@ -1054,10 +1138,23 @@ pub fn make_bare_source_repo(
         "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {source_name}\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n{extra}",
     );
     std::fs::write(src.join("cfgd-source.yaml"), yaml).expect("write cfgd-source.yaml");
+    // A manifest that PROMISES `default` and ships no `profiles/default.yaml`
+    // is a broken source, and a fixture shaped that way can only ever exercise
+    // the missing-profile arm of every surface that renders what a source
+    // provides.
+    std::fs::create_dir_all(src.join("profiles")).expect("profiles dir");
+    std::fs::write(
+        src.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n",
+    )
+    .expect("write profiles/default.yaml");
     let mut index = src_repo.index().expect("index");
     index
         .add_path(std::path::Path::new("cfgd-source.yaml"))
         .expect("add_path");
+    index
+        .add_path(std::path::Path::new("profiles/default.yaml"))
+        .expect("add_path profile");
     index.write().expect("index_write");
     let tree_id = index.write_tree().expect("write_tree");
     let tree = src_repo.find_tree(tree_id).expect("find_tree");
@@ -1337,7 +1434,7 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
             0,
             "packages",
             "package",
-            "package:brew:install:ripgrep",
+            "brew:install:ripgrep",
             None,
         )
         .unwrap();
@@ -1465,4 +1562,35 @@ pub fn workflow_empty_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     )
     .unwrap();
     (config_dir, state_dir)
+}
+
+/// Assert that `needle`'s line sits exactly one section level (2 spaces —
+/// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
+/// every depth-nested spinner must hold, a settled action line nesting DIRECTLY
+/// under the section/owner header that introduced it, not merely somewhere
+/// deeper than it. `output` is ANSI-stripped human text.
+///
+/// The integration-test sibling of `cfgd::cli::test_support::assert_nests_under`
+/// — an integration test cannot reach a `pub(crate)` item in the binary
+/// crate, so the two copies exist. Keep both in sync if the nesting contract
+/// ever changes.
+pub fn assert_nests_under(output: &str, header: &str, needle: &str) {
+    let header_line = output
+        .lines()
+        .find(|l| l.trim_start() == header)
+        .unwrap_or_else(|| panic!("{header:?} header must be rendered: {output}"));
+    let settled_line = output
+        .lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} settle line must be rendered: {output}"));
+
+    let header_indent = header_line.len() - header_line.trim_start().len();
+    let settled_indent = settled_line.len() - settled_line.trim_start().len();
+    assert_eq!(
+        settled_indent,
+        header_indent + 2,
+        "the settle line must nest exactly one section level (2 spaces) \
+         under its header, not merely somewhere deeper \
+         (header indent {header_indent}, settle indent {settled_indent}): {output}"
+    );
 }

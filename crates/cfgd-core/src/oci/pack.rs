@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::errors::OciError;
-use crate::output::Printer;
+use crate::output::{Printer, collapse_to_subject_line};
 use crate::sha256_digest;
 
 use super::archive::create_tar_gz_with_diff_id;
@@ -308,8 +308,51 @@ pub fn pack_image(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
-    let spinner = printer.map(|p| p.spinner(format!("Packing image to {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Packing image to {artifact_ref}")));
 
+    match pack_image_inner(dir, &oci_ref, auth.as_ref(), &agent, opts) {
+        Ok(outcome) => {
+            // The push is half of what this call does, so the settled line
+            // names it, and the digest and platform it produced are that
+            // line's detail. Settled without the reference: the caller's
+            // header block names it, and the running message above already
+            // carried it while the wait was the only thing on screen.
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_ok("Packed and pushed image")
+                    .detail(super::artifact_row_detail(
+                        &outcome.digest,
+                        &outcome.platform,
+                    ));
+            }
+            tracing::debug!(
+                reference = %oci_ref,
+                digest = %outcome.digest,
+                "image packed and pushed"
+            );
+            Ok(outcome)
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail(format!("Failed to pack image to {artifact_ref}"))
+                    .detail(collapse_to_subject_line(&e));
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The fallible half of [`pack_image`]: every step from platform resolution
+/// through the manifest push runs under one `Result` the caller matches
+/// once, rather than an early `?` abandoning the spinner mid-pack.
+fn pack_image_inner(
+    dir: &Path,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    agent: &ureq::Agent,
+    opts: &PackOptions,
+) -> Result<PackOutcome, OciError> {
     // Resolve platform — split opts.platform or fall back to host platform.
     let (os, arch) = resolve_platform(opts)?;
 
@@ -320,10 +363,10 @@ pub fn pack_image(
 
     let manifest = if let Some(base_ref) = opts.base.as_deref() {
         layer_onto_base(
-            &agent,
+            agent,
             base_ref,
-            &oci_ref,
-            auth.as_ref(),
+            oci_ref,
+            auth,
             &os,
             &arch,
             &layer_gz,
@@ -341,19 +384,13 @@ pub fn pack_image(
 
         // Upload both blobs (HEAD-exists check is inside upload_blob).
         upload_blob(
-            &agent,
-            &oci_ref,
-            auth.as_ref(),
+            agent,
+            oci_ref,
+            auth,
             &config_blob,
             MEDIA_TYPE_OCI_IMAGE_CONFIG,
         )?;
-        upload_blob(
-            &agent,
-            &oci_ref,
-            auth.as_ref(),
-            &layer_gz,
-            MEDIA_TYPE_OCI_IMAGE_LAYER,
-        )?;
+        upload_blob(agent, oci_ref, auth, &layer_gz, MEDIA_TYPE_OCI_IMAGE_LAYER)?;
 
         build_image_manifest(config_digest, config_size, layer_digest, layer_size, opts)
     };
@@ -368,10 +405,10 @@ pub fn pack_image(
     );
 
     let manifest_resp = authenticated_request(
-        &agent,
+        agent,
         "PUT",
         &manifest_url,
-        auth.as_ref(),
+        auth,
         None,
         Some(MEDIA_TYPE_OCI_MANIFEST),
         Some(&manifest_json),
@@ -381,16 +418,6 @@ pub fn pack_image(
     })?;
 
     let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json);
-
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(format!("Packed image to {artifact_ref}"));
-    }
-
-    tracing::info!(
-        reference = %oci_ref,
-        digest = %manifest_digest,
-        "image packed and pushed"
-    );
 
     Ok(PackOutcome {
         digest: manifest_digest,
@@ -402,7 +429,7 @@ pub fn pack_image(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Combined Accept header advertising every base-doc media type we can parse:
+/// Combined Accept header advertising every base-doc media type this can parse:
 /// OCI image manifest + OCI index + Docker manifest list.
 fn base_accept_header() -> String {
     format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
@@ -454,7 +481,7 @@ fn resolve_base_manifest(
 
     // An index has a `manifests` array (and an index `mediaType`); an image
     // manifest has `config` + `layers`. Branch on the presence of `manifests`
-    // so we tolerate registries that omit/abbreviate `mediaType`.
+    // so registries that omit/abbreviate `mediaType` are tolerated.
     let value: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid base manifest JSON: {e}"),
@@ -595,9 +622,9 @@ fn resolve_platform(opts: &PackOptions) -> Result<(String, String), OciError> {
             Ok((os.to_string(), arch.to_string()))
         }
         None => {
-            let os = std::env::consts::OS.to_string();
-            let arch = super::rust_arch_to_oci(std::env::consts::ARCH).to_string();
-            Ok((os, arch))
+            let host = super::current_platform();
+            let (os, arch) = super::parse_platform_target(&host)?;
+            Ok((os.to_string(), arch.to_string()))
         }
     }
 }

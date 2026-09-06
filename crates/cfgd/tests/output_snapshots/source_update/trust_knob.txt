@@ -1,0 +1,6 @@
+Update source:trust-src
+✓ Require Signed Commits — no → yes
+
+✓ Updated 1 source
+
+→ Run `cfgd sync` to fetch under the new policy

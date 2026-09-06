@@ -47,7 +47,12 @@ impl<'a> super::Reconciler<'a> {
                 // the preview bullet and the phase's alignment column use — a
                 // subject spelled locally here is what let the executed line
                 // read shorter than the column every trailing field pads to.
-                let subject = super::format::script_run_subject(entry.run_str(), phase, origin);
+                let subject = super::format::script_run_subject_within(
+                    entry.run_str(),
+                    phase,
+                    origin,
+                    printer.subject_budget(),
+                );
                 let (_desc, changed, captured) = execute_script(
                     entry,
                     config_dir,

@@ -14,8 +14,9 @@
 //! `output` module in the cfgd workspace.
 //!
 //! Usage:
-//!   cfgd-gen-crds                      # concatenated YAML to stdout
-//!   cfgd-gen-crds --out-dir <dir>      # one <dir>/<plural>.yaml per CRD
+//!
+//!     cfgd-gen-crds                      # concatenated YAML to stdout
+//!     cfgd-gen-crds --out-dir <dir>      # one <dir>/<plural>.yaml per CRD
 
 use std::path::Path;
 

@@ -1,8 +1,16 @@
 //! Snapshot tests for `cfgd explain`.
 //!
+//! Plus the one case the buffered captures above cannot state: the SHIPPED
+//! binary under `--color never`, which is where an attribute-only theme slot
+//! reached a pipe as bare SGR.
+//!
 //! Three cases mapping to the three command shapes:
 //!   - `explain/index.{txt,json}`  — bare `cfgd explain` (schema table + hints)
 //!   - `explain/module.{txt,json}` — `cfgd explain module` (overview + fields)
+//!   - `explain/profile-packages-brew.{txt,json}` — `cfgd explain profile.spec.packages.brew`
+//!     (a union field: the shapes under `Variants`, the one object shape's
+//!     fields under `Fields`, a legend whose placeholder resolves, and the
+//!     field page's own `Docs` row / `docs`+`docsUrl` pair)
 //!   - `explain/unknown.txt`       — `cfgd explain bogus` (error path; the
 //!     command short-circuits with `anyhow::bail!` so the snapshot captures
 //!     the Err string rather than a rendered Doc)
@@ -10,19 +18,43 @@
 //! Goldens live under `tests/output_snapshots/explain/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test explain_snapshots
 
+#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
+
 use std::path::Path;
 
-use cfgd::cli::explain::{build_explain_index_doc, build_explain_schema_doc, find_schema};
-use cfgd_core::output::Printer;
+use cfgd::cli::explain::{
+    build_explain_drilldown_doc, build_explain_index_doc, build_explain_schema_doc, find_schema,
+    resolve_field_path,
+};
+use cfgd_core::output::test_capture::assert_snapshot_at;
+use cfgd_core::output::{DocCapture, Printer, strip_ansi};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
+
+/// Assert a human golden with the running cfgd version folded to `<VERSION>`.
+/// The `Docs` row carries a release-pinned URL, so an unfolded golden would
+/// have to be re-cut on every version bump.
+fn assert_human(cap: &DocCapture, name: &str) {
+    let human = strip_ansi(&cap.human());
+    let actual = cfgd_core::normalize_cfgd_version(&human, env!("CARGO_PKG_VERSION"));
+    assert_snapshot_at(Path::new(SNAPSHOT_ROOT), name, &actual);
+}
+
+/// The same fold over the `-o json` payload, whose `docsUrl` is the same
+/// release-pinned URL.
+fn assert_json(cap: &DocCapture, name: &str) {
+    let payload = serde_json::to_string_pretty(&cap.json().expect("doc captured json"))
+        .expect("payload serializes");
+    let actual = cfgd_core::normalize_cfgd_version(&payload, env!("CARGO_PKG_VERSION"));
+    assert_snapshot_at(Path::new(SNAPSHOT_ROOT), name, &actual);
+}
 
 #[test]
 fn explain_index_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_explain_index_doc());
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/index.txt");
+    assert_human(&cap, "explain/index.txt");
 }
 
 #[test]
@@ -40,23 +72,23 @@ fn explain_index_json() {
         Some(10),
         "explain index must list 10 schemas (9 registry kinds incl. Module CRD + TeamConfig), got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/index.json");
+    assert_json(&cap, "explain/index.json");
 }
 
 #[test]
 fn explain_module_human() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, false));
+    printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.txt");
+    assert_human(&cap, "explain/module.txt");
 }
 
 #[test]
 fn explain_module_json() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, false));
+    printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
     let actual = cap.json().expect("doc captured json");
     assert!(
@@ -68,17 +100,17 @@ fn explain_module_json() {
         Some("Module"),
         "explain module payload must carry kind=Module, got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.json");
+    assert_json(&cap, "explain/module.json");
 }
 
 #[test]
 fn explain_recursive_drops_plus_marker() {
     // Recursive mode replaces the `[+]` marker with nested subsections —
-    // confirm the marker is absent so we don't regress to the manual-indent
+    // confirm the marker is absent to avoid regressing to the manual-indent
     // shape.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -98,16 +130,16 @@ fn explain_recursive_tree_human() {
     // deterministic.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.txt");
+    assert_human(&cap, "explain/profile-recursive.txt");
 }
 
 #[test]
 fn explain_recursive_tree_json() {
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
     let actual = cap.json().expect("doc captured json");
     assert_eq!(
@@ -115,7 +147,39 @@ fn explain_recursive_tree_json() {
         Some("Profile"),
         "recursive explain payload must carry kind=Profile, got: {actual}"
     );
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.json");
+    assert_json(&cap, "explain/profile-recursive.json");
+}
+
+#[test]
+fn explain_union_drilldown_human() {
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let path = ["packages", "brew"];
+    let fields = resolve_field_path(&schema.fields, &path).expect("brew resolves");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
+    drop(printer);
+    assert_human(&cap, "explain/profile-packages-brew.txt");
+}
+
+#[test]
+fn explain_union_drilldown_json() {
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let path = ["packages", "brew"];
+    let fields = resolve_field_path(&schema.fields, &path).expect("brew resolves");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_drilldown_doc(schema, &path, fields, false));
+    drop(printer);
+    let actual = cap.json().expect("doc captured json");
+    assert_eq!(
+        actual.get("path").and_then(|v| v.as_str()),
+        Some("profile.spec.packages.brew"),
+        "drilldown payload must carry path=profile.spec.packages.brew, got: {actual}"
+    );
+    assert!(
+        actual.get("docsUrl").and_then(|v| v.as_str()).is_some(),
+        "drilldown payload must carry the same docs/docsUrl pair a kind page carries, got: {actual}"
+    );
+    assert_json(&cap, "explain/profile-packages-brew.json");
 }
 
 #[test]
@@ -152,5 +216,43 @@ fn write_snapshot(path: &Path, contents: &str) {
         contents,
         "snapshot drift at {} (set INSTA_UPDATE=always to refresh)",
         path.display()
+    );
+}
+
+/// `--color never` withholds every escape from the shipped surface that
+/// reproduced the leak. `explain profile` is that surface: the default theme
+/// paints each field's type span with `type_hint`, whose only differentiator
+/// off a truecolor terminal is `.italic()` — so the row used to arrive as
+/// `\x1b[3m<[]ShellAlias>\x1b[0m` in a pipe, against what
+/// `docs/cli-reference.md` promises. Read raw, since stripping is the very
+/// thing this claim says is unnecessary.
+#[test]
+fn explain_profile_under_color_never_writes_no_escape() {
+    let run = |color: &str| {
+        let out = assert_cmd::Command::cargo_bin("cfgd")
+            .expect("cfgd binary builds")
+            .args(["--color", color, "explain", "profile"])
+            .output()
+            .expect("cfgd runs");
+        let mut both = String::from_utf8_lossy(&out.stdout).into_owned();
+        both.push_str(&String::from_utf8_lossy(&out.stderr));
+        both
+    };
+
+    let never = run("never");
+    assert!(
+        never.contains("aliases"),
+        "the run rendered no field rows, so the claim below is vacuous: {never:?}"
+    );
+    assert_eq!(
+        never.matches('\u{1b}').count(),
+        0,
+        "`--color never` wrote an escape: {never:?}"
+    );
+    // Not vacuous: the same command really does paint when colour is asked for.
+    let always = run("always");
+    assert!(
+        always.contains('\u{1b}'),
+        "`--color always` painted nothing, so the claim above proves nothing: {always:?}"
     );
 }

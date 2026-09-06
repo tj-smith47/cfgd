@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::collections::HashMap;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Role;
@@ -8,6 +8,13 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 use super::read_command_output;
 
 use super::{diff_nested_mapping, yaml_value_to_string};
+
+/// Test seam for every `gsettings` spawn in this configurator.
+const GSETTINGS_BIN_ENV: &str = "CFGD_GSETTINGS_BIN";
+
+fn gsettings_cmd() -> std::process::Command {
+    cfgd_core::tool_cmd(GSETTINGS_BIN_ENV, "gsettings")
+}
 
 /// GsettingsConfigurator — reads/writes GNOME/GTK desktop settings via `gsettings`.
 ///
@@ -33,9 +40,53 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn read_gsettings_value(schema: &str, key: &str) -> String {
-    let raw = read_command_output(Command::new("gsettings").args(["get", schema, key]));
-    strip_gsettings_quotes(&raw).to_string()
+/// Read one schema's keys in a single spawn.
+///
+/// `gsettings list-recursively <schema>` prints one `schema key value` line per
+/// key, with the value in the same GVariant spelling `gsettings get` returns —
+/// so the map's values are byte-identical to the per-key read, quotes and all,
+/// and [`strip_gsettings_quotes`] applies to both the same way. A schema with
+/// CHILD schemas lists their keys too, under their own schema id in the first
+/// field, which is why only lines naming the requested schema are kept: a child
+/// key would otherwise answer a question about a same-named key of the parent.
+///
+/// The declared string is passed through WHOLE, because a RELOCATABLE schema is
+/// declared as `<id>:<path>` and refuses to list without its path (`Schema … is
+/// relocatable (path must be specified)`); the listing then prints the BARE id
+/// in its first field, so the filter compares the id half. Matching the declared
+/// spelling instead dropped every line of every relocatable schema — custom
+/// keybindings, per-application notification settings, terminal profiles — and
+/// answered each of their keys with the empty string, which is permanent drift
+/// on a machine that is converged.
+fn snapshot_schema(schema: &str) -> HashMap<String, String> {
+    let mut cmd = gsettings_cmd();
+    cmd.args(["list-recursively", schema]);
+    parse_list_recursively(&read_command_output(&mut cmd), schema_id(schema))
+}
+
+/// The id half of a `<id>:<path>` schema spec; the whole string for a plain one.
+fn schema_id(schema: &str) -> &str {
+    schema.split_once(':').map_or(schema, |(id, _)| id)
+}
+
+fn parse_list_recursively(dump: &str, schema: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in dump.lines() {
+        let mut parts = line.splitn(3, ' ');
+        let (Some(line_schema), Some(key), Some(value)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if line_schema != schema || key.is_empty() {
+            continue;
+        }
+        map.insert(
+            key.to_string(),
+            strip_gsettings_quotes(value.trim()).to_string(),
+        );
+    }
+    map
 }
 
 impl SystemConfigurator for GsettingsConfigurator {
@@ -44,7 +95,7 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("gsettings")
+        cfgd_core::command_available_with_seam(GSETTINGS_BIN_ENV, "gsettings")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -52,7 +103,31 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-        diff_nested_mapping(desired, read_gsettings_value)
+        // One `list-recursively` per declared schema, memoized for the length of
+        // this call: `diff_nested_mapping` asks per key, and a schema block of
+        // twenty keys used to be twenty `gsettings get` spawns.
+        let mut snapshots: HashMap<String, HashMap<String, String>> = HashMap::new();
+        if let Some(mapping) = desired.as_mapping() {
+            for (schema_key, keys) in mapping {
+                // A schema declaring nothing is asked nothing: the lookup below
+                // never runs for it, so its listing would be a spawn whose
+                // result no key reads.
+                if let Some(schema) = schema_key.as_str()
+                    && keys.as_mapping().is_some_and(|m| !m.is_empty())
+                    && !snapshots.contains_key(schema)
+                {
+                    snapshots.insert(schema.to_string(), snapshot_schema(schema));
+                }
+            }
+        }
+
+        diff_nested_mapping(desired, |schema, key| {
+            snapshots
+                .get(schema)
+                .and_then(|keys| keys.get(key))
+                .cloned()
+                .unwrap_or_default()
+        })
     }
 
     fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
@@ -84,7 +159,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
                 );
 
-                let output = Command::new("gsettings")
+                let output = gsettings_cmd()
                     .args(["set", schema, key_str, &gsettings_val])
                     .output()
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
@@ -110,6 +185,199 @@ impl SystemConfigurator for GsettingsConfigurator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verbatim `gsettings list-recursively org.gnome.desktop.interface`
+    /// output (glib 2.86, Ubuntu), plus one line from a DIFFERENT schema to
+    /// pin the filter. Every value below was compared against the same host's
+    /// `gsettings get` for the same key — see
+    /// `snapshot_answers_what_the_per_key_read_answers`.
+    const REAL_LISTING: &str = "org.gnome.desktop.interface avatar-directories @as []\n\
+         org.gnome.desktop.interface clock-format '24h'\n\
+         org.gnome.desktop.interface color-scheme 'default'\n\
+         org.gnome.desktop.interface cursor-size 24\n\
+         org.gnome.desktop.interface enable-animations true\n\
+         org.gnome.desktop.interface font-name 'Adwaita Sans 11'\n\
+         org.gnome.desktop.a11y.keyboard bouncekeys-delay 300\n";
+
+    #[test]
+    fn snapshot_answers_what_the_per_key_read_answers() {
+        let snapshot = parse_list_recursively(REAL_LISTING, "org.gnome.desktop.interface");
+        // Right-hand sides are the captured `gsettings get <schema> <key>`
+        // output of the same host, folded through `strip_gsettings_quotes` the
+        // way the per-key path folds it. A listing value that needed different
+        // handling than a `get` value would show up here as a mismatch.
+        for (key, expected) in [
+            ("color-scheme", "default"),
+            ("font-name", "Adwaita Sans 11"),
+            ("cursor-size", "24"),
+            ("enable-animations", "true"),
+            ("clock-format", "24h"),
+            // An array reads identically both ways, so it needs no re-read.
+            ("avatar-directories", "@as []"),
+        ] {
+            assert_eq!(
+                snapshot.get(key).map(String::as_str),
+                Some(expected),
+                "listing and per-key read disagree about {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_never_answers_with_a_child_schemas_key() {
+        let snapshot = parse_list_recursively(REAL_LISTING, "org.gnome.desktop.interface");
+        assert!(
+            !snapshot.contains_key("bouncekeys-delay"),
+            "a key listed under another schema must not answer for this one"
+        );
+        assert_eq!(
+            parse_list_recursively(REAL_LISTING, "org.gnome.desktop.a11y.keyboard")
+                .get("bouncekeys-delay")
+                .map(String::as_str),
+            Some("300"),
+            "and it must answer for the schema it belongs to"
+        );
+    }
+
+    /// Verbatim `gsettings list-recursively
+    /// 'org.gnome.desktop.notifications.application:/org/gnome/desktop/notifications/application/firefox/'`
+    /// output. The first field is the BARE id, not the `<id>:<path>` spelling
+    /// the command was given — asking for the id alone is refused (`Schema …
+    /// is relocatable (path must be specified)`), so the two spellings are not
+    /// interchangeable and the filter has to know which is which.
+    const REAL_RELOCATABLE_LISTING: &str = "org.gnome.desktop.notifications.application application-id ''\n\
+         org.gnome.desktop.notifications.application enable true\n\
+         org.gnome.desktop.notifications.application show-banners true\n";
+
+    const RELOCATABLE_SPEC: &str = "org.gnome.desktop.notifications.application:\
+                                    /org/gnome/desktop/notifications/application/firefox/";
+
+    #[test]
+    fn a_relocatable_schemas_keys_answer_from_its_listing() {
+        let snapshot =
+            parse_list_recursively(REAL_RELOCATABLE_LISTING, schema_id(RELOCATABLE_SPEC));
+        // Right-hand sides are the captured `gsettings get <id>:<path> <key>`
+        // output. Filtering on the declared `<id>:<path>` spelling dropped every
+        // line, so every key answered "" and drifted forever.
+        assert_eq!(snapshot.get("enable").map(String::as_str), Some("true"));
+        assert_eq!(
+            snapshot.get("show-banners").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(snapshot.get("application-id").map(String::as_str), Some(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_of_a_relocatable_schema_reports_no_drift_when_converged() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            GSETTINGS_BIN_ENV,
+            0,
+            REAL_RELOCATABLE_LISTING,
+            "",
+        );
+        let mut keys = serde_yaml::Mapping::new();
+        keys.insert(
+            serde_yaml::Value::String("enable".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        keys.insert(
+            serde_yaml::Value::String("show-banners".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(RELOCATABLE_SPEC.into()),
+            serde_yaml::Value::Mapping(keys),
+        );
+
+        let drifts = GsettingsConfigurator
+            .diff(&serde_yaml::Value::Mapping(outer))
+            .unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("notifications.application"),
+            vec![format!("list-recursively {RELOCATABLE_SPEC}")],
+            "the listing is asked for by the full `<id>:<path>` spelling, which \
+             is the only one it accepts"
+        );
+        assert!(
+            drifts.is_empty(),
+            "a converged relocatable schema must report no drift: {drifts:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_of_an_empty_schema_block_spawns_nothing() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(GSETTINGS_BIN_ENV, 0, "", "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str("org.gnome.cfgd-empty: {}\n").unwrap();
+
+        let drifts = GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert!(drifts.is_empty());
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-empty").len(),
+            0,
+            "a schema declaring no keys is asked nothing: {}",
+            shim.argv_log()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_reads_a_schema_once_however_many_keys_it_declares() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            GSETTINGS_BIN_ENV,
+            0,
+            "org.gnome.cfgd-test color-scheme 'default'\n\
+             org.gnome.cfgd-test font-name 'Adwaita Sans 11'\n\
+             org.gnome.cfgd-test cursor-size 24\n",
+            "",
+        );
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "org.gnome.cfgd-test:\n  \
+             color-scheme: prefer-dark\n  \
+             font-name: Adwaita Sans 11\n  \
+             cursor-size: 24\n",
+        )
+        .unwrap();
+
+        let drifts = GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-test"),
+            vec!["list-recursively org.gnome.cfgd-test"],
+            "one listing answers every key in the schema"
+        );
+        assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+        assert_eq!(drifts[0].key, "org.gnome.cfgd-test.color-scheme");
+        assert_eq!(drifts[0].actual, "default");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_reads_each_declared_schema_once() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(GSETTINGS_BIN_ENV, 0, "", "");
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("org.gnome.cfgd-a:\n  x: 1\n  y: 2\norg.gnome.cfgd-b:\n  z: 3\n")
+                .unwrap();
+
+        GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-"),
+            vec![
+                "list-recursively org.gnome.cfgd-a",
+                "list-recursively org.gnome.cfgd-b",
+            ],
+            "one listing per schema, none per key"
+        );
+    }
 
     #[test]
     fn gsettings_strip_quotes() {
@@ -320,7 +588,7 @@ mod tests {
         let yaml = serde_yaml::Value::Mapping(outer);
         // Whether gsettings is on PATH or not, diff_nested_mapping returns Ok
         // and produces at most one drift entry (depends on whether the schema
-        // is registered). We assert only that diff itself does not fail.
+        // is registered). This asserts only that diff itself does not fail.
         let drifts = gc.diff(&yaml).unwrap();
         assert!(drifts.len() <= 1);
     }

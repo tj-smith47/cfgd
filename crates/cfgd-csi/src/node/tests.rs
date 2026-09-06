@@ -704,7 +704,7 @@ async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
     // `test_node()` caches CFGD_CSI_ALLOWED_REGISTRIES at construction. A
     // parallel `*_rejects_disallowed_registry` test that sets it would
     // pin this Node to its allow-list, making 127.0.0.1 fail with
-    // PermissionDenied instead of the Internal we test for. Force-unset
+    // PermissionDenied instead of the Internal being tested for. Force-unset
     // for the duration of this test.
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset(ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();

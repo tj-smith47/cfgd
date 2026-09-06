@@ -1,0 +1,18 @@
+Update module:diffmod
+  Old Commit     <COMMIT_SHA>
+  New Commit     <COMMIT_SHA>
+  New Integrity  sha256:<INTEGRITY>
+
+Changes
+  ✓ dependency added: vim-config
+  ✓ package added: ripgrep
+  ⚠ package 'git': minVersion 2.0 → 2.30
+  ⚠ env 'EDITOR': vim → nvim
+  ✓ env added: NEW_VAR=hello
+  ✗ env removed: OLD_VAR=legacy
+  ⚠ alias 'll': ls -la → ls -lah
+  ✓ alias added: gs=git status
+
+◉ Tag 'v1.1.0' is unsigned
+
+◉ Cancelled

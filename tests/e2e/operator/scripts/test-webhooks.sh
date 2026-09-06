@@ -43,9 +43,9 @@ spec:
     name: some-mc
   severity: Low
   driftDetails:
-    - field: test
-      expected: a
-      actual: b
+    - field: sysctl.vm.swappiness
+      expected: "10"
+      actual: "60"
 EOF
 )
 echo "  Empty deviceId result: $(echo "$RESULT_EMPTY_DEVICE" | tail -1)"
@@ -420,9 +420,9 @@ spec:
     name: ""
   severity: Medium
   driftDetails:
-    - field: packages
-      expected: installed
-      actual: missing
+    - field: sysctl.vm.swappiness
+      expected: "10"
+      actual: "60"
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
@@ -453,7 +453,7 @@ spec:
     name: some-mc
   severity: Low
   driftDetails:
-    - field: sysctl
+    - field: sysctl.net.ipv4.ip_forward
       expected: "1"
       actual: "0"
 EOF

@@ -22,8 +22,15 @@ fn the_server_serves_the_store_at_the_resolved_directory() {
     );
 
     let seed = cfgd_core::state::StateStore::open_in_dir(&resolved).unwrap();
-    seed.upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "s")
-        .unwrap();
+    seed.upsert_pending_decision(
+        "acme",
+        "packages.brew.k9s",
+        "recommended",
+        "install",
+        "s",
+        None,
+    )
+    .unwrap();
 
     let server = McpServer::new(
         tmp.path().to_path_buf(),

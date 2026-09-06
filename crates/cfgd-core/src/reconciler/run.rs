@@ -10,15 +10,15 @@ use std::time::{Duration, Instant};
 
 use crate::backup::BackupUnit;
 use crate::errors::Result;
-use crate::output::{OwnerLabel, Printer, Role, SectionGuard, measure_width};
+use crate::output::{
+    KvPair, OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, TitleLabel, measure_width,
+};
 use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
-use super::format::action_display_subject;
-use super::types::{
-    Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan, SystemAction,
-};
+use super::format::action_display_subject_within;
+use super::types::{Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan};
 
 /// Heading for a hook group that runs around a reconcile but is not part of
 /// the plan. Rendered through the same section primitive as a phase so the
@@ -30,6 +30,26 @@ pub const HOOKS_PHASE_LABEL: &str = "Drift Hooks";
 /// --apply` — because two spellings of "already converged" read as two
 /// different outcomes to anyone comparing two commands' transcripts.
 pub const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
+
+/// The verdict for a run that planned no actions, and the role it carries.
+///
+/// A withheld decision is work the machine knows about, has not done, and is
+/// waiting on an answer for — so "everything is up to date" is a false report
+/// while one is outstanding, printed directly under the block that just listed
+/// it. Every surface that closes on "nothing to do" answers from here, so no
+/// two of them can disagree about what a pending decision means.
+pub fn nothing_to_do_verdict(pending_decisions: usize) -> (Role, String) {
+    if pending_decisions == 0 {
+        return (Role::Ok, MSG_NOTHING_TO_DO.to_string());
+    }
+    (
+        Role::Pending,
+        format!(
+            "Nothing to apply — {} pending",
+            pluralize(pending_decisions, "decision")
+        ),
+    )
+}
 
 /// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
 /// declared work with their own hooks and record, but nothing plans them into
@@ -44,6 +64,8 @@ pub enum RunTitle {
     Apply,
     Reconcile,
     Backup,
+    Restore,
+    Rollback,
 }
 
 impl RunTitle {
@@ -53,6 +75,8 @@ impl RunTitle {
             RunTitle::Apply => "Apply",
             RunTitle::Reconcile => "Reconcile",
             RunTitle::Backup => "Backup",
+            RunTitle::Restore => "Restore",
+            RunTitle::Rollback => "Rollback",
         }
     }
 }
@@ -64,10 +88,85 @@ pub struct RunContext<'a> {
     pub title: RunTitle,
     pub config_path: Option<&'a std::path::Path>,
     pub profile: Option<&'a str>,
-    pub modules: &'a [String],
+    /// The `spec.sources[]` subscriptions the config declares
+    /// ([`ComposedSource::from_declared`]), in declaration order; present
+    /// whether or not this machine has synced. Empty for a config that
+    /// declares none, which renders no row.
+    pub sources: &'a [ComposedSource],
+    /// What the run's profile resolves to, through the ONE derivation every
+    /// surface reporting on a resolved profile reads
+    /// ([`crate::output::HeaderModule::of_resolved`]) — so membership, order
+    /// and platform gating cannot differ between this header and the `status`
+    /// beside it. Empty for a run under no profile, which renders no row.
+    pub modules: &'a [crate::output::HeaderModule],
+    /// The profile's resolved `inherits:` chain, nearest parent first — read
+    /// off [`crate::config::ResolvedProfile::inherits_chain`], never re-walked
+    /// here. Empty for a run under no profile, or one that does not inherit.
+    pub profile_inherits: &'a [String],
     /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
     /// `schedule (daily)`).
     pub trigger: Option<&'a str>,
+    /// What this run acts ON, for a title that does not otherwise name it —
+    /// the unit `cfgd backup restore` puts back. Renders as the value half of
+    /// a `Restore: notes` title; `None` leaves the title bare, which is what
+    /// every run naming its subject in the tree below already does.
+    pub subject: Option<&'a str>,
+    /// The declared source path of the ONE `spec.backups[]` unit this run acts
+    /// on, for a run whose subject is such a unit (`backup run <name>`,
+    /// `backup restore <name>`). Renders as a `Source` row: the action row
+    /// names what it WRITES (`snapshot <name>`, `restore <target> from …`),
+    /// and what the unit reads from is the header's fact, never a row hung
+    /// under the action. `None` for every other run, and for a `backup run`
+    /// over every declared unit, which has no one source to name.
+    pub unit_source: Option<&'a str>,
+}
+
+/// One `spec.sources[]` subscription the config declares, as the header names
+/// it and as the `-o json` plan payload carries it. Derived by
+/// [`ComposedSource::from_declared`], never off the layers a run composed.
+///
+/// The profile travels beside the name rather than baked into it because the
+/// two are separate facts about the subscription — the source is WHO delivered
+/// the layer, the profile is WHICH of its profiles this machine subscribed to —
+/// and a structured consumer must be able to read either without parsing a
+/// rendered string apart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposedSource {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl ComposedSource {
+    /// The subscriptions a config DECLARES, in declaration order — the ONE
+    /// derivation of the header's `Sources` row.
+    ///
+    /// Read off `spec.sources[]` and never off the composition the run
+    /// performed: read paths compose from the source CACHE alone, so a
+    /// declared source nobody has fetched yet contributes no layer, and a row
+    /// derived from the layers then vanished — the key `Sources` silently
+    /// answering "has this machine run `cfgd sync` yet" instead of what the
+    /// config subscribes to. `cfgd status` said the machine composed from
+    /// nothing while its own `Sources` table fifteen rows below listed two.
+    pub fn from_declared(sources: &[crate::config::SourceSpec]) -> Vec<Self> {
+        sources
+            .iter()
+            .map(|spec| Self {
+                name: spec.name.clone(),
+                profile: spec.subscription.profile.clone(),
+            })
+            .collect()
+    }
+
+    /// The header's rendering: `team (profile team)`, or the bare name when the
+    /// subscription named no profile.
+    pub(crate) fn display(&self) -> String {
+        match &self.profile {
+            Some(profile) => format!("{} (profile {profile})", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// Whether a run asks before it acts.
@@ -118,9 +217,23 @@ pub trait RunExecutor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunTally {
     pub succeeded: usize,
+    /// Actions that reached their line and settled a skip. Split out of
+    /// `succeeded` because the closing line is the account a reader keeps, and
+    /// a skip dash on screen counted as a success there is a footer that
+    /// contradicts the tree above it.
+    pub skipped: usize,
     pub failed: usize,
+    /// Why each action the plan withheld before the run was never attempted —
+    /// the [`Action::pre_skip_reason`] answers, one per action. Never folded
+    /// into `skipped` (which ran and changed nothing) and never priced into
+    /// `planned_total`, so `succeeded + skipped + failed` still reconciles
+    /// against the header; the closing line names the count in its
+    /// parenthetical, with the reason, and nowhere else.
+    ///
+    /// [`Action::pre_skip_reason`]: super::Action::pre_skip_reason
+    pub not_attempted: Vec<String>,
     /// What the run set out to do. The `Actions  N planned` header row and the
-    /// `⊙ N actions not attempted` shortfall line read the same field.
+    /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
@@ -131,6 +244,8 @@ impl RunTally {
     pub fn empty() -> Self {
         Self {
             succeeded: 0,
+            skipped: 0,
+            not_attempted: Vec::new(),
             failed: 0,
             planned_total: 0,
             status: ApplyStatus::Success,
@@ -144,7 +259,9 @@ impl RunTally {
     /// arithmetic stays honest, and takes the worse `status` of the two.
     pub fn merge(&mut self, other: RunTally) {
         self.succeeded += other.succeeded;
+        self.skipped += other.skipped;
         self.failed += other.failed;
+        self.not_attempted.extend(other.not_attempted);
         self.planned_total += other.planned_total;
         if status_severity(&other.status) > status_severity(&self.status) {
             self.status = other.status;
@@ -157,7 +274,7 @@ impl RunTally {
     /// panic path.
     fn shortfall(&self) -> usize {
         self.planned_total
-            .saturating_sub(self.succeeded + self.failed)
+            .saturating_sub(self.succeeded + self.skipped + self.failed)
     }
 
     /// The run planned work and reached none of it — every action was withheld
@@ -169,7 +286,7 @@ impl RunTally {
     /// two things on screen that could tell the user what happened — the ✓ and
     /// the exit code — disagreed.
     fn nothing_attempted(&self) -> bool {
-        self.planned_total > 0 && self.succeeded == 0 && self.failed == 0
+        self.planned_total > 0 && self.succeeded == 0 && self.skipped == 0 && self.failed == 0
     }
 }
 
@@ -193,6 +310,8 @@ impl ApplyResult {
     pub fn tally(&self) -> RunTally {
         RunTally {
             succeeded: self.succeeded(),
+            skipped: self.skipped(),
+            not_attempted: self.not_attempted(),
             failed: self.failed(),
             planned_total: self.planned_total,
             status: self.status.clone(),
@@ -219,9 +338,20 @@ pub struct ApplyRun<'a> {
     backups: Option<PendingBackups<'a>>,
     withheld: Option<&'a super::WithheldDecisions>,
     decide_answerable: bool,
+    /// Work the skeleton cannot enumerate because the caller renders it — see
+    /// [`ApplyRun::unplanned`]. Zero for every run that carries a [`Plan`] or
+    /// a [`PendingBackups`], whose counts are derived rather than stated.
+    unplanned_actions: usize,
 }
 
 impl<'a> ApplyRun<'a> {
+    /// The sources this run composed, so the `-o json` payload and the header
+    /// row above it read the same list rather than two independently threaded
+    /// copies of it.
+    pub fn sources(&self) -> &'a [ComposedSource] {
+        self.ctx.sources
+    }
+
     pub fn new(ctx: RunContext<'a>, plan: &'a Plan) -> Self {
         Self {
             ctx,
@@ -231,6 +361,30 @@ impl<'a> ApplyRun<'a> {
             backups: None,
             withheld: None,
             decide_answerable: true,
+            unplanned_actions: 0,
+        }
+    }
+
+    /// A run whose body the CALLER renders and whose work is neither a [`Plan`]
+    /// action nor a `spec.backups[]` unit — `cfgd backup restore`, which
+    /// overlays one snapshot and reports the row itself.
+    ///
+    /// The skeleton still owns the header and the rollup, so `actions` is the
+    /// one number both of them state: it is the header's `Actions {n} planned`
+    /// row here and the [`RunTally::planned_total`] the caller closes with, and
+    /// a run whose two ends disagreed about how much it set out to do is
+    /// exactly what a shared skeleton exists to prevent. Not a synthesized
+    /// empty [`Plan`], which would put a phase tree with no phases in it.
+    pub fn unplanned(ctx: RunContext<'a>, actions: usize) -> Self {
+        Self {
+            ctx,
+            plan: None,
+            filter: None,
+            preview_only: false,
+            backups: None,
+            withheld: None,
+            decide_answerable: true,
+            unplanned_actions: actions,
         }
     }
 
@@ -284,6 +438,7 @@ impl<'a> ApplyRun<'a> {
             backups: Some(PendingBackups { units, store }),
             withheld: None,
             decide_answerable: true,
+            unplanned_actions: 0,
         }
     }
 
@@ -296,14 +451,77 @@ impl<'a> ApplyRun<'a> {
         self
     }
 
-    /// Title + context rows, then the plan's warnings as `Role::Warn` lines at
-    /// row depth.
+    /// What the `Modules` row names, with this run's gating resolved.
+    ///
+    /// A plan carries its own `Skip` actions, built from the very
+    /// `platform_skip_reason` a [`crate::output::HeaderModule`] holds, so a
+    /// planned run reads the gate off the plan; a plan-less run has no actions
+    /// to read it off and reads the resolution directly.
+    fn header_modules(&self) -> Vec<crate::output::HeaderModule> {
+        let Some(plan) = self.plan else {
+            return self.ctx.modules.to_vec();
+        };
+        let skips = platform_skips(Some(plan));
+        let reason = |name: &str| {
+            skips
+                .iter()
+                .find(|(skipped, _)| *skipped == name)
+                .map(|(_, why)| (*why).to_string())
+        };
+        let mut listed: Vec<crate::output::HeaderModule> = self
+            .ctx
+            .modules
+            .iter()
+            .map(|module| crate::output::HeaderModule {
+                name: module.name.clone(),
+                platform_skip_reason: reason(&module.name),
+                dep_pulled: module.dep_pulled,
+            })
+            .collect();
+        // A gate the plan names for a module the resolution did not hand this
+        // header still reaches the annotation, which is where the reader is
+        // told why a name is missing.
+        listed.extend(
+            skips
+                .iter()
+                .filter(|(name, _)| !self.ctx.modules.iter().any(|m| m.name == *name))
+                .map(|(name, why)| crate::output::HeaderModule {
+                    name: (*name).to_string(),
+                    platform_skip_reason: Some((*why).to_string()),
+                    dep_pulled: false,
+                }),
+        );
+        listed
+    }
+
+    /// Whether the `--phase` value the invocation carried already names
+    /// exactly the phases the tree is about to print.
+    ///
+    /// A row restating it tells the reader only what they typed. `--phase
+    /// modules` is an owner filter spanning every phase module work can land
+    /// in, so WHICH of them held work is news and its row stays; so does an
+    /// unfiltered run's, which named nothing.
+    fn phases_named_by_invocation(&self, rendered: &[&str]) -> bool {
+        let named = match self.filter {
+            Some(PhaseFilter::Phase(phase)) | Some(PhaseFilter::Selector(phase, _)) => phase,
+            Some(PhaseFilter::ModuleOwners) | None => return false,
+        };
+        rendered == [named.display_name()]
+    }
+
+    /// Title + context rows, then the plan's warnings via `printer.alert`, at
+    /// the section's depth.
     ///
     /// Omits every empty row (a run with no in-scope work has no `Phases` and
     /// no `Actions` row); `Phases` lists only phases holding in-scope work
     /// **that renders**, and `Actions` renders `{n} planned` unless the run is
     /// preview-only. Warnings live here, not in the preview, so they survive
-    /// `--yes`.
+    /// `--yes`. Rendered via `alert` rather than `status_simple(Role::Warn,
+    /// …)` so a run-level warning — the undecidable-batch notice, the
+    /// zero-match `--skip`/`--only` accounting — stays visible at
+    /// `Verbosity::Quiet`, the same always-visible guarantee every producer of
+    /// [`crate::reconciler::Plan::warnings`] already gets for itself when it
+    /// warns directly.
     ///
     /// `n` is computed here, before the run, from whichever source this run has
     /// — never from `ApplyResult.planned_total`, which does not exist yet. With
@@ -312,48 +530,24 @@ impl<'a> ApplyRun<'a> {
     /// which is what makes the two reconcilable afterwards, plus one per
     /// pending backup item. With no plan it is the pending backup items alone.
     /// A backup item is one hook entry or one unit's snapshot; see
-    /// [`ApplyRun::pending_backup_count`] for what the engine can enumerate
+    /// `ApplyRun::pending_backup_count` for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
-        let mut rows: Vec<(String, String)> = Vec::new();
-        if let Some(path) = self.ctx.config_path {
-            rows.push(("Config".to_string(), crate::to_posix_string(path)));
-        }
-        if let Some(profile) = self.ctx.profile {
-            rows.push(("Profile".to_string(), profile.to_string()));
-        }
-        // A platform-gated module contributed no work, so it leaves the name
-        // list and returns as an annotation on it. That annotation IS the
-        // render of `PhaseName::Modules`, which prints no block of its own.
-        let skips = platform_skips(self.plan);
-        let names: Vec<&str> = self
-            .ctx
-            .modules
-            .iter()
-            .map(String::as_str)
-            .filter(|name| !skips.iter().any(|(skipped, _)| skipped == name))
-            .collect();
-        let annotation = skips
-            .iter()
-            .map(|(name, reason)| format!("{name} skipped: {reason}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let modules_row = match (names.is_empty(), annotation.is_empty()) {
-            (_, true) => names.join(", "),
-            // Every module gated off: the parentheses would enclose the whole
-            // value, so the annotation stands alone as the row.
-            (true, false) => printer.muted(&annotation),
-            (false, false) => format!(
-                "{} {}",
-                names.join(", "),
-                printer.muted(&format!("({annotation})"))
-            ),
-        };
-        if !modules_row.is_empty() {
-            rows.push(("Modules".to_string(), modules_row));
-        }
+        let mut rows: Vec<KvPair> =
+            crate::output::config_header_rows(&crate::output::ConfigHeader {
+                config_path: self.ctx.config_path,
+                sources: self.ctx.sources,
+                profile: self.ctx.profile,
+                profile_inherits: self.ctx.profile_inherits,
+                modules: &self.header_modules(),
+                arrow: printer.arrow(),
+            });
         if let Some(trigger) = self.ctx.trigger {
-            rows.push(("Trigger".to_string(), trigger.to_string()));
+            rows.push(KvPair::new("Trigger", trigger.to_string()));
+        }
+        // Folded like the `restore ~/… from …` row directly under it.
+        if let Some(source) = self.ctx.unit_source {
+            rows.push(KvPair::new("Source", crate::fold_home_in_text(source)));
         }
         // The `Phases` row names exactly the blocks the tree will print, so it
         // is read off the tree rather than recomputed from the plan.
@@ -364,28 +558,40 @@ impl<'a> ApplyRun<'a> {
             .into_iter()
             .map(|(phase, _)| phase.name.display_name())
             .collect();
-        if !phases.is_empty() {
-            rows.push(("Phases".to_string(), phases.join(", ")));
+        if !phases.is_empty() && !self.phases_named_by_invocation(&phases) {
+            rows.push(KvPair::new("Phases", phases.join(", ")));
         }
         if !self.preview_only {
             let planned = self.planned_count();
             if planned > 0 {
-                rows.push(("Actions".to_string(), format!("{planned} planned")));
+                rows.push(KvPair::new("Actions", format!("{planned} planned")));
             }
         }
 
         let warnings: &[String] = self.plan.map_or(&[], |p| p.warnings.as_slice());
+        // The subject is the title's value half, never a row: a run acting on
+        // one named unit says so where the reader looks for what ran.
+        let titled = self
+            .ctx
+            .subject
+            .map(|subject| TitleLabel::new(self.ctx.title.as_str(), subject));
         if rows.is_empty() && warnings.is_empty() {
-            printer.heading(self.ctx.title.as_str());
+            match &titled {
+                Some(label) => printer.heading_title(label),
+                None => printer.heading(self.ctx.title.as_str()),
+            }
         } else {
             // One section rather than a heading plus a top-level kv block: the
             // warnings belong to the header block and have to land at the same
             // indent as the rows they follow, which only a section's depth
             // gives.
-            let head = printer.section(self.ctx.title.as_str());
-            head.kv_block(rows);
+            let head = match &titled {
+                Some(label) => printer.section_title(label),
+                None => printer.section(self.ctx.title.as_str()),
+            };
+            head.kv_rows(rows);
             for warning in warnings {
-                head.status_simple(Role::Warn, warning);
+                printer.alert(warning);
             }
         }
         self.render_withheld(printer);
@@ -410,36 +616,63 @@ impl<'a> ApplyRun<'a> {
         let Some(withheld) = self.withheld else {
             return;
         };
-        let row = |d: &crate::state::PendingDecision, suffix: &str| {
-            format!(
-                "{} {} — {} by {} ({suffix})",
-                d.tier, d.resource, d.action, d.source
-            )
+        // The rows are the ones `cfgd decide` and `cfgd status` render, from
+        // the same composer and grouped the same way: the owner heading names
+        // the source, the subject names the tier and resource, and the detail
+        // says what would land on the machine. What is run-SPECIFIC is the
+        // instruction, and it is ONE hint under the block rather than a suffix
+        // repeated on every row.
+        let block = |title: &str,
+                     rows: &[crate::state::PendingDecision],
+                     role,
+                     hint: crate::output::HintCommands| {
+            let section = printer.section(title);
+            for (source, items) in super::decisions_by_source(rows) {
+                let owner = section.section_owner(&OwnerLabel::new("source", source));
+                for item in items {
+                    let (subject, detail) = withheld.contents.decision_row(item);
+                    let line = owner.status(role, subject);
+                    match detail {
+                        Some(detail) => line.detail(detail),
+                        None => line,
+                    };
+                }
+            }
+            section.hint(hint);
         };
         if !withheld.pending.is_empty() {
-            let section = printer.section("Pending Decisions (not included in this plan)");
-            for d in &withheld.pending {
-                // An unrecorded item (`id` 0) is answerable only where `cfgd
-                // decide` can mint its row. On a run whose config does not own
-                // the store, the usual instruction names a command that will
-                // refuse — so say what is true instead. Recorded rows resolve
-                // without a mint and keep the instruction everywhere.
-                let suffix = if d.id == 0 && !self.decide_answerable {
-                    "not yet recorded; decide from the machine's own config, or with --state-dir"
-                } else {
-                    "run `cfgd decide accept/reject`"
-                };
-                section.status_simple(Role::Info, row(d, suffix));
-            }
+            // An unrecorded item (`id` 0) is answerable only where `cfgd
+            // decide` can mint its row. On a run whose config does not own the
+            // store, the usual instruction names a command that will refuse —
+            // so say what is true instead. Recorded rows resolve without a mint
+            // and keep the instruction everywhere.
+            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
+            let hint = if unrecorded && !self.decide_answerable {
+                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
+                    .into()
+            } else {
+                super::answer_decisions_hint(withheld.pending.len())
+            };
+            block(
+                &super::pending_decisions_title(
+                    withheld.pending.len(),
+                    super::DecisionsTitleScope::NotInThisPlan,
+                ),
+                &withheld.pending,
+                Role::Info,
+                hint,
+            );
         }
         if !withheld.rejected.is_empty() {
-            let section = printer.section("Declined Decisions (not included in this plan)");
-            for d in &withheld.rejected {
-                section.status_simple(
-                    Role::Skipped,
-                    row(d, "declined; run `cfgd decide accept` to include"),
-                );
-            }
+            block(
+                &super::declined_decisions_title(
+                    withheld.rejected.len(),
+                    super::DecisionsTitleScope::NotInThisPlan,
+                ),
+                &withheld.rejected,
+                Role::Skipped,
+                super::MSG_INCLUDE_DECLINED_DECISIONS.into(),
+            );
         }
     }
 
@@ -476,6 +709,17 @@ impl<'a> ApplyRun<'a> {
                 None => Ok(RunDisposition::NothingToDo),
             };
         };
+        // Claimed here, where the whole report is visible: the preview below,
+        // the apply tree the executor writes, and the `Backups` pseudo-phase
+        // after it are one page, and each measuring its own part of it puts
+        // the trailing column at a different x position in each.
+        let budget = report_subject_budget(plan, self.filter, printer);
+        let _column = printer.report_column_beside(
+            budget,
+            report_align_width(plan, self.filter, budget, printer.arrow())
+                .max(self.backup_align_width()),
+            report_trailing_allowance(plan, self.filter, budget, printer.arrow()),
+        );
         if self.preview_only {
             self.preview(printer);
             return Ok(RunDisposition::Previewed);
@@ -514,10 +758,33 @@ impl<'a> ApplyRun<'a> {
         &self,
         printer: &Printer,
     ) -> Result<(ApplyStatus, Vec<crate::backup::BackupRunReport>)> {
+        // A run with no plan is all pseudo-phase, so its labels ARE the report.
+        let _column = printer.report_column(self.backup_align_width());
         let started = Instant::now();
         let (tally, backups) = self.render_backups(printer)?;
+        // run-header-ok: both entry points render the header before delegating
+        // here, and a second one would head the same run twice.
         let status = render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
         Ok((status, backups))
+    }
+
+    /// The widest label the `Backups` pseudo-phase will print, `0` for a run
+    /// carrying no units.
+    ///
+    /// Answered before anything renders, because the report's column has to
+    /// cover the phases the plan does not describe: a backup label wider than
+    /// every planned action would otherwise widen its own phase and leave the
+    /// apply tree above it padding to a narrower one.
+    fn backup_align_width(&self) -> usize {
+        let Some(pending) = &self.backups else {
+            return 0;
+        };
+        let labels: Vec<Vec<String>> = pending
+            .units
+            .iter()
+            .map(crate::backup::backup_unit_labels)
+            .collect();
+        align_width_of(labels.iter().flatten().map(String::as_str))
     }
 
     /// The `Backups` pseudo-phase: one owner group per unit, each carrying that
@@ -543,7 +810,12 @@ impl<'a> ApplyRun<'a> {
             .collect();
         let width = align_width_of(labels.iter().flatten().map(String::as_str));
 
-        let phase = pseudo_phase(printer, BACKUPS_PHASE_LABEL);
+        // Labelled only beside real phases: a plan-less run IS the backups
+        // phase, and its title already says so.
+        let phase = match self.plan {
+            Some(_) => pseudo_phase(printer, BACKUPS_PHASE_LABEL),
+            None => sole_phase(printer),
+        };
         let mut tally = RunTally::empty();
         let mut reports = Vec::with_capacity(pending.units.len());
         for (unit, planned) in pending.units.iter().zip(&labels) {
@@ -575,7 +847,8 @@ impl<'a> ApplyRun<'a> {
                 Some(filter) => phase
                     .owned_actions()
                     .filter(|(owner, action)| {
-                        action_matches_phase_filter(&phase.name, owner, action, filter)
+                        action.pre_skip_reason().is_none()
+                            && action_matches_phase_filter(&phase.name, owner, action, filter)
                     })
                     .count(),
                 None => phase.action_count(),
@@ -590,7 +863,7 @@ impl<'a> ApplyRun<'a> {
     /// alignment column over, so the header's `Actions N planned` and the
     /// rollup's counts reconcile against one list rather than two: a unit whose
     /// `preBackup` hook fails renders one line fewer than this and the
-    /// difference surfaces as the run's `⊙ N actions not attempted`.
+    /// difference surfaces as the run's `◉ N actions not attempted`.
     fn pending_backup_count(&self) -> usize {
         self.backups.as_ref().map_or(0, |p| {
             p.units
@@ -601,12 +874,12 @@ impl<'a> ApplyRun<'a> {
     }
 
     fn planned_count(&self) -> usize {
-        self.in_scope_action_count() + self.pending_backup_count()
+        self.in_scope_action_count() + self.pending_backup_count() + self.unplanned_actions
     }
 }
 
 /// One owner group's in-scope actions, in group order. Each renders under the
-/// subject [`action_display_subject`] derives from it alone, so no positional
+/// subject [`crate::reconciler::action_display_subject`] derives from it alone, so no positional
 /// pairing back into a per-group line vector is needed.
 pub type ScopedGroup<'p> = (&'p OwnerGroup, Vec<&'p Action>);
 
@@ -704,24 +977,74 @@ pub fn in_scope_tree<'p>(
 /// plan reaches it without inventing a [`RunContext`] whose every row would be
 /// empty — a fabricated context is a header waiting to be printed by accident.
 pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Printer) {
+    // Claimed for the whole tree, not per phase: the trailing column is the one
+    // a reader scans down, and a column measured inside each phase moves x
+    // position mid-report. A run that already claimed one — an apply, which saw
+    // its backup labels too — keeps it, so its preview and its tree agree.
+    let budget = report_subject_budget(plan, filter, printer);
+    let width = report_align_width(plan, filter, budget, printer.arrow());
+    let _column = printer.report_column_beside(
+        budget,
+        width,
+        report_trailing_allowance(plan, filter, budget, printer.arrow()),
+    );
     for (phase, groups) in in_scope_tree(plan, filter, PhaseCoverage::Rendered) {
         let phase_section = printer.section_phase(&phase.name.section_label());
         for (group, actions) in groups {
-            let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
+            let label = group.owner.label();
             let owner_section = phase_section.section_owner(&label);
+            owner_section.live_column(width);
             for action in actions {
-                let item = action_display_subject(action).to_string();
-                // An unknown system key is almost always a typo, so it keeps
-                // its warning role instead of reading as ordinary planned work.
-                if matches!(
-                    action,
-                    Action::System(SystemAction::Skip { unknown: true, .. })
-                ) {
-                    owner_section.status_simple(Role::Warn, item);
+                let subject = action_display_subject_within(action, budget, printer.arrow());
+                // Both settled rows go through `action_status`, the seam the
+                // apply tree settles through, so the two trees paint the same
+                // action identically one beat apart.
+                //
+                // The role of an action that is a no-op by construction comes
+                // from the ONE source the apply settles it through, never from
+                // a second decision here: an unknown system key and a refused
+                // file deploy are findings the reader must act on, and a plan
+                // that drew either as ordinary work contradicted the apply that
+                // followed it.
+                if let Some(role) = super::apply::declared_noop_role(action) {
+                    drop(owner_section.action_status(role, subject.to_string()));
+                } else if let Some(reason) = action.pre_skip_reason() {
+                    // Settled here rather than previewed: the host has already
+                    // answered, so the plan states the same outcome, with the
+                    // same detail, the apply will state.
+                    owner_section
+                        .action_status(Role::Skipped, subject.to_string())
+                        .detail(reason);
+                } else if let Some(marker) = &subject.marker {
+                    owner_section.bullet_marker(marker.clone(), subject.body.clone());
+                } else if let Some(detail) = super::action_produced_detail(action, None, 0, &[]) {
+                    // The same detail the apply's row will carry: what the
+                    // step produces is stated beside the subject, never
+                    // baked into it.
+                    owner_section.bullet_detail(subject.body.clone(), detail);
                 } else {
-                    owner_section.bullet(item);
+                    owner_section.bullet(subject.body.clone());
                 }
+                // Structural, not one more arm to remember: `apply::settle_action`
+                // attaches a DeployFiles action's children to EVERY outcome role
+                // (`Ok`, `Fail`, a pre-skip's `Skipped`), so the preview side calls
+                // this once after the row regardless of which arm painted it — a
+                // no-op for every other action kind — rather than repeating the
+                // call in each branch that happens to reach it today.
+                render_deploy_children(&owner_section, action);
             }
+        }
+    }
+}
+
+/// Every file a `DeployFiles` action writes, as the child rows beneath its own
+/// row — the plan-tree half of the one seam `apply::emit_action_line` settles
+/// on the apply side, so a preview and its settled row enumerate one list.
+/// A no-op for any other action kind.
+fn render_deploy_children(owner_section: &SectionGuard<'_>, action: &Action) {
+    if let Some(children) = super::format::deploy_file_children(action) {
+        for (target, method) in children {
+            owner_section.child_row(target, method);
         }
     }
 }
@@ -734,7 +1057,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
 /// The two counts are deliberately different sources. A unit whose `preBackup`
 /// hook list aborted never ran the hooks after the failure, so it emits fewer
 /// lines than it planned, and that difference is the run's
-/// `⊙ N actions not attempted`. A `Busy` skip contributes no item at all —
+/// `◉ N actions not attempted`. A `Busy` skip contributes no item at all —
 /// the unit IS being backed up, just not here — so its one `Role::Skipped` line
 /// moves neither count nor exit code and the unit surfaces only as the
 /// shortfall.
@@ -742,6 +1065,10 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
     let succeeded = report.items.iter().filter(|item| item.ok).count();
     RunTally {
         succeeded,
+        // A `Busy` skip contributes no item at all, so there is nothing here
+        // for a skipped count to hold; the unit surfaces as the shortfall.
+        skipped: 0,
+        not_attempted: Vec::new(),
         failed: report.items.len() - succeeded,
         planned_total: planned,
         // A skip is not a partial run of this unit; it is no run of it, so it
@@ -757,7 +1084,10 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
 /// A pseudo-phase heading held open across execution, so each item's status
 /// lands under its owner.
 pub struct PseudoPhase<'a> {
-    section: SectionGuard<'a>,
+    printer: &'a Printer,
+    /// The `Phase: <name>` section, or `None` for a run this is the ONLY
+    /// phase of — see [`sole_phase`].
+    section: Option<SectionGuard<'a>>,
     /// Work reached from inside a pseudo-phase renders at the phase's depth
     /// rather than tripping the top-level structural assert.
     _inherit: crate::output::renderer::DepthInheritGuard<'a>,
@@ -770,16 +1100,44 @@ impl PseudoPhase<'_> {
     /// cannot buffer to find it.
     #[must_use = "the group closes when the SectionGuard is dropped; bind it"]
     pub fn owner(&self, owner: &Owner, width: usize) -> SectionGuard<'_> {
-        let label = OwnerLabel::new(owner.kind.as_str(), &owner.name);
-        let group = self.section.section_owner(&label);
+        let label = owner.label();
+        let group = match &self.section {
+            Some(section) => section.section_owner(&label),
+            None => self.printer.section_owner(&label),
+        };
         group.live_column(width);
         group
     }
 }
 
+/// The run's ONLY phase, rendered with no phase row at all: its owner groups
+/// sit at the run's own depth, directly under the header.
+///
+/// A phase row earns its place where there are phases to tell apart —
+/// `Backups` among `Packages` and `Files` inside `cfgd apply`. A run whose
+/// whole body is one pseudo-phase named after the command (`cfgd backup run`,
+/// the daemon's scheduled fire) printed `Backup` / `Phase: Backups` /
+/// `backup:notes` down three indents: the same word three times and an extra
+/// level for nothing, while `backup restore` beside it put the identical owner
+/// group one level shallower and lost nothing. `ApplyRun::render_backups`
+/// chooses this whenever the run carries no [`Plan`]; a run whose other phases
+/// were merely FILTERED (`--phase files`) keeps its label, because there the
+/// label states the filter.
+#[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
+pub fn sole_phase(printer: &Printer) -> PseudoPhase<'_> {
+    PseudoPhase {
+        printer,
+        section: None,
+        _inherit: printer.depth_inheritance(),
+    }
+}
+
 /// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
-/// as a section, for work that surrounds a run without being planned. Held
-/// across execution so each item's status lands under its owner.
+/// as a section, for work that surrounds a run without being planned. Styled
+/// exactly like a real reconciler phase (`Phase: <name>`, via [`PhaseLabel`])
+/// so the two are visually one family — a reader should not be able to tell
+/// from styling alone that this phase was never planned. Held across
+/// execution so each item's status lands under its owner.
 ///
 /// A free function, not an [`ApplyRun`] associated function: the daemon's two
 /// `onDrift` arms open a `Drift Hooks` phase around a tick that constructs no
@@ -788,7 +1146,8 @@ impl PseudoPhase<'_> {
 #[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
 pub fn pseudo_phase<'p>(printer: &'p Printer, label: &str) -> PseudoPhase<'p> {
     PseudoPhase {
-        section: printer.section(label),
+        printer,
+        section: Some(printer.section_phase(&PhaseLabel::new(label))),
         _inherit: printer.depth_inheritance(),
     }
 }
@@ -803,27 +1162,281 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
     labels.map(measure_width).max().unwrap_or(0)
 }
 
-/// The plan-phase view over [`align_width_of`]: the max over the DISPLAY
-/// SUBJECT of **every** action in the phase, so every owner group in it opens
-/// with the same column.
+/// The plan-wide view over [`align_width_of`]: the max over the DISPLAY
+/// SUBJECT of **every** action any phase of the report will print.
+///
+/// Per REPORT, not per phase. The trailing column is the one thing a reader's
+/// eye scans straight down, and measuring it inside each phase moved it
+/// between `Prerequisites` and `Packages` of the same apply — correct within
+/// each block, a wobble across the page. Both trees call this with the same
+/// plan and the same filter, so a preview and the apply that follows it pad to
+/// one column too.
 ///
 /// The subject, not the raw plan string: a condensed script body or a marker
 /// the execution renders shorter than the payload would pad every trailing
-/// field in the phase against a column nothing reaches.
-pub fn align_width(phase: &Phase) -> usize {
-    let items: Vec<String> = phase
-        .groups()
+/// field against a column nothing reaches. Filtered the way the trees are, and
+/// over [`PhaseCoverage::Rendered`], because a phase that prints no block
+/// cannot widen a column no row of it occupies.
+///
+/// One column for every row shape the plan tree prints, not just its status
+/// rows: a produced count renders as a bullet's trailing detail
+/// (`- write ~/.cfgd.env — 3 vars, 3 aliases`), and `- ` is exactly as wide as
+/// a glyph and its space, so the bullet pads to the claimed column through
+/// `Emitting::bullet_column` the way a status row does through `route_status`.
+/// Ignoring the claim on the bullet put a preview's em-dashes in two places
+/// and neither at the apply's. A `DeployFiles` action's per-file CHILD rows
+/// are the third shape: since its own subject dropped to a bare count
+/// (`deploy 6 files`), the targets that used to widen the claim by being IN
+/// the subject widen it now only because this fn folds them in explicitly —
+/// otherwise a files-only plan's claim is set by a fourteen-character subject
+/// while its children run three times that wide, and every one glues ragged
+/// instead of padding to a column (`status::pad_subject` only pads what
+/// already fits).
+///
+/// Measured over each subject's FIRST physical row, which is the whole
+/// subject exactly when the subject fits the report's budget
+/// ([`report_subject_budget`]). A subject naming more operands than the line
+/// holds WRAPS, and a wrapped row carries its detail on its LAST physical row
+/// and anchors its duration at whatever column the rest of the report
+/// settled, so it needs no column of its own and is left out of the
+/// measurement. Included, one eleven-package install would set the column at
+/// the budget and push every sibling's em-dash to the far edge, or fail the
+/// claim outright and withdraw the column from the whole report. A child row
+/// never wraps the same way — a target too long for the budget glues instead
+/// (`Emitting::child_row_column`) — so it is left out of the claim by the
+/// same over-budget filter, at its own EFFECTIVE width: the folded target
+/// plus `status::CHILD_ROW_INDENT_DELTA`, the columns a child gives back for
+/// its extra indent and its missing glyph, because that sum is the quantity
+/// `status::pad_subject` actually judges the claim against.
+///
+/// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
+pub fn report_align_width(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    budget: Option<usize>,
+    arrow: &str,
+) -> usize {
+    let actions: Vec<&Action> = in_scope_tree(plan, filter, PhaseCoverage::Rendered)
         .iter()
-        .flat_map(|group| group.actions.iter())
-        .map(|action| action_display_subject(action).to_string())
+        .flat_map(|(_, groups)| groups.iter())
+        .flat_map(|(_, actions)| actions.iter().copied())
         .collect();
-    align_width_of(items.iter().map(String::as_str))
+    let subjects: Vec<String> = actions
+        .iter()
+        .map(|action| action_display_subject_within(action, budget, arrow).to_string())
+        .filter(|subject| budget.is_none_or(|b| measure_width(subject) <= b))
+        .collect();
+    let subject_width = align_width_of(subjects.iter().map(String::as_str));
+    let child_width = actions
+        .iter()
+        .flat_map(|action| {
+            super::format::deploy_file_children(action)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|(target, _method)| {
+            let effective = measure_width(&crate::fold_home_in_text(&target))
+                + crate::output::renderer::status::CHILD_ROW_INDENT_DELTA;
+            budget.is_none_or(|b| effective <= b).then_some(effective)
+        })
+        .max()
+        .unwrap_or(0);
+    subject_width.max(child_width)
 }
 
-/// Every arm returns; `Partial` returns three lines. No path panics, so the
-/// function is safe in core and testable without a `Printer` — and it reads a
-/// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
-fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
+/// The subject budget THIS report's rows are cut within: the printer's floor
+/// ([`Printer::subject_budget_floor`], which reserves the widest wait framing
+/// for every report alike), widened to what the line leaves after the glyph
+/// and this report's OWN `report_trailing_allowance` — a plan whose only
+/// wait reasons name short provision rows has no use for a reservation sized
+/// for `queued behind <a subject at the budget>`, and the reservation left
+/// seventy blank columns beside the hero's `apt install` row. Re-priced once
+/// at the wider budget, since what a reason may print beside a column is
+/// judged against it, and kept only if the claim still fits; the floor
+/// otherwise. `None` for a sink that never wraps, like the floor.
+///
+/// Idempotent under its own claim: inside a run that already holds it,
+/// [`Printer::subject_budget`] answers the claimed budget and the widening
+/// reproduces it, so a preview nested in an apply cuts the same strings.
+///
+/// [`Printer::subject_budget_floor`]: crate::output::Printer::subject_budget_floor
+/// [`Printer::subject_budget`]: crate::output::Printer::subject_budget
+pub fn report_subject_budget(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    printer: &Printer,
+) -> Option<usize> {
+    let floor = printer.subject_budget()?;
+    let line = printer.action_row_line_budget()?;
+    let reserved = |budget: usize| {
+        crate::output::renderer::status::GLYPH_PREFIX_WIDTH
+            + report_trailing_allowance(plan, filter, Some(budget), printer.arrow())
+    };
+    let widened = line.saturating_sub(reserved(floor));
+    if widened <= floor {
+        return Some(floor);
+    }
+    Some(if widened + reserved(widened) <= line {
+        widened
+    } else {
+        floor
+    })
+}
+
+/// The widest content any row of the report may print AFTER its subject —
+/// the `trailing` a [`Printer::report_column_beside`] claim is judged
+/// against — measured over what the run can actually say: every wait reason
+/// a phase's dispatcher can word (`lanes::phase_wait_reasons`, over the rows a
+/// reason can NAME and no other) and the widest produced count a row's detail
+/// may settle with ([`widest_produced_detail`], so a shortfall the preview
+/// cannot know is priced too). Both are worded by the ONE producers the rows
+/// read, so a claim here is a claim about a string the report will actually
+/// print — and never about one it cannot: priced as `queued behind` every
+/// action, the reservation for a reason naming a two-path deploy row withdrew
+/// the column from every report whose widest subject passed half the line.
+///
+/// Priced over what can sit BESIDE a column, so a trailing wider than the
+/// subject budget is left out for the reason a wrapping subject is left out
+/// of [`report_align_width`]: its own row wraps and glues, and pricing it
+/// would withdraw the column from every row that does fit.
+///
+/// [`Printer::report_column_beside`]: crate::output::Printer::report_column_beside
+/// [`widest_produced_detail`]: super::widest_produced_detail
+pub fn report_trailing_allowance(
+    plan: &Plan,
+    filter: Option<&PhaseFilter>,
+    budget: Option<usize>,
+    arrow: &str,
+) -> usize {
+    let separator = measure_width(" — ");
+    in_scope_tree(plan, filter, PhaseCoverage::Rendered)
+        .iter()
+        .map(|(_, groups)| {
+            let actions: Vec<&Action> = groups
+                .iter()
+                .flat_map(|(_, actions)| actions.iter().copied())
+                .collect();
+            let beside = |width: usize| budget.is_none_or(|b| width <= b);
+            let held = super::lanes::phase_wait_reasons(&actions, budget, arrow)
+                .iter()
+                .map(|reason| measure_width(reason))
+                .filter(|width| beside(*width))
+                .max()
+                .unwrap_or(0);
+            let produced = actions
+                .iter()
+                .filter_map(|action| super::widest_produced_detail(action))
+                .map(|d| measure_width(&d))
+                .filter(|width| beside(*width))
+                .max()
+                .unwrap_or(0);
+            separator + held.max(produced)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// What a run's actions came to, as ONE line: `13 actions succeeded`, or
+/// `12 actions succeeded, 1 skipped` — every clause `outcome_clauses`
+/// produced, joined. So no closing line can claim a skipped action as a
+/// success, and silent about outcomes that did not occur: a clean run's line
+/// does not name skips it has none of. No path panics, so the function is safe
+/// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
+/// backup run reaches it without an [`ApplyResult`].
+///
+/// Public because the daemon's `reconcile: complete — …` log line accounts for
+/// the same run the rollup above it does, and a tick whose log and whose
+/// on-screen rollup disagree about how many actions succeeded is two answers to
+/// one question. Take it over a hand-built `succeeded`/`failed` pair: those
+/// counted a skip as a success, which is the whole reason this exists. A LOG
+/// line has no glyph column, which is why this joined form exists beside the
+/// rollup's one-line-per-clause layout rather than being replaced by it.
+pub fn outcome_counts(tally: &RunTally) -> String {
+    outcome_clauses(tally)
+        .into_iter()
+        .map(|(_, clause)| clause)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One clause per outcome CLASS the run produced, each carrying the role that
+/// class's own action rows carried — the ONE decomposition, which
+/// [`outcome_counts`] joins for the daemon's single log line and
+/// [`rollup_lines`] lays out one line per clause.
+///
+/// The classes are distinct outcomes and cannot share a sentence: a skip RAN
+/// and changed nothing, a withheld action never ran at all, and neither is a
+/// success. Fused into the `Role::Ok` counts string, both rendered under a
+/// green tick — `✓ 20 actions succeeded, 1 not attempted: no session manager`
+/// — which invites two wrong readings. A careful reader sums `20 + 1 + 2`
+/// against a header that promised `Actions  22 planned` and concludes the
+/// arithmetic is off (the withheld count sits OUTSIDE `planned_total` by
+/// design); a quick reader takes "1 not attempted" for a kind of success.
+///
+/// A settled skip and a pre-skip both paint `Role::Skipped` on their own rows
+/// (`settled_success_role`, and `render_plan_tree`'s `pre_skip_reason` arm), so
+/// their clauses take it too: the rollup speaks the tree's vocabulary rather
+/// than minting a second one. What no clause may do is share a LINE with
+/// another class.
+fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
+    let mut clauses: Vec<(Role, String)> = Vec::new();
+    // A run whose every action was skipped says so outright: "0 actions
+    // succeeded, 1 skipped" leads with a count of nothing and reads as a
+    // shortfall the run does not have.
+    if tally.succeeded == 0 && tally.skipped > 0 {
+        clauses.push((
+            Role::Skipped,
+            format!("{} skipped", pluralize(tally.skipped, "action")),
+        ));
+    } else {
+        clauses.push((
+            Role::Ok,
+            format!("{} succeeded", pluralize(tally.succeeded, "action")),
+        ));
+        if tally.skipped > 0 {
+            clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
+        }
+    }
+    // The withheld actions are OUTSIDE the counted rollup — the header never
+    // promised them, and they never reconcile against `planned_total` — and
+    // they close the list with the reason the row above already gave, after a
+    // colon.
+    if !tally.not_attempted.is_empty() {
+        let mut reasons: Vec<&str> = Vec::new();
+        for reason in &tally.not_attempted {
+            if !reasons.contains(&reason.as_str()) {
+                reasons.push(reason);
+            }
+        }
+        clauses.push((
+            Role::Skipped,
+            format!(
+                "{} not attempted: {}",
+                tally.not_attempted.len(),
+                reasons.join(", ")
+            ),
+        ));
+    }
+    clauses
+}
+
+/// The rollup's lines, one per outcome the run has to state. Every arm
+/// returns and no path panics, so the function is safe in core and testable
+/// without a `Printer`.
+///
+/// Each line is `(role, subject, detail)`: the detail glues to the subject
+/// through the ONE canonical " — " composer at render time
+/// (`StatusBuilder::detail`), never baked into the subject string by hand. One
+/// outcome CLASS per line — see [`outcome_clauses`] — so the `Role::Ok` line
+/// states only what succeeded.
+fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<String>)> {
+    // Every clause but the first hangs below the verdict on a line of its own.
+    let clauses = outcome_clauses(tally);
+    let trailing = |from: usize| {
+        clauses[from.min(clauses.len())..]
+            .iter()
+            .map(|(role, clause)| (*role, clause.clone(), None))
+    };
     match tally.status {
         // Partial leads with a Warn title line naming the outcome, because the
         // block below it opens on a ✓ and a reader who takes the first line as
@@ -833,59 +1446,80 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         // failure count read as distinct outcomes — fusing them into one Warn
         // line makes a "9 succeeded, 1 failed" run look the same colour as a
         // "1 succeeded, 9 failed" run.
-        ApplyStatus::Partial => vec![
-            (
+        ApplyStatus::Partial => {
+            let mut lines = vec![(
                 Role::Warn,
-                format!(
-                    "{} partial — {} of {} applied",
-                    title.as_str(),
-                    tally.succeeded,
-                    tally.planned_total
-                ),
-            ),
-            (
-                Role::Ok,
-                format!("{} succeeded", pluralize(tally.succeeded, "action")),
-            ),
-            (
-                Role::Accent,
+                format!("{} partial", title.as_str()),
+                Some(format!(
+                    "{} of {} applied",
+                    tally.succeeded, tally.planned_total
+                )),
+            )];
+            lines.extend(
+                clauses
+                    .first()
+                    .map(|(role, clause)| (*role, clause.clone(), None)),
+            );
+            // `Role::Fail`, not `Role::Accent`: these are status lines in a
+            // status block, and `Accent` reserves no glyph column. The failure
+            // count hung one column left of the two lines above it — the only
+            // unmarked line in a report where every failed action row carries
+            // a red glyph — so the bad news read as a stray fragment of the
+            // green line above it.
+            //
+            // It sits above the withheld clauses because a failure is what the
+            // reader acts on, and what did not happen is the footnote.
+            lines.push((
+                Role::Fail,
                 format!("{} failed", pluralize(tally.failed, "action")),
-            ),
-        ],
+                None,
+            ));
+            lines.extend(trailing(1));
+            lines
+        }
         // A run that reached none of what it planned did not complete, whatever
         // its status says. One line, not two: the shortfall it would otherwise
         // carry below is exactly the count named here.
         ApplyStatus::Success if tally.nothing_attempted() => vec![(
             Role::Skipped,
-            format!(
-                "{} did not run — {} not attempted",
-                title.as_str(),
+            format!("{} did not run", title.as_str()),
+            Some(format!(
+                "{} not attempted",
                 pluralize(tally.planned_total, "action")
-            ),
+            )),
         )],
-        ApplyStatus::Success => vec![(
-            Role::Ok,
-            format!(
-                "{} complete — {} succeeded",
-                title.as_str(),
-                pluralize(tally.succeeded, "action")
-            ),
-        )],
+        ApplyStatus::Success => {
+            // Only a `Role::Ok` clause may ride the tick as its detail. A run
+            // that succeeded nothing and skipped something leads with the
+            // skip clause, and hanging that off the tick is the fusion this
+            // layout exists to prevent.
+            let head = matches!(clauses.first(), Some((Role::Ok, _)));
+            let mut lines = vec![(
+                Role::Ok,
+                format!("{} complete", title.as_str()),
+                head.then(|| clauses[0].1.clone()),
+            )];
+            lines.extend(trailing(usize::from(head)));
+            lines
+        }
         ApplyStatus::Failed => vec![(
             Role::Fail,
-            format!(
-                "{} failed — {} failed",
-                title.as_str(),
-                pluralize(tally.failed, "action")
-            ),
+            format!("{} failed", title.as_str()),
+            Some(format!("{} failed", pluralize(tally.failed, "action"))),
         )],
         ApplyStatus::InProgress => vec![(
             Role::Warn,
             format!("{} still in progress (unexpected state)", title.as_str()),
+            None,
         )],
         // The one line that folds the title's case: it is pinned as a lowercase
         // sentence by `tests/apply_signal_abort.rs` and by the sample in
         // `docs/safety.md`, and it reads correctly for every other title.
+        //
+        // The detail states the FACT (nothing was half-written); the
+        // instruction that follows from it is the run's next step, and closes
+        // the block through `run_next_step` like every other unfinished
+        // verdict's.
         //
         // A signal reaches the child process too, so an abort can carry a
         // failure: the install that was in flight dies with it. Naming only
@@ -894,9 +1528,9 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         // accounts for every planned action or it accounts for none.
         ApplyStatus::Aborted => vec![(
             Role::Warn,
-            format!(
-                "{} aborted by signal — {} of {} applied{}; no partial writes, rerun to converge",
-                title.as_str().to_ascii_lowercase(),
+            format!("{} aborted by signal", title.as_str().to_ascii_lowercase()),
+            Some(format!(
+                "{} of {} applied{}; no partial writes",
                 tally.succeeded,
                 pluralize(tally.planned_total, "action"),
                 if tally.failed > 0 {
@@ -904,16 +1538,63 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
                 } else {
                     String::new()
                 }
-            ),
+            )),
         )],
+    }
+}
+
+/// The command a run of this kind is re-run with, in the placeholder form a
+/// hint may name it — never the invocation that just ran, re-spelled with its
+/// own arguments.
+fn rerun_command(title: RunTitle) -> &'static str {
+    match title {
+        RunTitle::Plan => "cfgd plan",
+        // A daemon tick is not something the reader re-runs; the verb that
+        // converges the machine by hand is the same one `Apply` names.
+        RunTitle::Apply | RunTitle::Reconcile => "cfgd apply",
+        RunTitle::Backup => "cfgd backup run <name>",
+        RunTitle::Restore => "cfgd backup restore <name>",
+        RunTitle::Rollback => "cfgd backup rollback <name>",
+    }
+}
+
+/// What a reader DOES about a run that did not converge — the failure-side twin
+/// of [`nothing_to_do_verdict`], and the one thing every other closing line in
+/// the CLI already has.
+///
+/// A reader who has just watched cfgd narrate twenty-two actions gets
+/// `✗ 1 action failed` and, without this, an instruction about a different
+/// subject (the env-file reminder, emitted whenever the env phase wrote a
+/// file). They reasonably read the run as unrepeatable, which is the opposite
+/// of what an idempotent reconciler promises. One wording per state, and the
+/// command is a PLACEHOLDER: `cfgd apply` is a different verb from the
+/// `cfgd init` that ran, and the unit a backup verb acts on is `<name>`.
+///
+/// `Success` with something attempted is the one verdict with no next step:
+/// the run converged, and the surfaces that DO have something left to say
+/// (a withheld decision, a written env file) say it themselves.
+pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<String> {
+    let cmd = rerun_command(title);
+    match tally.status {
+        ApplyStatus::Success if tally.nothing_attempted() => Some(format!(
+            "Resolve what withheld the actions above, then run `{cmd}` again"
+        )),
+        ApplyStatus::Success => None,
+        ApplyStatus::Aborted => Some(format!("Run `{cmd}` again to converge")),
+        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
+            Some(format!("Fix what failed, then run `{cmd}` again"))
+        }
     }
 }
 
 /// The run's closing rollup: one or two status lines naming what happened, plus
 /// the shortfall line when fewer actions ran than the run set out to do.
 ///
-/// `elapsed` lands on the LAST line emitted, so a `Partial` run wears it on its
-/// failure line and a short run wears it on the shortfall.
+/// `elapsed` lands on the FIRST line — the one that NAMES the run. The wall
+/// total is the whole run's, so hanging it off whichever line happened to be
+/// last fused it to that line's own count: a `Partial` run read
+/// `2 actions failed (274.0s wall)`, which says the two failures burned four
+/// and a half minutes.
 pub fn render_run_rollup(
     tally: &RunTally,
     title: RunTitle,
@@ -929,16 +1610,29 @@ pub fn render_run_rollup(
         lines.push((
             Role::Info,
             format!("{} not attempted", pluralize(shortfall, "action")),
+            None,
         ));
     }
-    let last = lines.len().saturating_sub(1);
-    for (index, (role, subject)) in lines.into_iter().enumerate() {
+    for (index, (role, subject, detail)) in lines.into_iter().enumerate() {
         match elapsed {
-            Some(d) if index == last => {
-                printer.status(role, subject).duration(d);
+            Some(d) if index == 0 => {
+                printer
+                    .status(role, subject)
+                    .detail_opt(detail.as_deref())
+                    .wall_duration(d);
             }
-            _ => printer.status_simple(role, subject),
+            _ => match detail {
+                Some(detail) => {
+                    printer.status(role, subject).detail(detail);
+                }
+                None => printer.status_simple(role, subject),
+            },
         }
+    }
+    // Before anything the run's own phases have left to say (the env-file
+    // reminder rides the caveats below): the reader acts on the failure first.
+    if let Some(next) = run_next_step(tally, title) {
+        printer.hint(next);
     }
     tally.status.clone()
 }
@@ -951,6 +1645,8 @@ pub fn render_apply_result(
     printer: &Printer,
     elapsed: Option<Duration>,
 ) -> ApplyStatus {
+    // run-header-ok: a view over the rollup, not a run — the header belongs to
+    // whoever owns the run this result came out of.
     render_run_rollup(&result.tally(), title, printer, elapsed)
 }
 

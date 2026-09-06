@@ -21,14 +21,27 @@ FAIL=0
 
 run_audit_against() {
     local fixture="$1"
+    # `|| true`: a bad_* fixture legitimately drives audit.sh to a nonzero
+    # exit (an ERROR-level gate), and this script runs under `set -e` — a
+    # bare statement whose command fails would abort the whole suite on the
+    # first caught violation instead of reaching fixture_is_clean below.
     CFGD_AUDIT_PATH="$fixture" \
-        bash .claude/scripts/audit.sh > "$TMP/out" 2>&1
-    return $?
+        bash .claude/scripts/audit.sh > "$TMP/out" 2>&1 || true
+}
+
+# Only ERRORS flip the script's exit code (see audit.sh's summary), so a
+# fixture that must trip a WARN-level gate — the dead-error-variant and
+# repeated-string-literal gates below are both `log_warn` — passes the exit
+# code check regardless of what it reports. The summary line is the one place
+# both severities are visible, so "clean" means that exact line, not exit 0.
+fixture_is_clean() {
+    grep -qF '=== Audit Complete: 0 errors, 0 warnings ===' "$TMP/out"
 }
 
 for fix in "$FIXTURE_DIR"/bad_*.txt; do
     name=$(basename "$fix" .txt)
-    if run_audit_against "$fix"; then
+    run_audit_against "$fix"
+    if fixture_is_clean; then
         echo "FAIL: $name was NOT caught by audit (expected violation)"
         cat "$TMP/out"
         FAIL=1
@@ -39,7 +52,8 @@ done
 
 for fix in "$FIXTURE_DIR"/good_*.txt; do
     name=$(basename "$fix" .txt)
-    if run_audit_against "$fix"; then
+    run_audit_against "$fix"
+    if fixture_is_clean; then
         echo "ok:   $name correctly accepted"
     else
         echo "FAIL: $name was flagged by audit (expected to pass)"

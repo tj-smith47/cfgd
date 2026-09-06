@@ -7,7 +7,13 @@ operator:
   replicaCount: 1
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
-    tag: ""  # defaults to Chart.appVersion
+    # Pinned to the cfgd-operator crate's own version, which moves independently of
+    # the agent's (appVersion). Kept as a literal rather than a shared anchor because
+    # anodizer's version_files sweep is a whole-file literal replace: while the
+    # operator and CSI crates share a version literal, a bump of one rewrites the
+    # other's line too and the lagging crate's sweep then warns until it catches up
+    # (the same ceiling .anodizer.yaml documents for docs/installation.md).
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -24,6 +30,11 @@ operator:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # The operator reads every Module's artifact from its registry (platforms,
+  # attestations, cosign signature), so it needs the same registry settings the
+  # CSI driver takes — OCI_INSECURE_REGISTRIES for a plain-HTTP registry, and
+  # any credential environment your registry needs.
+  extraEnv: []
   imagePullSecrets: []
   podAnnotations: {}
   podLabels: {}
@@ -70,6 +81,9 @@ agent:
       effect: NoSchedule
     - operator: Exists
       effect: NoExecute
+  # The agent pulls module artifacts from their registry, so it takes the same
+  # registry settings as the operator and the CSI driver.
+  extraEnv: []
   extraVolumes: []
   extraVolumeMounts: []
   imagePullSecrets: []
@@ -133,7 +147,9 @@ csiDriver:
   enabled: false
   image:
     repository: ghcr.io/tj-smith47/cfgd-csi
-    tag: ""
+    # Pinned to the cfgd-csi crate's own version; see the operator image comment
+    # above for why this is a literal rather than a shared anchor.
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
   cache:
     maxSizeGi: 5

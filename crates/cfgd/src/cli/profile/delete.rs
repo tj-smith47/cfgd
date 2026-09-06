@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 /// Pre-mutation snapshot of the profile's payload directory: the dir that
 /// owns the payload (canonical `<name>/`, legacy `<name>/files/`) plus
@@ -52,7 +52,7 @@ pub fn cmd_profile_delete(
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Delete Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Delete Profile", name));
 
     let pdir = profiles_dir(cli);
     let profile_path = match cfgd_core::config::find_profile_path(&pdir, name) {
@@ -80,7 +80,7 @@ pub fn cmd_profile_delete(
             name,
             "active_profile",
             format!(
-                "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
+                "Cannot delete '{}' — it is the active profile. Switch first with: `cfgd profile switch <other>`",
                 name
             ),
             serde_json::json!({}),
@@ -133,7 +133,7 @@ pub fn cmd_profile_delete(
         Some((dir, true)) => {
             yes || printer.prompt_confirm(&format!(
                 "Profile directory '{}' still contains payload files — remove it too?",
-                dir.posix()
+                cfgd_core::fold_home_in_text(&dir.posix().to_string())
             ))?
         }
         _ => false,
@@ -153,7 +153,7 @@ pub fn cmd_profile_delete(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Deleted profile '{}'", name))
+            .status(Role::Ok, "Deleted")
             .with_data(serde_json::json!({
                 "name": name,
                 "cancelled": false,

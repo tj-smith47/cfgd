@@ -242,9 +242,9 @@ spec:
     name: e2e-ephemeral-mc-${E2E_RUN_ID}
   severity: Medium
   driftDetails:
-    - field: packages.vim
-      expected: installed
-      actual: missing
+    - field: sysctl.vm.swappiness
+      expected: "10"
+      actual: "60"
 EOF
 
 # Wait for DriftAlert to be processed (owner ref set)

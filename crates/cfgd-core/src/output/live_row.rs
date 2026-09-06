@@ -22,7 +22,7 @@
 //!   message that carried the indent itself would push the glyph two columns
 //!   right of where the committed line puts it — the row would jump sideways at
 //!   the moment it settled.
-//! - The settled text is composed through [`super::renderer::Renderer::compose_status`]
+//! - The settled text is composed through [`super::renderer::status::compose_status`]
 //!   against the same live column the section will pad to, so the row and the
 //!   permanent line that replaces it are the same bytes.
 use std::marker::PhantomData;
@@ -30,13 +30,18 @@ use std::sync::Arc;
 
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
-use super::renderer::{LiveBarGuard, Renderer, StatusFields, Writer, finalize_subject, wrap};
+use super::renderer::status::GLYPH_PREFIX_WIDTH;
+use super::renderer::{
+    LiveBarGuard, Renderer, StatusFields, Writer, finalize_subject, indent_prefix, wrap,
+};
 use super::spinner::Spinner;
 use super::window::OutputWindow;
 
 /// How close to the bottom of the terminal a live region may grow before
 /// indicatif stops drawing the rows at its foot. Two lines for the shell's own
-/// prompt and one for the line the region is drawn under.
+/// prompt and one for the line the region is drawn under, plus slack for a
+/// row painting more terminal lines than it counts as (see
+/// [`super::Printer::live_row_budget`]).
 const LIVE_REGION_HEADROOM: usize = 3;
 
 /// One action line of the phase tree, as the caller that owns the row holds
@@ -50,7 +55,7 @@ pub(crate) struct RowStatus<'a> {
     /// The detail states what the plan expected rather than what happened, so
     /// it renders muted — the same distinction `detail_muted_opt` draws.
     pub(crate) detail_muted: bool,
-    pub(crate) duration: Option<std::time::Duration>,
+    pub(crate) duration: Option<super::renderer::Elapsed>,
 }
 
 /// One line of the live region. Build with [`super::Printer::live_row_at`],
@@ -87,8 +92,8 @@ impl<'p> LiveRow<'p> {
         let padded =
             self.renderer
                 .padded_for_column(self.sink.as_ref(), self.depth, fields, column);
-        let (line, tails) = match &padded {
-            Some(subject) => self.renderer.compose_status(&StatusFields {
+        let (line, trailer, tails) = match &padded {
+            Some(subject) => self.renderer.compose_status_split(&StatusFields {
                 role: fields.role,
                 subject,
                 detail: fields.detail,
@@ -96,24 +101,39 @@ impl<'p> LiveRow<'p> {
                 target: fields.target,
                 subject_style: fields.subject_style.clone(),
                 detail_style: fields.detail_style.clone(),
+                verdict: None,
             }),
-            None => self.renderer.compose_status(fields),
+            None => self.renderer.compose_status_split(fields),
         };
-        // The row is repainted in place, so its own line cannot reach a second
-        // row and is clamped — at the COMPLETE-line budget the alignment
-        // ceiling padded it to, not at the narrower wrapped-body width. The
-        // continuation lines below it are separate rows of the same repaint
-        // and are clamped at their own indent.
-        let width = wrap::line_width(self.sink.as_ref(), self.depth);
-        let indent = "  ".repeat(self.depth + 1);
-        let mut message = wrap::clamp(&line, width);
+        // A subject names every package and every file its action touches, so
+        // a repaint lays the line out exactly as the permanent line does —
+        // wrapped under its own hang, the duration anchored at the group's
+        // column — rather than cutting the row a reader is watching. indicatif
+        // supplies this row's indent through the bar's `{prefix}`, so the
+        // widths and the trailer column are measured from the margin and every
+        // row after the first carries the indent itself.
+        let indent = indent_prefix(self.depth);
+        let cols = |depth: usize| {
+            self.sink
+                .wrap_columns()
+                .map(|cols| wrap::line_budget(cols, depth))
+        };
+        let trailer_column = (column > 0).then_some(GLYPH_PREFIX_WIDTH + column);
+        let mut message = wrap::wrap_body_with_trailer(
+            &line,
+            "",
+            cols(self.depth),
+            trailer.as_deref(),
+            trailer_column,
+        )
+        .join(&format!("\n{indent}"));
+        let tail_indent = indent_prefix(self.depth + 1);
         for tail in &tails {
-            message.push('\n');
-            message.push_str(&indent);
-            message.push_str(&wrap::clamp(
-                tail,
-                wrap::line_width(self.sink.as_ref(), self.depth + 1),
-            ));
+            for physical in wrap::wrap_body(tail, "", cols(self.depth + 1)) {
+                message.push('\n');
+                message.push_str(&tail_indent);
+                message.push_str(&physical);
+            }
         }
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
@@ -127,15 +147,28 @@ impl<'p> LiveRow<'p> {
     /// The returned window does NOT retire the bar when it closes: the row
     /// outlives it and settles the line itself.
     pub(crate) fn window(&self, subject: impl Into<String>) -> OutputWindow<'p> {
-        let subject = subject.into();
+        let subject = super::spinner::compose_in_flight_subject(&self.renderer.theme, subject);
+        // A running row names every package and every file its action touches,
+        // so a label wider than the line is laid out as rows of its own rather
+        // than cut: indicatif rewinds the rows a message DECLARES, and it is a
+        // hard wrap it cannot see that strands one. The continuation rows
+        // carry the indent themselves — the bar's `{prefix}` reaches only the
+        // first — exactly as the window's own tail lines below them do.
+        let subject = wrap::wrap_body(
+            &subject,
+            "",
+            self.sink
+                .wrap_columns()
+                .map(|_| wrap::available_width(self.sink.as_ref(), self.depth)),
+        )
+        .join(&format!("\n{}", indent_prefix(self.depth)));
         if !self.bar.is_hidden() {
             self.bar.set_style(super::spinner::spinner_style(
                 &self.renderer,
                 "{spinner} {msg}",
             ));
-            self.bar.enable_steady_tick(super::spinner::SPINNER_TICK);
         }
-        let spinner = Spinner {
+        let mut spinner = Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink.clone(),
             depth: self.depth,
@@ -149,19 +182,31 @@ impl<'p> LiveRow<'p> {
             borrowed: true,
             _phantom: PhantomData,
         };
-        spinner.set_message(subject.clone());
+        // Already composed above — folded, ellipsis-stripped and painted — so
+        // it goes in through the bypass. `set_message` would compose it a
+        // second time, whose fold strips the coat the first one put on and
+        // pays for the whole label again to arrive back where it started.
+        spinner.set_composed_message(subject.clone());
+        // The tick is the LAST call of the setup: `build_live_row` handed this
+        // bar over holding no message, and an animation started before the
+        // subject is in paints a lone glyph on an empty line.
+        if !self.bar.is_hidden() {
+            super::spinner::start_spinner_animation(&self.bar);
+        }
         OutputWindow::borrowed(spinner, subject)
     }
 
-    /// Draw this row as one action line of the phase tree — the subject
-    /// painted `theme.primary`, exactly as
-    /// [`super::SectionGuard::action_status`] paints it.
+    /// Draw this row as one action line of the phase tree — subject and detail
+    /// emphasised through `renderer::action_subject_style` /
+    /// `renderer::action_detail_is_muted`, exactly as
+    /// [`super::SectionGuard::action_status`] paints them, so a row cannot
+    /// settle in one emphasis and commit in another.
     pub(crate) fn set_action_status(&self, status: &RowStatus<'_>, column: usize) {
         if self.bar.is_hidden() {
             return;
         }
         let theme = &self.renderer.theme;
-        let subject = finalize_subject(theme, status.subject, None, None);
+        let subject = finalize_subject(theme, status.subject, None, None, None);
         self.set_status(
             &StatusFields {
                 role: status.role,
@@ -169,9 +214,13 @@ impl<'p> LiveRow<'p> {
                 detail: status.detail,
                 duration: status.duration,
                 target: None,
-                subject_style: theme.primary.clone(),
-                detail_style: (status.detail_muted && status.detail.is_some())
-                    .then(|| theme.muted.clone()),
+                subject_style: super::renderer::action_subject_style(theme, status.role),
+                detail_style: (super::renderer::action_detail_is_muted(
+                    status.role,
+                    status.detail_muted,
+                ) && status.detail.is_some())
+                .then(|| theme.muted.clone()),
+                verdict: None,
             },
             column,
         );
@@ -187,8 +236,10 @@ impl<'p> LiveRow<'p> {
         let width = wrap::available_width(self.sink.as_ref(), self.depth);
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
-        self.bar
-            .set_message(wrap::clamp(&label.styled(&self.renderer.theme), width));
+        self.bar.set_message(wrap::clamp_at_token(
+            &label.styled(&self.renderer.theme),
+            width,
+        ));
     }
 
     /// Draw this row as a NOTE about the region rather than a step of it: a
@@ -207,11 +258,11 @@ impl<'p> LiveRow<'p> {
             .renderer
             .theme
             .muted
-            .apply_to(format!("… {text}"))
+            .apply_to(format!("… {}", super::cursor_safe(text)))
             .to_string();
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());
-        self.bar.set_message(wrap::clamp(&body, width));
+        self.bar.set_message(wrap::clamp_at_token(&body, width));
     }
 
     /// Take this row out of the live region. Called once the line has been
@@ -310,6 +361,13 @@ impl super::Printer {
     /// recently — the opposite of what a reader needs. A caller that can choose
     /// NOT to draw a row (one describing work that has not started) asks here
     /// first. `0` when there is no live region at all.
+    ///
+    /// This is a ROW count, not a count of the terminal lines indicatif ends
+    /// up painting: a running row tails its child's output below itself, a
+    /// subject may carry `\n` continuations, and either can soft-wrap.
+    /// `LIVE_REGION_HEADROOM` is the slack that covers that difference, so a
+    /// caller keeps its OWN rows inside the budget and does not claim the
+    /// region can never overflow.
     pub(crate) fn live_row_budget(&self) -> usize {
         if !self.live_bars() {
             return 0;
@@ -358,6 +416,7 @@ mod tests {
             target: None,
             subject_style: None,
             detail_style: None,
+            verdict: None,
         }
     }
 
@@ -369,7 +428,7 @@ mod tests {
         assert!(row.bar.is_hidden(), "a row has no non-TTY form");
         row.retire();
         assert!(
-            buf.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            crate::test_helpers::captured_text(&buf).is_empty(),
             "a hidden row writes nothing, on any call and on retire"
         );
     }
@@ -429,7 +488,7 @@ mod tests {
     fn an_abandoned_window_leaves_the_row_able_to_speak_and_records_nothing() {
         // A lane worker that panics drops its handle without releasing the
         // window. The line is the ROW's, and an owned spinner's Drop would
-        // clear it and leave a `Status(Info)` behind — retiring a row its owner
+        // clear it and settle a `Role::Skipped` "(interrupted)" line — retiring a row its owner
         // is still going to settle, and printing a second line for an action
         // whose outcome that settle is about to write.
         let (printer, buf) = Printer::for_test_with_live_bars();
@@ -444,9 +503,9 @@ mod tests {
             "the abandoned window retired the row's bar"
         );
         assert_eq!(row.text(), "  ✓ pipx install pynvim");
-        let drawn = super::super::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let drawn = crate::test_helpers::captured_text(&buf);
         assert!(
-            !drawn.contains('⊙'),
+            !drawn.contains('◉'),
             "the abandoned window left a record of its own: {drawn:?}"
         );
     }
@@ -464,7 +523,7 @@ mod tests {
         first.set_status(&fields(Role::Ok, "first"), 0);
         middle.set_status(&fields(Role::Ok, "middle"), 0);
         last.set_status(&fields(Role::Ok, "last"), 0);
-        let drawn = super::super::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let drawn = crate::test_helpers::captured_text(&buf);
         // The last paint of each row, since every redraw appends the whole
         // region to the recording again.
         let positions: Vec<usize> = ["first", "middle", "last"]
@@ -479,6 +538,59 @@ mod tests {
             positions.windows(2).all(|w| w[0] < w[1]),
             "rows drawn out of order: {drawn:?}"
         );
+    }
+
+    #[test]
+    fn a_running_row_never_animates_before_it_has_a_subject() {
+        // The animated template is `{spinner} {msg}` and the bar
+        // `build_live_row` hands over holds no message, so a tick started
+        // ahead of the subject paints a lone glyph on an empty line — a status
+        // row naming no work. `start_spinner_animation` is the ordering seam:
+        // it asserts the message is in, so reaching the end of `window` at all
+        // is the pin.
+        let (printer, _buf) = Printer::for_test_with_live_bars();
+        let row = printer.live_row_at(2);
+        let window = row.window("install ripgrep");
+        assert!(
+            row.bar.message().contains("install ripgrep"),
+            "the row animated before its subject went in: {:?}",
+            row.bar.message()
+        );
+        window.release();
+
+        // Anti-vacuity: the guard really does refuse the inverted order, so
+        // the test above is not passing on an assertion that never runs.
+        let bare = IndProgressBar::new_spinner();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::super::spinner::start_spinner_animation(&bare);
+        }))
+        .is_err();
+        std::panic::set_hook(previous);
+        assert!(refused, "a messageless bar was allowed to start animating");
+    }
+
+    #[test]
+    fn the_live_region_never_draws_a_spinner_frame_on_a_line_of_its_own() {
+        // The emulated screen is the only capture that sees a line the region
+        // drew and never erased, which is where the lone glyph appeared.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let row = printer.live_row_at(2);
+        let window = row.window("install ripgrep");
+        let held = screen.contents();
+        window.release();
+        row.retire();
+        for line in held.lines() {
+            let bare = super::super::strip_ansi(line);
+            let rest: String = super::super::spinner::SPINNER_FRAMES
+                .iter()
+                .fold(bare.to_string(), |acc, frame| acc.replace(frame, ""));
+            assert!(
+                bare.trim().is_empty() || !rest.trim().is_empty(),
+                "the region drew a spinner frame with nothing after it: {held:?}"
+            );
+        }
     }
 
     #[test]

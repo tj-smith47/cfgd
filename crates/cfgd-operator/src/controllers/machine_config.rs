@@ -13,8 +13,9 @@ use crate::metrics::DriftLabels;
 use super::drift_alert::has_active_drift_alerts;
 use super::module::resolve_module_refs;
 use super::{
-    ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER,
-    build_condition, emit_event, find_condition_status, namespaced_api, record_reconcile_success,
+    ControllerContext, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER, add_finalizer,
+    build_condition, emit_event, find_condition, namespaced_api, record_reconcile_success,
+    remove_finalizer,
 };
 
 pub(super) async fn reconcile_machine_config(
@@ -32,49 +33,16 @@ pub(super) async fn reconcile_machine_config(
 
     if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
         info!(name = %name, "machineConfig being deleted, running cleanup");
-        let updated: Vec<&str> = finalizers
-            .iter()
-            .filter(|f| f.as_str() != MACHINE_CONFIG_FINALIZER)
-            .map(|f| f.as_str())
-            .collect();
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to remove finalizer from {name}: {e}"
-                ))
-            })?;
+        remove_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
+        // A deletion pass is a reconciliation that succeeded; during a
+        // deletion-heavy period this counter is the only sign the controller
+        // is alive at all.
+        record_reconcile_success(&ctx, "machine_config", start);
         return Ok(Action::await_change());
     }
 
     if obj.metadata.deletion_timestamp.is_none() && !has_finalizer {
-        let mut updated: Vec<String> = finalizers.to_vec();
-        updated.push(MACHINE_CONFIG_FINALIZER.to_string());
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
-            })?;
+        add_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
         info!(name = %name, "added finalizer to MachineConfig");
     }
 
@@ -110,9 +78,9 @@ pub(super) async fn reconcile_machine_config(
         .unwrap_or(&[]);
 
     // Check if any DriftAlerts exist for this MachineConfig
-    let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
+    let has_drift = has_active_drift_alerts(&ctx.stores, &namespace, &name).await?;
 
-    // Skip if we've already observed this generation, no drift, and condition already reflects that
+    // Skip if this generation is already observed, no drift, and condition already reflects that
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
     let had_drift = existing_conditions
@@ -120,26 +88,37 @@ pub(super) async fn reconcile_machine_config(
         .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
     if generation_unchanged && !has_drift && !had_drift {
         info!(name = %name, "already reconciled this generation, skipping");
+        // A pass that concluded there is nothing to do IS a reconciliation that
+        // succeeded, and it is the only signal a steady machine produces:
+        // `lastReconciled` deliberately stops advancing once the status stops
+        // changing, so a counter that also stopped would leave a healthy
+        // machine indistinguishable from a controller that had stopped
+        // reconciling it.
+        record_reconcile_success(&ctx, "machine_config", start);
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
     // Resolve moduleRefs against Module CRDs (cluster-scoped)
     let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
-        resolve_module_refs(&ctx.client, &obj.spec.module_refs).await;
+        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
 
     let now = cfgd_core::utc_now_iso8601();
 
+    // A DriftAlert carries the answers of a device's system CONFIGURATORS and
+    // nothing else, so the absence of one is not a machine proven in sync: the
+    // message says which class was reported, and the negative says which class
+    // went unreported rather than claiming a clean machine.
     let (drift_status, drift_reason, drift_message) = if has_drift {
         (
             "True",
             "DriftActive",
-            format!("MachineConfig {} has detected drift on device", name),
+            format!("A device reported drifted system settings for MachineConfig {name}"),
         )
     } else {
         (
             "False",
             "NoDrift",
-            format!("No drift detected for MachineConfig {}", name),
+            format!("No device reported drifted system settings for MachineConfig {name}"),
         )
     };
 
@@ -149,50 +128,82 @@ pub(super) async fn reconcile_machine_config(
         .map(|s| s.package_versions.clone())
         .unwrap_or_default();
 
-    let status = serde_json::json!({
-        "status": MachineConfigStatus {
-            last_reconciled: Some(now.clone()),
-            observed_generation: current_generation,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Reconciled", "True", "ReconcileSuccess",
-                    &format!("MachineConfig {} reconciled successfully", name),
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "DriftDetected", drift_status, drift_reason,
-                    &drift_message,
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "ModulesResolved", modules_resolved_status, modules_resolved_reason,
-                    &modules_resolved_message,
-                    &now, current_generation,
-                ),
-                // Compliant is set by policy controllers — preserve existing value
-                build_condition(
-                    existing_conditions,
-                    "Compliant",
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .unwrap_or("Unknown"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|s| if s == "True" { "PolicyCompliant" } else if s == "False" { "PolicyViolation" } else { "NotEvaluated" })
-                        .unwrap_or("NotEvaluated"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|_| "Policy compliance evaluated by ConfigPolicy controller")
-                        .unwrap_or("Awaiting policy evaluation"),
-                    &now, current_generation,
-                ),
-            ],
-            package_versions: existing_package_versions,
-        }
-    });
+    // `Compliant` belongs to the policy controllers: its status, reason AND
+    // message are all theirs, and this controller only carries them through.
+    // Rewriting any of the three is not cosmetic — a `Condition` compares by
+    // every field, so each controller's guard reads the other's text as a change
+    // and patches it back, and a drifted machine (which never takes the skip arm
+    // above) ping-pongs with the policy controller at watch speed rather than
+    // reaching steady state. Text is synthesized only for a machine no policy
+    // has evaluated, the one case with nothing to preserve.
+    let (compliant_status, compliant_reason, compliant_message) =
+        match find_condition(existing_conditions, "Compliant") {
+            Some(c) => (c.status.as_str(), c.reason.as_str(), c.message.as_str()),
+            None => ("Unknown", "NotEvaluated", "Awaiting policy evaluation"),
+        };
+
+    let mut desired = MachineConfigStatus {
+        // Carried forward rather than refreshed, so the comparison below is
+        // about what the reconcile OBSERVED. Stamping `now` here would make
+        // every status unequal to its predecessor, and the drifted machine —
+        // which never takes the skip arm above — would pay a status write and
+        // two events on every 60s requeue for as long as the drift lasts.
+        last_reconciled: existing_status.and_then(|s| s.last_reconciled.clone()),
+        observed_generation: current_generation,
+        conditions: vec![
+            build_condition(
+                existing_conditions,
+                "Reconciled",
+                "True",
+                "ReconcileSuccess",
+                &format!("MachineConfig {} reconciled successfully", name),
+                &now,
+                current_generation,
+            ),
+            build_condition(
+                existing_conditions,
+                "DriftDetected",
+                drift_status,
+                drift_reason,
+                &drift_message,
+                &now,
+                current_generation,
+            ),
+            build_condition(
+                existing_conditions,
+                "ModulesResolved",
+                modules_resolved_status,
+                modules_resolved_reason,
+                &modules_resolved_message,
+                &now,
+                current_generation,
+            ),
+            // Compliant is set by policy controllers — preserve existing value
+            build_condition(
+                existing_conditions,
+                "Compliant",
+                compliant_status,
+                compliant_reason,
+                compliant_message,
+                &now,
+                current_generation,
+            ),
+        ],
+        package_versions: existing_package_versions,
+    };
+
+    // Everything the reconcile observed is already recorded — write nothing and
+    // announce nothing. `build_condition` carries each condition's
+    // `lastTransitionTime` forward while its status holds, so a machine whose
+    // situation has not moved really does compare equal.
+    if existing_status == Some(&desired) {
+        info!(name = %name, "status already current, skipping write");
+        record_reconcile_success(&ctx, "machine_config", start);
+        return Ok(Action::requeue(std::time::Duration::from_secs(60)));
+    }
+
+    desired.last_reconciled = Some(now.clone());
+    let status = serde_json::json!({ "status": desired });
 
     if let Err(e) = machines_api
         .patch_status(
@@ -233,7 +244,7 @@ pub(super) async fn reconcile_machine_config(
             &obj.object_ref(&()),
             EventType::Warning,
             "DriftDetected",
-            format!("Drift detected on device for MachineConfig {}", name),
+            format!("A device reported drifted system settings for MachineConfig {name}"),
             "DriftCheck",
         )
         .await;

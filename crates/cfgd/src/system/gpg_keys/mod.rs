@@ -109,7 +109,7 @@ impl KeyringEntry {
 /// Parse `gpg --list-keys --with-colons --with-fingerprint <email>` output
 /// into a list of `KeyringEntry` values.
 ///
-/// The format is documented at https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS
+/// The format is documented at <https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS>
 /// Relevant record types used here:
 ///   - `pub` : public key record
 ///   - `uid` : user ID record (email extracted here)
@@ -117,7 +117,7 @@ impl KeyringEntry {
 fn parse_gpg_colon_output(output: &str) -> Vec<KeyringEntry> {
     let mut entries: Vec<KeyringEntry> = Vec::new();
 
-    // We build entries per `pub` block. State carried across lines:
+    // Entries are built per `pub` block. State carried across lines:
     let mut current_validity: char = '-';
     let mut current_expiry_ts: u64 = 0;
     let mut current_capabilities: String = String::new();
@@ -500,7 +500,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             if let Some(k) = new_key {
                 cx.report(
-                    Role::Ok,
+                    Role::Info,
                     format!(
                         "gpgKeys: generated key for {} <{}> — fingerprint {}",
                         spec.real_name, spec.email, k.fingerprint

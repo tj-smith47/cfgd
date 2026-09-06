@@ -16,18 +16,47 @@
       "resourceType": "env"
     }
   ],
+  "manifest": {
+    "description": "Team-wide baseline",
+    "modules": [
+      "dev-tools",
+      "shell"
+    ],
+    "name": "team-config",
+    "profiles": [],
+    "version": "3.1.0"
+  },
   "modules": [
     "dev-tools",
     "shell"
   ],
   "name": "team-config",
   "pinVersion": "v1.2.3",
+  "policy": {
+    "allowedTargetPaths": [
+      "~/.config/**",
+      "~/.bashrc"
+    ],
+    "encryption": {
+      "backend": "sops",
+      "mode": "Always",
+      "requiredTargets": [
+        "secrets/**"
+      ]
+    },
+    "requireSignedCommits": true,
+    "scriptsAllowed": false,
+    "secretsReadAllowed": false,
+    "signedCommitsBypassed": true,
+    "systemChangesAllowed": false
+  },
   "priority": 100,
   "profile": "team",
   "state": {
     "lastCommit": "deadbeef1234567890abcdef",
     "lastFetched": "2026-05-14T10:00:00Z",
-    "status": "synced",
+    "signed": true,
+    "status": "active",
     "version": "3.1.0"
   },
   "syncInterval": "1h",

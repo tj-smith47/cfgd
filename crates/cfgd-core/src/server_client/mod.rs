@@ -44,6 +44,14 @@ struct DriftReport {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DriftDetail {
+    /// The drifted setting's identity, qualified by the configurator that
+    /// reported it (`sysctl.net.ipv4.ip_forward`), composed through
+    /// [`crate::reconciler::system_resource_key`].
+    ///
+    /// Never the bare key: two configurators may declare the same one, and the
+    /// DriftAlert CRD merges `driftDetails` by this field. Never the
+    /// `system:`-prefixed spelling either — that outer wrapper belongs to
+    /// cfgd's own resource-id grammar, not to a fleet wire field.
     field: String,
     expected: String,
     actual: String,
@@ -123,7 +131,7 @@ pub struct DeviceCredential {
 /// and path) points at localhost, `127.0.0.1/8`, or `::1`. Used to suppress
 /// the plaintext-scheme warning for loopback dev setups.
 fn is_loopback_host(authority: &str) -> bool {
-    // Strip any path suffix so we compare just the host[:port].
+    // Strip any path suffix to compare just the host[:port].
     let host_port = authority.split('/').next().unwrap_or(authority);
     // Handle bracketed IPv6 host + port: `[::1]:8080`.
     let host = if let Some(rest) = host_port.strip_prefix('[') {
@@ -170,13 +178,55 @@ impl ServerClient {
         req
     }
 
-    /// Send a POST request with exponential backoff on network failures.
-    fn post_with_retry(&self, path: &str, body_json: &str) -> std::result::Result<String, String> {
+    /// Send a POST request with exponential backoff, narrating the wait.
+    ///
+    /// The one place every gateway round-trip blocks, and the only one that
+    /// knows an attempt failed and a backoff is being slept off — so the
+    /// narration lives here rather than at five call sites that cannot see
+    /// either. `label` is the caller's words for what it is asking for.
+    ///
+    /// Narrated SILENTLY: the caller prints a permanent line naming this
+    /// request before it calls, and the command around it settles the verdict
+    /// once the answer is in, so a settled line here would be a third
+    /// statement of one round-trip. `label` is the caller's words, and the
+    /// bar carries only the WAITING half of them, so the standing line and
+    /// the live one beneath it do not read as one sentence printed twice.
+    fn post_with_retry(
+        &self,
+        path: &str,
+        body_json: &str,
+        printer: &Printer,
+        label: &str,
+    ) -> std::result::Result<String, String> {
+        printer.narrate_silent(format!("{label}: waiting for response"), |sp| {
+            self.post_attempts(path, body_json, label, sp)
+        })
+    }
+
+    /// The retry ladder itself, split out so `post_with_retry` reads as the
+    /// one narrated wait it is: every arm below either returns or falls
+    /// through to the next attempt, and the wrapper's finish is the same on
+    /// all of them.
+    fn post_attempts(
+        &self,
+        path: &str,
+        body_json: &str,
+        label: &str,
+        sp: &mut crate::output::Spinner<'_>,
+    ) -> std::result::Result<String, String> {
         let retry = crate::retry::BackoffConfig::DEFAULT_TRANSIENT;
         let mut last_err = String::new();
         for attempt in 0..retry.max_attempts {
             let delay = retry.delay_for_attempt(attempt);
             if !delay.is_zero() {
+                // Named only from the second attempt on: the opening label
+                // already covers the first, and "attempt 1 of 3" on a request
+                // that will succeed reads as a problem.
+                sp.set_message(format!(
+                    "{label}: retrying, attempt {} of {}",
+                    attempt + 1,
+                    retry.max_attempts
+                ));
                 std::thread::sleep(delay);
             }
 
@@ -252,10 +302,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Checking in with device gateway");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Checking in with device gateway";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/checkin", &body_json)
+            .post_with_retry("/api/v1/checkin", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -271,16 +324,26 @@ impl ServerClient {
         })
     }
 
-    /// Report drift events to the device gateway.
-    pub fn report_drift(&self, drifts: &[SystemDrift], printer: &Printer) -> Result<()> {
+    /// Report drifted system settings to the device gateway.
+    ///
+    /// The gateway's whole drift picture is what this method sends, and every
+    /// element is a [`SystemDrift`] — one system configurator's setting whose
+    /// live value diverged from the declared one. Packages, files, env vars and
+    /// aliases are never carried here, so the narration names the class rather
+    /// than letting a fleet reader take a settings report for a machine verdict.
+    ///
+    /// Each drift arrives paired with the configurator that reported it, as
+    /// [`crate::compliance::system_drifts`] yields them: the wire field is the
+    /// qualified identity, so two configurators sharing a key stay two rows.
+    pub fn report_drift(&self, drifts: &[(&str, &SystemDrift)], printer: &Printer) -> Result<()> {
         if drifts.is_empty() {
             return Ok(());
         }
 
         let details: Vec<DriftDetail> = drifts
             .iter()
-            .map(|d| DriftDetail {
-                field: d.key.clone(),
+            .map(|(configurator, d)| DriftDetail {
+                field: crate::reconciler::system_resource_key(configurator, &d.key),
                 expected: d.expected.clone(),
                 actual: d.actual.clone(),
             })
@@ -289,23 +352,28 @@ impl ServerClient {
         let body = DriftReport { details };
         let body_json = serde_json::to_string(&body).map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(
+                // fleet-drift-ok: an internal serialization failure, not a claim
                 "failed to serialize drift report: {}",
                 e
             )))
         })?;
 
         let path = format!("/api/v1/devices/{}/drift", self.device_id);
-        printer.status_simple(
-            Role::Info,
-            format!("Reporting {} drift events to device gateway", drifts.len()),
+        // One binding for the permanent line and the bar beneath it: the two
+        // name the same request and must never drift apart.
+        let label = format!(
+            "Reporting {} to device gateway",
+            crate::pluralize(drifts.len(), "drifted system setting")
         );
+        printer.status_simple(Role::Info, label.clone());
 
-        self.post_with_retry(&path, &body_json).map_err(|e| {
-            CfgdError::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                format!("device gateway drift report failed: {}", e),
-            ))
-        })?;
+        self.post_with_retry(&path, &body_json, printer, &label)
+            .map_err(|e| {
+                CfgdError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!("device gateway system settings drift report failed: {}", e),
+                ))
+            })?;
 
         Ok(())
     }
@@ -330,10 +398,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Enrolling device with device gateway");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Enrolling device with device gateway";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll", &body_json)
+            .post_with_retry("/api/v1/enroll", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -395,10 +466,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Requesting enrollment challenge");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Requesting enrollment challenge";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll/challenge", &body_json)
+            .post_with_retry("/api/v1/enroll/challenge", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -435,10 +509,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Submitting signed challenge for verification");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Submitting signed challenge for verification";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll/verify", &body_json)
+            .post_with_retry("/api/v1/enroll/verify", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,

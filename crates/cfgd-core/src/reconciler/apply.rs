@@ -1,27 +1,31 @@
 use crate::AbortFlag;
 use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
-use crate::errors::{ConfigError, Result};
+use crate::errors::{CfgdError, ConfigError, PackageError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
+use crate::output::{Printer, Role, SectionGuard};
 use crate::state::ApplyStatus;
+use crate::to_posix_string;
 
+use super::env_engine::ManagerPathDir;
 use super::format::{
-    action_display_subject, condense_action_desc_for_display, format_action_description,
-    parse_package_description, parse_resource_from_description,
+    action_display_subject_within, condense_action_desc_for_display, deploy_file_children,
+    format_action_description, parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
-use super::run::align_width;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
+use super::sidecar::SidecarOutcome;
 use super::types::{
-    Action, ActionResult, ApplyResult, MANAGER_RESOURCE_TYPE, ManagerAction, ModuleAction,
-    ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    ScriptAction, ScriptPhase, SystemAction,
+    Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
+    ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction, module_skipped_whole,
 };
-use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
+use crate::providers::{
+    ActionNote, FileAction, NoteSink, PackageAction, ProviderRegistry, SecretAction,
+};
 
 /// One action's line in the execution tree, resolved where the outcome is known
 /// and written either immediately (a streaming phase) or at phase close
@@ -42,6 +46,11 @@ pub(super) struct ActionOutcome {
     /// out beneath this line when the phase's tree is written. Always empty in
     /// a sequential phase, where the output window already showed it live.
     body: Vec<String>,
+    /// Every file a `DeployFiles` action writes, target then resolved method —
+    /// [`super::format::deploy_file_children`]'s output, carried here so
+    /// [`emit_action_line`] renders the same list [`super::render_plan_tree`]
+    /// previewed. Empty for every other action kind.
+    children: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -57,8 +66,249 @@ impl ActionOutcome {
             duration: Some(duration),
             notes: Vec::new(),
             body: Vec::new(),
+            children: Vec::new(),
         }
     }
+
+    /// [`Self::for_test`] with its child rows populated — for a test proving
+    /// the plan and apply trees enumerate a `DeployFiles` action's files
+    /// identically.
+    pub(super) fn for_test_with_children(
+        subject: &str,
+        duration: std::time::Duration,
+        children: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            children,
+            ..Self::for_test(subject, duration)
+        }
+    }
+
+    /// The outcome `settle_action` records for an action that did nothing: the
+    /// role its own text implies, and a detail it derived rather than observed.
+    pub(super) fn for_test_settled(subject: &str, role: Role, detail: &str) -> Self {
+        Self {
+            subject: subject.to_string(),
+            role,
+            detail: Some(detail.to_string()),
+            detail_muted: true,
+            duration: None,
+            notes: Vec::new(),
+            body: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+}
+
+/// What an env-file write put in the file, for the detail beside its own line:
+/// `write ~/.cfgd.env — 3 vars, 3 aliases`.
+///
+/// `None` for every other action, and for a write that renders neither (the
+/// neutralizing rewrite of a surface whose declarations all went away) — a
+/// detail reading `0 vars, 0 aliases` states the same thing the empty file
+/// already does.
+fn env_write_summary(action: &Action) -> Option<String> {
+    let Action::Env(super::types::EnvAction::WriteEnvFile { vars, aliases, .. }) = action else {
+        return None;
+    };
+    let mut parts = Vec::new();
+    if *vars > 0 {
+        parts.push(crate::pluralize(*vars, "var"));
+    }
+    if *aliases > 0 {
+        // Not `pluralize`: its plural is a bare `+s`, and this noun's is not.
+        let noun = if *aliases == 1 { "alias" } else { "aliases" };
+        parts.push(format!("{aliases} {noun}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// What a module file deploy leaves alone, for the detail beside its own
+/// line: `deploy init.lua — 5 already deployed` for a subset.
+///
+/// A subset is stated against the DECLARED set, so "one file changed" and
+/// "nothing changed" (no action at all) can never render alike. A full deploy
+/// carries no count at all: the subject already states how many it writes
+/// (`deploy 6 files`), so a detail of `6 already deployed` would restate it.
+///
+/// The COMPLEMENT, never a ratio: the detail names only what the subject
+/// cannot. A second number over a set the subject already spells out invites
+/// pairing the wrong two. What the subject cannot say is how many declared
+/// entries were already in place, so that is the number.
+fn deploy_files_summary(action: &Action) -> Option<String> {
+    let Action::Module(ModuleAction {
+        kind:
+            ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            },
+        ..
+    }) = action
+    else {
+        return None;
+    };
+    let written = files.len();
+    (written < *declared_total).then(|| format!("{} already deployed", declared_total - written))
+}
+
+/// What a package install found already on the machine, for the detail beside
+/// its own line: `apt install ripgrep, fd-find — 1 already installed`.
+///
+/// The subject stays the PLANNED set in every tree ([`action_display_subject`]
+/// is one string across the preview bullet, the alignment column and the
+/// executed row) and so does the recorded description, which is a wire
+/// contract. What the executed row alone can differ on is the COUNT, and it
+/// only learns it at execute time: the `Prerequisites` phase installs packages,
+/// so an install re-reads the machine and drops every entry that is already
+/// there. `installed` is that re-read's answer, carried out of the executor on
+/// [`ActionRun`]; `None` is a preview, which has no answer yet.
+///
+/// No plain count on a full install: a package subject names every entry it
+/// installs, so a trailing `— 6 packages` could only ever restate the row.
+/// And the shortfall is the COMPLEMENT, never a ratio, for the reason the
+/// deploy arm states: `— 7 of 9 packages` puts two numbers over one set on
+/// one row, and the available reading was that the two the reader could not
+/// pair were the ones that landed. The shortfall on this arm is never a
+/// failure (a failed install fails the action; `installed_now` drops exactly
+/// what an earlier phase already put on the machine), so the un-said number
+/// is what was already there.
+///
+/// [`action_display_subject`]: super::format::action_display_subject
+fn installed_packages_summary(
+    action: &Action,
+    installed: Option<usize>,
+    delivered: usize,
+) -> Option<String> {
+    let planned = planned_package_count(action)?;
+    let landed = installed.filter(|landed| *landed < planned)?;
+    // `already installed` is the vocabulary for state this run did not
+    // create. An entry the run's own `Prerequisites` phase put on the machine
+    // (`provision npm via brew` IS a `brew install node`) reads as delivered
+    // by the run, or the row says cfgd declared one tool twice and wasted
+    // half the install twelve lines under the provision that landed it.
+    let delivered = delivered.min(planned - landed);
+    let already = planned - landed - delivered;
+    let mut parts = Vec::new();
+    if already > 0 {
+        parts.push(format!("{already} already installed"));
+    }
+    if delivered > 0 {
+        parts.push(format!("{delivered} provisioned by this run"));
+    }
+    Some(parts.join(", "))
+}
+
+/// How many entries an install NAMES, for the two shapes whose executed set
+/// can be narrower than their planned one.
+fn planned_package_count(action: &Action) -> Option<usize> {
+    match action {
+        Action::Package(PackageAction::Install { packages, .. }) => Some(packages.len()),
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => Some(resolved.len()),
+        _ => None,
+    }
+}
+
+/// What a provision actually had to install, for the detail beside its own
+/// line: `provision cargo, npm via apt — 1 of 2 managers`.
+///
+/// A provision node promises an AVAILABLE manager, not a second run of an
+/// installer that is minutes of work and idempotent for nobody — so an earlier
+/// node, or the `Prerequisites` phase, may have already delivered one of the
+/// managers this node names. The subject stays the planned set in both trees
+/// (it is one string across the preview bullet, the alignment column and the
+/// executed row), so the count is the only seam that can say the run landed
+/// fewer, and it is the executor's own re-read carried out on
+/// [`ActionRun::installed`] exactly as the package arm's is.
+///
+/// No count when the node landed everything it named: its subject already
+/// names every manager it provisions, so a trailing `— 2 managers` could only
+/// restate the row. The same rule the two arms above state for their own
+/// subjects.
+///
+/// And what it DELIVERED: the version each landed manager's own binary
+/// reports (`PackageManager::tool_version`, re-read by the executor after its
+/// verification), the one fact about a provision its subject cannot already
+/// hold. A node naming one manager states the version bare (`— 4.6.3`); a
+/// batch names each (`— npm 11.4.2, pipx 1.7.1`); a shortfall keeps its count
+/// and parenthesises what did land (`— 1 of 2 managers (npm 11.4.2)`). A
+/// manager that answers no version leaves the slot as it was, so a preview
+/// and a mock render exactly as before.
+fn provisioned_managers_summary(
+    action: &Action,
+    installed: Option<usize>,
+    versions: &[(String, String)],
+) -> Option<String> {
+    let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
+        return None;
+    };
+    let members = node.provisioned_managers();
+    let planned = members.len();
+    let shortfall = installed.filter(|landed| *landed < planned).map(|landed| {
+        format!(
+            "{landed} of {planned} {}",
+            crate::plural_noun(planned, "manager")
+        )
+    });
+    let delivered = (!versions.is_empty()).then(|| {
+        if planned == 1 && versions.len() == 1 {
+            versions[0].1.clone()
+        } else {
+            versions
+                .iter()
+                .map(|(manager, version)| format!("{manager} {version}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    });
+    match (shortfall, delivered) {
+        (Some(count), Some(delivered)) => Some(format!("{count} ({delivered})")),
+        (Some(count), None) => Some(count),
+        (None, delivered) => delivered,
+    }
+}
+
+/// The fact an action PRODUCES, worded for the detail slot of its own row —
+/// the ONE producer both trees read, so the plan's bullet and the apply's
+/// status line state the same count one beat apart, and `-o json`'s plan
+/// payload carries it as `detail` rather than folded into `description`.
+///
+/// `installed`, `delivered` and `versions` are the facts a preview cannot
+/// supply: how many of the entries an install NAMED it still had to land, how
+/// many of the rest this run's own provisions put there
+/// (`Reconciler::delivered_by_this_run`), and what version each manager a
+/// provision landed reports. A plan passes `None`, `0` and `&[]` and gets the
+/// same detail it always did.
+///
+/// `None` for an action that produces nothing worth stating.
+pub fn action_produced_detail(
+    action: &Action,
+    installed: Option<usize>,
+    delivered: usize,
+    versions: &[(String, String)],
+) -> Option<String> {
+    env_write_summary(action)
+        .or_else(|| deploy_files_summary(action))
+        .or_else(|| installed_packages_summary(action, installed, delivered))
+        .or_else(|| provisioned_managers_summary(action, installed, versions))
+}
+
+/// The widest detail [`action_produced_detail`] can settle `action`'s row
+/// with, for a report pricing its column BEFORE the run: every shortfall the
+/// executor may re-read, worded through the same producer. A preview's own
+/// `None` priced `— 2 already installed` at nothing, so the moment the wait
+/// term stopped dominating the allowance the produced term was the binding
+/// one and under-priced. Versions are not priced: a manager answers one only
+/// after it is here, and a provision row carries no other detail to compete
+/// with.
+pub fn widest_produced_detail(action: &Action) -> Option<String> {
+    let planned = planned_package_count(action).unwrap_or(0);
+    // A provision prices its own shortfall through `installed` alone.
+    (0..=planned)
+        .filter_map(|delivered| action_produced_detail(action, Some(0), delivered, &[]))
+        .max_by_key(|detail| crate::output::measure_width(detail))
 }
 
 /// A planned action that is a no-op by construction. Its subject already states
@@ -68,18 +318,71 @@ impl ActionOutcome {
 /// An unknown system key keeps `Role::Warn` — it is almost always a typo, and
 /// `format_plan_items` branches on the same flag, so the warning-versus-neutral
 /// distinction the deleted bespoke lines carried survives as the action's role.
-fn declared_noop_role(action: &Action) -> Option<Role> {
+pub(super) fn declared_noop_role(action: &Action) -> Option<Role> {
+    // A module kind is classified in its own total match, with no wildcard: the
+    // outer arm below has to keep one for the action kinds that carry no
+    // no-op shape at all, and a new `ModuleActionKind` reaching it would be
+    // painted as ordinary work without anything failing to compile.
+    if let Action::Module(ModuleAction { kind, .. }) = action {
+        return match kind {
+            ModuleActionKind::Skip { .. } => Some(Role::Skipped),
+            // A refused file deploy is a finding the reader must act on — an
+            // encryption demand nothing on this host can honour — so it warns
+            // rather than reading as ordinary withheld work.
+            ModuleActionKind::FilesRefused { .. } => Some(Role::Warn),
+            ModuleActionKind::InstallPackages { .. }
+            | ModuleActionKind::DeployFiles { .. }
+            | ModuleActionKind::RunScript { .. } => None,
+        };
+    }
     match action {
         Action::System(SystemAction::Skip { unknown: true, .. }) => Some(Role::Warn),
         Action::System(SystemAction::Skip { .. })
         | Action::File(FileAction::Skip { .. })
         | Action::Package(PackageAction::Skip { .. })
-        | Action::Secret(SecretAction::Skip { .. })
-        | Action::Module(ModuleAction {
-            kind: ModuleActionKind::Skip { .. },
-            ..
-        }) => Some(Role::Skipped),
+        | Action::Secret(SecretAction::Skip { .. }) => Some(Role::Skipped),
         _ => None,
+    }
+}
+
+/// What a FAILED action's row shows in the elapsed slot: whether it ran.
+///
+/// The row slot measures what RAN, not what succeeded — the same rule the
+/// success arm states for itself, where a threshold would make the suffix's
+/// absence ambiguous between "fast" and "not measured". A failed `apt-get
+/// install rustc` fetched and unpacked a whole dependency closure; untimed, it
+/// left the run's `(N.Ns wall)` total exceeding the sum of its visible rows
+/// with nothing on screen to account for the difference.
+///
+/// Two failure shapes genuinely ran nothing and stay untimed. A `Refuse` node
+/// IS the refusal — it runs no command by construction — and a dependent the
+/// coordinator swept was never dispatched at all. Both are asked HERE rather
+/// than inferred from a near-zero `elapsed`, which the duration floor would
+/// render as `(<0.1s)` and so state as a measurement.
+struct FailureDisplay {
+    detail: String,
+    continue_on_err: bool,
+    ran: bool,
+}
+
+pub(super) fn failed_action_ran(action: &Action, error: &CfgdError) -> bool {
+    !matches!(action, Action::Manager(ManagerAction::Refuse { .. }))
+        && !matches!(
+            error,
+            CfgdError::Package(PackageError::DependencyFailed { .. })
+        )
+}
+
+/// The role a SUCCESSFUL action's line settles at.
+///
+/// The ONE derivation, read by the line the tree paints and by the `skipped`
+/// flag its [`ActionResult`] carries: a run whose footer counts an outcome the
+/// glyph above it contradicts is the defect this shares its answer to prevent.
+fn settled_success_role(action: &Action, changed: bool) -> Role {
+    match (declared_noop_role(action), changed) {
+        (Some(role), _) => role,
+        (None, true) => Role::Ok,
+        (None, false) => Role::Skipped,
     }
 }
 
@@ -96,9 +399,6 @@ fn action_reports_its_own_status(action: &Action) -> bool {
         )
 }
 
-/// Elapsed times below this read as noise on a line whose subject is the point.
-const MIN_REPORTED_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// The per-phase display inputs every settled action line is built from.
 struct PhaseLedger<'p> {
     phase_name: PhaseName,
@@ -107,11 +407,95 @@ struct PhaseLedger<'p> {
     subjects: &'p std::collections::HashMap<usize, String>,
 }
 
+/// What applying one action produced.
+///
+/// A struct rather than a tuple because a script action's captured output is a
+/// third thing an action can produce, and a third anonymous slot names none of
+/// them.
+pub(super) struct ActionRun {
+    /// The description the journal, the result row and the line all carry.
+    pub description: String,
+    pub changed: bool,
+    /// A script action's captured output.
+    pub script_output: Option<String>,
+    /// How many of the entries the action NAMED it actually put on the
+    /// machine, for an action whose executed set is narrower than its planned
+    /// one and only knows by how much once it has run. `None` for every action
+    /// that installs nothing and for a preview, which has not run yet.
+    pub installed: Option<usize>,
+    /// How many of the entries it did NOT install were put there by THIS
+    /// run's own provisions (`Reconciler::delivered_by_this_run`), so the row
+    /// can tell `already installed` from `provisioned by this run`.
+    pub delivered: usize,
+    /// The version each manager a provision LANDED reports, `(manager,
+    /// version)` in provision order — the executor's re-read after its
+    /// verification, and empty for every other action and for a member that
+    /// was already here or answers no version.
+    pub versions: Vec<(String, String)>,
+}
+
+impl ActionRun {
+    pub(super) fn new(description: String, changed: bool) -> Self {
+        Self {
+            description,
+            changed,
+            script_output: None,
+            installed: None,
+            delivered: 0,
+            versions: Vec::new(),
+        }
+    }
+
+    /// The same run, carrying what the provision delivered.
+    pub(super) fn delivering(self, versions: Vec<(String, String)>) -> Self {
+        Self { versions, ..self }
+    }
+
+    /// The same run, carrying the count the executor re-read off the machine,
+    /// and how many of the rest this run itself delivered.
+    pub(super) fn installed(self, installed: usize, delivered: usize) -> Self {
+        Self {
+            installed: Some(installed),
+            delivered,
+            ..self
+        }
+    }
+}
+
+/// The detail an action row carries about the copies it took, joined when one
+/// action displaced several targets (a module's deploy loop).
+///
+/// Read from a buffer the DISPATCHER owns rather than off the action's `Ok`
+/// value, because a sidecar is taken BEFORE the write it protects: an action
+/// that copied a target aside and then failed still displaced nothing, and the
+/// copy it left on disk has to be named on its row or it is named nowhere.
+/// Two things one row has to say, joined in the order they happened; either
+/// half alone when it is the only one.
+fn join_detail(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}, {b}")),
+        (a, b) => a.or(b),
+    }
+}
+
+fn sidecar_detail(sidecars: &[SidecarOutcome]) -> Option<String> {
+    (!sidecars.is_empty()).then(|| {
+        sidecars
+            .iter()
+            .map(SidecarOutcome::detail)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 /// One finished action, as its collection point hands it over.
 struct SettleInput<'p, 'r> {
     action: &'p Action,
     journal_id: Option<i64>,
-    result: Result<(String, bool, Option<String>)>,
+    result: Result<ActionRun>,
+    /// Every target this action copied aside before displacing it. Owned by the
+    /// dispatcher, so a FAILED action still reports the copy it took.
+    sidecars: Vec<SidecarOutcome>,
     elapsed: std::time::Duration,
     notes: Vec<ActionNote>,
     body: Vec<String>,
@@ -150,20 +534,6 @@ impl Completions {
     }
 }
 
-/// The notes a provider produced during one action, under the status that
-/// action just emitted — whoever emitted it. The ONE render path for a note,
-/// package-manager caveat and system-configurator narration alike.
-///
-/// Public so a per-configurator snapshot bridge renders its capture through the
-/// same call the reconciler makes: a golden assembled from a test's own
-/// `attached_status` loop would keep passing after this derivation moved, and
-/// would then be pinning a shape cfgd no longer emits.
-pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
-    for note in notes {
-        section.attached_status(note.role, note.body());
-    }
-}
-
 pub(super) fn emit_action_line(
     printer: &Printer,
     section: &SectionGuard<'_>,
@@ -171,7 +541,7 @@ pub(super) fn emit_action_line(
 ) {
     {
         let mut builder = section.action_status(outcome.role, &outcome.subject);
-        if outcome.detail_muted {
+        if crate::output::renderer::action_detail_is_muted(outcome.role, outcome.detail_muted) {
             builder = builder.detail_muted_opt(outcome.detail.as_deref());
         } else {
             builder = builder.detail_opt(outcome.detail.as_deref());
@@ -181,13 +551,139 @@ pub(super) fn emit_action_line(
         }
         drop(builder);
     }
-    emit_action_notes(section, &outcome.notes);
+    for (target, method) in &outcome.children {
+        section.child_row(target.clone(), method.clone());
+    }
+    // Notes no longer attach here: every note the action produced rides in
+    // `outcome.notes` to the run-wide `caveats` collector instead, and
+    // renders once as the closing `Caveats` section (`render_caveats`) —
+    // see `collect_caveats`'s call sites in `Reconciler::apply`.
+    //
     // Held back rather than streamed: two lanes streaming into one log
     // interleave line by line, so a concurrent phase captures its children's
     // output and lays each action's out under the line it belongs to. Empty
     // whenever a live window already showed it, and under `Verbosity::Quiet`.
     if !outcome.body.is_empty() {
         crate::output::OutputWindow::dump_below(printer, section.depth, &outcome.body);
+    }
+}
+
+/// Append a settled action's notes to the caveat group for the owner that
+/// produced them, merging into an existing group rather than opening a
+/// second `Caveats` heading for the same `kind:name` token — a module
+/// installing through more than one package manager gets one `module:<name>`
+/// group carrying every manager's notes, in the order they were collected.
+pub(super) fn collect_caveats(
+    caveats: &mut Vec<(Owner, Vec<ActionNote>)>,
+    owner: &Owner,
+    subject: &str,
+    notes: Vec<ActionNote>,
+) {
+    if notes.is_empty() {
+        return;
+    }
+    // The section groups by OWNER, so the action's own line — the only thing
+    // naming what a manager spoke about — is gone by the time a caveat renders.
+    // Re-tagged here, the one place the note and the action that produced it
+    // are both in scope.
+    let notes: Vec<ActionNote> = notes
+        .into_iter()
+        .map(|note| note.attributed_to(subject))
+        .collect();
+    match caveats.iter_mut().find(|(existing, _)| existing == owner) {
+        Some((_, group)) => group.extend(notes),
+        None => caveats.push((owner.clone(), notes)),
+    }
+}
+
+/// Render the run's closing `Caveats` section: every note collected during
+/// the run, grouped under the `kind:name` owner that produced it — the same
+/// token the phase tree uses. Silent (opens nothing) when every group is
+/// empty, so a run that produced no caveats prints nothing extra.
+///
+/// Both note slots deduplicate by MESSAGE across the whole section, the first
+/// occurrence keeping it; a group left holding nothing but repeats opens no
+/// heading. A render fold only — the `-o json` payload keeps every note under
+/// its own owner.
+///
+/// Groups render in the order given — deciding THAT order (informational
+/// groups first, `cfgd:env`'s re-source reminder last, since it is the one
+/// thing the reader must still do) is the caller's job, and
+/// `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd
+/// apply`; a per-configurator snapshot bridge is the other caller, with a
+/// single group of its own.
+///
+/// Within a group, `Role::Warn` notes render before every other role — a
+/// stable partition, so two `Warn`s (or two non-`Warn`s) keep the relative
+/// order they were collected in. Settle order among concurrent lanes is not
+/// deterministic (a fast manager can finish well before a slower one
+/// dispatched first), so a caveat's ROLE, not its arrival time, decides
+/// precedence: the reader's attention goes to what needs it before what is
+/// merely informational, and the render is reproducible for VHS/acceptance
+/// pinning regardless of which lane happened to settle first.
+pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
+    if groups.iter().all(|(_, notes)| notes.is_empty()) {
+        return;
+    }
+    // A next step is what the reader does after reading everything the run had
+    // to say about itself, so it belongs at the report's FOOT — not indented
+    // inside one owner's caveat group, where it reads as a remark about that
+    // owner rather than as the run's closing instruction.
+    let mut next_steps: Vec<String> = Vec::new();
+    // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
+    // states a fact about the MACHINE — brew put its completions in one
+    // directory, once — and a run that provisions a manager in
+    // `Prerequisites` and uses it again in `Packages` files that one fact
+    // under two owners, so the section printed it twice with nothing but the
+    // owner heading to distinguish the copies. Attributing a machine-level
+    // fact to an owner is what produces the duplicate; the first occurrence
+    // keeps it, so the note stays under the owner that produced it earliest
+    // and the phase order still reads top to bottom. A render fold only: the
+    // `-o json` payload keeps every note under its own owner.
+    //
+    // The MESSAGE, never the composed body: `collect_caveats` re-tags every
+    // note with the SUBJECT of the action that produced it, so two copies of
+    // one machine fact carry `[brew install gum]` and `[provision brew via
+    // curl]` and no two tagged notes on a real run ever compare equal. Keyed
+    // on the body the fold could only ever fire in a test that bypassed the
+    // attribution — which is exactly what it did, while the hero printed
+    // `Bash completion has been installed to` twice.
+    let mut reported: Vec<String> = Vec::new();
+    {
+        let mut section = None;
+        for (owner, notes) in groups {
+            for note in notes.iter().filter(|n| n.hint) {
+                if !next_steps.iter().any(|s| s == &note.message) {
+                    next_steps.push(note.message.clone());
+                }
+            }
+            let mut reports: Vec<&ActionNote> = notes
+                .iter()
+                .filter(|n| !n.hint)
+                .filter(|n| {
+                    if reported.contains(&n.message) {
+                        return false;
+                    }
+                    reported.push(n.message.clone());
+                    true
+                })
+                .collect();
+            // Every report this group held was a repeat, so it opens no
+            // heading: an owner label over nothing reads as a group whose
+            // contents went missing.
+            if reports.is_empty() {
+                continue;
+            }
+            let section = section.get_or_insert_with(|| printer.section_caveats());
+            let group = section.section_owner(&owner.label());
+            reports.sort_by_key(|note| note.role != Role::Warn);
+            for note in reports {
+                group.status_simple(note.role, note.body());
+            }
+        }
+    }
+    for step in next_steps {
+        printer.hint(step);
     }
 }
 
@@ -236,10 +732,7 @@ fn emit_phase_tree(
             let target = match already_open {
                 Some(guard) => guard,
                 None => group_section.get_or_insert_with(|| {
-                    let opened = section.section_owner(&OwnerLabel::new(
-                        group.owner.kind.as_str(),
-                        group.owner.name.as_str(),
-                    ));
+                    let opened = section.section_owner(&group.owner.label());
                     opened.live_column(width);
                     opened
                 }),
@@ -275,7 +768,11 @@ fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
     }
 }
 
-fn hash_sorted_parts(mut parts: Vec<String>) -> String {
+/// The ONE fold from a module's parts to one recorded digest, shared by every
+/// per-module hash cfgd stores: declaration order says nothing about the
+/// machine, so the parts sort before they are joined and two spellings of one
+/// module cannot record two different digests.
+pub(super) fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
 }
@@ -352,10 +849,58 @@ fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
 /// that alternate by run and neither matches the id the planner derives.
 pub(super) const ENV_SKIPPED_SUFFIX: &str = ":skipped";
 
+/// Suffix `apply_env_action` appends to `LIVE_SESSION_RESOURCE_ID` when the
+/// refresh could not reach any session manager, rather than converging with
+/// nothing to do — see `SessionRefresh::unavailable`. A sibling of
+/// [`ENV_SKIPPED_SUFFIX`] rather than a variant of it: both mean "nothing was
+/// written", but only this one has a distinct display detail
+/// (`"no session manager"` instead of `"unchanged"`), and every consumer that
+/// strips one for the persisted id strips the other identically.
+pub(super) const ENV_NO_SESSION_MANAGER_SUFFIX: &str = ":no-session-manager";
+
+/// How many of `results` the plan withheld before the run: the rows carrying
+/// a [`ActionResult::not_attempted`] reason, which every stored total and every
+/// `failed = len - …` subtraction has to leave out.
+fn not_attempted_count(results: &[ActionResult]) -> usize {
+    results.iter().filter(|r| r.not_attempted.is_some()).count()
+}
+
 fn env_result_key(description: &str) -> &str {
     description
         .strip_suffix(ENV_SKIPPED_SUFFIX)
+        .or_else(|| description.strip_suffix(ENV_NO_SESSION_MANAGER_SUFFIX))
         .unwrap_or(description)
+}
+
+/// What a system arm's result description says it DID, split off the composed
+/// id it says it did it to: `system:sysctl.vm.swappiness (60 → 10)`, and
+/// `system:sysctl (skipped)` for a configurator this host has nothing to apply
+/// through. [`None`] for every other action's description.
+///
+/// The description itself keeps the decoration — it is the wire contract — but
+/// the persisted id may not carry it, for the same reason
+/// [`ENV_SKIPPED_SUFFIX`] is stripped before one: a drift row is keyed on
+/// [`super::system_resource_key`]'s output alone, so an id carrying the
+/// transition matches no row any producer wrote and every value the setting
+/// ever held leaves its own `managed_resources` row behind. The prefix test is
+/// what keeps this off a file description, where a legal path may hold ` (`.
+fn system_result_parts(description: &str) -> Option<(&str, &str)> {
+    if !description.starts_with("system:") {
+        return None;
+    }
+    let (key, did) = description.strip_suffix(')')?.split_once(" (")?;
+    Some((key, did))
+}
+
+/// The decoration a system arm appends for a configurator it applied nothing
+/// through.
+const SYSTEM_SKIPPED_DETAIL: &str = "skipped";
+
+/// Whether an env-action description carries either "nothing was written"
+/// suffix — the general form `.contains(ENV_SKIPPED_SUFFIX)` calls used before
+/// this suffix existed, now covering both.
+fn env_result_unchanged(description: &str) -> bool {
+    description.contains(ENV_SKIPPED_SUFFIX) || description.contains(ENV_NO_SESSION_MANAGER_SUFFIX)
 }
 
 /// Whether the post-phase env regeneration must re-run over `path_dirs_now`,
@@ -369,10 +914,17 @@ fn env_result_key(description: &str) -> &str {
 /// that provisions a manager alphabetically ahead of one already recorded
 /// must not be told PATH "changed" just because grouping by manager name
 /// reordered it.
-pub(super) fn path_dirs_changed(path_dirs_now: &[String], path_dirs_at_plan: &[String]) -> bool {
-    let mut now_sorted = path_dirs_now.to_vec();
+pub(super) fn path_dirs_changed(
+    path_dirs_now: &[ManagerPathDir],
+    path_dirs_at_plan: &[ManagerPathDir],
+) -> bool {
+    // Sorted on the rendered pair: the generated line names the manager beside
+    // the directory, so a directory that changed hands is a content change the
+    // regeneration has to pick up.
+    let key = |d: &ManagerPathDir| (d.dir.clone(), d.manager.clone());
+    let mut now_sorted: Vec<_> = path_dirs_now.iter().map(key).collect();
     now_sorted.sort();
-    let mut at_plan_sorted = path_dirs_at_plan.to_vec();
+    let mut at_plan_sorted: Vec<_> = path_dirs_at_plan.iter().map(key).collect();
     at_plan_sorted.sort();
     now_sorted != at_plan_sorted
 }
@@ -386,13 +938,23 @@ pub(super) fn path_dirs_changed(path_dirs_now: &[String], path_dirs_at_plan: &[S
 /// against. A prior *failure* is left standing as its own row: a failed attempt
 /// and a later successful one are distinct events and collapsing them would hide
 /// the error.
-fn merge_env_result(results: &mut Vec<ActionResult>, description: String, changed: bool) {
+pub(super) fn merge_env_result(
+    results: &mut Vec<ActionResult>,
+    action: &Action,
+    registry: &ProviderRegistry,
+    description: String,
+    changed: bool,
+) {
     let key = env_result_key(&description);
     if let Some(prev) = results
         .iter_mut()
         .find(|r| r.success && env_result_key(&r.description) == key)
     {
         prev.changed = prev.changed || changed;
+        // The row the Env phase settled said "unchanged" and wore a skip dash;
+        // a regeneration that has now written the file makes that verdict
+        // stale, and a stale skip is a success missing from the tally.
+        prev.skipped = prev.skipped && !prev.changed;
         prev.description = if prev.changed {
             key.to_string()
         } else {
@@ -400,6 +962,14 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         };
         return;
     }
+    // The regeneration is not in the plan, but it replays a real action, so the
+    // row it heals comes from the same producer the tick records through — a
+    // key derived from the description instead would be a third spelling, and
+    // the session surface's own row is not the one its description parses to.
+    let drift_rows = super::action_drift_rows(action, registry)
+        .into_iter()
+        .map(|row| row.key())
+        .collect();
     results.push(ActionResult {
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
@@ -409,6 +979,13 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         success: true,
         error: None,
         changed,
+        // The same verdict the Env phase's own row settles on: a write that
+        // changed nothing is a no-op, whichever late input triggered it.
+        skipped: !changed,
+        not_attempted: None,
+        installed: None,
+        versions: Default::default(),
+        drift_rows,
     });
 }
 
@@ -449,7 +1026,7 @@ impl<'a> super::Reconciler<'a> {
     fn update_module_state(
         &self,
         modules: &[ResolvedModule],
-        apply_id: i64,
+        apply_id: Option<i64>,
         results: &[ActionResult],
     ) -> Result<()> {
         for module in modules {
@@ -458,7 +1035,11 @@ impl<'a> super::Reconciler<'a> {
             let any_failed = results
                 .iter()
                 .any(|r| r.description.starts_with(&module_prefix) && !r.success);
-            let status = if any_failed { "error" } else { "installed" };
+            let status = if any_failed {
+                crate::state::MODULE_STATUS_ERROR
+            } else {
+                crate::state::MODULE_STATUS_INSTALLED
+            };
 
             let packages_hash = hash_sorted_parts(
                 module
@@ -503,7 +1084,7 @@ impl<'a> super::Reconciler<'a> {
 
             self.state.upsert_module_state(
                 &module.name,
-                Some(apply_id),
+                apply_id,
                 &packages_hash,
                 &files_hash,
                 git_sources_json.as_deref(),
@@ -511,6 +1092,23 @@ impl<'a> super::Reconciler<'a> {
             )?;
         }
         Ok(())
+    }
+
+    /// Record the module bookkeeping for a run that had NOTHING to execute.
+    ///
+    /// A run whose plan is empty never reaches [`Self::apply`], so the only
+    /// writer of `module_state` never fires — and since a module's packages are
+    /// elided from the plan once the manager already holds them, an empty plan
+    /// is exactly what a converged packages-only module produces. Without this
+    /// the module reads `NotApplied` in both `cfgd status` and `cfgd module
+    /// list` forever, on a machine where it is fully converged, and its
+    /// `packages_hash` keeps describing a declared set that has since changed.
+    ///
+    /// Only correct for a run that planned NOTHING AT ALL: every module in
+    /// `modules` is recorded `installed`, which is a claim about the whole
+    /// module, not about the subset a phase filter admitted.
+    pub fn record_converged_modules(&self, modules: &[ResolvedModule]) -> Result<()> {
+        self.update_module_state(modules, None, &[])
     }
 
     /// Apply a plan, executing each phase in order.
@@ -536,27 +1134,41 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
-        let profile_name = resolved
-            .layers
-            .last()
-            .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown");
+        // What this run was SCOPED to, which is not always a profile: a
+        // `--module` run resolves none, and the caller says so with
+        // `module:<name>`. An empty string is the honest record of a scope
+        // nothing could name — every surface reading this column omits its row
+        // rather than showing a placeholder, and a placeholder stored here is
+        // one no reader can tell from a profile genuinely called that.
+        let scope = self.recorded_scope.clone().unwrap_or_else(|| {
+            resolved
+                .layers
+                .last()
+                .map(|l| l.profile_name.clone())
+                .unwrap_or_default()
+        });
         let apply_id =
             self.state
-                .record_apply(profile_name, &plan_hash, ApplyStatus::InProgress, None)?;
+                .record_apply(&scope, &plan_hash, ApplyStatus::InProgress, None)?;
 
         // Filter-aware count of the actions this run intends to execute, using
         // the SAME predicate as the loop below — so an aborted run reports
         // "{applied} of {planned_total}" against only the in-scope actions, not
-        // the whole plan.
+        // the whole plan. The attemptability half is asked through
+        // `attempted_count`, never respelled here: a second copy is how the
+        // header once promised a row the tree did not draw.
         let planned_total: usize = plan
             .phases
             .iter()
             .map(|phase| match phase_filter {
-                Some(filter) => phase
-                    .owned_actions()
-                    .filter(|(owner, a)| action_matches_phase_filter(&phase.name, owner, a, filter))
-                    .count(),
+                Some(filter) => super::attempted_count(
+                    phase
+                        .owned_actions()
+                        .filter(|(owner, a)| {
+                            action_matches_phase_filter(&phase.name, owner, a, filter)
+                        })
+                        .map(|(_, a)| a),
+                ),
                 None => phase.action_count(),
             })
             .sum();
@@ -592,10 +1204,24 @@ impl<'a> super::Reconciler<'a> {
         // Post-install notes a manager produced during ONE action, drained
         // after that action's status line so they render attached to it.
         let notes = NoteSink::default();
+        // Provider narration collected across the whole run, grouped by owner,
+        // and rendered once as the closing `Caveats` section instead of inline
+        // under each action (see `collect_caveats` / `render_caveats`).
+        let mut caveats: Vec<(Owner, Vec<ActionNote>)> = Vec::new();
         // Library code reached from inside a phase or owner section renders at
         // that section's depth for the whole run: package-manager output
         // windows, script windows and every status they collapse into.
         let _inherit = printer.depth_inheritance();
+
+        // One column for the tree, measured over every action any phase of it
+        // will print. A width taken inside the loop moves the trailing column
+        // between one phase and the next, which reads as a wobble down a page
+        // whose whole point is that the column can be scanned. The run
+        // skeleton claims a report-wide column over this and its
+        // pseudo-phases; this is the value when a caller drives the reconciler
+        // without one.
+        let budget = printer.subject_budget();
+        let width = super::run::report_align_width(plan, phase_filter, budget, printer.arrow());
 
         'phases: for phase in &plan.phases {
             // Plan positions of the actions in this phase that survive
@@ -611,6 +1237,13 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(filter) = phase_filter
                     && !action_matches_phase_filter(&phase.name, owner, action, filter)
                 {
+                    continue;
+                }
+                // A module skipped whole is the header's `Modules`-row clause,
+                // not work: the tree draws no row for it and the plan promised
+                // none, so dispatching it would settle an outcome and a
+                // `skipped` tally against a row nobody saw.
+                if module_skipped_whole(action) {
                     continue;
                 }
                 let next = plan_positions.len();
@@ -645,11 +1278,10 @@ impl<'a> super::Reconciler<'a> {
                 .map(|action| {
                     (
                         action_key(action),
-                        action_display_subject(action).to_string(),
+                        action_display_subject_within(action, budget, printer.arrow()).to_string(),
                     )
                 })
                 .collect();
-            let width = align_width(phase);
             let ledger = PhaseLedger {
                 phase_name: phase.name.clone(),
                 subjects: &subjects,
@@ -718,8 +1350,7 @@ impl<'a> super::Reconciler<'a> {
                 .as_ref()
                 .zip(sole_lane_owner)
                 .map(|(section, owner)| {
-                    let group = section
-                        .section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+                    let group = section.section_owner(&owner.label());
                     group.live_column(width);
                     group.commit_header();
                     group
@@ -734,6 +1365,11 @@ impl<'a> super::Reconciler<'a> {
                 // the dispatcher first has something to say about it, and the
                 // finish settles that row in place. Off one there are no rows,
                 // and the outcomes are held for `emit_phase_tree` below.
+                // Taken before the dispatch opens, since `settle` below keeps
+                // writing to the list while these lanes run.
+                let unprovisioned = self.unprovisioned.borrow().clone();
+                let provisioned = self.provisioned.borrow().clone();
+                let provisioned_packages = self.provisioned_packages.borrow().clone();
                 let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
@@ -746,6 +1382,9 @@ impl<'a> super::Reconciler<'a> {
                     abort,
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
+                    unprovisioned: &unprovisioned,
+                    provisioned: &provisioned,
+                    provisioned_packages: &provisioned_packages,
                 };
                 let mut tree = super::live_tree::PhaseTree::new(
                     printer,
@@ -758,41 +1397,58 @@ impl<'a> super::Reconciler<'a> {
                 // halves of this decision must never disagree, or an outcome
                 // is rendered twice or not at all.
                 let settles_in_place = tree.is_live();
-                let mut settle = |action: &Action, collected: super::lanes::LaneCollected| {
-                    let finished = completions.next();
-                    let settled = self.settle_action(SettleInput {
-                        action,
-                        journal_id: collected.journal_id,
-                        result: collected
-                            .result
-                            .map(|(desc, changed)| (desc, changed, None)),
-                        elapsed: collected.elapsed,
-                        notes: collected.notes,
-                        body: collected.body,
-                        finished,
-                        ledger: &ledger,
-                        results: &mut results,
-                    });
-                    match settled.outcome {
-                        Some(outcome) if settles_in_place => Some(outcome),
-                        Some(outcome) => {
-                            recorded.insert(action_key(action), outcome);
-                            None
+                let mut settle =
+                    |owner: &Owner, action: &Action, collected: super::lanes::LaneCollected| {
+                        let finished = completions.next();
+                        let settled = self.settle_action(SettleInput {
+                            action,
+                            journal_id: collected.journal_id,
+                            result: collected.result,
+                            // A lane runs package and manager actions, neither
+                            // of which adopts a file.
+                            sidecars: Vec::new(),
+                            elapsed: collected.elapsed,
+                            notes: collected.notes,
+                            body: collected.body,
+                            finished,
+                            ledger: &ledger,
+                            results: &mut results,
+                        });
+                        match settled.outcome {
+                            Some(outcome) if settles_in_place => {
+                                collect_caveats(
+                                    &mut caveats,
+                                    owner,
+                                    &outcome.subject,
+                                    outcome.notes.clone(),
+                                );
+                                Some(outcome)
+                            }
+                            Some(outcome) => {
+                                collect_caveats(
+                                    &mut caveats,
+                                    owner,
+                                    &outcome.subject,
+                                    outcome.notes.clone(),
+                                );
+                                recorded.insert(action_key(action), outcome);
+                                None
+                            }
+                            // An action that reported its own status carries its
+                            // notes beside the outcome rather than inside it, and a
+                            // held-back tree has no line open to attach them under.
+                            // Unreachable: only the two script shapes self-report,
+                            // and neither is ever dispatched into a lane.
+                            None => {
+                                debug_assert!(
+                                    settled.notes.is_empty(),
+                                    "a self-reporting action reached a lane carrying notes"
+                                );
+                                collect_caveats(&mut caveats, owner, &settled.desc, settled.notes);
+                                None
+                            }
                         }
-                        // An action that reported its own status carries its
-                        // notes beside the outcome rather than inside it, and a
-                        // held-back tree has no line open to attach them under.
-                        // Unreachable: only the two script shapes self-report,
-                        // and neither is ever dispatched into a lane.
-                        None => {
-                            debug_assert!(
-                                settled.notes.is_empty(),
-                                "a self-reporting action reached a lane carrying notes"
-                            );
-                            None
-                        }
-                    }
-                };
+                    };
                 abort_stop = self.dispatch_lanes(
                     &lane_dispatch,
                     &run,
@@ -842,10 +1498,7 @@ impl<'a> super::Reconciler<'a> {
                         // binding would build the new guard first and unwind the
                         // renderer's section stack out of order.
                         drop(owner_section.take());
-                        let group = section.section_owner(&OwnerLabel::new(
-                            owner.kind.as_str(),
-                            owner.name.as_str(),
-                        ));
+                        let group = section.section_owner(&owner.label());
                         group.live_column(width);
                         // The label lands before the action does: an action
                         // that opens an output window or a spinner paints it
@@ -885,6 +1538,7 @@ impl<'a> super::Reconciler<'a> {
                                     self.state
                                         .store_file_backup(apply_id, &path_str, &file_state)
                                 {
+                                    // tracing-ok: the rollback copy could not be stored; no row states it, the write it protects settles on its own
                                     tracing::warn!(
                                         "failed to store file backup for {}: {}",
                                         path.posix(),
@@ -895,6 +1549,7 @@ impl<'a> super::Reconciler<'a> {
                             Ok(None) => {
                                 if let Err(e) = self.state.store_absent_backup(apply_id, &path_str)
                                 {
+                                    // tracing-ok: same, for the CREATE marker a rollback deletes by
                                     tracing::warn!(
                                         "failed to store absent marker for {}: {}",
                                         path.posix(),
@@ -903,6 +1558,7 @@ impl<'a> super::Reconciler<'a> {
                                 }
                             }
                             Err(e) => {
+                                // tracing-ok: same, one step earlier - the target could not be read at all
                                 tracing::warn!(
                                     "failed to capture file state for backup of {}: {}",
                                     path.posix(),
@@ -926,6 +1582,10 @@ impl<'a> super::Reconciler<'a> {
                         .ok();
 
                     let started = std::time::Instant::now();
+                    // Owned HERE rather than returned in the `Ok` value: a copy
+                    // is taken before the write it protects, so a failing write
+                    // must still report it.
+                    let mut action_sidecars = Vec::new();
                     let result = self.apply_action(
                         action,
                         resolved,
@@ -938,6 +1598,7 @@ impl<'a> super::Reconciler<'a> {
                         shell_override,
                         abort,
                         &notes,
+                        &mut action_sidecars,
                     );
                     let elapsed = started.elapsed();
                     let finished = completions.next();
@@ -949,6 +1610,7 @@ impl<'a> super::Reconciler<'a> {
                         action,
                         journal_id,
                         result,
+                        sidecars: action_sidecars,
                         elapsed,
                         notes: drained,
                         body: Vec::new(),
@@ -961,11 +1623,10 @@ impl<'a> super::Reconciler<'a> {
                     match settled.outcome {
                         // One status line per plan action, always — except the two
                         // script shapes, whose line `execute_script` already
-                        // emitted. Their notes still belong under it.
+                        // emitted. Their notes still flow to the run-wide
+                        // `caveats` collector rather than attaching here.
                         None => {
-                            if let Some(section) = owner_section.as_ref() {
-                                emit_action_notes(section, &settled.notes);
-                            }
+                            collect_caveats(&mut caveats, owner, &desc, settled.notes);
                         }
                         // `PhaseName::Modules` opens no block: its only actions
                         // are platform-gated skips, which the header's
@@ -974,6 +1635,12 @@ impl<'a> super::Reconciler<'a> {
                             if let Some(section) = owner_section.as_ref() {
                                 emit_action_line(printer, section, &outcome);
                             }
+                            collect_caveats(
+                                &mut caveats,
+                                owner,
+                                &outcome.subject,
+                                outcome.notes.clone(),
+                            );
                         }
                     }
 
@@ -1033,9 +1700,14 @@ impl<'a> super::Reconciler<'a> {
         // for the actions that did run, then record an `Aborted` marker and
         // return the signal exit code. The lock releases via the caller's Drop.
         if let Some(code) = aborted_code {
-            self.record_managed_resources(apply_id, &results)?;
-            self.update_module_state(module_actions, apply_id, &results)?;
-            let succeeded = results.iter().filter(|r| r.success).count();
+            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+            self.update_module_state(module_actions, Some(apply_id), &results)?;
+            let not_attempted = not_attempted_count(&results);
+            let succeeded = results
+                .iter()
+                .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
+                .count();
+            let skipped = results.iter().filter(|r| r.success && r.skipped).count();
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
             // record whose total is the reached count reads as a clean sweep
@@ -1043,15 +1715,17 @@ impl<'a> super::Reconciler<'a> {
             // and it is the only place the actions the abort stopped are
             // accounted for — the dispatcher deliberately reports none of them
             // action by action.
-            let not_run = planned_total.saturating_sub(results.len());
-            let summary = serde_json::json!({
-                "total": planned_total,
-                "succeeded": succeeded,
-                "failed": results.len() - succeeded,
-                "notRun": not_run,
-                "aborted": true,
-            })
-            .to_string();
+            let not_run = planned_total.saturating_sub(results.len() - not_attempted);
+            let summary = crate::state::ApplySummary::Actions {
+                total: planned_total,
+                succeeded,
+                skipped,
+                failed: results.len() - not_attempted - succeeded - skipped,
+                not_attempted,
+                not_run: Some(not_run),
+                aborted: true,
+            }
+            .to_column();
             self.state
                 .update_apply_status(apply_id, ApplyStatus::Aborted, Some(&summary))?;
             return Ok(ApplyResult {
@@ -1060,6 +1734,7 @@ impl<'a> super::Reconciler<'a> {
                 apply_id,
                 aborted: Some(code),
                 planned_total,
+                caveats,
             });
         }
 
@@ -1095,38 +1770,52 @@ impl<'a> super::Reconciler<'a> {
         // triggered the regeneration are durable, so the run that stops
         // withholding still converges it.
         if self.withhold_env_surface {
-            tracing::info!("env surface withheld: skipping post-phase regeneration");
+            tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
-            let (env_actions, _) = self.plan_env(
+            let env_plan = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
                 resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
                 &path_dirs_now,
                 &super::env::recorded_managed_env_files(self.state),
             );
-            for env_action in &env_actions {
+            for env_action in &env_plan.actions {
                 if let Action::Env(ea) = env_action {
                     // No phase section is open here and nothing will drain a
                     // sink, so a session-refresh warning settles on its own line
                     // — beside the failure line below it, which does the same.
                     match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
                         Ok(desc) => {
-                            let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
-                            merge_env_result(&mut results, desc, changed);
+                            let changed = !env_result_unchanged(&desc);
+                            merge_env_result(
+                                &mut results,
+                                env_action,
+                                self.registry,
+                                desc,
+                                changed,
+                            );
                         }
                         Err(e) => {
-                            printer.status_simple(
-                                Role::Fail,
-                                format!("Failed to regenerate shell env files: {}", e),
-                            );
+                            printer
+                                .status(Role::Fail, "regenerate shell env files")
+                                .detail(e.to_string());
                             results.push(ActionResult {
                                 phase: PhaseName::Prerequisites.as_str().to_string(),
-                                description: "env:write:regenerate".to_string(),
+                                description: format!(
+                                    "env:{}:regenerate",
+                                    super::env_engine::ENV_VERB_WRITE
+                                ),
                                 success: false,
                                 error: Some(e.to_string()),
                                 changed: false,
+                                skipped: false,
+                                not_attempted: None,
+                                installed: None,
+                                versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                         }
                     }
@@ -1175,6 +1864,13 @@ impl<'a> super::Reconciler<'a> {
                             success: true,
                             error: None,
                             changed,
+                            // A script reports its own outcome line; the tree
+                            // settles no role for it and this record invents none.
+                            skipped: false,
+                            not_attempted: None,
+                            installed: None,
+                            versions: Default::default(),
+                            drift_rows: Vec::new(),
                         });
                     }
                     Err(e) => {
@@ -1186,6 +1882,11 @@ impl<'a> super::Reconciler<'a> {
                             success: false,
                             error: Some(format!("{}", e)),
                             changed: false,
+                            skipped: false,
+                            not_attempted: None,
+                            installed: None,
+                            versions: Default::default(),
+                            drift_rows: Vec::new(),
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1250,6 +1951,11 @@ impl<'a> super::Reconciler<'a> {
                                 success: true,
                                 error: None,
                                 changed,
+                                skipped: false,
+                                not_attempted: None,
+                                installed: None,
+                                versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                         }
                         Err(e) => {
@@ -1265,6 +1971,11 @@ impl<'a> super::Reconciler<'a> {
                                 success: false,
                                 error: Some(format!("{}", e)),
                                 changed: false,
+                                skipped: false,
+                                not_attempted: None,
+                                installed: None,
+                                versions: Default::default(),
+                                drift_rows: Vec::new(),
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1275,7 +1986,10 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        let total = results.len();
+        // `total` is what the run ATTEMPTED: a pre-skipped action has a result
+        // row (its reason) and no place in the count the header promised.
+        let not_attempted = not_attempted_count(&results);
+        let total = results.len() - not_attempted;
         let failed = results.iter().filter(|r| !r.success).count();
         let status = if failed == 0 {
             ApplyStatus::Success
@@ -1286,53 +2000,38 @@ impl<'a> super::Reconciler<'a> {
         };
 
         // Update apply status from "in-progress" placeholder to final
-        let summary = serde_json::json!({
-            "total": total,
-            "succeeded": total - failed,
-            "failed": failed,
-        })
-        .to_string();
-        self.state
-            .update_apply_status(apply_id, status.clone(), Some(&summary))?;
-
-        self.record_managed_resources(apply_id, &results)?;
-
-        // Update module state and file manifests for successfully applied modules
-        self.update_module_state(module_actions, apply_id, &results)?;
-
-        // Post-apply snapshot: capture the resolved content of all managed file
-        // targets (following symlinks). This ensures rollback can restore the
-        // exact content visible at this point, even for symlink-deployed files
-        // where the source may be modified in-place between applies.
-        let mut snapshot_paths = std::collections::HashSet::new();
-        for managed in &resolved.merged.files.managed {
-            let target = crate::expand_tilde(&managed.target);
-            let key = crate::to_posix_fs_key(&target);
-            if snapshot_paths.contains(&key) {
-                continue;
-            }
-            snapshot_paths.insert(key.clone());
-            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-            {
-                tracing::debug!("post-apply snapshot for {}: {}", key, e);
-            }
+        let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+        let summary = crate::state::ApplySummary::Actions {
+            total,
+            succeeded: total - failed - skipped,
+            skipped,
+            failed,
+            not_attempted,
+            not_run: None,
+            aborted: false,
         }
-        for module in module_actions {
-            for file in &module.files {
-                let target = crate::expand_tilde(&file.target);
-                let key = crate::to_posix_fs_key(&target);
-                if snapshot_paths.contains(&key) {
-                    continue;
-                }
-                snapshot_paths.insert(key.clone());
-                if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                    && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-                {
-                    tracing::debug!("post-apply snapshot for {}: {}", key, e);
-                }
-            }
-        }
+        .to_column();
+        // One transaction for the whole bookkeeping tail. Every write below is a
+        // per-row insert in a loop over the run's results, its modules and its
+        // touched files; individually committed, a large apply paid one WAL
+        // commit per row for work that is only meaningful as a whole.
+        //
+        // The status update belongs INSIDE it, not before it: the apply row's
+        // verdict and the ownership rows describing what the run now owns are
+        // one fact. Committed separately, a tail that fails after packages were
+        // installed leaves a row reading `Success` beside no `managed_resources`
+        // rows at all — the next run's declarative prune cannot reach packages
+        // this one installed, because nothing records that cfgd owns them.
+        // Rolled back together, the row stays at its `in-progress` placeholder,
+        // which is what a run that did not finish its bookkeeping actually is.
+        self.state.in_transaction(|| {
+            self.state
+                .update_apply_status(apply_id, status.clone(), Some(&summary))?;
+            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+            // Update module state and file manifests for successfully applied modules
+            self.update_module_state(module_actions, Some(apply_id), &results)?;
+            self.snapshot_touched_files(apply_id, resolved, module_actions)
+        })?;
 
         Ok(ApplyResult {
             action_results: results,
@@ -1340,16 +2039,76 @@ impl<'a> super::Reconciler<'a> {
             apply_id,
             aborted: None,
             planned_total,
+            caveats,
         })
+    }
+
+    /// Post-apply snapshot: capture the resolved content (following symlinks)
+    /// of the managed file targets THIS apply touched, so a rollback to it
+    /// restores the bytes that were visible the moment it finished — which is
+    /// not the same as the pre-action backup for a symlink-deployed file, whose
+    /// target resolves through a link the action rewrote.
+    ///
+    /// Scoped to the touched set, read back from the backup rows the run itself
+    /// wrote (a row lands immediately before any file action overwrites its
+    /// target, and immediately before any module file is deployed). The
+    /// unscoped form re-read and re-stored EVERY managed target in the profile
+    /// on every apply — for a converged machine, that is the entire dotfile
+    /// tree read, hashed and written into the state DB as blobs to record that
+    /// nothing happened. A file the run did not touch still has its content
+    /// recorded under the apply that last wrote it, which is the apply a
+    /// rollback resolves it through; what is genuinely given up is undoing
+    /// OUT-OF-BAND edits to files no apply since has touched, which is drift for
+    /// `cfgd apply` to reconcile rather than history for a rollback to rewind.
+    fn snapshot_touched_files(
+        &self,
+        apply_id: i64,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let touched = self.state.backed_up_paths_for_apply(apply_id)?;
+        if touched.is_empty() {
+            return Ok(());
+        }
+        let mut snapshot_paths = std::collections::HashSet::new();
+        let managed_targets = resolved.merged.files.managed.iter().map(|m| &m.target);
+        let module_targets = modules
+            .iter()
+            .flat_map(|module| module.files.iter().map(|f| &f.target));
+        for target in managed_targets.chain(module_targets) {
+            let target = crate::expand_tilde(target);
+            let key = crate::to_posix_fs_key(&target);
+            if !touched.contains(&key) || !snapshot_paths.insert(key.clone()) {
+                continue;
+            }
+            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+            {
+                tracing::debug!("post-apply snapshot for {}: {}", key, e);
+            }
+        }
+        Ok(())
     }
 
     /// Persist managed-resource tracking rows for the successfully-applied
     /// actions in `results`. Shared by the normal completion path and the
     /// cooperative-abort path, which both need state to reflect exactly the
     /// resources that actually changed.
-    fn record_managed_resources(&self, apply_id: i64, results: &[ActionResult]) -> Result<()> {
+    pub(super) fn record_managed_resources(
+        &self,
+        apply_id: i64,
+        results: &[ActionResult],
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
         for result in results {
             if !result.success {
+                continue;
+            }
+            // An action this host was never going to run put nothing on the
+            // machine: it manages no resource and heals no finding. The plan
+            // already priced it out of the header's total; the store must agree.
+            if result.not_attempted.is_some() {
                 continue;
             }
 
@@ -1359,8 +2118,10 @@ impl<'a> super::Reconciler<'a> {
             // install adds a tracking row per package, uninstall deletes it.
             if let Some((manager, verb, packages)) = parse_package_description(&result.description)
             {
+                self.state
+                    .resolve_drift_keys(apply_id, &result.drift_rows)?;
                 for pkg in &packages {
-                    let rid = format!("{manager}/{pkg}");
+                    let rid = crate::state::package_resource_id(&manager, pkg);
                     match verb.as_str() {
                         "install" => {
                             // Persist the scripted uninstall command (Some only for
@@ -1368,7 +2129,7 @@ impl<'a> super::Reconciler<'a> {
                             // after its manager block leaves the config.
                             let uninstall_cmd = self
                                 .registry
-                                .package_managers
+                                .package_managers()
                                 .iter()
                                 .find(|m| m.name() == manager)
                                 .and_then(|m| m.persisted_uninstall());
@@ -1378,11 +2139,9 @@ impl<'a> super::Reconciler<'a> {
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
-                            self.state.resolve_drift(apply_id, "package", &rid)?;
                         }
                         "uninstall" => {
                             self.state.remove_managed_resource("package", &rid)?;
-                            self.state.resolve_drift(apply_id, "package", &rid)?;
                         }
                         _ => {}
                     }
@@ -1390,24 +2149,189 @@ impl<'a> super::Reconciler<'a> {
                 continue;
             }
 
-            let description = result
-                .description
-                .strip_suffix(ENV_SKIPPED_SUFFIX)
-                .unwrap_or(&result.description);
+            let description = env_result_key(&result.description);
+            // A configurator that applied nothing manages nothing and heals
+            // nothing: its planned `Skip` is the record that the tool is
+            // missing, and an apply that ran it is exactly as unable as the
+            // tick that recorded it. Everything else keys on the composition
+            // alone (see `system_result_parts`).
+            let description = match system_result_parts(description) {
+                Some((_, SYSTEM_SKIPPED_DETAIL)) => continue,
+                Some((key, _)) => key,
+                None => description,
+            };
             let (rtype, rid) = parse_resource_from_description(description);
+            // Neither module row stands for a resource on the machine: a
+            // module the host declined whole was never probed, and a refused
+            // file deploy is cfgd declining to write rather than something it
+            // wrote. Both are information about this host. The sibling of the
+            // `SYSTEM_SKIPPED_DETAIL` guard above.
+            if rtype == "module"
+                && matches!(
+                    super::module_row_facet(&rid),
+                    Some("skip" | super::MODULE_FACET_FILES_REFUSED)
+                )
+            {
+                continue;
+            }
+            // The rows this action stands for, from the ONE producer the daemon
+            // tick records through — never re-derived from `description`, which
+            // is the `managed_resources` tracking id and spells a module's
+            // deployment as a unit (`module:<name>:files:<n>`) no per-file check
+            // can match. Reached only past the guards above: a configurator that
+            // applied nothing converged nothing.
+            self.state
+                .resolve_drift_keys(apply_id, &result.drift_rows)?;
             // A manager node is cfgd's own scaffolding, never a resource the
             // user declared: a refreshed index, a provisioned manager and a
             // tool a cascade shelled out to are none of them things cfgd
             // prunes, restores or reports under `cfgd status`. The journal
-            // still records the work; `managed_resources` does not.
+            // still records the work; `managed_resources` does not. A landed
+            // provision still settles its drift rows first — both producers
+            // record the missing-tooling finding under
+            // ("package", "provision:<mgr>") / ("package", "refuse:<mgr>"),
+            // and this apply is the event that heals them. The description
+            // names only the batch's leader, so the members ride in on
+            // `result.versions`; a successful Refuse resolves nothing — the
+            // manager it names is exactly as missing as before.
             if rtype == MANAGER_RESOURCE_TYPE {
+                if let Some(leader) = rid.strip_prefix("provision:") {
+                    let mut healed: Vec<(String, String)> = Vec::new();
+                    for manager in
+                        std::iter::once(leader).chain(result.versions.keys().map(String::as_str))
+                    {
+                        healed.push((
+                            "package".to_string(),
+                            ManagerAction::provision_resource_id(manager),
+                        ));
+                        healed.push((
+                            "package".to_string(),
+                            ManagerAction::refuse_resource_id(manager),
+                        ));
+                    }
+                    self.state.resolve_drift_keys(apply_id, &healed)?;
+                }
                 continue;
             }
             self.state
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
-            self.state.resolve_drift(apply_id, &rtype, &rid)?;
+            if rtype == ENV_RESOURCE_TYPE {
+                // An `env:inject:<rc>` action's subject is the shell rc file,
+                // but the check that reads it records the source line under
+                // `env-rc`, not `env` — so the injected line's row stood open
+                // through the apply that wrote it. The verb is reconstructed
+                // from the target, the one reading of that split — an ask the
+                // live-session id is not a target for, so it is held back
+                // before the question is put, as its sibling below holds it.
+                if rid != crate::state::ENV_SESSION_RESOURCE_ID
+                    && super::recorded_env_method(&rid) == super::ENV_VERB_INJECT
+                {
+                    self.state.resolve_drift(apply_id, "env-rc", &rid)?;
+                }
+                self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
+            }
+            if let Some(module) =
+                super::format::module_files_description_module(&result.description)
+            {
+                self.resolve_module_file_drift(apply_id, module, modules)?;
+            }
         }
         Ok(())
+    }
+
+    /// Resolve the per-file `module` drift rows a successful file deployment
+    /// converged.
+    ///
+    /// The deployment records ONE aggregate row per module
+    /// (`module:<name>:files:<n>`, keyed on the declared count so a partial
+    /// deploy lands where a full one does), while every live check records one
+    /// row per file (`<module>/<target>`). Nothing matched the two, so healing
+    /// a drifted file with `cfgd apply` left its row open until the next scan —
+    /// and `cfgd status` went on advising the very command that had just run.
+    ///
+    /// The ids come from
+    /// [`module_file_spec_resource_id`](super::module_file_spec_resource_id),
+    /// which owns the `Patch`/unexpanded-target split the finding's own id was
+    /// minted through; a hand-built one would spell a patched file two ways.
+    ///
+    /// Every DECLARED file of the module is resolved, not only the subset the
+    /// action wrote. An entry elided as already-converged is one the machine
+    /// matched before the run — the same claim a write makes, reached without
+    /// writing — so its row is as stale as the written file's. A FAILED action
+    /// resolves nothing: `record_managed_resources` skips it before reaching
+    /// here, and the machine is exactly as drifted as the check found it.
+    ///
+    /// A file whose row `withholds_recorded_row` protects is left open. The
+    /// prune edits a `DeployFiles` action's file list per target, so an action
+    /// can succeed while one of its declared files was deliberately withheld
+    /// from the run; resolving that row would heal a claim nothing checked.
+    fn resolve_module_file_drift(
+        &self,
+        apply_id: i64,
+        module: &str,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let Some(resolved_module) = modules.iter().find(|m| m.name == module) else {
+            return Ok(());
+        };
+        let keys: Vec<(String, String)> = resolved_module
+            .files
+            .iter()
+            .map(|file| super::module_file_spec_resource_id(module, file))
+            .filter(|id| {
+                !self
+                    .withheld_rows
+                    .is_some_and(|x| x.withholds_recorded_row("module", id))
+            })
+            .map(|id| ("module".to_string(), id))
+            .collect();
+        self.state.resolve_drift_keys(apply_id, &keys)
+    }
+
+    /// Resolve the per-item `env-var`/`alias` drift rows a successful write of
+    /// the PRIMARY managed env file converged.
+    ///
+    /// `verify_env_items` records one row per declared entry, keyed by the
+    /// entry's own name, but the action that heals every one of them is a
+    /// single `env:write:<path>` whose description parses to
+    /// `("env", <path>)` — so the file's own row resolved and the item rows
+    /// beneath it stayed open forever, and a converged machine kept reporting
+    /// drift about entries the file already holds. Nothing here rewrites an
+    /// operand: the rows are resolved exactly as the file's own row is, so the
+    /// stored `current` / `missing or changed` markers stay byte-exact.
+    ///
+    /// Gated on the PRIMARY file because that is the only one the per-item
+    /// checks read; a write of `environment.d` or the launchd plist says
+    /// nothing about whether the entry landed in the file that was verified.
+    fn resolve_env_item_drift(
+        &self,
+        apply_id: i64,
+        written: &str,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        if written != to_posix_string(super::primary_env_file(&self.home)) {
+            return Ok(());
+        }
+        let (env, aliases, _) = super::verify::merge_module_env_aliases(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
+            modules,
+        );
+        // One statement for the whole merged set: a per-entry resolve is its own
+        // index seek and its own statement per declared env var and alias,
+        // inside the apply transaction, where the set-based form seeks once.
+        let keys: Vec<(String, String)> = env
+            .iter()
+            .map(|ev| ("env-var".to_string(), ev.name.clone()))
+            .chain(
+                aliases
+                    .iter()
+                    .map(|alias| ("alias".to_string(), alias.name.clone())),
+            )
+            .collect();
+        self.state.resolve_drift_keys(apply_id, &keys)
     }
 
     /// Turn one finished action into its journal completion, its result row and
@@ -1422,6 +2346,7 @@ impl<'a> super::Reconciler<'a> {
             action,
             journal_id,
             result,
+            sidecars,
             elapsed,
             notes,
             body,
@@ -1431,51 +2356,149 @@ impl<'a> super::Reconciler<'a> {
         } = input;
         // Set by the `Err` arm below so the tree renders the failure on
         // the action's own line instead of a bespoke one above it.
-        let mut failure_detail: Option<(String, bool)> = None;
+        let mut failure_detail: Option<FailureDisplay> = None;
 
-        let (desc, success, action_changed, error, should_abort) = match result {
-            Ok((desc, action_changed, script_output)) => {
-                if let Some(jid) = journal_id
-                    && let Err(e) =
-                        self.state
-                            .journal_complete(jid, finished, None, script_output.as_deref())
-                {
-                    tracing::warn!("failed to record journal completion: {e}");
+        // The copies an adopting action took, rendered as that action's own
+        // detail rather than as a status line above it — on the failure row as
+        // much as the success one, since the copy was taken either way.
+        let sidecar_detail = sidecar_detail(&sidecars);
+        let (desc, success, action_changed, installed, delivered, versions, error, should_abort) =
+            match result {
+                Ok(run) => {
+                    if let Some(jid) = journal_id
+                        && let Err(e) = self.state.journal_complete(
+                            jid,
+                            finished,
+                            None,
+                            run.script_output.as_deref(),
+                        )
+                    {
+                        // tracing-ok: the journal row could not be closed; the action's own line is settled either way
+                        tracing::warn!("failed to record journal completion: {e}");
+                    }
+                    // The mirror of the failure arm's record below: a manager this
+                    // run PUT on the machine, so a later phase can tell a tool it
+                    // delivered from one that was already here. See
+                    // `Reconciler::provisioned`.
+                    if let Action::Manager(node @ ManagerAction::Provision { .. }) = action {
+                        let mut landed = self.provisioned.borrow_mut();
+                        for manager in node.provisioned_managers() {
+                            if !landed.iter().any(|m| m == manager) {
+                                landed.push(manager.to_string());
+                            }
+                        }
+                        self.provisioned_packages.borrow_mut().extend(
+                            super::managers::provision_delivered_packages(self.registry, node),
+                        );
+                    }
+                    (
+                        run.description,
+                        true,
+                        run.changed,
+                        run.installed,
+                        run.delivered,
+                        run.versions,
+                        None,
+                        false,
+                    )
                 }
-                (desc, true, action_changed, None, false)
-            }
-            Err(e) => {
-                let desc = format_action_description(action);
+                Err(e) => {
+                    let desc = format_action_description(action);
 
-                // Check if this is a script action with continueOnError
-                let continue_on_err = if let Action::Script(ScriptAction::Run {
-                    entry,
-                    phase: script_phase,
-                    ..
-                }) = action
-                {
-                    effective_continue_on_error(entry, script_phase)
-                } else {
-                    false
-                };
+                    // Check if this is a script action with continueOnError
+                    let continue_on_err = if let Action::Script(ScriptAction::Run {
+                        entry,
+                        phase: script_phase,
+                        ..
+                    }) = action
+                    {
+                        effective_continue_on_error(entry, script_phase)
+                    } else {
+                        false
+                    };
 
-                failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
-                if let Some(jid) = journal_id
-                    && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
-                {
-                    tracing::warn!("failed to record journal failure: {je}");
+                    failure_detail = Some(FailureDisplay {
+                        // The DETAIL fold, not the subject one: a failed command's
+                        // message carries the child's own lines, and the renderer
+                        // already lays them out as indented continuations. Flattening
+                        // them here spent the row's ` — ` separator once per line.
+                        detail: crate::output::captured_output_detail(&e),
+                        continue_on_err,
+                        ran: failed_action_ran(action, &e),
+                    });
+                    if let Some(jid) = journal_id
+                        && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
+                    {
+                        // tracing-ok: same, for the failure half
+                        tracing::warn!("failed to record journal failure: {je}");
+                    }
+                    // The run's own verdict about what is on the machine, recorded
+                    // where every finish lands so a later phase answers from it
+                    // instead of re-probing: see `Reconciler::unprovisioned`.
+                    if let Action::Manager(node) = action {
+                        let mut withheld = self.unprovisioned.borrow_mut();
+                        for manager in node.managers_left_unavailable() {
+                            if !withheld.iter().any(|m| m == manager) {
+                                withheld.push(manager.to_string());
+                            }
+                        }
+                    }
+                    (
+                        desc,
+                        false,
+                        false,
+                        None,
+                        0,
+                        Vec::new(),
+                        Some(e.to_string()),
+                        !continue_on_err,
+                    )
                 }
-                (desc, false, false, Some(e.to_string()), !continue_on_err)
-            }
-        };
+            };
 
         let changed = success && action_changed;
+        // The ONE predicate the header priced the plan with decides the tally
+        // too: an action the plan already withheld is recorded as not attempted,
+        // never as a skip that ran, or the apply reports one outcome more than
+        // the plan promised.
+        let not_attempted = action
+            .pre_skip_reason()
+            .filter(|_| success)
+            .map(str::to_string);
         results.push(ActionResult {
             phase: ledger.phase_name.as_str().to_string(),
             description: desc.clone(),
             success,
             error,
             changed,
+            // An action that reports its own status line settles its own
+            // outcome, so the tree never decides one for it and this record
+            // must not invent one either.
+            skipped: success
+                && not_attempted.is_none()
+                && !action_reports_its_own_status(action)
+                && settled_success_role(action, action_changed) != Role::Ok,
+            not_attempted,
+            // Only when the run landed FEWER than it named: the description
+            // beside it is the planned set, so an equal count restates it.
+            // Judged by the same producers the row's detail is worded from, so
+            // a count `-o json` carries is one the report also states.
+            installed: installed.filter(|_| {
+                installed_packages_summary(action, installed, delivered).is_some()
+                    || provisioned_managers_summary(action, installed, &[]).is_some()
+            }),
+            versions: versions.iter().cloned().collect(),
+            // Off the ONE producer, so the rows a daemon tick recorded for this
+            // action and the rows this settle heals are one set. Empty for a
+            // Skip, whose row records that cfgd could not act at all.
+            drift_rows: if super::apply_heals_action_rows(action) {
+                super::action_drift_rows(action, self.registry)
+                    .iter()
+                    .map(super::DriftRow::key)
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
 
         if action_reports_its_own_status(action) {
@@ -1493,7 +2516,11 @@ impl<'a> super::Reconciler<'a> {
             .cloned()
             .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
         let outcome = match &failure_detail {
-            Some((message, continue_on_err)) => ActionOutcome {
+            Some(FailureDisplay {
+                detail: message,
+                continue_on_err,
+                ran,
+            }) => ActionOutcome {
                 subject,
                 role: if *continue_on_err {
                     Role::Warn
@@ -1503,31 +2530,59 @@ impl<'a> super::Reconciler<'a> {
                 // A refusal's subject IS its reason by construction
                 // (`cannot provision <m> — <reason>`), and the error it
                 // settles through restates that reason for the journal. On
-                // the line the two are one sentence printed twice.
-                detail: (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
-                    .then(|| message.clone()),
+                // the line the two are one sentence printed twice. A sidecar
+                // still rides along: the copy was taken before the write that
+                // failed, and it is on disk whatever the write did.
+                detail: join_detail(
+                    (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
+                        .then(|| message.clone()),
+                    sidecar_detail,
+                ),
                 detail_muted: false,
-                duration: None,
+                duration: ran.then_some(elapsed),
                 notes,
                 body,
+                // A failed deploy still lists what it was ASKED to write, not
+                // what it actually wrote — the plan promised this exact list,
+                // and a reader diagnosing the failure needs to see which
+                // targets and methods were in flight, not a blank row.
+                children: deploy_file_children(action).unwrap_or_default(),
             },
             None => {
                 let noop = declared_noop_role(action);
-                let role = match (noop, action_changed) {
-                    (Some(role), _) => role,
-                    (None, true) => Role::Ok,
-                    (None, false) => Role::Skipped,
+                let role = settled_success_role(action, action_changed);
+                let detail = if noop.is_none() && !action_changed {
+                    Some(if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
+                        crate::NO_SESSION_MANAGER.to_string()
+                    } else {
+                        "unchanged".to_string()
+                    })
+                } else {
+                    action_produced_detail(action, installed, delivered, &versions)
                 };
-                let detail = (noop.is_none() && !action_changed).then(|| "unchanged".to_string());
-                let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
+                // Every action that DID something is timed, however briefly: a
+                // threshold makes the suffix's absence ambiguous between "fast"
+                // and "not measured", and a reader comparing two runs cannot
+                // tell which. `Role::Ok` is exactly "not a declared noop, and it
+                // changed something" — everything else did no work to time.
+                let duration = (role == Role::Ok).then_some(elapsed);
+                // A displaced original is a fact about the user's own file, not
+                // a note about the write, so it is not muted the way an
+                // `unchanged` aside is. It does not REPLACE what the row
+                // already had to say either: a module `DeployFiles` that
+                // adopted a target and then wrote nothing new is both
+                // `unchanged` AND holding a copy, and dropping either half
+                // describes a different run.
+                let adopted = sidecar_detail.is_some();
                 ActionOutcome {
                     subject,
                     role,
-                    detail,
-                    detail_muted: true,
+                    detail: join_detail(detail, sidecar_detail),
+                    detail_muted: !adopted,
                     duration,
                     notes,
                     body,
+                    children: deploy_file_children(action).unwrap_or_default(),
                 }
             }
         };
@@ -1553,50 +2608,80 @@ impl<'a> super::Reconciler<'a> {
         shell_override: Option<ScriptShell>,
         abort: &AbortFlag,
         notes: &NoteSink,
-    ) -> Result<(String, bool, Option<String>)> {
+        sidecars: &mut Vec<SidecarOutcome>,
+    ) -> Result<ActionRun> {
         match action {
             Action::System(sys) => self
                 .apply_system_action(sys, &resolved.merged, module_actions, printer, notes)
-                .map(|d| (d, true, None)),
-            Action::Package(pkg) => self
-                .apply_package_action(pkg, printer, notes)
-                .map(|d| (d, true, None)),
+                .map(|d| ActionRun::new(d, true)),
+            Action::Package(pkg) => self.apply_package_action(pkg, printer, notes),
             Action::File(file) => self
-                .apply_file_action(file, resolved.profile_name(), config_dir, printer)
-                .map(|d| (d, true, None)),
+                .apply_file_action(file, resolved.profile_name(), config_dir, printer, sidecars)
+                .map(|d| ActionRun::new(d, true)),
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, secret_env_collector)
-                .map(|d| (d, true, None)),
-            Action::Script(script) => self.apply_script_action(
-                script,
-                resolved,
-                config_dir,
-                printer,
-                context,
-                shell_override,
-                abort,
-            ),
-            Action::Module(module) => self
-                .apply_module_action(
-                    module,
+                .map(|d| ActionRun::new(d, true)),
+            Action::Script(script) => self
+                .apply_script_action(
+                    script,
+                    resolved,
                     config_dir,
                     printer,
-                    apply_id,
                     context,
-                    resolved,
-                    module_actions,
                     shell_override,
                     abort,
-                    notes,
                 )
-                .map(|(d, c)| (d, c, None)),
-            Action::Manager(manager) => self
-                .apply_manager_action(manager, printer, notes)
-                .map(|(desc, changed)| (desc, changed, None)),
+                .map(|(d, c, output)| ActionRun {
+                    script_output: output,
+                    ..ActionRun::new(d, c)
+                }),
+            Action::Module(module) => self.apply_module_action(
+                module,
+                config_dir,
+                printer,
+                apply_id,
+                context,
+                resolved,
+                module_actions,
+                shell_override,
+                abort,
+                notes,
+                sidecars,
+            ),
+            Action::Manager(manager) => self.apply_manager_action(manager, printer, notes),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
-                let changed = !d.contains(ENV_SKIPPED_SUFFIX);
-                (d, changed, None)
+                let changed = !env_result_unchanged(&d);
+                ActionRun::new(d, changed)
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    /// A row that both adopted a target and had something else to say carries
+    /// BOTH, in the order they happened. `or`-ing them drops one: a module
+    /// `DeployFiles` that adopted a target and then wrote nothing new is
+    /// `unchanged` AND holding a copy, and a failed write is an error AND
+    /// holding a copy — reporting either half alone describes a different run.
+    #[test]
+    fn a_row_with_two_things_to_say_says_both() {
+        let j = super::join_detail;
+        assert_eq!(
+            j(
+                Some("unchanged".into()),
+                Some("backed up to ~/x.cfgd-backup".into())
+            ),
+            Some("unchanged, backed up to ~/x.cfgd-backup".to_string())
+        );
+        assert_eq!(
+            j(Some("unchanged".into()), None),
+            Some("unchanged".to_string())
+        );
+        assert_eq!(
+            j(None, Some("backed up to ~/x.cfgd-backup".into())),
+            Some("backed up to ~/x.cfgd-backup".to_string())
+        );
+        assert_eq!(j(None, None), None);
     }
 }

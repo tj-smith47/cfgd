@@ -1,12 +1,13 @@
 //! Snapshot tests for `cfgd diff`.
 //!
-//! Real `cmd_diff` capture against tempdir profiles. The file-diff body
-//! (subheaders + unified diff lines) renders via `CfgdFileManager::diff`;
-//! snapshots lock the section headers + outcome statuses + buffered summary,
-//! not the diff body. Test profiles use an empty `spec.system` map so each
-//! system configurator short-circuits on `merged.system.get(key) == None` —
-//! the System section emits only "No system drift" regardless of host. The
-//! `normalize` helper handles tempdir path substitution only.
+//! Real `cmd_diff` capture against tempdir profiles. The report is
+//! differences-only: a surface with nothing to say leaves no trace, so the
+//! goldens lock which sections appear at all, the order they appear in, and
+//! the closing line's tally of what drifted against which surfaces came back
+//! clean. Test profiles use an empty `spec.system` map so each system
+//! configurator short-circuits on `merged.system.get(key) == None` — the
+//! System section never renders regardless of host. The `normalize` helper
+//! handles tempdir path substitution only.
 //!
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test diff_snapshots
@@ -15,7 +16,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use cfgd::cli::diff::{build_diff_doc, cmd_diff};
+use cfgd::cli::diff::{DiffScope, build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
@@ -56,9 +57,61 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Plant the whole env surface this host's engine would write for `aliases`
+/// under `home`, less the alias definitions themselves, and hand back the
+/// lines that were withheld.
+///
+/// Those lines are what the shell check will report as missing, so a caller
+/// pinning the row's `want` takes them from here rather than composing a
+/// second one — a fixture and an assertion that render the declaration
+/// separately can agree on a dialect neither host writes.
+///
+/// What is left is a machine that has been applied and has since lost exactly
+/// those aliases, which is the one shell row the golden is about: the primary
+/// file's freshness row is redundant beside it and dropped, and every rc source
+/// line is in place so no `env-rc` row joins them.
+///
+/// Every path and every byte comes from the engine's own target list — a
+/// fixture spelling `.cfgd.env` or a `source` line by hand writes where nothing
+/// reads, and the surfaces that break assert an absence, so it would pass
+/// blind rather than fail.
+fn plant_env_surface_without_aliases(
+    home: &Path,
+    aliases: &[cfgd_core::config::ShellAlias],
+) -> Vec<String> {
+    let mut owners = cfgd_core::config::EntryOwners::default();
+    owners.claim(
+        &cfgd_core::reconciler::Owner::profile("tiny").token(),
+        &[],
+        aliases,
+    );
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&[], aliases, &owners, &[], &[]);
+    let scope = cfgd_core::config::EnvScope::default();
+    let withheld: Vec<String> = aliases
+        .iter()
+        .filter_map(|a| merged.declared_line("alias", &a.name))
+        .collect();
+    let write = |path: &Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    for (path, content) in merged.managed_env_files(home, scope) {
+        let body: String = content
+            .lines()
+            .filter(|l| !withheld.iter().any(|w| w == l))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        write(&path, body);
+    }
+    for (rc_path, line) in merged.managed_env_source_lines(home, scope) {
+        write(&rc_path, format!("{line}\n"));
+    }
+    withheld
+}
+
 /// Profile where the target does NOT exist on disk; `fm.diff` reports drift.
-/// Same shape as `common::tiny_profile_setup`, inlined here because we add a
-/// custom-manager profile entry in other fixtures and want consistency.
+/// Same shape as `common::tiny_profile_setup`, inlined here because a
+/// custom-manager profile entry is added in other fixtures for consistency.
 fn file_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
@@ -111,6 +164,15 @@ fn package_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// `package_drift_setup` with the managed target REMOVED, so files and
+/// packages both drift in one run — the fixture behind the surface-order and
+/// clean-surface-naming golden.
+fn multi_surface_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = package_drift_setup();
+    std::fs::remove_file(&target).unwrap();
+    (config_dir, state_dir, target)
+}
+
 /// Profile referencing a module with files (target missing → file drift) and
 /// no packages. Drives the `--module` branch in `cmd_diff`.
 fn module_only_setup() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -142,8 +204,9 @@ fn module_only_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 /// Real `cmd_diff` against a clean profile — files match, no packages, no
-/// system spec. Locks the "No file drift" / "No package drift" / "No system
-/// drift" + "No drift detected" summary line.
+/// system spec. Every surface is converged, so the golden is the heading, the
+/// run's context rows and one `✓ No drift detected` line: a converged surface
+/// prints nothing at all.
 #[test]
 fn diff_no_drift_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
@@ -159,6 +222,122 @@ fn diff_no_drift_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/no_drift.txt", &stripped);
 }
 
+/// The `Standing` section, over both operand shapes a recorded row comes in.
+///
+/// A `script` row is a type no pass of the full scan can re-find, so both rows
+/// survive the walk and reach the section. The golden is what keeps the
+/// operand-less one honest: it has no two sides to name, so it words itself as
+/// the bare cause — never `want: missing, have: ...`, which the absence fold
+/// invents out of a silence the store never recorded. A declared alias the
+/// machine does not deliver renders in the same report, so the golden holds
+/// both wordings at once: a row with two sides states them, a row with none
+/// does not.
+///
+/// The alias row's `want` is the line the PRIMARY managed env file would hold,
+/// which is bash's on POSIX and PowerShell's on Windows — so the golden holds
+/// `<ALIAS_LINE>` there and the DIALECT is pinned beside it, against the same
+/// `declared_line` the fixture plants with. Two claims, each where it can be
+/// made on every OS: the golden says which rows render, in what order, with
+/// which cause wordings; the equality says the row's `want` is the very line
+/// this host's primary env file must hold. Gating the whole test on `unix`
+/// instead would have left the section's shape — the one place both cause
+/// wordings meet — unwatched on the OS whose dialect it was gated for.
+#[test]
+fn diff_standing_rows_human() {
+    let (config_dir, state_dir, target) = no_drift_setup();
+    // The shell check resolves `~`, so without a test home this reads the
+    // invoking user's own env surface: this box dogfoods cfgd and has every
+    // planned target already, while a CI runner has none of them and renders
+    // five absence rows for a home the report also folds with the wrong `~`.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: false,
+        },
+    );
+    // A declared alias no env file delivers: a SHELL row, and the one kind
+    // whose cause states both operands. It renders beside the standing rows so
+    // the golden holds both wordings at once, and the first standing row is
+    // seeded WITH two operands to hold the chooser to its other half: a row
+    // that could state a divergence still reads as the terse cause, because
+    // its kind is not a shell one.
+    let profile_path = config_dir.path().join("profiles/tiny.yaml");
+    let profile = std::fs::read_to_string(&profile_path).unwrap();
+    let alias_only = [cfgd_core::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    }];
+    std::fs::write(
+        &profile_path,
+        format!("{profile}  aliases:\n    - name: gs\n      command: git status\n"),
+    )
+    .unwrap();
+    let withheld = plant_env_surface_without_aliases(home.path(), &alias_only);
+    let [alias_line] = withheld.as_slice() else {
+        panic!("one declared alias renders one line: {withheld:?}");
+    };
+    {
+        let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        store
+            .record_drift(
+                "script",
+                "echo hook",
+                Some("exit 0"),
+                Some("exit 1"),
+                "local",
+            )
+            .unwrap();
+        store
+            .record_drift("script", "echo silent", None, None, "local")
+            .unwrap();
+    }
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let human = cap.human();
+    // The dialect claim, made on the raw capture before the placeholder goes
+    // in: the row's `want` is the very line this host's primary env file must
+    // hold, which is bash's here and PowerShell's on Windows.
+    let want = strip_ansi(&human)
+        .lines()
+        .find_map(|l| l.split_once("want: ").map(|(_, rest)| rest.to_string()))
+        .and_then(|rest| {
+            rest.split_once(", have: ")
+                .map(|(want, _)| want.to_string())
+        })
+        .expect("the alias row states both operands");
+    assert_eq!(
+        &want, alias_line,
+        "the alias row's `want` is not the line the primary env file must hold"
+    );
+
+    let normalized = normalize(
+        &human,
+        config_dir.path(),
+        &[
+            (&target, "<TARGET>"),
+            (Path::new(alias_line), "<ALIAS_LINE>"),
+        ],
+    );
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "diff/standing_rows.txt",
+        &stripped
+    );
+}
+
 /// JSON payload roundtrip — DiffOutput shape via build_diff_doc + cap.json().
 #[test]
 fn diff_no_drift_json() {
@@ -167,15 +346,21 @@ fn diff_no_drift_json() {
         packages: Vec::new(),
         system: Vec::new(),
         system_errors: Vec::new(),
+        env: Vec::new(),
+        env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
             has_system_drift: false,
             system_check_failed: false,
+            has_env_drift: false,
+            env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_diff_doc(&output));
+    printer.emit(build_diff_doc(&output, DiffScope::Machine));
     drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
@@ -187,9 +372,9 @@ fn diff_no_drift_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "diff/no_drift.json");
 }
 
-/// Profile target doesn't exist on disk — `fm.diff` reports drift. Snapshot
-/// locks the "Files" section header + summary outcome, not the diff body
-/// (which renders via `CfgdFileManager::diff`).
+/// Profile target doesn't exist on disk — `fm.diff` reports drift. Locks the
+/// one drifted surface rendering (and the three converged ones staying
+/// silent) plus the closing line naming both halves.
 #[test]
 fn diff_file_drift_human() {
     let (config_dir, state_dir, target) = file_drift_setup();
@@ -207,7 +392,8 @@ fn diff_file_drift_human() {
 
 /// Profile declares a custom package manager whose `is_installed` script
 /// always returns nothing — `plan_packages` emits an `Install` action; the
-/// snapshot locks the "Packages: drift-mgr: missing — ..." status line.
+/// golden locks the `drift-mgr: missing — drifted-pkg` row under its owner,
+/// with `files` among the surfaces the closing line calls clean.
 #[test]
 fn diff_package_drift_human() {
     let (config_dir, state_dir, target) = package_drift_setup();
@@ -227,10 +413,36 @@ fn diff_package_drift_human() {
     );
 }
 
+/// Two surfaces drifted at once: `Files` renders before `Packages` (the fixed
+/// surface order), and the closing line names the count on each drifted
+/// surface plus the two that were checked and came back clean.
+#[test]
+fn diff_multi_surface_drift_human() {
+    let (config_dir, state_dir, target) = multi_surface_drift_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = strip_ansi(&normalized);
+    assert!(
+        stripped.find("\nFiles") < stripped.find("\nPackages"),
+        "files render before packages: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "diff/multi_surface_drift.txt",
+        &stripped,
+    );
+}
+
 /// Synthetic system-drift payload — exercises the `SystemDriftOutput` rendering
 /// path in `build_diff_doc`. Real system drift requires platform-privileged
 /// state mutation (sysctl, launchd, etc.) that is intractable from an
-/// integration test, so we anchor the buffered summary's role + payload shape
+/// integration test, so this anchors the buffered summary's role + payload shape
 /// via the pure Doc constructor. The streaming-side rendering of system
 /// drift status lines is exercised by the `print_package_drift`-shaped
 /// in-module tests (drift.rs) and the renderer bucket-g anchors.
@@ -245,23 +457,53 @@ fn diff_system_drift_human() {
             actual: "128".to_string(),
         }],
         system_errors: Vec::new(),
+        env: Vec::new(),
+        env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
             has_system_drift: true,
             system_check_failed: false,
+            has_env_drift: false,
+            env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_diff_doc(&output));
+    printer.emit(build_diff_doc(&output, DiffScope::Machine));
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/system_drift.txt", &stripped);
 }
 
-/// `--module <name>` branch of `cmd_diff` — drives the parallel Files +
-/// Packages sections via resolved-module data and skips the system section.
+/// The full-report header names what the profile RESOLVES to, not what it
+/// declares: `editor` alone is in `spec.modules`, and the row reads
+/// `core, editor`.
+#[test]
+fn diff_module_dependency_header_human() {
+    let (config_dir, state_dir) = common::profile_with_module_dependency_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let normalized = normalize(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "diff/module_dependency.txt",
+        &stripped
+    );
+}
+
+/// `--module <name>` branch of `cmd_diff` — the heading carries the module
+/// (`Diff: diff-mod`), the one drifted file renders under its owner group,
+/// and the closing line calls `packages` clean without claiming anything
+/// about `system` or the shell, which a module run never checks.
 #[test]
 fn diff_module_only_human() {
     let (config_dir, state_dir) = module_only_setup();
@@ -290,24 +532,33 @@ fn diff_bridge_one_blank_line() {
             packages: vec!["pkg-a".to_string()],
             bootstrap_method: None,
             reason: None,
+            expected: None,
+            actual: None,
         }],
         system: Vec::new(),
         system_errors: Vec::new(),
+        env: Vec::new(),
+        env_check_error: None,
+        standing: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: true,
             has_system_drift: false,
             system_check_failed: false,
+            has_env_drift: false,
+            env_check_failed: false,
+            has_standing_drift: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
 
     printer.heading("Diff");
     {
-        let pkg_sec = printer.section("Phase: Packages");
+        let pkg_sec = printer.section("Packages");
         let group = pkg_sec.section_owner(&OwnerLabel::new("profile", "tiny"));
         group
-            .status(Role::Warn, "drift-mgr: missing")
+            .status(Role::Warn, "drift-mgr")
+            .qualifier(cfgd_core::Absence::NotInstalled.as_str())
             .detail("pkg-a");
     }
 

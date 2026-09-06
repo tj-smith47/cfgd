@@ -25,10 +25,86 @@ pub use priority::cmd_source_priority;
 pub use remove::cmd_source_remove;
 pub use replace::cmd_source_replace;
 pub use show::cmd_source_show;
-pub use update::cmd_source_update;
+pub use update::{SubscriptionEdits, cmd_source_update};
 
-#[cfg(test)]
-pub(in crate::cli) use update::run_source_update;
+// Public so an integration test can drive the fetch loop without
+// `cmd_source_update`'s process-exiting tail aborting the test binary.
+pub use update::run_source_update;
+
+/// The detail half of the ONE failure row a per-source operation settles on,
+/// rendered under the `source:<name>` owner section the caller has already
+/// opened (`✗ sync failed — <cause>`, `✗ update failed — <cause>`).
+///
+/// A [`SourceError`] hands back its `cause()` rather than its `Display`,
+/// because the owner heading directly above the row already names the source;
+/// the full sentence would put that name on the line twice. Anything else
+/// collapses as it always did — those errors carry no name to strip.
+///
+/// [`SourceError`]: cfgd_core::errors::SourceError
+pub(in crate::cli) fn source_failure_detail(err: &cfgd_core::errors::CfgdError) -> String {
+    match err {
+        cfgd_core::errors::CfgdError::Source(source_err) => {
+            cfgd_core::output::collapse_to_subject_line(source_err.cause())
+        }
+        other => cfgd_core::output::collapse_to_subject_line(other),
+    }
+}
+
+/// The Title Case label a human surface reads for each `subscription` knob,
+/// keyed by the YAML key the knob is written under.
+///
+/// `cfgd source update` rendered the wire key as its row subject
+/// (`√ requireSignedCommits — false → true`) on the very command whose job is
+/// to set the knob, while `cfgd source show` two screens later called the same
+/// fact `Require Signed Commits`. One table, read by both, so the knob cannot
+/// have two names.
+const SUBSCRIPTION_KNOB_LABELS: &[(&str, &str)] = &[
+    ("requireSignedCommits", "Require Signed Commits"),
+    ("allowScripts", "Scripts Allowed"),
+];
+
+/// The label for one subscription knob's wire key, falling back to the key
+/// itself for a knob nothing has named yet — a rendered wire key is a defect,
+/// but hiding the row would be a worse one.
+pub(in crate::cli) fn subscription_knob_label(key: &str) -> &str {
+    SUBSCRIPTION_KNOB_LABELS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or(key, |(_, label)| *label)
+}
+
+/// The next step for a per-source failure, for the hint under the ONE failure
+/// row `sync` and `update` settle on.
+///
+/// A refusal is the one screen where the reader is blocked and has to choose
+/// between real actions, and it was the only one offering none. Every arm names
+/// something the reader can DO; nothing here restates the cause, which the
+/// detail beside the row already carries.
+pub(in crate::cli) fn source_failure_next_step(
+    err: &cfgd_core::errors::CfgdError,
+    name: &str,
+) -> String {
+    use cfgd_core::errors::SourceError;
+    match err {
+        cfgd_core::errors::CfgdError::Source(SourceError::SignatureVerificationFailed {
+            ..
+        }) => format!(
+            "Sign the HEAD commit, or run `cfgd source update {name} --no-require-signed-commits`"
+        ),
+        cfgd_core::errors::CfgdError::Source(SourceError::PinRefNotFound { .. }) => {
+            format!("Pick an existing ref with `cfgd source update {name} --pin-version <ref>`")
+        }
+        cfgd_core::errors::CfgdError::Source(SourceError::NotFound { .. }) => {
+            "Run `cfgd source list` to see the subscribed sources".to_string()
+        }
+        cfgd_core::errors::CfgdError::Source(SourceError::InvalidManifest { .. }) => {
+            format!("Fix the source's manifest, then run `cfgd source update {name}`")
+        }
+        // Fetch, git, cache: a transport or a local-cache failure the reader
+        // retries once the cause the detail names is gone.
+        _ => format!("Retry with `cfgd source update {name}` once the cause above is resolved"),
+    }
+}
 
 /// Warning emitted when writing `sources.lock` fails after a source mutation.
 /// The lockfile is advisory (it records resolved commit SHAs), so every caller
@@ -50,8 +126,8 @@ pub(in crate::cli) use helpers::{
 #[cfg(test)]
 pub(in crate::cli) use helpers::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
-    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
+    count_policy_items, format_conflict_preview_lines, infer_source_name, parse_priority_input,
+    remove_source_from_config, resolve_non_interactive_profile,
 };
 
 // Glob-import all helpers so siblings can reference them as `super::*`-imported

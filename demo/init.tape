@@ -1,8 +1,20 @@
-# `Output <dir>/` is a no-op on the installed vhs (v0.11.0) — it exits 0 and
-# writes nothing, with the real frames landing in a /tmp scratch dir that vhs
-# deletes on cleanup. The mp4 is therefore the only artifact this tape
-# actually produces, and it is what the GIF ramp reads.
-Output "demo/.out/raw.mp4"
+# A trailing slash and no extension is what makes vhs keep the take as its two
+# lossless PNG sequences (frame-text-NNNNN.png, frame-cursor-NNNNN.png) instead
+# of encoding it; it moves its scratch directory here by renaming it, so the
+# parent has to exist and has to be on the same filesystem as $TMPDIR — see
+# demo/scripts/record.sh, which arranges both. No mp4 is asked for on purpose:
+# h264 is 4:2:0, and the chroma smear on thin coloured glyphs would be baked in
+# before the GIF's palette pass ever ran.
+# Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
+# line the beat printed, clamped to [2s, 6s]; the one payoff beat (the settled
+# LazyVim dashboard, the thing one command produced) gets +1.5s on top; a beat
+# whose output is a single line holds 2s; a typed line that prints nothing
+# holds 1s, and a full screen of content takes the ceiling. A reader needs time
+# in proportion to what landed on screen, so each Sleep below carries the line
+# count it was computed from, measured off a real render rather than guessed.
+# The settle before the hero hold is not a dwell — it waits for the tree's
+# scan — and the closing hold reads nothing and stays 2s.
+Output "demo/.out/raw/"
 
 Require docker
 
@@ -10,29 +22,30 @@ Set Shell "bash"
 # LazyVim's tree, tabline and statusline are drawn with Nerd Font glyphs; the
 # default font renders every one of them as a tofu box.
 Set FontFamily "FiraCode Nerd Font Mono"
-# 1320x1000 at font 15 is a measured 125x47 terminal (cell 10.24x20.43 after
-# the 20px padding each side) — wide and tall enough that LazyVim's tree,
-# tabline and statusline frame a real editing view rather than a cropped one,
-# with the extra rows going to the install log so more of it is on screen at
-# once. Changing any of the three changes the grid; re-measure with
-# `echo $(tput cols)x$(tput lines)` rather than deriving it. The GIF is not
-# rescaled, so this width is also the GIF's width and the README img width.
+# The width, height and font size together fix the terminal grid: wide and
+# tall enough that LazyVim's tree, tabline and statusline frame a real editing
+# view rather than a cropped one. The rows buy nothing for the install log,
+# whose tail is a fixed count of lines the terminal size cannot move; they are
+# spent on the editor. Changing any of the three changes the
+# grid; measure it with `echo $(tput cols)x$(tput lines)` inside a take rather
+# than deriving it. The GIF is not rescaled, so this width is also the GIF's
+# width and the README img width.
 Set FontSize 15
 Set Width 1320
-Set Height 1000
+Set Height 1260
 # 50ms lands exactly two keystrokes in every 100ms frame. A speed that does not
 # divide the frame period evenly (40ms lands 2.5 chars per frame) alternates 2
 # and 3 characters per frame, which reads as stuttering rather than typing.
 Set TypingSpeed 50ms
 Set Padding 20
 
-# The GIF is encoded at 10fps, so recording any faster only makes vhs's
-# headless chromium screenshot a 1320x1000 viewport twice as often for frames
+# The GIF is encoded at 50fps, so recording any faster only makes vhs's
+# headless chromium screenshot the viewport twice as often for frames
 # the encoder throws away — and a take that cannot sustain its declared rate
-# plays back faster than the session really ran. 10 also divides 100 exactly,
+# plays back faster than the session really ran. 50 also divides 100 exactly,
 # so every GIF frame delay lands on a whole centisecond and playback does not
 # drift against the recorded timing.
-Set Framerate 10
+Set Framerate 50
 
 # Everything up to the container's first prompt is hidden: the demo's claim is
 # that one command takes a bare machine to a working nvim, and `docker run` is
@@ -45,18 +58,31 @@ Enter
 # `-it` because the recording needs cfgd's TTY output (spinners, colour), and
 # `bash -l` because the source line cfgd injects lands in the login shell's own
 # rc. The image bakes no brew PATH: before the apply `nvim` resolves to nothing,
-# after it to the binary cfgd's own ~/.cfgd.env put on PATH.
-Type "docker run --rm -it cfgd-demo:latest bash -l"
+# after it to the binary cfgd's own ~/.cfgd.env put on PATH. `--hostname
+# jarvispro` names the container the same way the machine this demo stands in
+# for is named, so the prompt reads as a real host rather than Docker's random
+# hex id. Named, and kept after it exits: the ramp needs to know the source
+# second the apply reached its scripts phase, and that is read from the
+# container's own output (`docker logs -t`, a wall-clock stamp per line) by
+# demo/scripts/record.sh, which removes the container once it has the log. An
+# `--rm` container takes its log with it.
+Type "docker run -it --name cfgd-demo-init --hostname jarvispro cfgd-demo:latest bash -l"
 Enter
 # The container prompt ends in the workdir name; matching `cfgd$` instead of a
 # bare `$` keeps package-manager output from satisfying the wait early.
 Wait@2m /cfgd\$$/
-Sleep 1s
+# `clear` inside the container: `Hide` pauses the recording without erasing
+# the terminal, so without it the `docker run` line would open frame 0.
+Type "clear"
+Enter
+Sleep 300ms
 Show
+Sleep 1s
 
 Type "nvim"
 Enter
-Sleep 3s
+# `nvim: command not found`, 1 line → 2s
+Sleep 2s
 
 Type "cfgd init --from tj-smith47/cfgd-config --apply-module nvim --theme dracula --yes"
 Sleep 700ms
@@ -64,20 +90,18 @@ Enter
 # apt + brew + rustup + Lazy/Mason/treesitter bootstrap; minutes, not seconds.
 # The ceiling has to clear the module's own worst case, or vhs gives up
 # mid-provision and records a truncated run instead of the failure the module
-# would have reported. The nvim module's postApply steps allot 50m between them
-# (120s + 900s + 600s + 900s + 300s + 180s) and the package phase ahead of them
-# has measured ~6m, so 60m covers a run where every step burns its whole budget.
-# A healthy take spends nowhere near it: the take this GIF was cut from ran
-# 7m03s end to end, with MasonToolsInstallSync — the step the ceiling was
-# sized around — returning in 70s.
+# would have reported. It is sized as the sum of the nvim module's postApply
+# step timeouts (see the module's scripts) plus the package phase ahead of
+# them, so it covers a run where every step burns its whole budget. A healthy
+# take spends a fraction of it; the apply's own rollup line states what this
+# one took.
 Wait@60m /cfgd\$$/
 # Everything from here plays at 1:1 — the ramp's tail starts at the moment the
 # install finishes, so the payoff is soaked at real speed rather than ramping up
-# only once the editor is already open. Long enough to read the apply summary
-# before the alt screen covers it. It does not settle the file tree: nvim-tree's
-# first scan still loses its race about half the time and paints an empty pane,
-# which no amount of waiting here fixes.
-Sleep 5s
+# only once the editor is already open. The settled apply fills the frame
+# (~55 lines) → the rule's 6s ceiling, which is what the summary has to be read
+# in before the next beat pushes it up.
+Sleep 6s
 
 # The one beat the apply cannot do for us: this shell was started before
 # ~/.bashrc learned to source ~/.cfgd.env, so its PATH is still the pre-apply
@@ -98,15 +122,18 @@ Wait+Screen@20s /Welcome, TJ Smith!/
 # empty pane; waiting on real tree content turns a bad take into a hard
 # failure instead of a silently-wrong GIF.
 Wait+Screen@20s /Cargo\.toml/
-# The first interactive start raises notifications that cover half the editor.
-# They expire on their own, so this settles the screen rather than showing
-# anything. It now plays at 1:1 inside the tail, so it is cut to the shortest
-# span that still outlasts the toasts rather than the ramp-compressed 14s.
-Sleep 5s
-# The hero frames: LazyVim with the repo tree, no toasts left on top of it.
-# Long enough to read the dashboard, short enough that the loop does not sit on
-# a still image — at 6s the hold read as the recording having stalled.
-Sleep 4s
+# The tree has just painted its first entries; this lets its scan finish and
+# the statusline settle before the hold starts counting. It is a settle, not a
+# dwell — nothing is being read yet. lazy.nvim's update panel is not waited
+# for: it fires only when the fixture's lazy-lock trails the plugins it pins,
+# and that lock is refreshed upstream before a take. On a take where it does
+# appear the lock is stale, and the fix is the refresh, not a longer settle
+# (measured: the panel covers the dashboard for ~7s, longer than any settle
+# worth paying for).
+Sleep 1s
+# The hero frames: LazyVim with the repo tree, no toasts left on top of it. A
+# full editor screen → the rule's 6s ceiling, +1.5s as this tape's payoff beat.
+Sleep 7500ms
 
 Type ":qa"
 Enter
@@ -119,16 +146,22 @@ Wait@30s /cfgd\$$/
 Sleep 500ms
 Type "nvim --version | head -1"
 Enter
-# The closing frame is the claim the whole recording exists to prove, and a
-# loop that cuts away from it the instant it appears reads as an accident.
-Sleep 5s
+# The closing frame is the claim the whole recording exists to prove: 1 line → 2s.
+Sleep 2s
+
+# Closing hold — the last beat's own hold already covers reading it; this is
+# only the breath before the loop snaps back.
+Sleep 2s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
-# decimates everything between them. Two spans must land inside those ends:
-# the opening typing (~11s at 50ms plus container start, under a 22s head) and
-# everything from the install finishing onward — the 5s summary read, the env
-# source, nvim's start, the 5s settle, the 4s hero hold, the quit and the
-# version beats (~31s plus nvim's variable start, under a 34s tail). Only the
-# install itself is compressed. Lengthen a beat here and the matching head/tail
-# second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
-# that has to play at real speed.
+# decimates everything between them in two tiers, split where the apply opens
+# its scripts phase. Two spans must land inside the 1:1 ends: the opening
+# typing plus the install's first settled progress rows (brew's version at
+# ~25.5s measured, under a 26s head) and everything from the apply's rollup
+# line onward — the 6s summary read, the env source, nvim's start, the 1s
+# settle, the 7.5s hero hold, the quit, the version beat and the closing
+# breath (23.9s measured, under a 27s tail). Only the install between them is
+# compressed. Lengthen a
+# beat here and the matching head/tail second in demo/scripts/make-gif.sh
+# moves with it, or the ramp eats footage that has to play at real speed. The
+# tier boundary needs no such care: it is read off the take.

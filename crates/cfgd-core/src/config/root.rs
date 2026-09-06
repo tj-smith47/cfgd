@@ -15,12 +15,28 @@ use crate::errors::Result;
 
 // --- Root Config (cfgd.yaml) ---
 
+/// The root `cfgd.yaml` document: a KRM-style envelope (`apiVersion`/`kind`/
+/// `metadata`/`spec`) around a machine's declared configuration.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: CfgdConfig
+/// metadata:
+///   name: my-machine
+/// spec:
+///   profile: work
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CfgdConfig {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`. See `API_VERSION`.
     pub api_version: String,
+    /// Document kind. Always `CfgdConfig` for this file.
     pub kind: String,
+    /// Identifying metadata for this config document.
     pub metadata: ConfigMetadata,
+    /// The body of the document: everything cfgd reads to decide what this
+    /// machine should look like.
     pub spec: ConfigSpec,
     /// Deprecation messages collected while parsing (e.g. legacy `theme.overrides.*`
     /// keys). Not part of the schema: never serialized, never compared. A command
@@ -59,36 +75,54 @@ impl CfgdConfig {
             .filter(|p| !p.is_empty())
             .ok_or_else(|| {
                 crate::errors::CfgdError::Config(crate::errors::ConfigError::Invalid {
-                    message: "no profile configured — run: cfgd profile create <name>".to_string(),
+                    message: "no profile configured — run: `cfgd profile create <name>`"
+                        .to_string(),
                 })
             })
     }
 }
 
+/// `metadata`: identifying information for a `cfgd.yaml` document.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigMetadata {
+    /// A human-chosen name for this machine's config, shown in status output.
     pub name: String,
 }
 
+/// `spec`: the body of a `cfgd.yaml` document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSpec {
+    /// Name of the active `ProfileSpec` to reconcile against.
     #[serde(default)]
     pub profile: Option<String>,
 
+    /// Git origins this config's changes may be pushed to / pulled from.
     #[serde(default)]
     pub origin: Vec<OriginSpec>,
 
+    /// The background daemon that watches for drift between reconciles.
+    /// Omitted, no daemon runs and every reconcile is an explicit
+    /// `cfgd apply`.
     #[serde(default)]
     pub daemon: Option<DaemonConfig>,
 
+    /// Which backend resolves a `${secret:…}` reference, and how it is
+    /// reached. Omitted, no backend is configured and a declared secret
+    /// reference fails to resolve.
     #[serde(default)]
     pub secrets: Option<SecretsConfig>,
 
+    /// Additional config sources this machine subscribes to.
     #[serde(default)]
     pub sources: Vec<SourceSpec>,
 
+    /// Colours and glyphs cfgd renders with: a named preset (`default`,
+    /// `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`,
+    /// `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`,
+    /// `one-dark`, `minimal`) plus per-slot overrides. Omitted, the
+    /// `default` preset applies.
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 
@@ -117,13 +151,19 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub ai: Option<AiConfig>,
 
-    /// Compliance snapshot configuration.
+    /// Periodic snapshots of machine state, for drift history and audit.
+    /// Omitted, no snapshots are taken and `cfgd compliance` reports only
+    /// what it collects on the spot.
     #[serde(default)]
     pub compliance: Option<ComplianceConfig>,
 
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+
+    /// Whether closing `→` usage hints render. Omitted, hints render.
+    #[serde(default)]
+    pub usage_hints: Option<bool>,
 }
 
 /// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Patch`.
@@ -169,11 +209,11 @@ case_insensitive_enum!(UpdatePolicy {
     "Manual" => UpdatePolicy::Manual,
 });
 
-/// Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which
-/// defers to the binary-level [`UpdateConfig::policy`].
+/// Per-skill update policy. Mirrors `UpdatePolicy` but adds `Inherit`, which
+/// defers to the binary-level `update.policy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum SkillUpdatePolicy {
-    /// Defer to the binary-level update policy ([`UpdateConfig::policy`]).
+    /// Defer to the binary-level update policy (`update.policy`).
     #[default]
     Inherit,
     /// Apply skill updates automatically without prompting.

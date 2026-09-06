@@ -14,7 +14,7 @@
 //!     ✓ refresh apt index                    (9.5s) ← settled, in place
 //!     ⠹ provision brew via homebrew installer       ← running
 //!         ==> Downloading and installing Homebrew…  ← its output window
-//!     ○ provision pipx via apt · waiting on apt     ← blocked, in its own row
+//!     ○ provision pipx via apt — waiting on refresh apt index ← blocked, in its own row
 //! ```
 //!
 //! Four rules hold it together, and every one of them exists because the
@@ -65,7 +65,7 @@ use crate::output::live_row::{LiveRow, RowStatus};
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard};
 
 use super::apply::{ActionOutcome, emit_action_line};
-use super::format::action_display_subject;
+use super::format::action_display_subject_within;
 use super::types::{Action, Owner};
 
 /// One line the scheduler wants on screen for work it has not started.
@@ -74,9 +74,14 @@ pub(super) struct Wait<'p> {
     /// The blocked action, or `None` for a line standing for the whole group —
     /// the tier barrier holds every action a group has, and says so once.
     pub(super) action: Option<&'p Action>,
-    /// The whole sentence, composed by the scheduler that knows what is in the
-    /// way.
+    /// What is held: the blocked action's own display subject, or — for a
+    /// group line, which has no action of its own — the reason itself.
     pub(super) subject: String,
+    /// Why it is held, composed by the scheduler that knows what is in the
+    /// way. The row's DETAIL slot: a withheld role mutes the subject and
+    /// brightens this, so the half the reader is looking for is the bright
+    /// one. `None` on a group line, whose whole row is its reason.
+    pub(super) reason: Option<String>,
 }
 
 /// What the scheduler is holding back, and which groups can still grow.
@@ -177,7 +182,10 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             section,
             preopened,
             depth,
-            width,
+            // The claimed report column when the run holds one: the section
+            // path pads its commits to that, and a row repainted to any other
+            // shifts sideways at the moment it settles.
+            width: printer.live_column_for(width),
             live: printer.live_bars() && section.is_some(),
             groups: Vec::new(),
             flushed: 0,
@@ -195,6 +203,18 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         self
     }
 
+    /// The subject budget every row of this tree — and every wait line the
+    /// dispatcher words about one — renders within.
+    pub(super) fn subject_budget(&self) -> Option<usize> {
+        self.printer.subject_budget()
+    }
+
+    /// The theme's arrow glyph, for a wait row naming a Secret or System
+    /// blocker's value change.
+    pub(super) fn arrow(&self) -> &str {
+        self.printer.arrow()
+    }
+
     /// Whether outcomes settle HERE, in the rows the region already shows.
     ///
     /// The negative answer is the whole off-TTY contract: the caller holds each
@@ -210,7 +230,8 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     /// that row is where the reader has been watching it, and starting it
     /// somewhere else is the jump this whole module exists to prevent.
     pub(super) fn dispatched(&mut self, owner: &'p Owner, action: &'p Action) -> LaneHandle<'p> {
-        let subject = action_display_subject(action).to_string();
+        let subject =
+            action_display_subject_within(action, self.subject_budget(), self.arrow()).to_string();
         if !self.live {
             return self.printer.lane_at(self.depth, subject);
         }
@@ -242,11 +263,11 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
             match wait.action {
                 Some(action) => {
                     let (gi, ri) = self.row_for(wait.owner, Some(action));
-                    self.paint_pending(gi, ri, &wait.subject);
+                    self.paint_pending(gi, ri, &wait.subject, wait.reason.as_deref());
                 }
                 None => {
                     let (gi, ri) = self.row_for(wait.owner, None);
-                    self.paint_pending(gi, ri, &wait.subject);
+                    self.paint_pending(gi, ri, &wait.subject, wait.reason.as_deref());
                 }
             }
         }
@@ -292,7 +313,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                     subject: &outcome.subject,
                     detail: outcome.detail.as_deref(),
                     detail_muted: outcome.detail_muted,
-                    duration: outcome.duration,
+                    duration: outcome.duration.map(crate::output::renderer::Elapsed::row),
                 },
                 self.width,
             );
@@ -591,7 +612,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
         if let Some(index) = self.groups.iter().position(|group| group.owner == owner) {
             return index;
         }
-        let label = OwnerLabel::new(owner.kind.as_str(), owner.name.as_str());
+        let label = owner.label();
         let heading = match self.preopened {
             // Already on screen, above the whole live region.
             Some((preopened, _)) if preopened == owner => None,
@@ -629,7 +650,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
     }
 
     /// Draw a pending row, if the live region has room for one.
-    fn paint_pending(&mut self, gi: usize, ri: usize, subject: &str) {
+    fn paint_pending(&mut self, gi: usize, ri: usize, subject: &str, detail: Option<&str>) {
         if !matches!(self.groups[gi].rows[ri].state, RowState::Pending) {
             return;
         }
@@ -648,7 +669,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                 &RowStatus {
                     role: Role::Pending,
                     subject,
-                    detail: None,
+                    detail,
                     detail_muted: false,
                     duration: None,
                 },
@@ -697,7 +718,7 @@ mod tests {
 
     use super::*;
     use crate::output::Verbosity;
-    use crate::output::strip_ansi;
+
     use crate::providers::PackageAction;
     use crate::reconciler::types::PhaseName;
 
@@ -714,7 +735,7 @@ mod tests {
     }
 
     fn drawn(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
-        strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
+        crate::test_helpers::captured_text(buf)
     }
 
     /// Where each of `needles` was last drawn, panicking on one that never was
@@ -873,6 +894,58 @@ mod tests {
         );
     }
 
+    /// A wait row's REASON is the bright half, and its subject the dim one.
+    ///
+    /// The withholding emphasis (`renderer::action_subject_style` /
+    /// `action_detail_is_muted`) is decided per SLOT, so a row that fuses
+    /// `<subject> · <reason>` into the subject alone gets the whole line
+    /// dimmed — the half the reader is scanning for included. Every other
+    /// wait-line test reads ANSI-stripped text and so cannot see it; this one
+    /// paints in a colour-carrying theme through the live painter, the one
+    /// surface a wait row is ever drawn by.
+    #[test]
+    fn a_wait_rows_reason_is_the_bright_half_of_its_row() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let (printer, buf) = Printer::for_test_with_live_bars_themed(theme.clone());
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let blocked = install("brew-cask", "firefox");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &managers,
+                action: Some(&blocked),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
+            }],
+            pending_owners: vec![managers.token()],
+        });
+
+        // raw-capture-ok: the claim IS which escapes each half carries
+        let painted = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // The subject slot is padded to the alignment column INSIDE its style
+        // span, so the claim is about what opens each half, not about a whole
+        // styled string.
+        let dim = theme.muted.apply_to("X").to_string();
+        let (dim_open, dim_close) = dim.split_once('X').unwrap_or_default();
+        assert!(!dim_open.is_empty(), "the theme must carry colour");
+        assert!(
+            painted.contains(&format!("{dim_open}brew-cask install firefox")),
+            "a withheld row holds its subject back: {painted:?}"
+        );
+        // The reason lands AFTER the subject's dim span closes, unstyled and
+        // behind the renderer's own separator. Fused into the subject it sits
+        // inside that span, dimmed, behind a ` \u{b7} ` the renderer never
+        // wrote — which is exactly what this spelling refuses.
+        assert!(
+            painted.contains(&format!("{dim_close} \u{2014} waiting on brew")),
+            "a withheld row's reason is the information on it, and renders bright: {painted:?}"
+        );
+    }
+
     #[test]
     fn a_wait_row_names_the_blocked_action_and_becomes_that_actions_row() {
         // Two claims that are one claim: the row a blocked action waits in is
@@ -891,15 +964,16 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&blocked),
-                subject: "brew-cask install firefox · waiting on brew".to_string(),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });
 
         let waiting = drawn(&buf);
         assert!(
-            waiting.contains("brew-cask install firefox · waiting on brew"),
-            "the wait row must name what is blocked: {waiting:?}"
+            waiting.contains("brew-cask install firefox") && waiting.contains("— waiting on brew"),
+            "the wait row must name what is blocked and why, in its two slots: {waiting:?}"
         );
 
         lane.finish();
@@ -939,7 +1013,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&blocked),
-                subject: "brew-cask install firefox · waiting on brew".to_string(),
+                subject: "brew-cask install firefox".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });
@@ -1386,23 +1461,101 @@ mod tests {
     }
 
     #[test]
+    fn a_lifted_group_wait_leaves_no_blank_line_in_the_scrollback() {
+        // The observed defect: `profile:base` was held behind the module tier,
+        // drew a group-wide `waiting on modules` row, and when the barrier
+        // lifted the row was retired — but the boundary between that group's
+        // last committed line and the next group's heading kept a blank line
+        // no other owner boundary has.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let base = Owner::profile("base");
+        let nvim = Owner::module("nvim");
+        let tap = install("brew-tap", "charmbracelet/tap");
+        let gum = install("brew", "gum");
+        let npm = install("npm", "yarn");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let running_tap = tree.dispatched(&base, &tap);
+        // The barrier: base still holds `gum`, and the module tier is in
+        // flight, so the group wears one wait row.
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &base,
+                action: None,
+                subject: "waiting on modules".to_string(),
+                reason: None,
+            }],
+            pending_owners: vec![base.token(), nvim.token()],
+        });
+        // The wait hangs on the lane that is WAITING, in the action-row column
+        // of its own owner group — not at the group heading's column, and not
+        // under the group it is waiting on, which is running its own work.
+        let waiting = screen.contents();
+        let wait_line = waiting
+            .lines()
+            .find(|line| line.contains("waiting on modules"))
+            .unwrap_or_else(|| panic!("no wait row drawn: {waiting}"));
+        let row_indent = waiting
+            .lines()
+            .find(|line| line.contains("brew-tap install"))
+            .map(|line| line.len() - line.trim_start().len())
+            .unwrap_or_else(|| panic!("no action row drawn: {waiting}"));
+        assert_eq!(
+            wait_line.len() - wait_line.trim_start().len(),
+            row_indent,
+            "the wait row sits off the action-row column: {waiting}"
+        );
+        let running_npm = tree.dispatched(&nvim, &npm);
+        running_tap.finish();
+        tree.settled(&base, &tap, done("brew-tap install charmbracelet/tap"));
+        // Barrier lifted: no group wait left to draw.
+        tree.waiting(&Held {
+            waits: Vec::new(),
+            pending_owners: vec![base.token(), nvim.token()],
+        });
+        tree.dispatched(&base, &gum).finish();
+        tree.settled(&base, &gum, done("brew install gum"));
+        running_npm.finish();
+        tree.settled(&nvim, &npm, done("npm install yarn"));
+        tree.finish();
+        drop(section);
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("waiting on modules"),
+            "the retired wait row survived on screen: {held}"
+        );
+        let lines: Vec<&str> = held
+            .lines()
+            .map(str::trim_end)
+            .skip_while(|line| !line.contains("Phase: Packages"))
+            .take_while(|line| !line.contains("npm install yarn"))
+            .collect();
+        assert!(
+            !lines.iter().any(|line| line.trim().is_empty()),
+            "a blank line survives inside the phase tree: {lines:?}"
+        );
+    }
+
+    #[test]
     fn a_settled_row_padded_to_the_alignment_ceiling_keeps_its_duration_live() {
-        // The alignment ceiling (`affordable_column`) caps the phase's column
-        // by the terminal's complete-line budget, so a padded settled line
-        // lands on exactly that budget. The live repaint clamps the same
-        // composed line; read from a second, tighter formula (the wrapped-BODY
-        // width, two columns narrower), the clamp amputated the last two
-        // columns of the duration the padding had just right-aligned — live
-        // paints only, healed at commit, so no scrollback golden could see it.
+        // The group column (`group_column`) is capped by the terminal's
+        // complete-line budget, so a padded settled line lands inside it. The
+        // live repaint clamps the same composed line; read from a second,
+        // tighter formula (the wrapped-BODY width, two columns narrower), the
+        // clamp amputated the last two columns of the duration the padding had
+        // just right-aligned — live paints only, healed at commit, so no
+        // scrollback golden could see it.
         let (printer, screen) = Printer::for_test_live_terminal(24, 50);
         let section = printer.section_phase(&PhaseName::Packages.section_label());
         let managers = Owner::cfgd("managers");
         let head = install("apt", "ripgrep");
         let padded = install("pipx", "pynvim");
 
-        // A column wider than 50 columns afford, so the ceiling binds and the
-        // settled line is padded out to the full line budget.
-        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 60);
+        // A column the 50-column window still affords at this depth, so the
+        // group pads and the settled line carries its padding into the clamp.
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 37);
         let running_head = tree.dispatched(&managers, &head);
         let running_padded = tree.dispatched(&managers, &padded);
         running_padded.finish();
@@ -1419,6 +1572,112 @@ mod tests {
         running_head.finish();
         tree.settled(&managers, &head, done("apt install ripgrep"));
         tree.finish();
+        drop(section);
+    }
+
+    /// On a terminal too narrow for the padded subject AND the wait reason
+    /// beside it, the report claims no column (the live twin of the buffered
+    /// path's retreat) and the row that still overflows WRAPS under its own
+    /// hang — a repaint lays a row out exactly as the permanent line does, so
+    /// nothing a reader is watching is cut away. Both hold kinds, because
+    /// each words the reason differently and the break lands in different
+    /// words.
+    #[test]
+    fn a_wait_row_on_a_narrow_terminal_retreats_its_column_and_wraps_its_reason() {
+        for reason in [
+            "queued behind provision brew via homebrew-installer",
+            "waiting on provision brew via homebrew-installer",
+        ] {
+            let (printer, screen) = Printer::for_test_live_terminal(24, 44);
+            let _claim = printer.report_column_beside(
+                None,
+                30,
+                crate::output::measure_width(" — ") + crate::output::measure_width(reason),
+            );
+            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let managers = Owner::cfgd("managers");
+            let blocked = install("brew", "gum");
+            let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+            tree.waiting(&Held {
+                waits: vec![Wait {
+                    owner: &managers,
+                    action: Some(&blocked),
+                    subject: "brew install gum".to_string(),
+                    reason: Some(reason.to_string()),
+                }],
+                pending_owners: vec![managers.token()],
+            });
+            let held = screen.contents();
+            let lines: Vec<&str> = held.lines().collect();
+            let at = lines
+                .iter()
+                .position(|line| line.contains("brew install gum"))
+                .unwrap_or_else(|| panic!("the wait row is on screen: {held}"));
+            assert!(
+                lines[at].contains("brew install gum — "),
+                "the column retreated rather than pad the reason off the line: {:?}",
+                lines[at]
+            );
+            assert!(
+                !held.contains('…'),
+                "a wait row wraps rather than losing the reason it was given: {held}"
+            );
+            // Every physical row the wrap took, read back as the one line it
+            // lays out: a break falls on a space, so the rows rejoin on one.
+            let painted = lines[at..]
+                .iter()
+                .map(|line| line.trim())
+                .take_while(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                painted.starts_with(&format!("○ brew install gum — {reason}")),
+                "the wrapped row names the whole reason: {painted:?}"
+            );
+            drop(tree);
+            drop(section);
+        }
+    }
+
+    /// A RUNNING row names every package it is installing, on a terminal no
+    /// single physical row could hold them on. The row a reader watches is
+    /// the one the recording shows, so a label cut there generalizes what
+    /// cfgd is about to install exactly as a cut plan row would.
+    #[test]
+    fn a_running_row_names_every_operand_at_eighty_columns() {
+        let packages = [
+            "neovim",
+            "fd-find",
+            "ripgrep",
+            "zoxide",
+            "lazygit",
+            "stylua",
+            "wl-clipboard",
+            "xclip",
+        ];
+        let (printer, screen) = Printer::for_test_live_terminal(24, 80);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let action = Action::Package(PackageAction::Install {
+            manager: "apt".to_string(),
+            packages: packages.iter().map(|p| (*p).to_string()).collect(),
+            origin: "local".to_string(),
+        });
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let running = tree.dispatched(&managers, &action);
+        let shown = screen.contents();
+        for package in packages {
+            assert!(
+                shown.contains(package),
+                "the running row names {package}: {shown}"
+            );
+        }
+        assert!(
+            !shown.contains('…'),
+            "a running row wraps rather than cutting its operand list: {shown}"
+        );
+        running.finish();
+        drop(tree);
         drop(section);
     }
 
@@ -1491,7 +1750,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &nvim,
                 action: Some(&blocked),
-                subject: "brew install neovim · waiting on apt".to_string(),
+                subject: "brew install neovim".to_string(),
+                reason: Some("waiting on apt".to_string()),
             }],
             pending_owners: vec![nvim.token()],
         });
@@ -1543,7 +1803,8 @@ mod tests {
             waits: vec![Wait {
                 owner: &managers,
                 action: Some(&action),
-                subject: "brew install neovim · waiting on brew".to_string(),
+                subject: "brew install neovim".to_string(),
+                reason: Some("waiting on brew".to_string()),
             }],
             pending_owners: vec![managers.token()],
         });

@@ -66,12 +66,12 @@ impl StateStore {
         Ok(records)
     }
 
-    /// The most recent run for `name`, if any.
+    /// The most recent run of `name`, if any: the row `backup list`'s Last Run
+    /// reads and an interval schedule anchors on. A restore writes no row, so
+    /// nothing here can answer with the restore's clock.
     pub fn latest_backup_run(&self, name: &str) -> Result<Option<BackupRunRecord>> {
         let result = self.conn.query_row(
-            &format!(
-                "SELECT {BACKUP_RUN_COLUMNS} FROM backup_runs WHERE name = ?1 ORDER BY id DESC LIMIT 1"
-            ),
+            &format!("SELECT {BACKUP_RUN_COLUMNS} FROM backup_runs WHERE name = ?1 ORDER BY id DESC LIMIT 1"),
             params![name],
             map_backup_run,
         );

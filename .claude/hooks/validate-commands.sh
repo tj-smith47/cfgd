@@ -12,7 +12,7 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 # `rm -rf target/...` keeps cleanup ergonomic. The target-path check requires
 # `target/` (or its absolute form) as the argument's prefix, so `rm -rf ..`,
 # `rm -rf /`, `rm -rf $HOME` still fail.
-if echo "$COMMAND" | grep -qE '^rm -rf|cargo clean.*--release'; then
+if echo "$COMMAND" | grep -qE '^rm -rf'; then
     if echo "$COMMAND" | grep -qE '^rm -rf (target/|/opt/repos/cfgd/target/)[^[:space:]]+[[:space:]]*$'; then
         exit 0
     fi
