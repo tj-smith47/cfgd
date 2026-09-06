@@ -3151,7 +3151,7 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
         } else {
             offenders.push(format!(
                 "{}:{}: {line:?}",
-                path.display().to_string().replace('\\', "/"),
+                crate::to_posix_string(path),
                 i + 1
             ));
         }
@@ -3173,9 +3173,9 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
 /// block pasted from one, is caught by the shipped bytes rather than by the
 /// eye.
 ///
-/// The roots are DERIVED — every directory under `crates/` named `snapshots`
-/// or `output_snapshots` — so a render-golden root joins the population the
-/// day it is created, and every one of them is asserted by name
+/// The roots are DERIVED — every directory under `crates/` named `snapshots`,
+/// `output_snapshots` or `golden` — so a render-golden root joins the
+/// population the day it is created, and every one of them is asserted by name
 /// ([`every_golden_root_is_named`]), so a rename is loud rather than silently
 /// shrinking the walk. The derivation is
 /// [`crate::test_helpers::snapshot_golden_roots`], which the `cfgd` crate's
@@ -3199,7 +3199,7 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
                         .any(|known| e == *known)
             })
         })
-        .map(|f| f.display().to_string().replace('\\', "/"))
+        .map(crate::to_posix_string)
         .collect();
     assert!(
         unclassified.is_empty(),

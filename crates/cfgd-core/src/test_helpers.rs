@@ -3970,6 +3970,7 @@ pub const KNOWN_GOLDEN_ROOTS: &[&str] = &[
     "crates/cfgd-core/src/output/tests/snapshots",
     "crates/cfgd-core/src/reconciler/snapshots",
     "crates/cfgd-core/src/server_client/snapshots",
+    "crates/cfgd-core/tests/golden",
     "crates/cfgd-core/tests/snapshots",
     "crates/cfgd/src/packages/brew/snapshots",
     "crates/cfgd/src/system/node/snapshots",
@@ -3978,8 +3979,9 @@ pub const KNOWN_GOLDEN_ROOTS: &[&str] = &[
     "crates/cfgd/tests/output_snapshots",
 ];
 
-/// Every directory under `crates/` named `snapshots` or `output_snapshots`,
-/// sorted, with every root [`KNOWN_GOLDEN_ROOTS`] names asserted present.
+/// Every directory under `crates/` named `snapshots`, `output_snapshots` or
+/// `golden`, sorted, with every root [`KNOWN_GOLDEN_ROOTS`] names asserted
+/// present.
 ///
 /// The ONE derivation of the golden population for the whole workspace. The
 /// crates compile separately, so a walk that re-derived the roots in its own
@@ -3988,6 +3990,11 @@ pub const KNOWN_GOLDEN_ROOTS: &[&str] = &[
 /// over "every golden" exists to rule out. `target/` is skipped: a build tree
 /// mirrors captured renders under paths nobody ships. A root is not descended
 /// into, so a nested one is never listed twice.
+///
+/// The directory NAME is the whole guard, so a tree of committed goldens goes
+/// under one of the three names above; one named anything else is outside this
+/// derivation, outside [`KNOWN_GOLDEN_ROOTS`] and outside every walk reading
+/// either, with nothing to say so.
 pub fn snapshot_golden_roots() -> Vec<PathBuf> {
     let root = workspace_root();
     let mut roots = Vec::new();
@@ -4003,7 +4010,7 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
             }
             match path.file_name().and_then(|n| n.to_str()) {
                 Some("target") => {}
-                Some("snapshots" | "output_snapshots") => roots.push(path),
+                Some("snapshots" | "output_snapshots" | "golden") => roots.push(path),
                 _ => stack.push(path),
             }
         }

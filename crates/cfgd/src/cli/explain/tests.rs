@@ -1164,8 +1164,14 @@ fn no_schema_description_addresses_a_maintainer_instead_of_a_user() {
     for schema in all_schemas() {
         walk(&schema.name, &schema.fields, &mut found);
     }
-    let goldens =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/tests/golden/schema");
+    // Reached through the ONE derivation of the workspace's golden roots
+    // rather than by a second spelling of the path: a root that moves fails
+    // there by name, where a private join would silently judge nothing.
+    let goldens = cfgd_core::test_helpers::snapshot_golden_roots()
+        .into_iter()
+        .find(|r| r.ends_with("golden"))
+        .expect("the golden root is named in `KNOWN_GOLDEN_ROOTS`")
+        .join("schema");
     let mut judged = 0;
     for entry in std::fs::read_dir(&goldens).expect("golden schema dir") {
         let path = entry.expect("dir entry").path();
