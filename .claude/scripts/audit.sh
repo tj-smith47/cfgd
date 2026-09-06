@@ -10,7 +10,7 @@ cd "$(dirname "$0")/../.."
 ERRORS=0
 WARNINGS=0
 
-SRC_ROOTS=(crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
+SRC_ROOTS=(crates/cfgd-schema/src crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---
 
@@ -947,6 +947,10 @@ ALLOWED_FN_PAIRS=(
     "report crates/cfgd-core/src/reconciler/sidecar.rs"
     "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
     "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
+    # A third delegate: cfgd-schema owns the file shape rule so the Module CRD
+    # applies the same one, and this wrapper only re-labels its bare message as
+    # a ConfigError. cfgd-schema's definition keeps the budget.
+    "validate_file_patch_shape crates/cfgd-core/src/config/profile_spec.rs"
     # The names below were blanket-excused by NAME until the trait-impl skip
     # above landed. The skip covers each trait's IMPLS; what still collides is
     # the trait's own declaration against an unrelated inherent method, a free
@@ -2021,6 +2025,21 @@ if [ -n "$catalog_gap" ]; then
     printf '%s\n' "$catalog_gap"
 else
     log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
+fi
+
+log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
+
+# The CSI node plugin never touches a Kubernetes API object, so it builds
+# cfgd-core with `default-features = false` to leave the kube stack out of its
+# image. Any crate that slips into cfgd-core unconditionally — or into a new
+# leaf like cfgd-schema — reaches CSI too, and the weight comes back silently.
+csi_heavy="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>/dev/null \
+  | awk '{print $1}' | sort -u | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
+if [ -n "$csi_heavy" ]; then
+    log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"
+    printf '%s\n' "$csi_heavy"
+else
+    log_ok "cfgd-csi's dependency tree carries no kube/k8s-openapi crate"
 fi
 
 # --- Summary ---

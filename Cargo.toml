@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cfgd-schema",
     "crates/cfgd-crd",
     "crates/cfgd-core",
     "crates/cfgd",

@@ -622,6 +622,7 @@ name = "cfgd-core"
 version = "0.9.0"
 dependencies = [
  "cfgd-crd",
+ "cfgd-schema",
  "chrono",
  "console",
  "croner",
@@ -672,6 +673,7 @@ dependencies = [
 name = "cfgd-crd"
 version = "0.6.0"
 dependencies = [
+ "cfgd-schema",
  "k8s-openapi",
  "kube",
  "schemars",
@@ -760,6 +762,16 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cfgd-schema"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

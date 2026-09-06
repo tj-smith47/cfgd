@@ -3,9 +3,6 @@
 // This module is split into per-concern submodules; everything previously
 // public at `cfgd_core::config::X` is preserved here via `pub use` re-exports.
 
-#[macro_use]
-mod enum_de;
-
 mod ai;
 mod comments;
 mod compliance;
@@ -39,8 +36,8 @@ pub use image_lock::{ImageLockEntry, ImagesLockfile};
 pub use modeline::{SchemaDocKind, docs_url, schema_modeline, with_schema_modeline};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
-    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptCommand, ScriptEntry, ScriptShell,
-    parse_module, validate_module_file_entries,
+    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, parse_module,
+    validate_module_file_entries,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub(crate) use parse::validate_api_version;
@@ -52,12 +49,17 @@ pub use parse::{
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub use profile_spec::{
-    AptSpec, BackupSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint,
-    EncryptionMode, EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec,
-    ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, PatchFormat, PatchSpec, ProfileDocument,
-    ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, SystemSettings,
-    render_backup_name_pattern, validate_backup_specs, validate_managed_file_specs,
-    validate_secret_specs,
+    AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EnvScope, FilesSpec,
+    FlatpakSpec, ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, ProfileDocument,
+    ProfileMetadata, ProfileSpec, SecretSpec, SnapSpec, SystemSettings, render_backup_name_pattern,
+    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
+};
+
+// The value types cfgd-schema owns, kept resolvable at their long-standing
+// `cfgd_core::config::*` paths so the CRD sharing them changes no caller here.
+pub use cfgd_schema::{
+    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchFormat, PatchSpec,
+    ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{

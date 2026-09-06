@@ -1563,7 +1563,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     // holds no offender, and an empty offender list reads the same whether the
     // scan saw every file-scope item or none of them.
     assert!(
-        items >= 316,
+        items >= 315,
         "the walk read {items} items outside a function body in cfgd-core; it \
          has stopped seeing the crate's file-scope declarations"
     );

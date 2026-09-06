@@ -23,6 +23,7 @@
 /// published schemas, and any rendered spelling cannot drift apart: adding a
 /// variant here updates all three at once, and forgetting to is a compile error
 /// rather than a silently stale list.
+#[macro_export]
 macro_rules! case_insensitive_enum {
     ($name:ty { $($token:literal => $variant:path),+ $(,)? }) => {
         impl $name {

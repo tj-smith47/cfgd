@@ -1,0 +1,26 @@
+# Leaf crate: the config value types whose shape the local YAML parser and the
+# Module CRD schema must agree on. Depends on serde + schemars only, so the CSI
+# node plugin (which builds cfgd-core with `default-features = false`) still
+# resolves these types without the kube/k8s-openapi stack cfgd-crd carries.
+[package]
+name = "cfgd-schema"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Shared cfgd config value types and cross-field shape validation"
+keywords = ["config", "schema", "serde", "cfgd"]
+categories = ["config"]
+
+[lib]
+name = "cfgd_schema"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = "1.2"

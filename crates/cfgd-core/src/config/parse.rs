@@ -7,7 +7,9 @@ use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
-use super::profile_spec::{FileStrategy, ProfileDocument};
+use cfgd_schema::FileStrategy;
+
+use super::profile_spec::ProfileDocument;
 use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec, UpdateConfig};
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::{ConfigSourceDocument, SourceSpec};
