@@ -156,7 +156,7 @@ spec:
     - name: neovim
       minVersion: "0.9"
       prefer: [brew, apt]
-      platforms:
+      aliases:
         brew: neovim
         apt: neovim
   files:
@@ -195,13 +195,18 @@ spec:
 | `mountPolicy` | `Always` \| `Debug` | How the module is exposed to pod containers (default `Always`) |
 | `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS) |
 | `depends` | list of string | Names of other `Module` resources applied first |
-| `packages` | list | Packages to install: `name`, per-manager name overrides in `platforms`, `minVersion`, and a `prefer` manager order |
-| `files` | list | Files to deploy: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
+| `packages` | list | Packages the module declares: `name`, per-manager name overrides in `aliases`, `minVersion`, a `prefer` manager order, a `deny` manager list, and per-entry `platforms` gates |
+| `files` | list | Files the module declares: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
 | `env` | list | Environment variables: `name`, `value`, `append`, and per-entry `platforms` gates |
 | `aliases` | list | Shell aliases: `name`, `command`, and per-entry `platforms` gates |
 | `system` | map | System configurator settings, keyed by configurator name (`shell`, `sysctl`, `macosDefaults`, …) |
 | `scripts.postApply` | string | A script PATH inside the artifact, run by the mutating webhook in a pod init container |
-| `hooks` | object | The cfgd agent's lifecycle hooks — `preApply`, `postApply`, `preReconcile`, `postReconcile`, `onDrift`, `onChange` — each a list of inline command bodies |
+| `hooks` | object | The cfgd agent's lifecycle hooks (`preApply`, `postApply`, `preReconcile`, `postReconcile`, `onDrift`, `onChange`), each a list of inline command bodies |
+
+Who reads what: the cfgd agent reconciles `platforms`, `depends`, `packages`, `files`, `env`,
+`aliases`, `system` and `hooks` from the artifact it pulls onto its own machine; the CSI node
+plugin mounts the module's content into a pod; and the pod-mutating webhook reads `mountPolicy`
+to decide on that mount, plus `env` and `scripts.postApply` to build the init container.
 
 > `spec.scripts.postApply` and `spec.hooks.postApply` are different things and both may be set.
 > `scripts.postApply` is a relative path inside the artifact, joined into an init container
@@ -209,8 +214,8 @@ spec:
 > inline command bodies, with their own `onlyIf` / `unless` / `creates` guards, `timeout` and
 > `shell`, run on a machine reconciling the module. Nothing in a pod runs a `hooks` body.
 
-> The script-install knobs of a package entry (`script`, `onlyIf`, `unless`, `creates`, `deny`)
-> stay off the CRD: they steer a shell install on a machine, and nothing cluster-side runs one.
+> The four script-install knobs of a package entry (`script`, `onlyIf`, `unless`, `creates`) stay
+> off the CRD: they steer a shell install on a machine, and nothing cluster-side runs one.
 
 ### DriftAlert
 

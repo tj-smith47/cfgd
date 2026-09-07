@@ -522,6 +522,83 @@ pub fn validate_file_patch_shape(
     }
 }
 
+/// Refuse a file entry whose `target` cannot key a server-side-apply merge:
+/// an empty one, or one an earlier entry in the same list already claimed.
+///
+/// The Module CRD declares `spec.files` an SSA map keyed by `target`, so two
+/// entries sharing a target make the API server refuse the whole resource with
+/// a message naming neither of them. `seen` is the caller's own set, carried
+/// across its loop, so one pass answers both questions for a whole list.
+pub fn validate_file_target<'a>(
+    subject: &str,
+    target: &'a str,
+    seen: &mut std::collections::HashSet<&'a str>,
+) -> Result<(), FileShapeError> {
+    if target.is_empty() {
+        return Err(FileShapeError(format!(
+            "{subject}.target must not be empty"
+        )));
+    }
+    if !seen.insert(target) {
+        return Err(FileShapeError(format!(
+            "{subject}.target '{target}' is already declared by an earlier entry"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject a `platforms:` tag no host can ever match.
+///
+/// A platform tag is compared verbatim, so a misspelled one silently matches
+/// nothing: on a whole module that is at least a visible Skip action, but on
+/// one env var it is a variable that quietly never appears. Every tag cfgd
+/// emits is lowercase `[a-z0-9_]`, and the four families of near-miss spelling
+/// (`darwin`, `win`, `amd64`, `arm64`) are named against their canonical token
+/// rather than merely refused.
+///
+/// Anything else lowercase is accepted: a distro or arch cfgd does not name is
+/// still a legitimate tag for another host.
+pub fn validate_platform_tag(tag: &str) -> Result<(), String> {
+    let canonical = |t: &str| match t {
+        "darwin" | "osx" | "mac" => Some("macos"),
+        "win" | "win32" | "win64" => Some("windows"),
+        "x64" | "amd64" => Some("x86_64"),
+        "arm64" => Some("aarch64"),
+        _ => None,
+    };
+    let lower = tag.to_ascii_lowercase();
+    if let Some(canon) = canonical(&lower) {
+        return Err(format!(
+            "platform tag '{tag}' is not a platform: tags are matched exactly; use '{canon}'"
+        ));
+    }
+    if tag.is_empty()
+        || !tag
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(format!(
+            "platform tag '{tag}' is not a platform: tags are matched exactly and every tag cfgd \
+             knows is lowercase letters, digits and underscores (for example 'macos', 'ubuntu', 'x86_64')"
+        ));
+    }
+    Ok(())
+}
+
+/// The serde hook every `platforms:` field is deserialized through, so a tag
+/// no host can match is refused where it is written rather than at the machine
+/// it silently skipped.
+pub fn deserialize_platform_tags<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let tags = Vec::<String>::deserialize(deserializer)?;
+    for tag in &tags {
+        validate_platform_tag(tag).map_err(serde::de::Error::custom)?;
+    }
+    Ok(tags)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

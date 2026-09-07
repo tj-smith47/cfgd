@@ -259,10 +259,14 @@ pub struct ModuleFileEntry {
     pub patch: Option<PatchSpec>,
 }
 
-/// Validate the `patch` strategy shape of every module file entry
-/// (`spec.files`). See `validate_file_patch_shape`.
+/// Validate every module file entry: the `patch` strategy shape (see
+/// `validate_file_patch_shape`) and the `target` the cluster-side SSA merge
+/// keys on (see [`cfgd_schema::validate_file_target`]).
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
-    for entry in entries {
+    let mut seen = std::collections::HashSet::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        cfgd_schema::validate_file_target(&format!("spec.files[{i}]"), &entry.target, &mut seen)
+            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
         validate_file_patch_shape(
             &format!("module file '{}'", entry.target),
             entry.source.is_empty(),
@@ -437,6 +441,44 @@ spec: {}
         assert!(
             !round_tripped.contains("version:"),
             "an absent version must not be materialized on write, got: {round_tripped}"
+        );
+    }
+
+    /// A module published to a cluster becomes a `Module` resource whose
+    /// `spec.files` is a server-side-apply map keyed on `target`. A target the
+    /// merge cannot key on is refused here, while the message can still name
+    /// the entry that wrote it.
+    #[test]
+    fn module_file_entry_rejects_an_empty_target() {
+        let yaml = "source: a
+target: \"\"\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("spec.files[0].target must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn module_file_entries_reject_two_files_claiming_one_target() {
+        let entry = |source: &str| ModuleFileEntry {
+            source: source.to_string(),
+            target: "~/.vimrc".to_string(),
+            strategy: None,
+            private: false,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        };
+        let err =
+            validate_module_file_entries(&[entry("vimrc"), entry("vimrc.local")]).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "spec.files[1].target '~/.vimrc' is already declared by an earlier entry"
+            ),
+            "unexpected error: {err}"
         );
     }
 

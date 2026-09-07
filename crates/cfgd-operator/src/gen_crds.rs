@@ -81,40 +81,66 @@ pub fn render_all() -> Result<String, GenCrdsError> {
 /// - `additionalProperties: false`, which `#[serde(deny_unknown_fields)]`
 ///   produces. Kubernetes rejects it wherever `properties` is also set, and
 ///   the CRD's own pruning already drops unknown fields, so the constraint is
-///   redundant as well as illegal.
+///   redundant as well as illegal. A node left with no type by that removal
+///   settles as `type: object` — it asked for LESS than the default, so it
+///   must never fall through to the free-form marker below.
 /// - a schema node with no single OpenAPI type: the free-form `patch.ensure`
 ///   arm, which carries no `type` at all, and the untagged `ScriptEntry`
-///   union, whose `anyOf` contradicts the `type` schemars emits beside it.
-///   Those become `x-kubernetes-preserve-unknown-fields: true`, the API
-///   server's own spelling for "keep whatever is here and validate no
-///   further".
+///   union, whose `anyOf` carries an empty arm the `type` schemars emits
+///   beside it contradicts. Those become
+///   `x-kubernetes-preserve-unknown-fields: true`, the API server's own
+///   spelling for "keep whatever is here and validate no further".
 ///
 /// The walk descends only through the child positions that are themselves
 /// schemas (`properties`, `items`, `additionalProperties`, `patternProperties`)
 /// — the same positions the structural rules require a `type` at. A blind walk
 /// over every nested object would reach a `default: {}` literal or an
 /// `x-kubernetes-validations` rule and rewrite data that is not a schema.
+/// Whether a union node carries the tell of kube's own flattening: an arm that
+/// is the EMPTY schema, matching anything at all.
+///
+/// schemars renders an untagged enum as its object arm's own `type` and
+/// `properties` alongside an `anyOf` naming every arm, and that `type` is then
+/// a claim the union does not keep — `ScriptEntry`'s bare-string arm is not an
+/// object, so the API server rejects exactly the shorthand the local YAML
+/// documents. The empty arm is what says the union spans more than the type
+/// beside it; a union whose arms all agree on a type keeps the claim.
+fn union_flattens_over_an_untyped_arm(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["anyOf", "oneOf"].iter().any(|key| {
+        map.get(*key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|arms| {
+                arms.iter()
+                    .any(|arm| arm.as_object().is_some_and(serde_json::Map::is_empty))
+            })
+    })
+}
+
 fn sanitize_structural(schema: &mut serde_json::Value) {
     let Some(map) = schema.as_object_mut() else {
         return;
     };
-    if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+    let denied_unknown = map.get("additionalProperties") == Some(&serde_json::Value::Bool(false));
+    if denied_unknown {
         map.remove("additionalProperties");
     }
-    // schemars renders an untagged enum as its object arm's own `type` and
-    // `properties` alongside an `anyOf` naming every arm. The `type` is then a
-    // claim the union does not keep — `ScriptEntry`'s bare-string arm is not an
-    // object — and the API server enforces it, rejecting exactly the shorthand
-    // the local YAML documents. Drop the claim and let the clause below mark
-    // the node free-form.
-    if map.contains_key("anyOf") || map.contains_key("oneOf") {
+    if union_flattens_over_an_untyped_arm(map) {
         map.remove("type");
     }
     if !map.contains_key("type") && !map.contains_key("$ref") && !map.contains_key("allOf") {
-        map.insert(
-            "x-kubernetes-preserve-unknown-fields".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        let settled = if denied_unknown {
+            // The node said "no field but the ones I list"; dropping that on
+            // the floor and marking it free-form inverts the author's
+            // intent. `type: object` restores it — the CRD's own pruning
+            // already removes every unlisted field.
+            ("type", serde_json::Value::String("object".to_string()))
+        } else {
+            (
+                "x-kubernetes-preserve-unknown-fields",
+                serde_json::Value::Bool(true),
+            )
+        };
+        map.insert(settled.0.to_string(), settled.1);
     }
     for key in ["properties", "patternProperties"] {
         if let Some(children) = map.get_mut(key).and_then(serde_json::Value::as_object_mut) {
@@ -657,34 +683,69 @@ mod tests {
         }
     }
 
-    /// `patch.ensure` is a free-form YAML mapping: the keys a user merges into
-    /// their own config file, which no schema can enumerate. It reaches the
-    /// API server as `x-kubernetes-preserve-unknown-fields`, without which the
-    /// whole CRD is refused for having a typeless node.
-    #[test]
-    fn a_free_form_schema_is_marked_preserve_unknown_fields() {
+    /// Every schema node the structural pass reaches, paired with its JSON
+    /// pointer — the same descent `sanitize_structural` makes, so a walk pin
+    /// judges exactly the nodes the pass judged and never a `default: {}`
+    /// literal that is not a schema at all.
+    fn schema_nodes<'a>(root: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
+        let Some(map) = root.as_object() else {
+            return;
+        };
+        out.push((path.clone(), root));
+        for key in ["properties", "patternProperties"] {
+            if let Some(children) = map.get(key).and_then(Value::as_object) {
+                for (name, child) in children {
+                    schema_nodes(child, format!("{path}/{key}/{name}"), out);
+                }
+            }
+        }
+        for key in ["items", "additionalProperties"] {
+            if let Some(child) = map.get(key)
+                && child.is_object()
+            {
+                schema_nodes(child, format!("{path}/{key}"), out);
+            }
+        }
+    }
+
+    /// Every rendered schema node, over all five documents.
+    fn every_rendered_schema_node() -> Vec<(String, Value)> {
         let docs = super::render_each().expect("render CRDs");
-        let module = docs
-            .iter()
-            .find(|d| d.name == "modules.cfgd.io")
-            .expect("the Module CRD is rendered");
-        let crd: Value = serde_yaml::from_str(&module.yaml).expect("parse rendered CRD");
+        assert_eq!(docs.len(), 5, "every CRD must be walked");
+        let mut all = Vec::new();
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let Some(root) = crd.pointer("/spec/versions/0/schema/openAPIV3Schema") else {
+                panic!("{} carries no schema", doc.name);
+            };
+            let mut nodes = Vec::new();
+            schema_nodes(root, doc.name.clone(), &mut nodes);
+            all.extend(nodes.into_iter().map(|(p, v)| (p, v.clone())));
+        }
+        all
+    }
 
-        let ensure = crd
-            .pointer(
-                "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/files\
-                 /items/properties/patch/properties/ensure",
-            )
-            .expect("the patch.ensure schema is rendered");
-
-        assert_eq!(
-            ensure.get("x-kubernetes-preserve-unknown-fields"),
-            Some(&json!(true)),
-            "a schema node with no OpenAPI type must be marked preserve-unknown-fields: {ensure:?}"
-        );
+    /// A typeless schema node is what the API server refuses a CRD for, so
+    /// every one the pass leaves behind carries the marker that makes it
+    /// legal. `patch.ensure` — the free-form mapping a user merges into their
+    /// own config file, whose keys no schema can enumerate — is the floor.
+    #[test]
+    fn every_typeless_rendered_node_is_marked_preserve_unknown_fields() {
+        let mut typeless = 0usize;
+        for (path, node) in every_rendered_schema_node() {
+            if node.get("type").is_some() || node.get("$ref").is_some() {
+                continue;
+            }
+            typeless += 1;
+            assert_eq!(
+                node.get("x-kubernetes-preserve-unknown-fields"),
+                Some(&json!(true)),
+                "{path} has no OpenAPI type and no preserve-unknown-fields marker: {node:?}"
+            );
+        }
         assert!(
-            ensure.get("type").is_none(),
-            "a preserved node carries no type to contradict: {ensure:?}"
+            typeless > 0,
+            "no typeless node was walked, so the pin proves nothing"
         );
     }
 
@@ -692,7 +753,33 @@ mod tests {
     /// the mapping form, and schemars renders the mapping arm's `type: object`
     /// beside the `anyOf` naming both. Left alone, the API server enforces that
     /// `type` and rejects every module whose hook is written the short way —
-    /// which is what `cfgd module push --apply` emits.
+    /// which is what `cfgd module push --apply` emits. The tell that a union
+    /// spans more than that type is an EMPTY arm; a union whose arms agree on
+    /// a type keeps its claim, so every node the pass untyped carries the tell.
+    #[test]
+    fn every_untyped_union_node_carries_the_empty_arm_that_untyped_it() {
+        let mut unions = 0usize;
+        for (path, node) in every_rendered_schema_node() {
+            let arms = ["anyOf", "oneOf"]
+                .iter()
+                .filter_map(|k| node.get(*k))
+                .filter_map(Value::as_array)
+                .flatten()
+                .collect::<Vec<_>>();
+            if arms.is_empty() || node.get("type").is_some() {
+                continue;
+            }
+            unions += 1;
+            assert!(
+                arms.iter()
+                    .any(|arm| arm.as_object().is_some_and(serde_json::Map::is_empty)),
+                "{path} was left untyped but no arm of its union is the empty schema: {node:?}"
+            );
+        }
+        assert!(unions > 0, "no untyped union was walked (ScriptEntry's)");
+    }
+
+    /// The Module CRD's hook lists are the union above, end to end.
     #[test]
     fn a_union_typed_schema_keeps_no_type_its_arms_contradict() {
         let docs = super::render_each().expect("render CRDs");
@@ -728,6 +815,35 @@ mod tests {
                 "{hook} items must be marked preserve-unknown-fields: {items:?}"
             );
         }
+    }
+
+    /// A node that said "no field but the ones I list" must not come out of
+    /// the pass saying the opposite. `additionalProperties: false` is illegal
+    /// in a structural schema and has to go, but dropping it leaves the node
+    /// typeless, and the free-form marker would then invert the author's
+    /// intent — `type: object` keeps it, the CRD's own pruning doing the work
+    /// the removed constraint asked for.
+    #[test]
+    fn a_node_denying_unknown_fields_settles_as_an_object_not_as_free_form() {
+        let mut schema = json!({
+            "properties": {
+                "closed": { "additionalProperties": false },
+                "open": {}
+            }
+        });
+        super::sanitize_structural(&mut schema);
+
+        let closed = &schema["properties"]["closed"];
+        assert_eq!(
+            closed,
+            &json!({ "type": "object" }),
+            "a deny-unknown node settles as a pruned object: {closed:?}"
+        );
+        assert_eq!(
+            schema["properties"]["open"],
+            json!({ "x-kubernetes-preserve-unknown-fields": true }),
+            "a node that asked for nothing still becomes free-form"
+        );
     }
 
     #[test]

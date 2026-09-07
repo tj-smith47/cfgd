@@ -623,9 +623,11 @@ fn module_validate_accepts_full() {
     let spec = ModuleSpec {
         packages: vec![PackageEntry {
             name: "vim".to_string(),
-            platforms: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             min_version: Some("9.0".to_string()),
             prefer: vec!["brew".to_string()],
+            deny: vec!["snap".to_string()],
+            platforms: vec!["macos".to_string()],
         }],
         files: vec![ModuleFileSpec {
             source: "vimrc".to_string(),
@@ -718,6 +720,118 @@ fn module_validate_rejects_empty_package_name() {
         ..Default::default()
     };
     assert!(spec.validate().is_err());
+}
+
+/// `spec.files` is a server-side-apply map keyed on `target`, so a target the
+/// merge cannot key on has to be refused where the message can still name the
+/// entry: an empty one keys nothing, and two entries sharing one make the API
+/// server reject the whole resource naming neither.
+#[test]
+fn module_validate_rejects_an_empty_file_target() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            source: "vimrc".to_string(),
+            target: String::new(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("an empty SSA map key must be refused");
+
+    assert!(
+        errors.contains(&"spec.files[0].target must not be empty".to_string()),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn module_validate_rejects_two_files_claiming_one_target() {
+    let entry = |source: &str| ModuleFileSpec {
+        source: source.to_string(),
+        target: "~/.vimrc".to_string(),
+        ..Default::default()
+    };
+    let spec = ModuleSpec {
+        files: vec![entry("vimrc"), entry("vimrc.local")],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a duplicate SSA map key must be refused");
+
+    assert!(
+        errors.contains(
+            &"spec.files[1].target '~/.vimrc' is already declared by an earlier entry".to_string()
+        ),
+        "{errors:?}"
+    );
+}
+
+/// A platform tag no host can ever match gates its entry off every machine
+/// silently, so every list carrying one is validated by the rule the local
+/// parser refuses a tag by.
+#[test]
+fn module_validate_rejects_a_bad_platform_tag_on_every_gated_field() {
+    let bad = vec!["Linux!".to_string()];
+    let cases: [(&str, ModuleSpec); 4] = [
+        (
+            "spec.platforms[0]",
+            ModuleSpec {
+                platforms: bad.clone(),
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.packages[0].platforms[0]",
+            ModuleSpec {
+                packages: vec![PackageEntry {
+                    name: "vim".to_string(),
+                    platforms: bad.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.aliases[0].platforms[0]",
+            ModuleSpec {
+                aliases: vec![ModuleAlias {
+                    name: "ll".to_string(),
+                    command: "ls -la".to_string(),
+                    platforms: bad.clone(),
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.env[0].platforms[0]",
+            ModuleSpec {
+                env: vec![ModuleEnvVar {
+                    name: "EDITOR".to_string(),
+                    value: "vim".to_string(),
+                    append: false,
+                    platforms: bad.clone(),
+                }],
+                ..Default::default()
+            },
+        ),
+    ];
+
+    for (subject, spec) in cases {
+        let errors = spec
+            .validate()
+            .expect_err("a malformed platform tag must be refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with(&format!("{subject}: "))),
+            "{subject} accepted a tag no host can match: {errors:?}"
+        );
+    }
 }
 
 #[test]

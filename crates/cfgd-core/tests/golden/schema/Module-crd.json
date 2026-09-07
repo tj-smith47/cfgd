@@ -260,8 +260,22 @@
       ]
     },
     "PackageEntry": {
-      "description": "An entry in a Module's package list with optional per-platform overrides.",
+      "description": "An entry in a Module's package list: the package to install plus the hints that decide which manager on a machine installs it.",
       "properties": {
+        "aliases": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-manager package name overrides (e.g. {\"brew\": \"gnu-sed\", \"apt\": \"sed\"}) for a package spelled differently by each manager.",
+          "type": "object"
+        },
+        "deny": {
+          "description": "Package managers never used for this package, even where one is available and the machine's own priority would pick it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "minVersion": {
           "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`). An installed copy below this is treated as not satisfying the module.",
           "type": [
@@ -270,15 +284,15 @@
           ]
         },
         "name": {
-          "description": "Default package name, used on every platform `platforms` names no override for.",
+          "description": "Default package name, used on every manager `aliases` names no override for.",
           "type": "string"
         },
         "platforms": {
-          "additionalProperties": {
+          "description": "Platform tags gating this package alone. Empty means every platform the declaring module is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+          "items": {
             "type": "string"
           },
-          "description": "Per-platform package name overrides (e.g. {\"brew\": \"gnu-sed\", \"apt\": \"sed\"}).",
-          "type": "object"
+          "type": "array"
         },
         "prefer": {
           "description": "Manager preference order for this package, overriding the machine's default manager priority (e.g. `[brew, apt]`).",

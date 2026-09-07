@@ -1416,6 +1416,9 @@ fn handle_validate_invalid_spec_json_denied() {
     );
 }
 
+/// `spec.files` is a server-side-apply map keyed on `target`, so the admission
+/// path is where an unkeyable entry has to be named: accepted, the API server
+/// itself refuses the whole resource with a message naming no entry at all.
 #[test]
 fn validate_module_rejects_empty_file_path() {
     let review = make_module_review(serde_json::json!({
@@ -1423,12 +1426,11 @@ fn validate_module_rejects_empty_file_path() {
     }));
     let req = extract_req(review);
     let result = validate_object_spec::<ModuleSpec>(&req);
-    // ModuleSpec.validate() does not check file target emptiness (unlike MachineConfigSpec),
-    // so this should pass deserialization and validation without error or panic.
+    let err = result.expect_err("an unkeyable SSA entry must be refused at admission");
     assert!(
-        result.is_ok(),
-        "ModuleSpec with empty file target should pass webhook validation (module file validation is deferred to reconciliation): {:?}",
-        result.err()
+        err.to_string()
+            .contains("spec.files[0].target must not be empty"),
+        "the refusal must name the entry that wrote the empty key: {err}"
     );
 }
 

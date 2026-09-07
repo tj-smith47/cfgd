@@ -849,19 +849,17 @@ Clones the repo, finds the module, resolves deps, detects platform, and applies 
 
 ## Modules in a Cluster
 
-`cfgd module push --artifact <ref> --apply` publishes the module to an OCI registry and registers
-it as a cluster-scoped `Module` resource in one step. The resource carries the same surface the
-local `module.yaml` declares: `platforms`, `depends`, `packages` (with `minVersion`, `prefer` and
-per-manager name overrides), `files` (with `strategy`, `private`, `permissions`, `encryption` and
-a `patch` block), `env`, `aliases`, `system`, and the lifecycle hooks under `spec.hooks`. A module
-read back out of the cluster declares what its author wrote.
+`cfgd module push <dir> --artifact <ref> --apply` publishes the module to an OCI registry and
+registers it as a cluster-scoped `Module` resource in one step. The resource carries the same
+surface the local `module.yaml` declares: `platforms`, `depends`, `packages` (with `minVersion`,
+`prefer`, `deny`, per-manager name overrides in `aliases` and gating `platforms` tags), `files`
+(with `strategy`, `private`, `permissions`, `encryption` and a `patch` block), `env`, `aliases`,
+`system`, and the lifecycle hooks under `spec.hooks`. A module read back out of the cluster
+declares what its author wrote.
 
-Two things stay off the resource, both because nothing cluster-side runs them:
-
-- A package entry's script-install knobs (`script`, `onlyIf`, `unless`, `creates`, `deny`). They
-  steer a shell install on a machine the agent is reconciling, and the cluster installs nothing.
-- The per-package platform gating tags. The CRD's `packages[].platforms` is the per-manager name
-  override map, not a gate.
+One thing stays off the resource, because nothing cluster-side runs it: a package entry's four
+script-install knobs (`script`, `onlyIf`, `unless`, `creates`). They steer a shell install on a
+machine the agent is reconciling, and the cluster installs nothing.
 
 `spec.hooks` (the agent's inline hook bodies) is distinct from `spec.scripts.postApply`, which is
 a relative script path inside the artifact that the pod-mutating webhook runs in an init

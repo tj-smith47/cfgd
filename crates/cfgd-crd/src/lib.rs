@@ -419,16 +419,18 @@ pub struct ClusterConfigPolicyStatus {
 // Module
 // ---------------------------------------------------------------------------
 
-/// An entry in a Module's package list with optional per-platform overrides.
+/// An entry in a Module's package list: the package to install plus the hints
+/// that decide which manager on a machine installs it.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
-    /// Default package name, used on every platform `platforms` names no
+    /// Default package name, used on every manager `aliases` names no
     /// override for.
     pub name: String,
-    /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
+    /// Per-manager package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"})
+    /// for a package spelled differently by each manager.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub platforms: BTreeMap<String, String>,
+    pub aliases: BTreeMap<String, String>,
     /// Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
     /// An installed copy below this is treated as not satisfying the module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -437,6 +439,15 @@ pub struct PackageEntry {
     /// default manager priority (e.g. `[brew, apt]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
+    /// Package managers never used for this package, even where one is
+    /// available and the machine's own priority would pick it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+    /// Platform tags gating this package alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 /// A file managed by a Module.
@@ -859,6 +870,16 @@ impl DriftAlertSpec {
     }
 }
 
+/// Collect a `platforms:` list's refusals under the field path that holds it,
+/// so a tag no host can match is named where it was written.
+fn push_tag_errors(errors: &mut Vec<String>, subject: &str, tags: &[String]) {
+    for (i, tag) in tags.iter().enumerate() {
+        if let Err(e) = cfgd_schema::validate_platform_tag(tag) {
+            errors.push(format!("{subject}[{i}]: {e}"));
+        }
+    }
+}
+
 impl ModuleSpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -867,10 +888,22 @@ impl ModuleSpec {
             if pkg.name.is_empty() {
                 errors.push(format!("spec.packages[{i}].name must not be empty"));
             }
+            push_tag_errors(
+                &mut errors,
+                &format!("spec.packages[{i}].platforms"),
+                &pkg.platforms,
+            );
         }
+        let mut seen_targets = std::collections::HashSet::with_capacity(self.files.len());
         for (i, file) in self.files.iter().enumerate() {
+            let subject = format!("spec.files[{i}]");
+            if let Err(e) =
+                cfgd_schema::validate_file_target(&subject, &file.target, &mut seen_targets)
+            {
+                errors.push(e.to_string());
+            }
             if let Err(e) = cfgd_schema::validate_file_patch_shape(
-                &format!("spec.files[{i}]"),
+                &subject,
                 file.source.is_empty(),
                 file.strategy,
                 file.patch.as_ref(),
@@ -879,6 +912,21 @@ impl ModuleSpec {
             ) {
                 errors.push(e.to_string());
             }
+        }
+        push_tag_errors(&mut errors, "spec.platforms", &self.platforms);
+        for (i, alias) in self.aliases.iter().enumerate() {
+            push_tag_errors(
+                &mut errors,
+                &format!("spec.aliases[{i}].platforms"),
+                &alias.platforms,
+            );
+        }
+        for (i, var) in self.env.iter().enumerate() {
+            push_tag_errors(
+                &mut errors,
+                &format!("spec.env[{i}].platforms"),
+                &var.platforms,
+            );
         }
         for (i, dep) in self.depends.iter().enumerate() {
             if dep.is_empty() {

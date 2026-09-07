@@ -4611,11 +4611,11 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
 #[test]
 fn build_module_crd_json_packages_carry_their_resolution_hints_but_no_script_install() {
     // A package entry reaches the CRD with everything a machine needs to
-    // resolve it: the name, the per-manager aliases, the version floor and the
-    // manager preference order. The script-install knobs stay behind — they
-    // are a shell body and the guards that decide whether to run it, and
-    // nothing cluster-side installs a package. `deny` goes with them: it only
-    // narrows a manager choice the cluster never makes.
+    // resolve it: the name, the per-manager aliases, the version floor, the
+    // manager preference and denial lists and the tags gating the entry. The
+    // four script-install knobs (`script`, `onlyIf`, `unless`, `creates`) stay
+    // behind — they are a shell body and the guards that decide whether to run
+    // it, and nothing cluster-side installs a package.
     let mut pkg = make_pkg("ripgrep");
     pkg.min_version = Some("13.0".into());
     pkg.prefer = vec!["brew".into(), "cargo".into()];
@@ -4637,9 +4637,10 @@ fn build_module_crd_json_packages_carry_their_resolution_hints_but_no_script_ins
             "name": "ripgrep",
             "minVersion": "13.0",
             "prefer": ["brew", "cargo"],
+            "deny": ["apt"],
+            "platforms": ["darwin"],
         }),
-        "the resolution hints travel; the script-install knobs, the manager \
-         denylist and the gating tags do not"
+        "the resolution hints travel; the four script-install knobs do not"
     );
 }
 

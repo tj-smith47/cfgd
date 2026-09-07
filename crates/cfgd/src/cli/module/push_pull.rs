@@ -228,30 +228,30 @@ pub(super) fn build_module_crd_json(
                 name,
                 min_version,
                 prefer,
+                deny,
                 aliases,
-                // The four script-install knobs and the manager denylist steer
-                // a `prefer: [script]` install on a machine the agent is
-                // reconciling — a shell body and the guards that decide
-                // whether to run it. Nothing cluster-side executes a package
-                // install, so carrying them onto the CRD would publish a
-                // shell payload no reader of the resource can run.
+                platforms,
+                // The four script-install knobs steer a `prefer: [script]`
+                // install on a machine the agent is reconciling — a shell body
+                // and the guards that decide whether to run it. Nothing
+                // cluster-side executes a package install, so carrying them
+                // onto the CRD would publish a shell payload no reader of the
+                // resource can run.
                 script: _script,   // no CRD counterpart
                 only_if: _only_if, // no CRD counterpart
                 unless: _unless,   // no CRD counterpart
                 creates: _creates, // no CRD counterpart
-                deny: _deny,       // no CRD counterpart
-                platforms: _platform_tags, // gating tags: the CRD's `platforms` field is a
-                                   // per-manager name-override map (see PackageEntry::platforms), not gating
-                                   // tags, so package-level gating has no CRD counterpart
             } = entry;
             cfgd_crd::PackageEntry {
                 name: name.clone(),
-                platforms: aliases
+                aliases: aliases
                     .iter()
                     .map(|(manager, override_name)| (manager.clone(), override_name.clone()))
                     .collect(),
                 min_version: min_version.clone(),
                 prefer: prefer.clone(),
+                deny: deny.clone(),
+                platforms: platforms.clone(),
             }
         })
         .collect();
@@ -291,7 +291,7 @@ pub(super) fn build_module_crd_json(
             cfgd_crd::ModuleEnvVar {
                 name: name.clone(),
                 value: value.clone(),
-                append: false, // local EnvVar has no append concept today
+                append: false, // the local EnvVar carries no append concept
                 // Carried so a module round-trips through the registry
                 // unchanged, and so the pod-mutating webhook can honour the
                 // gate instead of injecting an entry the module gated off.
@@ -1384,9 +1384,11 @@ spec:
                     "platforms": ["linux"],
                     "packages": [{
                         "name": "sed",
-                        "platforms": { "apt": "sed", "brew": "gnu-sed" },
+                        "aliases": { "apt": "sed", "brew": "gnu-sed" },
                         "minVersion": "4.8",
                         "prefer": ["brew", "apt"],
+                        "deny": ["snap"],
+                        "platforms": ["linux"],
                     }],
                     "files": [
                         {
