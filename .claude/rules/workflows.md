@@ -113,8 +113,10 @@ single-source-of-truth wiring.
   server-side with no FreeBSD surface (same rationale as the Windows branch).
   The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
   the VM); `task`/`nextest` come from pkg; no protoc (neither in-scope crate
-  compiles protos). `task test:freebsd` runs the same leg locally against the
-  accept VM (start-if-stopped, poll, sync, `task test:ci`).
+  compiles protos). The guest gets `mem: 10240`: rustc compiling cfgd-core's
+  test crate was SIGKILLed on the default allotment (run 34063783806), and
+  the 16 GB runner can spare it. `task test:freebsd` runs the same leg
+  locally against the accept VM (start-if-stopped, poll, sync, `task test:ci`).
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, not nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own
@@ -130,14 +132,25 @@ single-source-of-truth wiring.
   the literal freezes (v0.8.0 left `chart/cfgd/Chart.yaml` and four docs at
   0.7.0 through two more releases). Keep it in the audit job, not the
   release workflow: the point is to fail a PR, before anything is tagged.
-  Its sibling in the `clippy` job is `task chart:tags:check`, which renders
-  the chart with every first-party image enabled and asks ghcr whether each
-  `cfgd*` tag exists — the chart's three components version independently
-  (agent = `appVersion`, operator/csi = their own crate versions), so
-  literals agreeing with each other prove nothing, and the published 0.9.0
-  chart resolved an operator tag nobody had pushed. Both guards are
-  registry/anodizer questions rather than Rust ones; they sit in the jobs
-  that already hold the tools they need (`task`, docker, helm).
+  Its sibling, right after it in the same job, is `task chart:tags:check`,
+  which renders the chart with every first-party image enabled and holds
+  each `cfgd*` tag to the release contract — the chart's three components
+  version independently (agent = `appVersion`, operator/csi = their own
+  crate versions), so literals agreeing with each other prove nothing, and
+  the published 0.9.0 chart resolved an operator tag nobody had pushed. The
+  agent pin is swept by anodizer's `version_files` at tag time, so it must
+  name the released version and exist on ghcr. The operator and CSI pins are
+  kept by hand (anodizer refuses one file enrolled by crates with different
+  bumps), so on a release branch each must equal the version `anodizer tag
+  --dry-run` predicts for its crate — the release cut from that very commit
+  publishes it, which is why the guard as an existence check could never
+  pass a pin bump (run 34063783806) — and off a release branch a pin may run
+  ahead of the released version, which the release branch's own run then
+  checks exactly. Both guards are registry/anodizer questions rather than
+  Rust ones; they sit in the one job that holds the tools they need
+  (`task`, anodizer on PATH from the action step, docker, helm, yq, jq),
+  and that job checks out with `fetch-depth: 0` because the prediction
+  walks the tags.
 - The `clippy` job also runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var), right
