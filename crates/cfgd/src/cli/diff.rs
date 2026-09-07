@@ -2696,12 +2696,12 @@ mod tests {
         let output = strip_ansi(&cap.human());
         assert!(
             output.contains("pipx: not installed")
-                && output.contains("can bootstrap via pip install pipx"),
+                && output.contains("can provision via pip install pipx"),
             "should show the bootstrap need and its method, got: {output}"
         );
         assert!(
             output.contains("snap: not installed")
-                && output.contains("cannot bootstrap: no available system manager"),
+                && output.contains("cannot provision: no available system manager"),
             "should show the refusal and its reason with a single separator \
              (the status renderer already supplies ' — ' before the detail), \
              got: {output}"

@@ -1,0 +1,20 @@
+Apply
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  shell
+  Phases   Bootstrap
+  Actions  6 planned
+
+Phase: Bootstrap
+  cfgd:env
+    ✓ write ~/.cfgd.env — 3 vars, 2 aliases (XXs)
+    ✓ write ~/.config/environment.d/cfgd.conf — 3 vars (XXs)
+  cfgd:shell
+    ✓ inject source line into ~/.bashrc (XXs)
+    ✓ inject source line into ~/.zshenv (XXs)
+    ✓ inject source line into ~/.profile (XXs)
+  cfgd:session
+    ✓ publish 3 vars to the live session (XXs)
+
+✓ Apply complete — 6 actions succeeded (XXs wall)
+
+→ Run `source ~/.cfgd.env`, or open a new shell

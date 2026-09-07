@@ -1126,8 +1126,15 @@ fn managed_resource_rows(
             } else {
                 cfgd_core::fold_home_in_text(&r.resource_id)
             };
+            // An `env` row's own type names all three env surfaces at once;
+            // the verb it was written under is what says which one it is.
+            let kind = if r.resource_type == ENV_RESOURCE_TYPE {
+                recorded_env_drift_type(r)
+            } else {
+                r.resource_type.as_str()
+            };
             rows.push([
-                display_type(&r.resource_type).to_string(),
+                display_type(kind).to_string(),
                 recorded_owner(r, &profile_owner),
                 resource,
                 recorded_row_method(r, detail),
@@ -1255,23 +1262,46 @@ fn recorded_row_method(
 
 /// The Owner column's token for a recorded row that names no module.
 ///
-/// The split is the reconciler's own: an `env` row is a file cfgd authored or
-/// a session cfgd published, so it is cfgd's own and carries the same group
-/// suffix the tree heads it with — [`cfgd_core::reconciler::SESSION_GROUP`]
-/// for the one row whose id names the act, [`cfgd_core::reconciler::ENV_GROUP`]
-/// for the files. Everything else in this branch — a package, a managed file,
-/// a profile script, a system setting, a secret — is work a user document
-/// declared, which is the profile's.
+/// The split is the reconciler's own, and asked of the reconciler rather than
+/// re-derived: an `env` row is a file cfgd authored, a source line cfgd
+/// planted in a file the user owns, or a session cfgd published, and each
+/// carries the same group suffix [`cfgd_core::reconciler::owner_of`] heads its
+/// tree group with. The write-vs-inject half of that question has exactly one
+/// answerer, [`cfgd_core::reconciler::recorded_env_method`], because the
+/// recorded id drops the verb; asking it a second way here is how a table and
+/// a tree came to disagree about which group owns `~/.bashrc`.
+///
+/// Everything else in this branch — a package, a managed file, a profile
+/// script, a system setting, a secret — is work a user document declared,
+/// which is the profile's.
 fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
     if r.resource_type != ENV_RESOURCE_TYPE {
         return profile_owner.to_string();
     }
-    let group = if is_session_env_row(r) {
-        cfgd_core::reconciler::SESSION_GROUP
+    cfgd_core::reconciler::Owner::cfgd(recorded_env_group(r)).token()
+}
+
+/// The cfgd group a recorded `env` row belongs to: the session for the one row
+/// whose id names the act, and otherwise the group the verb that wrote it
+/// belongs to. The ONE reading, shared by the Owner column, the Type cell and
+/// the Component Health counts, so the three cannot classify one row three
+/// ways.
+fn recorded_env_group(r: &cfgd_core::state::ManagedResource) -> &'static str {
+    if is_session_env_row(r) {
+        return cfgd_core::reconciler::SESSION_GROUP;
+    }
+    env_method_group(cfgd_core::reconciler::recorded_env_method(&r.resource_id))
+}
+
+/// The cfgd group an env verb's output belongs to — the same split
+/// [`cfgd_core::reconciler::owner_of`] makes over the ACTIONS, made here over
+/// the verb a recorded row survives with.
+fn env_method_group(method: &str) -> &'static str {
+    if method == cfgd_core::reconciler::ENV_VERB_INJECT {
+        cfgd_core::reconciler::SHELL_GROUP
     } else {
         cfgd_core::reconciler::ENV_GROUP
-    };
-    cfgd_core::reconciler::Owner::cfgd(group).token()
+    }
 }
 
 /// The owner a rendered token names, read back so the table can be ordered by
@@ -1324,10 +1354,32 @@ fn is_session_env_row(r: &cfgd_core::state::ManagedResource) -> bool {
 /// apply settles that action with — the dashboard resolving it from the same
 /// probe rather than reporting a surface it cannot reach as ordinary state.
 fn session_env_resource() -> String {
+    let noun = cfgd_core::output::drift_kind_label(SESSION_DRIFT_TYPE);
     if cfgd_core::session_manager_available() {
-        "session env".to_string()
+        noun.to_string()
     } else {
-        format!("session env — {}", cfgd_core::NO_SESSION_MANAGER)
+        format!("{noun} — {}", cfgd_core::NO_SESSION_MANAGER)
+    }
+}
+
+/// The stored drift `resource_type` of the live-session env surface, and of
+/// an rc source line — the spellings `action_drift_rows` mints for those two
+/// acts. Named here because this table classifies a recorded `env` row into
+/// them: the row's own type is `env` for all three surfaces, and the verb it
+/// was written under is what tells them apart.
+const SESSION_DRIFT_TYPE: &str = "env-session";
+const RC_LINE_DRIFT_TYPE: &str = "env-rc";
+
+/// The drift `resource_type` a recorded `env` row's own surface is reported
+/// under, so both the Type cell and the Component Health count noun read
+/// through the ONE vocabulary every other row uses ([`display_type`] and
+/// [`cfgd_core::output::drift_kind_label`]) rather than a second word list
+/// that could drift from what `verify` calls the same resource.
+fn recorded_env_drift_type(r: &cfgd_core::state::ManagedResource) -> &'static str {
+    match recorded_env_group(r) {
+        cfgd_core::reconciler::SESSION_GROUP => SESSION_DRIFT_TYPE,
+        cfgd_core::reconciler::SHELL_GROUP => RC_LINE_DRIFT_TYPE,
+        _ => ENV_RESOURCE_TYPE,
     }
 }
 
@@ -1543,23 +1595,47 @@ fn freshest_check_stamp<'a>(
     row_stamps.chain(scoped_stamps).chain(last_scan_at).max()
 }
 
-/// Whether a check stands behind a verdict for `owner_token`: this run checked
-/// live, the machine-wide scan stamp stands, or a scoped scan stamped this
-/// owner.
+/// Whether a check stands behind a verdict for `owner_token`: a scoped scan
+/// stamped this owner, or a check the scan REACHES ran — this run live, or the
+/// machine-wide stamp.
 ///
 /// The ONE coverage question every surface deriving a component's word asks,
 /// so a `Synced` can never render beside an annotation saying nothing was ever
-/// checked. Only a module token can be a `scoped` key — a scoped scan checks a
-/// module's own files, packages and env ITEMS, never the env FILES or the
-/// profile's packages — so `cfgd:env` and `profile:*` are covered by a live
-/// check or the machine-wide stamp alone, without a second branch here.
+/// checked. The question is per OWNER because a machine-wide scan is not a
+/// machine-wide answer: it evaluates the resource types
+/// [`super::live_drift::FULL_CHECK_RESOLVABLE_TYPES`] names, and every owner
+/// outside that reach ([`scan_reaches`]) stays as unchecked after a `--scan`
+/// as before it. Only a module token can be a `scoped` key — a scoped scan
+/// checks a module's own files, packages and env ITEMS, never the env FILES or
+/// the profile's packages — so `cfgd:env` and `profile:*` are covered by a
+/// live check or the machine-wide stamp alone, without a second branch here.
 fn check_covers(
     owner_token: &str,
     checked_live: bool,
     last_scan_at: Option<&str>,
     scoped: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    checked_live || last_scan_at.is_some() || scoped.contains_key(owner_token)
+    scoped.contains_key(owner_token)
+        || (scan_reaches(owner_token) && (checked_live || last_scan_at.is_some()))
+}
+
+/// Whether a full live check evaluates anything this owner owns.
+///
+/// The ONE exclusion, derived from what the scan actually looks at: every
+/// resource type in [`super::live_drift::FULL_CHECK_RESOLVABLE_TYPES`] belongs
+/// to a module, the profile, `cfgd:env`, `cfgd:shell` or `cfgd:managers`, and
+/// none of them to `cfgd:session` — the live session is published, never
+/// probed, so no scan can vouch for it and its row keeps stating the record's
+/// own fact. `every_owner_the_scan_never_reaches_is_excluded_from_coverage`
+/// derives that reached set through [`finding_owner`] and fails if this
+/// disagrees.
+fn scan_reaches(owner_token: &str) -> bool {
+    !matches!(
+        cfgd_core::output::split_owner_token(owner_token),
+        Some((kind, name))
+            if kind == cfgd_core::reconciler::OwnerKind::Cfgd.as_str()
+                && name == cfgd_core::reconciler::SESSION_GROUP
+    )
 }
 
 /// [`check_covers`] applied to a verdict: an owner no check covers cannot earn
@@ -1659,11 +1735,15 @@ fn package_owner(
 /// owner's verdict states the unknown instead of a word only an answered
 /// check earns.
 ///
-/// One arm per key grammar the three producers mint: the managed env file's
-/// own path, a package floor's `<manager>:<package>` drift id, and a system
+/// One arm per key grammar the three producers mint: an env surface's own
+/// path, a package floor's `<manager>:<package>` drift id, and a system
 /// configurator's bare name — which belongs to the profile that declared it,
 /// exactly as its drift findings do. A key no owner claims stays loose, and
 /// its row still renders at the foot of the section.
+///
+/// A path key is classified by the verb that wrote it, through the same one
+/// answerer [`recorded_owner`] asks, so a failed check on `~/.bashrc` lands on
+/// the owner whose row lists it rather than on its neighbour.
 ///
 /// The env arm is judged by SHAPE rather than by a `/` substring: a slash is
 /// legal inside a package name (`npm:@scope/name`, `go:github.com/foo/bar`),
@@ -1678,9 +1758,11 @@ fn check_error_owner(
     output: &StatusOutput,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
-    use cfgd_core::reconciler::{ENV_GROUP, Owner};
+    use cfgd_core::reconciler::Owner;
     if std::path::Path::new(key).is_absolute() || key.starts_with("~/") {
-        return Some(Owner::cfgd(ENV_GROUP));
+        return Some(Owner::cfgd(env_method_group(
+            cfgd_core::reconciler::recorded_env_method(key),
+        )));
     }
     if key.contains(':') {
         return package_owner(key, output, profile_owner);
@@ -1712,9 +1794,10 @@ fn module_facet_noun(facet: &str) -> Option<&'static str> {
 /// does not split is attributed through
 /// [`cfgd_core::reconciler::module_row_owner`] — the ONE reading of a recorded
 /// module row, so a `<module>:script` id names the module rather than becoming
-/// an owner of its own; a shell row belongs to cfgd's env
-/// surface (`owner_of`'s vocabulary — the session refresh row to
-/// `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
+/// an owner of its own; a shell row belongs to whichever cfgd group
+/// `owner_of` heads its action's tree group with (the generated file and its
+/// items to `cfgd:env`, an rc source line to `cfgd:shell`, the session refresh
+/// row to `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
 /// any other package row to the module whose current resolution declares
 /// one of its names under the id's own manager, then to the profile when the
 /// profile's own recorded package rows hold one of the names under that
@@ -1730,7 +1813,7 @@ fn finding_owner(
     Option<&'static str>,
     FindingSlot,
 ) {
-    use cfgd_core::reconciler::{ENV_GROUP, MANAGERS_GROUP, Owner, SESSION_GROUP};
+    use cfgd_core::reconciler::{ENV_GROUP, MANAGERS_GROUP, Owner, SESSION_GROUP, SHELL_GROUP};
     match event.resource_type.as_str() {
         "module" => match super::live_drift::split_module_file_resource_id(&event.resource_id) {
             Some((owner, target)) => (
@@ -1759,17 +1842,24 @@ fn finding_owner(
         // `action_drift_rows` mints and the apply heals. Reading it off an
         // `env` row's id instead matched a shape no producer wrote, and the
         // env-file redundancy drop below would have swallowed it anyway.
-        "env-session" => (
+        SESSION_DRIFT_TYPE => (
             Some(Owner::cfgd(SESSION_GROUP)),
-            Some("session env"),
+            Some(cfgd_core::output::drift_kind_label(SESSION_DRIFT_TYPE)),
             FindingSlot::Child(None),
         ),
-        shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias" | "env-rc") => {
+        // The rc source line is cfgd's edit to a file the user owns, so it is
+        // the shell group's; the file cfgd generates whole and the items
+        // inside it are the env group's.
+        RC_LINE_DRIFT_TYPE => (
+            Some(Owner::cfgd(SHELL_GROUP)),
+            Some(cfgd_core::output::drift_kind_label(RC_LINE_DRIFT_TYPE)),
+            FindingSlot::Child(None),
+        ),
+        shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias") => {
             let noun = match shell {
                 ENV_RESOURCE_TYPE => "env file",
                 "env-var" => "env var",
-                "alias" => "alias",
-                _ => "rc line",
+                _ => "alias",
             };
             (
                 Some(Owner::cfgd(ENV_GROUP)),
@@ -1843,11 +1933,9 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             continue;
         }
         let noun = if r.resource_type == ENV_RESOURCE_TYPE {
-            if is_session_env_row(r) {
-                "session env"
-            } else {
-                "env file"
-            }
+            // The word `verify` prints for the same resource, so the count and
+            // the row it counts name one thing.
+            cfgd_core::output::drift_kind_label(recorded_env_drift_type(r))
         } else {
             // A profile-declared row with no derivable profile has no owner a
             // component row could name; the table renders it under `-`.
@@ -2074,6 +2162,8 @@ fn display_type(kind: &str) -> &str {
         "file" | "files" => "file",
         "package" | "packages" => "package",
         "script" | "Running script" => "script",
+        RC_LINE_DRIFT_TYPE => "rc",
+        SESSION_DRIFT_TYPE => "session",
         other => other,
     }
 }
@@ -3618,7 +3708,7 @@ mod tests {
     /// can drift from the tree without failing here.
     #[test]
     fn a_profile_declared_row_carries_the_owner_the_apply_tree_heads_its_group_with() {
-        use cfgd_core::reconciler::{ENV_GROUP, Owner, SESSION_GROUP};
+        use cfgd_core::reconciler::{ENV_GROUP, Owner, SESSION_GROUP, SHELL_GROUP};
 
         let rows = managed_resource_rows(
             &[
@@ -3626,6 +3716,7 @@ mod tests {
                 recorded("module", "nvim:files:1"),
                 recorded("file", "/home/u/.gitconfig"),
                 recorded("env", "/home/u/.cfgd.env"),
+                recorded("env", "/home/u/.bashrc"),
                 recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
             ],
             &[],
@@ -3637,6 +3728,7 @@ mod tests {
             Owner::module("nvim"),
             Owner::cfgd(SESSION_GROUP),
             Owner::profile("base"),
+            Owner::cfgd(SHELL_GROUP),
             Owner::cfgd(ENV_GROUP),
         ];
         Owner::order(&mut expected);
@@ -3645,8 +3737,10 @@ mod tests {
         let mut owners: Vec<String> = rows.iter().map(|r| r[1].clone()).collect();
         owners.dedup();
         assert_eq!(owners, expected, "{rows:?}");
-        // The two `env` rows are cfgd's own and carry the group suffix the
-        // tree heads them with; the file and the package are the profile's.
+        // The three `env` rows are cfgd's own and each carries the group
+        // suffix the tree heads IT with — the generated file's, the rc line's
+        // and the session's are three groups, named by the verb that wrote
+        // them; the file and the package are the profile's.
         assert_eq!(
             rows.iter()
                 .map(|r| (r[0].as_str(), r[1].as_str()))
@@ -3655,10 +3749,157 @@ mod tests {
                 ("file", "profile:base"),
                 ("package", "profile:base"),
                 ("env", "cfgd:env"),
-                ("env", "cfgd:session"),
+                ("rc", "cfgd:shell"),
+                ("session", "cfgd:session"),
                 ("file", "module:nvim"),
             ],
             "{rows:?}"
+        );
+    }
+
+    /// The write-vs-inject question has ONE answerer, and it lives beside the
+    /// generator that mints the targets.
+    ///
+    /// A recorded env id drops the verb, so the only way back to it is the
+    /// target's basename — and every basename this file could test against is
+    /// a second copy of a table `env_targets` already owns. A host adding a
+    /// dialect (or renaming one) then moves the tree's group while this
+    /// surface keeps classifying by a name nothing writes, which is how a
+    /// table and a tree came to disagree about `~/.bashrc`.
+    #[test]
+    fn no_status_site_classifies_an_env_target_by_its_basename() {
+        // Every basename `MergedEnvItems::managed_env_files` and
+        // `managed_env_source_lines` can put on a host, plus the directories
+        // that give one its dialect.
+        const BASENAME_TELLS: &[&str] = &[
+            ".cfgd.env",
+            "cfgd.conf",
+            "cfgd-env.fish",
+            "cfgd-env.ps1",
+            ".bashrc",
+            ".zshenv",
+            ".zshrc",
+            ".profile",
+            "conf.d",
+            "environment.d",
+        ];
+        let literals = production_string_literals();
+        assert!(
+            literals.len() >= 20,
+            "the walk no longer reads this file's production literals: {}",
+            literals.len()
+        );
+        for literal in &literals {
+            for tell in BASENAME_TELLS {
+                assert!(
+                    !literal.contains(tell),
+                    "`{literal}` names an env target by its basename — ask \
+                     `cfgd_core::reconciler::recorded_env_method` instead"
+                );
+            }
+        }
+        // And the one answerer really is reached, so the walk above cannot
+        // pass by this file having stopped classifying env rows at all.
+        let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        assert!(
+            production.matches("recorded_env_method(").count() >= 2,
+            "the Owner column and the erroring-check key both ask the one answerer"
+        );
+    }
+
+    /// The double-quoted literals of every non-comment production line.
+    ///
+    /// Per line, so a `"` inside a doc comment cannot pair with one three
+    /// lines down and hide a real literal between them.
+    fn production_string_literals() -> Vec<String> {
+        cfgd_core::test_helpers::production_slice(include_str!("status.rs"))
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(string_literals)
+            .collect()
+    }
+
+    /// Coverage is per owner, and the owners a `--scan` never reaches are
+    /// derived from the scan's own allow-list rather than listed here.
+    ///
+    /// `check_covers` answers from [`scan_reaches`], whose exclusion has to
+    /// match what a full check can actually resolve: every type in
+    /// `FULL_CHECK_RESOLVABLE_TYPES`, folded through [`finding_owner`], is an
+    /// owner a scan can speak for. The live session is the one cfgd group no
+    /// type there names — nothing re-reads a `launchctl`/`systemctl --user`
+    /// environment — so a `--scan` that healed the whole machine still leaves
+    /// it as unchecked as before, and a row claiming `Synced` off that scan is
+    /// a claim no check earned.
+    #[test]
+    fn every_owner_the_scan_never_reaches_is_excluded_from_coverage() {
+        use cfgd_core::reconciler::{CFGD_GROUP_ORDER, Owner};
+
+        let output = empty_output();
+        let profile_owner = Owner::profile("base");
+        let mut reached: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for rtype in super::super::live_drift::FULL_CHECK_RESOLVABLE_TYPES {
+            // Every id shape its own producer mints for this type, so
+            // `finding_owner` takes each arm the scan's rows really take — a
+            // `package` row is a module's, the profile's OR a manager cfgd
+            // provisions, and one specimen would have hidden two of the three.
+            let ids: &[&str] = match *rtype {
+                "module" => &["nvim/init.lua", "nvim:script"],
+                "package" => &["brew:bat", "provision:npm", "refuse:npm"],
+                "system" => &["sysctl.net.ipv4.ip_forward"],
+                _ => &["/home/u/.bashrc"],
+            };
+            for id in ids {
+                let event = cfgd_core::state::DriftEvent {
+                    id: 1,
+                    timestamp: cfgd_core::utc_now_iso8601(),
+                    resource_type: (*rtype).to_string(),
+                    resource_id: (*id).to_string(),
+                    expected: None,
+                    actual: None,
+                    resolved_by: None,
+                    source: cfgd_core::config::LOCAL_LAYER.to_string(),
+                    want: None,
+                    have: None,
+                };
+                let (owner, _, _) = finding_owner(&event, &output, Some(&profile_owner));
+                if let Some(owner) = owner {
+                    reached.insert(owner.token());
+                }
+            }
+        }
+        assert!(
+            reached.len() >= 4,
+            "the walk no longer reaches the scan's own types: {reached:?}"
+        );
+        for group in CFGD_GROUP_ORDER {
+            let token = Owner::cfgd(*group).token();
+            assert_eq!(
+                scan_reaches(&token),
+                reached.contains(&token),
+                "`{token}` disagrees with what the scan's own types resolve to: {reached:?}"
+            );
+        }
+        assert!(
+            scan_reaches(&profile_owner.token()) && scan_reaches(&Owner::module("nvim").token()),
+            "a profile and a module are both reached: {reached:?}"
+        );
+
+        // The session's exclusion is the whole point: a live check AND a
+        // machine-wide stamp still leave it uncovered.
+        let scoped = std::collections::BTreeMap::new();
+        let session = Owner::cfgd(cfgd_core::reconciler::SESSION_GROUP).token();
+        assert!(
+            !check_covers(&session, true, Some("2026-09-07T00:00:00Z"), &scoped),
+            "no check the scan runs stands behind the live session"
+        );
+        assert!(
+            check_covers(
+                &Owner::cfgd(cfgd_core::reconciler::SHELL_GROUP).token(),
+                true,
+                None,
+                &scoped
+            ),
+            "the rc lines ARE re-read by a full check"
         );
     }
 
@@ -3802,7 +4043,7 @@ mod tests {
         );
         assert_eq!(
             session_cell(),
-            format!("session env — {}", cfgd_core::NO_SESSION_MANAGER),
+            format!("live session — {}", cfgd_core::NO_SESSION_MANAGER),
             "with nothing to publish to, the row says so"
         );
 
@@ -3813,7 +4054,7 @@ mod tests {
         );
         assert_eq!(
             session_cell(),
-            "session env",
+            "live session",
             "a reachable session manager needs no qualifier"
         );
     }
@@ -3886,6 +4127,11 @@ mod tests {
         assert_eq!(display_type("files"), display_type("file"));
         assert_eq!(display_type("packages"), display_type("package"));
         assert_eq!(display_type("Running script"), display_type("script"));
+        // The three env surfaces are three kinds, not one: the table says
+        // which of them a row is, so no two of them fold onto one word.
+        assert_eq!(display_type("env"), "env");
+        assert_eq!(display_type("env-rc"), "rc");
+        assert_eq!(display_type("env-session"), "session");
     }
 
     /// A config dir whose profile resolves to something its DECLARED list does
@@ -4731,7 +4977,7 @@ mod tests {
             "an unchecked fleet row claims no verdict: {unchecked_fleet}"
         );
         assert!(
-            unchecked_fleet.contains("module:nvim") && unchecked_fleet.contains("— Installed"),
+            unchecked_fleet.contains("module:nvim") && unchecked_fleet.contains("— Applied"),
             "it states the record's own fact instead: {unchecked_fleet}"
         );
     }
@@ -5385,7 +5631,10 @@ mod tests {
             recorded("package", "brew/bat"),
             recorded("package", "apt/git"),
             recorded("env", "/home/user/.cfgd.env"),
-            recorded("env", "/home/user/.config/fish/conf.d/cfgd.fish"),
+            recorded("env", "/home/user/.config/fish/conf.d/cfgd-env.fish"),
+            recorded("env", "/home/user/.bashrc"),
+            recorded("env", "/home/user/.zshenv"),
+            recorded("env", "/home/user/.profile"),
             recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
         ];
         let mut output = empty_output();
@@ -5416,12 +5665,18 @@ mod tests {
             names_of("profile:default"),
             rows_of("profile:default", "file"),
         );
-        let (env_files, sessions) = (rows_of("cfgd:env", "env"), rows_of("cfgd:session", "env"));
+        // Each of cfgd's three env groups is counted under the Type word its
+        // own rows carry, so a row moving between groups moves both counts.
+        let (env_files, rc_lines, sessions) = (
+            rows_of("cfgd:env", "env"),
+            rows_of("cfgd:shell", "rc"),
+            rows_of("cfgd:session", "session"),
+        );
         // Grounded against the fixture, so a classifier change dropping rows
         // from BOTH derivations cannot agree its way past this pin.
         assert_eq!(
-            (packages, files, env_files, sessions),
-            (3, 2, 2, 1),
+            (packages, files, env_files, rc_lines, sessions),
+            (3, 2, 2, 3, 1),
             "the table no longer lists the fixture's rows:\n{table:?}"
         );
 
@@ -5440,8 +5695,12 @@ mod tests {
                 format!("({})", cfgd_core::pluralize(env_files, "env file")),
             ),
             (
+                "cfgd:shell",
+                format!("({})", cfgd_core::pluralize(rc_lines, "rc line")),
+            ),
+            (
                 "cfgd:session",
-                format!("({})", cfgd_core::pluralize(sessions, "session env")),
+                format!("({})", cfgd_core::pluralize(sessions, "live session")),
             ),
         ];
         // Only the health section's own rows: the table below carries the
@@ -5465,13 +5724,13 @@ mod tests {
     /// Every kind the Managed Resources table can call a module's has a slot in
     /// the headline three lines above it.
     ///
-    /// The population is read off `display_type`'s own arms — the fn that folds
-    /// a recorded token onto the Type word — so a kind reaching that column
-    /// cannot skip this walk: the words it FOLDS are exactly the module-owned
-    /// ones (`env` and every cfgd-owned token fall through its `other` arm and
-    /// belong to no module). The headline dropped the `script` rows for as long
-    /// as its tally was an unnamed pair, which is why the slot is proven by
-    /// rendering rather than by counting fields.
+    /// The population is read off the literal arms of `display_type` — the fn
+    /// that folds a recorded token onto the Type word — so a kind reaching that
+    /// column cannot skip this walk: the literals it folds are exactly the
+    /// module-owned ones, cfgd's own env tokens naming their group through
+    /// consts and belonging to no module. The headline dropped the `script`
+    /// rows for as long as its tally was an unnamed pair, which is why the slot
+    /// is proven by rendering rather than by counting fields.
     #[test]
     fn every_module_owned_kind_the_table_lists_has_a_slot_in_the_headline() {
         let words = folded_type_column_words();
@@ -5542,9 +5801,17 @@ mod tests {
             .expect("the Type column's mapping fn");
         let body = &source[start..];
         let end = body.find("\n}\n").expect("the fn's closing brace");
+        // cfgd's own env groups name their arms through consts, but their
+        // WORDS are literals in the same body; neither belongs to a module,
+        // so both are dropped here rather than by spelling.
+        let cfgd_owned = [
+            display_type(RC_LINE_DRIFT_TYPE),
+            display_type(SESSION_DRIFT_TYPE),
+        ];
         let mut words: Vec<String> = string_literals(&body[..end])
             .into_iter()
             .map(|token| display_type(&token).to_string())
+            .filter(|word| !cfgd_owned.contains(&word.as_str()))
             .collect();
         words.sort();
         words.dedup();
@@ -6776,11 +7043,25 @@ mod tests {
             "module declares 1 package, got: {output}"
         );
         // No check has run on this host, so the recorded fact is the whole
-        // verdict — `Synced` here would claim an answer nothing produced.
+        // verdict — `Synced` here would claim an answer nothing produced, and
+        // the word for what the record alone can say is `Applied`. Read off
+        // the Status ROW, because the header's `Last Applied` age carries the
+        // same word in a slot that answers a different question.
         assert!(
-            output.contains("Installed"),
+            status_row_reads(&output, "Applied"),
             "should print state-store status, got: {output}"
         );
+    }
+
+    /// Whether the module report's own `Status` row reads `word`.
+    ///
+    /// The whole render is not the assertion: `Last Applied` is a different
+    /// row answering a different question, and a bare `contains` on the
+    /// vocabulary's words matches it.
+    fn status_row_reads(output: &str, word: &str) -> bool {
+        output
+            .lines()
+            .any(|line| line.trim_start().starts_with("Status") && line.trim_end().ends_with(word))
     }
 
     fn declared(name: &str, platforms: &[&str]) -> cfgd_core::config::ModulePackageEntry {
@@ -7004,7 +7285,7 @@ mod tests {
         drop(printer);
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Installed") && !output.contains("NotApplied"),
+            status_row_reads(&output, "Applied") && !output.contains("NotApplied"),
             "a converged module must not report itself unapplied, got: {output}"
         );
     }

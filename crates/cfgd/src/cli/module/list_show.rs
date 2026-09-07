@@ -47,10 +47,11 @@ fn source_role(source: &str) -> Option<Role> {
 /// one module-state vocabulary. No row here can read `Drifted` or `Unknown` —
 /// both come from a finding, and `module list` runs no check: it reports
 /// recorded state only. `checked` says whether any check covers the module at
-/// all, so a module nothing has ever checked reads the record's own
-/// `Installed` instead of a `Synced` no check earned.
+/// all, so a module nothing has ever checked reads `Installed` — this table's
+/// own fact, that the module is on the machine — through the LISTING half of
+/// the vocabulary, instead of a `Synced` no check earned.
 fn status_cell(status: &str, checked: bool) -> (String, Option<Role>) {
-    let (word, role) = cfgd_core::state::module_status_display(status, recorded_verdict(checked));
+    let (word, role) = cfgd_core::state::module_listing_display(status, recorded_verdict(checked));
     (word.to_string(), Some(role))
 }
 
@@ -194,7 +195,7 @@ pub fn build_module_show_doc(
     if let Some(state_rec) = &output.state {
         // Recorded state only, same as the list table — see `status_cell`.
         let (word, role) =
-            cfgd_core::state::module_status_display(&state_rec.status, recorded_verdict(checked));
+            cfgd_core::state::module_listing_display(&state_rec.status, recorded_verdict(checked));
         rows.push(KvPair::role_valued("Status", word, role));
         // The age, not the recorded instant: `-o json`'s `state.installedAt`
         // carries the exact moment, and the row a person reads answers how
@@ -563,10 +564,10 @@ mod role_mapping_tests {
 
     /// `module list` runs no check of its own, so `Synced` on its rows is a
     /// claim borrowed from somebody else's: the machine-wide scan stamp, or a
-    /// scoped scan of that module. With neither, the row states the record's
-    /// own fact — the module was installed, and nothing has looked since.
-    /// The word a person reads changes; the `status` token `-o json` carries
-    /// does not.
+    /// scoped scan of that module. With neither, the row states this table's
+    /// own fact — the module is on the machine — which is `Installed` and not
+    /// the `Applied` a dashboard row says about a different question. The word
+    /// a person reads changes; the `status` token `-o json` carries does not.
     #[test]
     fn module_list_reads_synced_only_for_a_module_a_check_covers() {
         assert_eq!(

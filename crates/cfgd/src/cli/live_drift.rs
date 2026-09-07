@@ -898,8 +898,10 @@ pub(in crate::cli) struct ManagerDriftPhrase {
     /// What the manager's state IS, with no subject — the `diff` line prepends
     /// `<manager>: ` and the `actual` string stands alone.
     pub(in crate::cli) state: &'static str,
-    /// What can be done about it: `can bootstrap via <method>`, or
-    /// `cannot bootstrap: <reason>`.
+    /// What can be done about it: `can provision via <method>`, or
+    /// `cannot provision: <reason>` — the verb the plan's own bullet spends
+    /// on the very action this row is reporting the absence of, so one fact
+    /// is not named two ways across two commands.
     pub(in crate::cli) detail: String,
 }
 
@@ -913,11 +915,11 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
         ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("can bootstrap via {via}"),
+            detail: format!("can provision via {via}"),
         }),
         ManagerAction::Refuse { reason, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("cannot bootstrap: {reason}"),
+            detail: format!("cannot provision: {reason}"),
         }),
     }
 }
@@ -2203,7 +2205,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "provision:npm")
             .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
         assert_eq!(
-            manager_row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            manager_row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method `diff` would show, got: {manager_row:?}"
         );
     }
@@ -2247,7 +2249,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "refuse:npm")
             .unwrap_or_else(|| panic!("a refused manager must register as drift too: {drift:?}"));
         assert!(
-            manager_row.actual.contains("cannot bootstrap")
+            manager_row.actual.contains("cannot provision")
                 && manager_row.actual.contains("a-tool-nothing-provides"),
             "must name why, distinct from the provisionable wording, got: {manager_row:?}"
         );
@@ -2341,7 +2343,7 @@ mod tests {
             "must fail verify — this is what flips exit code 5"
         );
         assert_eq!(
-            row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method, same as diff/status, got: {row:?}"
         );
     }
@@ -2381,7 +2383,7 @@ mod tests {
         );
         assert!(
             row.actual
-                .contains("cannot bootstrap: a-tool-nothing-provides"),
+                .contains("cannot provision: a-tool-nothing-provides"),
             "must name the refusal reason, got: {row:?}"
         );
     }
@@ -2389,7 +2391,7 @@ mod tests {
     /// One unprovisionable manager, read on both surfaces that report it.
     ///
     /// `diff` renders a status line and `verify`/`status --scan` a `VerifyResult`,
-    /// and the two used to word the same fact differently (`cannot bootstrap:
+    /// and the two used to word the same fact differently (`cannot provision:
     /// <reason>` against `not installed (cannot bootstrap — <reason>)`), so a
     /// reader matching a verify row against the diff explaining it met two
     /// spellings of one refusal. Captured from the real renders rather than

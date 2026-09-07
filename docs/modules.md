@@ -581,7 +581,7 @@ The heading's annotation dates the recorded drift verdicts: how long ago the
 machine was last checked, or `(drift never checked)` when no scan has ever
 run. A row only reads `Synced` where a check actually covered that owner — a
 machine-wide scan, or a scoped (`--module`) one that stamped that module. An
-owner nothing has checked reads `Installed` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
+owner nothing has checked reads `Applied` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
 paints rather than from any declaration, so a health line and the rows under
 it cannot disagree; a kind an owner holds none of is dropped rather than
 rendered as `0`, and an owner holding nothing reads its bare verdict. The

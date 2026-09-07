@@ -960,6 +960,9 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reconciler::types::{
+        Action, ENV_GROUP, EnvAction, Owner, SESSION_GROUP, SHELL_GROUP, owner_of,
+    };
 
     fn probe() -> EnvHostProbe {
         EnvHostProbe {
@@ -1251,6 +1254,13 @@ mod tests {
     /// target the builders really push, on every platform, under two probe
     /// shapes (bash_profile and bash_login hosts), so a new member lands here
     /// before its status row can claim the wrong verb.
+    ///
+    /// The OWNER half rides the same walk, because it is the same question
+    /// asked of the action rather than of the recorded id: the ACTION each
+    /// target becomes (`env.rs`'s builder) is passed to
+    /// [`crate::reconciler::owner_of`], and a target's verb and its owner
+    /// group have to agree or the Managed Resources table lists a row under a
+    /// group whose tree never printed it.
     #[test]
     fn every_env_target_classifies_under_the_verb_that_produced_it() {
         let cases = [
@@ -1279,6 +1289,10 @@ mod tests {
         ];
         let mut writes = 0;
         let mut injects = 0;
+        let mut sessions = 0;
+        // Any profile: `owner_of` falls back to it only for the actions this
+        // walk never builds, so a cfgd answer here is a cfgd answer.
+        let declaring = Owner::profile("work");
         for (platform, home) in cases {
             for probe in &probes {
                 let separator = path_separator(platform);
@@ -1298,29 +1312,72 @@ mod tests {
                         // The recorded id is `to_posix_string(path)` for both verbs
                         // (`format_action_description`'s env arms), so the walk
                         // folds the same way before asking.
-                        let (id, expected) = match &target {
-                            EnvTarget::ManagedFile { path, .. } => {
+                        // The action the planner really builds from this
+                        // target, so the owner half is asked of the same value
+                        // `Phase::from_actions` groups on.
+                        let (id, expected, action) = match target {
+                            EnvTarget::ManagedFile {
+                                path,
+                                content,
+                                rendered,
+                            } => {
                                 writes += 1;
-                                (crate::to_posix_string(path), ENV_VERB_WRITE)
+                                (
+                                    crate::to_posix_string(&path),
+                                    ENV_VERB_WRITE,
+                                    Action::Env(EnvAction::WriteEnvFile {
+                                        path,
+                                        content,
+                                        vars: rendered.vars,
+                                        aliases: rendered.aliases,
+                                    }),
+                                )
                             }
-                            EnvTarget::SourceLine { rc_path, .. } => {
+                            EnvTarget::SourceLine { rc_path, line } => {
                                 injects += 1;
-                                (crate::to_posix_string(rc_path), ENV_VERB_INJECT)
+                                (
+                                    crate::to_posix_string(&rc_path),
+                                    ENV_VERB_INJECT,
+                                    Action::Env(EnvAction::InjectSourceLine { rc_path, line }),
+                                )
                             }
-                            EnvTarget::LiveSession { .. } => continue,
+                            EnvTarget::LiveSession { vars } => {
+                                sessions += 1;
+                                assert_eq!(
+                                    owner_of(
+                                        &Action::Env(EnvAction::RefreshLiveSession { vars }),
+                                        &declaring
+                                    )
+                                    .token(),
+                                    Owner::cfgd(SESSION_GROUP).token(),
+                                    "the live-session broadcast is the session group's"
+                                );
+                                continue;
+                            }
                         };
                         assert_eq!(
                             recorded_env_method(&id),
                             expected,
                             "{id} classifies under the verb that produced it"
                         );
+                        let group = if expected == ENV_VERB_WRITE {
+                            ENV_GROUP
+                        } else {
+                            SHELL_GROUP
+                        };
+                        assert_eq!(
+                            owner_of(&action, &declaring).token(),
+                            Owner::cfgd(group).token(),
+                            "{id} is owned by the group its verb belongs to"
+                        );
                     }
                 }
             }
         }
         assert!(
-            writes >= 6 && injects >= 6,
-            "the walk no longer reaches both verbs' members ({writes} writes, {injects} injects)"
+            writes >= 6 && injects >= 6 && sessions >= 1,
+            "the walk no longer reaches every verb's members \
+             ({writes} writes, {injects} injects, {sessions} sessions)"
         );
     }
 

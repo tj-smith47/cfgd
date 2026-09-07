@@ -242,12 +242,13 @@ Apply
 Phase: Bootstrap
   cfgd:env
     ✓ write /home/you/.cfgd.env                       — 1 var
+    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
+  cfgd:shell
     ✓ inject source line into /home/you/.bashrc
     ✓ inject source line into /home/you/.zshenv
     ✓ inject source line into /home/you/.profile
-    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
   cfgd:session
-    ✓ publish 1 var to the session manager
+    ✓ publish 1 var to the live session
 
 ✓ Apply complete — 6 actions succeeded (0.3s wall)
 
@@ -275,7 +276,7 @@ a colon (the one parenthetical on that line is the elapsed):
 
 ```console
   cfgd:session
-    ∅ publish 1 var to the session manager — no session manager
+    ∅ publish 1 var to the live session — no session manager
 
 ✓ Apply complete — 5 actions succeeded, 1 not attempted: no session manager (0.3s wall)
 ```
@@ -313,9 +314,11 @@ export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # m
 `environment.d` and the macOS LaunchAgent have no trailing-comment grammar, so their lines
 carry no owner.
 
-The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
-a future shell reads, `cfgd:session` pushes the same values into the session manager you are
-already logged into. A host with no live user session reports that group's action as
+The three owner groups separate what cfgd authored from what it edited from what is not
+durable at all: `cfgd:env` writes the files a future shell reads, `cfgd:shell` plants the one
+line that reads them into a dotfile you own, `cfgd:session` pushes the same values into the
+session manager you are already logged into. Skipping one and keeping the others is a real
+request — `--skip bootstrap.shell` writes the env file and leaves `~/.bashrc` alone. A host with no live user session reports that group's action as
 unchanged and carries the reason as a warning under it; the files are still correct.
 
 To opt out of the broader surfaces, narrow the scope: `envScope: Interactive` restores the

@@ -10,6 +10,7 @@ Plan
 Phase: Bootstrap
   cfgd:env
     - write ~/.cfgd.env                 — 1 var
+  cfgd:shell
     - inject source line into ~/.bashrc
 
 ◉ 2 actions planned

@@ -34,7 +34,7 @@ pub use types::{
     FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
     ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
     SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
-    module_status_display, source_status_display,
+    module_listing_display, module_status_display, source_status_display,
 };
 
 /// Canonical state DB filename. The single source of truth so the default and

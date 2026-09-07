@@ -671,31 +671,43 @@ impl OwnerKind {
 
 /// The order cfgd's own groups run and render in, which is causal rather than
 /// alphabetical: `managers` is the only group that changes what binaries exist,
-/// `env` publishes where they live, `session` broadcasts that to the running
-/// login session. Producer before consumer.
+/// `env` writes the files that publish where they live, `shell` plants the
+/// source lines that make a future shell read those files, `session` broadcasts
+/// the same values to the running login session. Producer before consumer.
 ///
 /// Only cfgd's names are ordered this way, and only because cfgd mints all of
 /// them — a profile, module, backup or source name is a user string with no
 /// meaning to order by, so those still sort by name.
 ///
 /// `pub`, not `pub(super)`: the CLI's `--phase`/`--skip`/`--only` dotted
-/// grammar (`bootstrap.managers`/`.env`/`.session`) and its selector
+/// grammar (`bootstrap.managers`/`.env`/`.shell`/`.session`) and its selector
 /// validation both read this list rather than minting their own copy of it —
 /// two copies is how the group vocabulary drifted between `--phase` (via
 /// `reconciler::action_matches_phase_filter`) and `--skip`/`--only` (via
 /// `cfgd::cli::plan_ops::pattern_matches_action`) before it was unified here.
-pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, ENV_GROUP, SESSION_GROUP];
+pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, ENV_GROUP, SHELL_GROUP, SESSION_GROUP];
 
 /// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
 /// filter that keeps this group and a planner that mints into it must agree on
 /// the spelling, and a mismatch drops the whole phase silently.
 pub const MANAGERS_GROUP: &str = "managers";
 
-/// The cfgd-owned group every [`EnvAction`] but the live-session broadcast
-/// belongs to. Named once for the same reason as [`MANAGERS_GROUP`]: the
-/// assignment rule below and [`CFGD_GROUP_ORDER`] above spelled it twice, and
-/// two spellings of a group name is how a filter and a planner stop agreeing.
+/// The cfgd-owned group of the env files cfgd generates whole
+/// ([`EnvAction::WriteEnvFile`]). Named once for the same reason as
+/// [`MANAGERS_GROUP`]: the assignment rule below and [`CFGD_GROUP_ORDER`] above
+/// spelled it twice, and two spellings of a group name is how a filter and a
+/// planner stop agreeing.
 pub const ENV_GROUP: &str = "env";
+
+/// The cfgd-owned group of the source lines cfgd plants in shell rc files it
+/// does not own ([`EnvAction::InjectSourceLine`]).
+///
+/// Split from [`ENV_GROUP`] because the two do different things to different
+/// files: `env` writes files cfgd authored whole and may rewrite freely, while
+/// `shell` edits a file the user owns, one line at a time. Skipping one and
+/// keeping the other is a real request (`--skip bootstrap.shell` writes the env
+/// file without touching `~/.bashrc`), and a single group could not express it.
+pub const SHELL_GROUP: &str = "shell";
 
 /// The cfgd-owned group the live-session broadcast belongs to; the sibling of
 /// [`ENV_GROUP`], named for the same reason.
@@ -842,9 +854,12 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         Action::Module(ma) => Owner::module(ma.module_name.clone()),
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
-        // and cfgd owns it.
+        // and cfgd owns it. Matched exhaustively rather than through a
+        // wildcard: a fourth env act would otherwise land in whichever group
+        // the wildcard happened to name.
+        Action::Env(EnvAction::WriteEnvFile { .. }) => Owner::cfgd(ENV_GROUP),
+        Action::Env(EnvAction::InjectSourceLine { .. }) => Owner::cfgd(SHELL_GROUP),
         Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd(SESSION_GROUP),
-        Action::Env(_) => Owner::cfgd(ENV_GROUP),
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
         Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
@@ -1918,16 +1933,18 @@ mod tests {
     #[test]
     fn owner_sort_key_breaks_rank_ties_by_name() {
         assert!(Owner::module("apt").sort_key() < Owner::module("brew").sort_key());
-        assert!(Owner::cfgd("env").sort_key() < Owner::cfgd("session").sort_key());
+        assert!(Owner::cfgd(ENV_GROUP).sort_key() < Owner::cfgd(SHELL_GROUP).sort_key());
+        assert!(Owner::cfgd(SHELL_GROUP).sort_key() < Owner::cfgd(SESSION_GROUP).sort_key());
     }
 
     #[test]
     fn renders_above_answers_from_the_comparator_it_is_asked_of() {
         // The prerequisites shape the apply path depends on: the lane group is
         // written as a tree, and the serial groups stream below it.
-        assert!(Owner::cfgd("managers").renders_above(&Owner::cfgd("env")));
-        assert!(Owner::cfgd("env").renders_above(&Owner::cfgd("session")));
-        assert!(!Owner::cfgd("session").renders_above(&Owner::cfgd("managers")));
+        assert!(Owner::cfgd(MANAGERS_GROUP).renders_above(&Owner::cfgd(ENV_GROUP)));
+        assert!(Owner::cfgd(ENV_GROUP).renders_above(&Owner::cfgd(SHELL_GROUP)));
+        assert!(Owner::cfgd(SHELL_GROUP).renders_above(&Owner::cfgd(SESSION_GROUP)));
+        assert!(!Owner::cfgd(SESSION_GROUP).renders_above(&Owner::cfgd(MANAGERS_GROUP)));
         assert!(
             !Owner::cfgd("env").renders_above(&Owner::cfgd("env")),
             "an owner does not render above itself"

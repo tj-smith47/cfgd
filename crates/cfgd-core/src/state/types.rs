@@ -520,10 +520,16 @@ impl DriftVerdict {
     }
 }
 
-/// The human vocabulary for a module's state — the ONE derivation of the word
-/// a person reads from the token the state store holds, so `cfgd status`,
-/// `cfgd status --module` and `cfgd module list` can never call one machine
-/// state by three names.
+/// The human vocabulary for a module's state on a surface REPORTING ON THE
+/// MACHINE — the ONE derivation of the word `cfgd status` and
+/// `cfgd status --module` read from the token the state store holds, so those
+/// surfaces can never call one machine state by two names.
+///
+/// The fact this vocabulary states is "cfgd put this here, and here is what a
+/// check since says about it". [`module_listing_display`] is its sibling for
+/// the surfaces stating a different fact — `cfgd module list` / `module show`
+/// answer whether a module is ON the machine at all — and the two differ in
+/// exactly the arm no check has answered.
 ///
 /// The stored tokens are untouched WIRE values ([`MODULE_STATUS_INSTALLED`] /
 /// [`MODULE_STATUS_ERROR`], pinned by
@@ -555,9 +561,26 @@ pub fn module_status_display(stored: &str, drift: DriftVerdict) -> (&'static str
         // The record's own fact, with the record's confidence: this module's
         // last apply completed, and nothing has since checked whether the
         // machine still agrees. `Synced` here is the claim the record cannot
-        // make.
-        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Installed", Role::Ok),
+        // make, and `Installed` is the claim `module list` makes about a
+        // DIFFERENT fact — so this surface says what it actually knows.
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Applied", Role::Ok),
         _ => ("NotApplied", Role::Pending),
+    }
+}
+
+/// The same vocabulary for `cfgd module list` and `cfgd module show`, which
+/// state a DIFFERENT fact: whether the module is on this machine.
+///
+/// Identical to [`module_status_display`] in every arm but the unchecked one.
+/// Both surfaces run no check of their own, so that arm is the one they
+/// almost always land in, and the word they want there is `Installed` — the
+/// listing's question is presence, not agreement. `module_status_display`'s
+/// `Applied` answers the other question, and one word doing both let a reader
+/// take a dashboard row's silence about drift for a claim about presence.
+pub fn module_listing_display(stored: &str, drift: DriftVerdict) -> (&'static str, Role) {
+    match (stored, drift) {
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Installed", Role::Ok),
+        other => module_status_display(other.0, other.1),
     }
 }
 
@@ -759,6 +782,11 @@ mod module_status_tests {
     /// `-o json` payload, so a machine consumer matches on them. A reword is a
     /// wire break and has to be made on purpose here rather than land as an
     /// incidental find-and-replace.
+    ///
+    /// [`module_listing_display`] is pinned in the same test because the two
+    /// are one vocabulary with two facts: the walk below drives every arm of
+    /// both and states where they deliberately part, so a reword of either
+    /// cannot quietly re-collide them.
     #[test]
     fn module_status_display_words_are_a_pinned_wire_contract() {
         assert_eq!(
@@ -783,8 +811,29 @@ mod module_status_tests {
         );
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked).0,
-            "Installed"
+            "Applied"
         );
+
+        // The listing vocabulary answers "is it on the machine", so the one
+        // arm no check covers is where the two words part.
+        assert_eq!(
+            module_listing_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
+            ("Installed", Role::Ok)
+        );
+        for (stored, drift) in [
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Clean),
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Drifted),
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Unknown),
+            (MODULE_STATUS_ERROR, DriftVerdict::Clean),
+            (MODULE_STATUS_ERROR, DriftVerdict::Unchecked),
+            ("", DriftVerdict::Clean),
+        ] {
+            assert_eq!(
+                module_listing_display(stored, drift),
+                module_status_display(stored, drift),
+                "{stored:?}/{drift:?} is one fact, worded once"
+            );
+        }
     }
 
     #[test]
@@ -812,7 +861,7 @@ mod module_status_tests {
         // claim about the machine agreeing with it is missing.
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
-            ("Installed", Role::Ok)
+            ("Applied", Role::Ok)
         );
         // A failed apply still outranks the absence of a check.
         assert_eq!(

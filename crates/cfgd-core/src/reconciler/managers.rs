@@ -1989,9 +1989,22 @@ mod tests {
             vec![
                 "cfgd:managers".to_string(),
                 "cfgd:env".to_string(),
+                "cfgd:shell".to_string(),
                 "cfgd:session".to_string(),
             ],
-            "the binaries are created, then where they live is published, then broadcast"
+            "the binaries are created, then the file cfgd owns is written, then \
+             the line in the file the user owns, then the session is broadcast"
+        );
+        // The spelled order above is the claim; this is the other half of it —
+        // a group added to the render order with no place in this phase would
+        // otherwise ship with nothing saying where it runs.
+        let ordered: Vec<String> = crate::reconciler::CFGD_GROUP_ORDER
+            .iter()
+            .map(|group| crate::reconciler::Owner::cfgd(*group).token())
+            .collect();
+        assert_eq!(
+            owners, ordered,
+            "every group the tree renders has a place in this phase"
         );
     }
 

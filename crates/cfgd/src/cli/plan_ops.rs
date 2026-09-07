@@ -19,10 +19,11 @@ const PS_ENV_FILE: &str = ".cfgd-env.ps1";
 /// changed" heading — folded into the `cfgd:env` group on real provenance
 /// rather than a heading invented for it alone.
 ///
-/// Groups render informational-first, `cfgd:env` always last: it is the one
-/// group that is action-required (the reader has to actually run the command),
-/// so it is the last thing printed before the prompt returns. Every other
-/// group keeps the order `ApplyResult::caveats` collected it in.
+/// Groups render informational-first, cfgd's two shell-surface groups always
+/// last: they are the ones that are action-required (the reader has to actually
+/// run the command), so they are the last thing printed before the prompt
+/// returns. Every other group keeps the order `ApplyResult::caveats` collected
+/// it in.
 ///
 /// The re-source text is gated purely on the descriptions `apply_env_action`
 /// returns — it suffixes `:skipped` when the on-disk bytes already matched —
@@ -33,7 +34,7 @@ pub(in crate::cli) fn print_caveats(
     printer: &Printer,
 ) {
     let mut caveats = result.caveats.clone();
-    let env_owner = cfgd_core::reconciler::Owner::cfgd("env");
+    let env_owner = cfgd_core::reconciler::Owner::cfgd(cfgd_core::reconciler::ENV_GROUP);
 
     if let Some(reminder) = shell_env_reminder_note(result) {
         match caveats.iter_mut().find(|(owner, _)| *owner == env_owner) {
@@ -42,18 +43,24 @@ pub(in crate::cli) fn print_caveats(
         }
     }
 
-    // `cfgd:env` renders last, after every informational group: it is the one
-    // group that is action-required (the reader has to actually run its
-    // command). Not a general owner ordering — `Owner::sort_key` is the only
-    // one of those, applied where `Phase::from_actions` builds the phase
-    // tree's groups — so this stays a one-off split-and-append on the single
-    // fixed `cfgd:env` owner rather than a second comparator.
-    let (mut informational, env_last): (Vec<_>, Vec<_>) = caveats
-        .into_iter()
-        .partition(|(owner, _)| *owner != env_owner);
-    informational.extend(env_last);
+    // cfgd's env and shell groups render last, after every informational
+    // group, and between themselves in `CFGD_GROUP_ORDER` — the order the run
+    // itself printed them in. Not a general owner ordering — `Owner::sort_key`
+    // is the only one of those, applied where `Phase::from_actions` builds the
+    // phase tree's groups — so this stays a stable sink of the two fixed
+    // shell-surface owners rather than a second comparator.
+    let action_required = [
+        env_owner,
+        cfgd_core::reconciler::Owner::cfgd(cfgd_core::reconciler::SHELL_GROUP),
+    ];
+    caveats.sort_by_key(|(owner, _)| {
+        action_required
+            .iter()
+            .position(|required| required == owner)
+            .map_or(0, |at| at + 1)
+    });
 
-    cfgd_core::reconciler::render_caveats(printer, &informational);
+    cfgd_core::reconciler::render_caveats(printer, &caveats);
 }
 
 /// The `cfgd:env` re-source reminder, as a note — `None` when this apply
@@ -190,7 +197,11 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::EnvAction::InjectSourceLine { .. } => {
                 cfgd_core::reconciler::ENV_VERB_INJECT
             }
-            reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
+            // The verb the plan bullet already prints for this act
+            // (`publish 3 vars to the live session`); `refresh` below is the
+            // package-index verb, and one wire word for two acts made a
+            // consumer filtering on `type` unable to tell them apart.
+            reconciler::EnvAction::RefreshLiveSession { .. } => "publish",
         },
         reconciler::Action::Manager(ma) => match ma {
             reconciler::ManagerAction::RefreshIndex { .. } => "refresh",
@@ -945,7 +956,7 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
 }
 
 /// The owner token a phase-qualified group alias (`bootstrap.managers`,
-/// `bootstrap.env`, `bootstrap.session`) resolves to, if `pattern`
+/// `bootstrap.env`, `bootstrap.shell`, `bootstrap.session`) resolves to, if `pattern`
 /// spells one — the alternate grammar for the `kind:name` owner-token check
 /// `pattern_matches_action` already understands directly.
 ///
@@ -990,7 +1001,7 @@ pub(in crate::cli) fn pattern_matches(pattern: &str, action_path: &str) -> bool 
 /// `OwnerKind` token; rule 2 cannot shadow it either, because after the
 /// kind-phase routing the only paths starting with `modules.` are the
 /// platform-gated skips rule 2 selects anyway. Rule 4 (the phase-qualified
-/// group alias, `bootstrap.managers`/`.env`/`.session`) falls through
+/// group alias, `bootstrap.managers`/`.env`/`.shell`/`.session`) falls through
 /// rather than returning `false` on a miss, so a pattern that only
 /// COINCIDENTALLY looks like a group alias (a system configurator that
 /// happens to be named `env`) still gets the literal match it would have

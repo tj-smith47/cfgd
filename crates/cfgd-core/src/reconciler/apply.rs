@@ -819,7 +819,8 @@ pub fn action_matches_phase_filter(
 }
 
 /// The `<selector>` half of a dotted phase filter: either one of the closed
-/// cfgd owner-group names (`managers`/`env`/`session`) or a manager name.
+/// cfgd owner-group names (`managers`/`env`/`shell`/`session`) or a manager
+/// name.
 ///
 /// A manager selector matches on [`ManagerAction::filter_subject`] directly
 /// rather than through `Owner`, because every [`ManagerAction`] shares the

@@ -10855,6 +10855,16 @@ fn action_type_str_env_variants() {
         })),
         "inject"
     );
+
+    // The live session is its own act with its own verb: `refresh` below
+    // names a package index, and one word for both left a consumer filtering
+    // on `type` unable to tell them apart.
+    assert_eq!(
+        super::action_type_str(&Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("FOO".into(), "bar".into())],
+        })),
+        "publish"
+    );
 }
 
 #[test]
@@ -15087,11 +15097,18 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
 fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     /// (golden, the test source that produced it, that test's name); both
     /// paths workspace-relative, the grammar the walk's own population is in.
-    const DECLARED: &[(&str, &str, &str)] = &[(
-        "crates/cfgd/tests/output_snapshots/plan/composed_source.txt",
-        "crates/cfgd/tests/plan_snapshots.rs",
-        "plan_composed_source_human",
-    )];
+    const DECLARED: &[(&str, &str, &str)] = &[
+        (
+            "crates/cfgd/tests/output_snapshots/apply/env_owner_groups.txt",
+            "crates/cfgd/tests/apply_snapshots.rs",
+            "apply_env_owner_groups_human",
+        ),
+        (
+            "crates/cfgd/tests/output_snapshots/plan/composed_source.txt",
+            "crates/cfgd/tests/plan_snapshots.rs",
+            "plan_composed_source_human",
+        ),
+    ];
     /// The env-target action subjects, as `action_display_subject` renders
     /// them. `write` is qualified by the generated basenames so a fixture's
     /// own file write cannot look like one.
@@ -32258,6 +32275,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
         managed_resources: [
             ("file", "~/.gitconfig"),
             ("env", "/home/user/.cfgd.env"),
+            ("env", "/home/user/.bashrc"),
             ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
         ]
         .into_iter()
@@ -32346,10 +32364,13 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         heading_line.contains("(checked 3m ago)"),
         "the heading carries the recorded scan's age, got:\n{heading_line}"
     );
+    // The session is the one owner a machine-wide scan never reaches, so it
+    // keeps the record's own word while its siblings earn a verdict.
     let rows = [
         ("profile:base", "— Synced (1 file)"),
         ("cfgd:env", "— Synced (1 env file)"),
-        ("cfgd:session", "— Synced (1 session env)"),
+        ("cfgd:shell", "— Synced (1 rc line)"),
+        ("cfgd:session", "— Applied (1 live session)"),
         ("module:broken", "— Failed"),
         ("module:git", "— Synced (1 file)"),
         ("module:nvim", "— Synced (6 files)"),
@@ -32504,10 +32525,17 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
         section.starts_with(" (drift never checked)"),
         "an unstamped host says so on the heading:\n{section}"
     );
-    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+    for owner in [
+        "cfgd:env",
+        "cfgd:shell",
+        "cfgd:session",
+        "module:git",
+        "module:nvim",
+        "profile:base",
+    ] {
         let line = row(section, owner);
         assert!(
-            line.contains("— Installed") && !line.contains("Synced"),
+            line.contains("— Applied") && !line.contains("Synced"),
             "`{owner}` may not read Synced with no check behind it:\n{line}"
         );
     }
@@ -32515,13 +32543,27 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
     let machine_wide = component_health_fixture();
     let rendered = render(&machine_wide);
     let section = component_health_section(&rendered);
-    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+    for owner in [
+        "cfgd:env",
+        "cfgd:shell",
+        "module:git",
+        "module:nvim",
+        "profile:base",
+    ] {
         let line = row(section, owner);
         assert!(
             line.contains("— Synced"),
             "a machine-wide scan covers `{owner}`:\n{line}"
         );
     }
+    // The live session is the one owner outside the scan's reach: nothing
+    // re-reads a `launchctl` / `systemctl --user` environment, so a stamp the
+    // whole machine earned still leaves this row on the record's own word.
+    let session = row(section, "cfgd:session");
+    assert!(
+        session.contains("— Applied") && !session.contains("Synced"),
+        "a machine-wide scan reaches no live session:\n{session}"
+    );
 
     let mut scoped = component_health_fixture();
     scoped.last_scan_at = None;
@@ -32539,10 +32581,16 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
         row(section, "module:nvim").contains("— Synced"),
         "the scanned module earns its verdict:\n{section}"
     );
-    for uncovered in ["cfgd:env", "module:git", "profile:base"] {
+    for uncovered in [
+        "cfgd:env",
+        "cfgd:shell",
+        "cfgd:session",
+        "module:git",
+        "profile:base",
+    ] {
         let line = row(section, uncovered);
         assert!(
-            line.contains("— Installed"),
+            line.contains("— Applied"),
             "a scoped scan of nvim vouches for nothing else, `{uncovered}` read:\n{line}"
         );
     }
@@ -33425,8 +33473,9 @@ fn every_recorded_scope_slot_declares_its_owner_tokens() {
 fn every_title_cased_status_word_renders_role_styled() {
     /// Every word the pair producers return, enumerated from their own match
     /// arms (`ApplyStatus::human_str`, `module_status_display`,
-    /// `source_status_display`, `backup_run_status_display`,
-    /// `ComplianceStatus::human_display`). A new arm adds its word here.
+    /// `module_listing_display`, `source_status_display`,
+    /// `backup_run_status_display`, `ComplianceStatus::human_display`). A new
+    /// arm adds its word here.
     const WORDS: &[&str] = &[
         // ApplyStatus
         "Success",
@@ -33438,6 +33487,9 @@ fn every_title_cased_status_word_renders_role_styled() {
         "Synced",
         "Drifted",
         "NotApplied",
+        "Applied",
+        // module_listing_display, whose unchecked arm states presence instead
+        "Installed",
         // source_status_display (`Unknown` is shared with the module one)
         "Active",
         "Pending",
@@ -33453,6 +33505,7 @@ fn every_title_cased_status_word_renders_role_styled() {
     const PAIRS: &[&str] = &[
         "human_display()",
         "module_status_display(",
+        "module_listing_display(",
         "source_status_display(",
         "backup_run_status_display(",
         "state_display()",

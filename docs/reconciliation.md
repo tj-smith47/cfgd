@@ -35,11 +35,14 @@ is labelled `kind:name`:
 | `profile:<name>` | declared by the active profile |
 | `module:<name>` | declared by that module |
 | `cfgd:managers` | package-manager work cfgd runs on its own initiative: an index refresh, a manager it provisions, a tool that provisioning needs |
-| `cfgd:env` / `cfgd:session` | the generated env file / the live-session refresh |
+| `cfgd:env` | the env files cfgd writes whole (`~/.cfgd.env`, `environment.d`, the macOS LaunchAgent) |
+| `cfgd:shell` | the source lines cfgd plants in the shell rc files you own |
+| `cfgd:session` | the live-session refresh |
 
-Groups read profile-first, then `cfgd:`, then modules by name. cfgd's own three groups
-read producer-before-consumer: `cfgd:managers` creates the binaries, `cfgd:env` publishes
-where they live, `cfgd:session` broadcasts it. **Execution order in `Packages` is
+Groups read profile-first, then `cfgd:`, then modules by name. cfgd's own four groups
+read producer-before-consumer: `cfgd:managers` creates the binaries, `cfgd:env` writes the
+files that say where they live, `cfgd:shell` plants the line that reads those files into a
+shell you own, `cfgd:session` broadcasts it. **Execution order in `Packages` is
 deliberately not the displayed order**: module-owned package work runs first, then
 profile-owned package work, so a module's dependency is present before a module's own
 hooks need it. `Bootstrap` is the other exception: its `cfgd:managers` group is a
@@ -82,8 +85,8 @@ serialize around an install that changes `PATH` mid-`Packages`, and a manager th
 missing is exactly what this phase is for. What still holds is one operation per manager
 family, so two nodes never drive one binary at once. **A node whose dependency failed
 never runs**: it is reported as a failure naming the root cause (`did not run — brew
-failed earlier in this phase`), never as a silent success. `cfgd:env` and `cfgd:session`
-run after that group finishes, in order, because they publish what it created.
+failed earlier in this phase`), never as a silent success. `cfgd:env`, `cfgd:shell` and
+`cfgd:session` run after that group finishes, in order, because they publish what it created.
 
 On a terminal the live region **is** the phase's tree, drawn while it happens: each
 action takes a row the moment the scheduler has something to say about it, and that row
@@ -238,6 +241,7 @@ cfgd apply --only packages.brew          # dot-notation filter (the brew manager
 cfgd apply --only packages.module:nvim   # a module's package work
 cfgd apply --skip module:nvim            # one module, every phase
 cfgd apply --skip cfgd:managers          # every index refresh and manager cfgd provisions
+cfgd apply --skip bootstrap.shell    # write the env file, touch no rc file
 cfgd apply --skip bootstrap.session  # skip the live-session broadcast
 cfgd apply --skip bootstrap.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl          # skip specific items
@@ -310,11 +314,13 @@ where a check actually covered the owner. cfgd keeps two stamps for that:
 | Machine-wide (`last_scan`) | `cfgd diff`, `cfgd verify`, `cfgd status --scan`, a profile-wide daemon tick | Every owner: modules, cfgd's env surfaces, the profile |
 | Scoped (`scoped_scans`) | `cfgd diff --module`, `cfgd verify --module`, `cfgd status <module> --scan`, a per-module daemon tick (the module file-watch) | Every module of the chain that check resolved, keyed `module:<name>` |
 
-An owner neither stamp covers reads `Installed` — the record's own fact, that
+An owner neither stamp covers reads `Applied` — the record's own fact, that
 the last apply completed and nothing has looked since — rather than `Synced`.
 A scoped check stamps its own chain and deliberately leaves the machine-wide
 stamp alone: one module's files and packages are not evidence the machine was
-checked, and `cfgd:env` and `profile:*` stay uncovered by it. The daemon
+checked, and `cfgd:env`, `cfgd:shell` and `profile:*` stay uncovered by it.
+`cfgd:session` is covered by neither: no check re-reads a live session's
+environment, so that row states `Applied` however recently you scanned. The daemon
 answers the same way: a tick woken by one module's file watch dates that
 module's scope, and only a profile-wide tick dates the machine.
 

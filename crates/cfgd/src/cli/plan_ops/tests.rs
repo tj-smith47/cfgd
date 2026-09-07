@@ -483,10 +483,35 @@ fn action_type_str_script_and_module_variants() {
     assert_eq!(action_type_str(&module_skip()), "skip");
 }
 
+/// The three env acts are three wire types, and the live-session one does not
+/// borrow the package index's verb.
+///
+/// `refresh` names a package-index refresh in the same vocabulary, so a
+/// consumer filtering `type` could not tell "cfgd re-read brew's catalogue"
+/// from "cfgd published 3 vars into your session". The write and inject words
+/// come from the two verb consts the recorded ids are also read back through,
+/// so a wire type and a recorded id cannot spell one act two ways.
 #[test]
 fn action_type_str_env_variants() {
-    assert_eq!(action_type_str(&env_write()), "write");
-    assert_eq!(action_type_str(&env_inject()), "inject");
+    assert_eq!(
+        action_type_str(&env_write()),
+        cfgd_core::reconciler::ENV_VERB_WRITE
+    );
+    assert_eq!(
+        action_type_str(&env_inject()),
+        cfgd_core::reconciler::ENV_VERB_INJECT
+    );
+    let publish = Action::Env(EnvAction::RefreshLiveSession {
+        vars: vec![("FOO".to_string(), "bar".to_string())],
+    });
+    assert_eq!(action_type_str(&publish), "publish");
+    assert_ne!(
+        action_type_str(&publish),
+        action_type_str(&Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })),
+        "the live session and a package index are two acts and two types"
+    );
 }
 
 #[test]

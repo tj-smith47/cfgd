@@ -132,6 +132,7 @@ cfgd apply --only packages.brew         # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
 cfgd apply --skip module:nvim           # one module, every phase
 cfgd apply --skip cfgd:managers         # every package-manager bootstrap
+cfgd apply --skip bootstrap.shell      # write the env file, touch no rc file
 cfgd apply --skip bootstrap.session     # skip the live-session broadcast
 cfgd apply --skip bootstrap.brew        # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl         # skip specific items
@@ -226,6 +227,7 @@ cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # nvim + deps, isolated from the profile
 cfgd plan --module nvim --with-profile  # full profile PLUS nvim
 cfgd plan --phase bootstrap.managers    # one owner group within a phase
+cfgd plan --skip bootstrap.shell       # write the env file, touch no rc file
 cfgd plan --skip bootstrap.session      # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
@@ -295,7 +297,7 @@ the `brew` package manager never collide:
 
 `--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
 scoped to a single phase: `<phase>.<selector>`, where the selector is either
-an owner group (`managers`, `env`, `session`: the three `Bootstrap`
+an owner group (`managers`, `env`, `shell`, `session`: the four `Bootstrap`
 always carries), a manager name (family-collapsed, so `bootstrap.brew`
 also covers `brew-tap`/`brew-cask`), or a prerequisite tool a registered
 manager's installer shells out to (`bootstrap.curl`). A selector is only valid on
@@ -307,7 +309,8 @@ pointing at `--phase bootstrap.brew` instead, since manager work lives in
 | Pattern | Selects |
 |---|---|
 | `bootstrap.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Bootstrap`) |
-| `bootstrap.env` | the `~/.cfgd.env`/rc-file write group |
+| `bootstrap.env` | the env files cfgd writes whole (`~/.cfgd.env`, `~/.config/environment.d/cfgd.conf`, the macOS LaunchAgent) |
+| `bootstrap.shell` | the source lines cfgd plants in the shell rc files you own (`~/.bashrc`, `~/.zshenv`, `~/.profile`) |
 | `bootstrap.session` | the live-session broadcast (`RefreshLiveSession`) |
 | `bootstrap.brew` | only the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`bootstrap.curl`) rather than on whichever manager's installer happens to need it |
 
@@ -581,10 +584,12 @@ no scan is on record, `checked live now` after `--scan`), the freshest of the
 machine-wide scan stamp, the scoped scans' own stamps, and the recorded rows'
 timestamps, since a scoped scan stamps its own chain rather than moving the
 machine-wide stamp. A row reads `Synced` only where one of those checks
-covered that owner: an owner nothing has checked reads `Installed`, the
+covered that owner: an owner nothing has checked reads `Applied`, the
 record's own fact, so a verdict can never claim an answer no check produced.
-A scoped scan covers the modules it resolved and nothing else — `cfgd:env` and
-`profile:*` need a machine-wide check. Each unresolved recorded finding
+A scoped scan covers the modules it resolved and nothing else — `cfgd:env`,
+`cfgd:shell` and `profile:*` need a machine-wide check, and `cfgd:session`
+is reached by no check at all (nothing re-reads a live session's
+environment), so it reads `Applied` however recently you scanned. Each unresolved recorded finding
 nests under the health row of the owner it belongs to, stating its terse
 cause, and the owner's verdict flips to `Drifted` with the shortfall as its
 parenthetical:
@@ -651,9 +656,10 @@ the same `{key, error}` entries the fleet payload uses for the same fact.
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`
 reports drift under: `profile:<name>` for a resource the profile declared,
-`module:<name>` for one a module declared, and `cfgd:env` / `cfgd:session` for
-what cfgd manages on its own behalf (the generated env file and the rc source
-line; the live-session publish).
+`module:<name>` for one a module declared, and `cfgd:env` / `cfgd:shell` /
+`cfgd:session` for what cfgd manages on its own behalf (the env files cfgd
+writes whole; the source lines cfgd plants in rc files you own; the
+live-session publish).
 
 The rows are ordered by owner the way a plan or apply tree orders its groups:
 the profile first, then cfgd's own groups in the order they run, then the
@@ -666,7 +672,8 @@ Managed Resources
   file     profile:work      ~/.bashrc                          local
   package  profile:work      brew: bat, ripgrep                 local
   env      cfgd:env          /home/you/.cfgd.env                local
-  env      cfgd:session      session env                        local
+  rc       cfgd:shell        /home/you/.bashrc                  local
+  session  cfgd:session      live session                       local
   file     module:nvim       /home/you/.config/nvim (12 files)  local
 ```
 
@@ -888,8 +895,8 @@ Packages
     ⚠ brew: not installed — extra-tool
     ⚠ nix: not installed  — hello
   cfgd:managers
-    ⚠ pipx: not installed — can bootstrap via pip install pipx
-    ⚠ snap: not installed — cannot bootstrap: no available system manager
+    ⚠ pipx: not installed — can provision via pip install pipx
+    ⚠ snap: not installed — cannot provision: no available system manager
 
 Shell
   profile:work
@@ -968,8 +975,9 @@ refuse: not something the profile declared missing, but something `apply` would
 still change. It draws from the same planner the `Bootstrap` phase uses (see
 [Reconciliation](reconciliation.md#phases)), so a manager never reads
 "converged" here while `apply` still has work to do on it. A manager `apply` can
-self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
-`not installed — cannot bootstrap: <reason>`.
+self-heal reads `not installed — can provision via <method>`; one it cannot reads
+`not installed — cannot provision: <reason>`. The verb is the plan's own — the
+`Bootstrap` phase provisions that manager — so the two surfaces name one act one way.
 
 A file's body renders directly under the line that names it, so a hunk reads with
 its target rather than above it.

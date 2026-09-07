@@ -304,6 +304,72 @@ fn apply_phase_tree_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
 }
 
+/// The env work of one apply falls into THREE owner groups, in the order the
+/// tree heads them with: the files cfgd authors, the lines cfgd plants in
+/// files the user owns, then the session cfgd publishes into.
+///
+/// A single group over all three said cfgd owns `~/.bashrc` the way it owns
+/// `~/.cfgd.env`, and left `--skip bootstrap.shell` — write the env file,
+/// touch no rc file — inexpressible. The grouping is what a reader steers by,
+/// so it is pinned as rendered bytes rather than as an owner list.
+///
+/// Every free variable of the row SET is pinned, because a golden holds one
+/// render for every machine that runs it: the shell probe decides which rc
+/// files are targets, and the `systemctl` shim decides whether this host has
+/// a live-session manager at all (without one the publish is withheld with a
+/// reason, which is a different row). Linux-only for the same reason the
+/// composed-source plan golden is POSIX-only — macOS adds a LaunchAgent and
+/// Windows writes PowerShell profiles, so the row set is a property of the
+/// platform, not of this grouping.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial]
+fn apply_env_owner_groups_human() {
+    let _systemctl = cfgd_core::test_helpers::ToolShim::install("CFGD_SYSTEMCTL_BIN", 0, "", "");
+    // The env targets hang off `$HOME`; an unguarded test home is named after
+    // the pid and would not be host-stable.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: true,
+        },
+    );
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("shell.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shell\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n    - name: PAGER\n      value: less\n    - name: VISUAL\n      value: nvim\n  aliases:\n    - name: gs\n      command: git status\n    - name: ll\n      command: ls -la\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: shell\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    run_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "apply/env_owner_groups.txt",
+        &stripped
+    );
+}
+
 #[test]
 fn apply_bridge_one_blank_line() {
     // Bridge invariant: when the streaming SectionGuard drops, the
