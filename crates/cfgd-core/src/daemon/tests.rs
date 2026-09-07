@@ -14053,7 +14053,7 @@ spec:
     /// replaced completed in 0.3-1.2s on a dedicated Windows host and blew
     /// past 3s on a 2-vCPU hosted runner, where nextest schedules other tests
     /// against the same cores.
-    const LOOP_EXIT_BUDGET: StdDuration = StdDuration::from_secs(30);
+    pub(super) const LOOP_EXIT_BUDGET: StdDuration = StdDuration::from_secs(30);
 
     /// `DaemonHooks` that panics in `plan_files`. Used to drive
     /// `handle_reconcile_tick` into a `JoinError` so the loop's recovery
@@ -19887,7 +19887,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{LOOP_EXIT_BUDGET, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::backup::ScheduleProjections;
     use crate::daemon::backup::{
@@ -20198,6 +20198,55 @@ mod backup_timers {
         assert_eq!(set.tasks()[0].spec.retention, 3);
     }
 
+    /// The running loop is what turns a recorded projection into a re-armed
+    /// timer set: the check-in raises the state's own notify, and the loop's
+    /// own arm re-resolves. Driving `schedule_retry` by hand proves the timer
+    /// half alone, so this pin drives the loop and lets nothing between the
+    /// notify and the re-resolution go untested.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
+    async fn a_running_loop_re_resolves_its_timers_when_the_projection_is_raised() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: \"6h\"\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (triggers, senders) = make_triggers();
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
+            Arc::new(AtomicU64::new(300)),
+            Arc::new(AtomicU64::new(300)),
+        ));
+
+        // What a check-in that answered a changed projection does, and nothing
+        // more: the loop owns every step after it.
+        state.lock().await.backup_reresolve().notify_one();
+        wait_for_daemon_log(
+            "backup schedules restored: 1 scheduled",
+            DAEMON_LOG_WAIT_CEILING,
+        )
+        .await;
+
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
+            .await
+            .expect("loop did not exit after shutdown")
+            .expect("join error")
+            .expect("loop returned Err");
+    }
+
     /// Re-arming on every check-in would re-resolve the whole profile once per
     /// tick, so the answer that re-arms is specifically a CHANGED one.
     #[test]
@@ -20279,6 +20328,211 @@ mod backup_timers {
                 .map(|p| p.schedule.as_str()),
             Some("0 3 * * *"),
             "an unreachable gateway must not delete the cadences the cluster owns"
+        );
+    }
+
+    /// A configured origin this machine holds no enrolment for is a skip, not
+    /// an anonymous post: the mock must see NO request at all. An
+    /// unauthenticated body would be refused, and a gateway logging refusals
+    /// from a machine that never enrolled is the operator's problem to be told
+    /// about, not to discover.
+    #[test]
+    fn a_configured_origin_with_no_stored_credential_posts_nothing() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        // Any check-in at all fails this pin: the mock expects zero.
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .expect(0)
+            .with_status(200)
+            .create();
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            !outcome.config_changed,
+            "a check-in that never happened reports no change"
+        );
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "a check-in that never happened answers no projection"
+        );
+    }
+
+    /// A gateway that could not read the cluster answers with no projection at
+    /// all, and no projection is nothing to record: the same rule as a lost
+    /// round-trip, one hop up. A `200` is not by itself an answer about what
+    /// the cluster owns.
+    #[test]
+    fn a_check_in_answered_without_a_projection_keeps_the_recorded_one() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "an answer carrying no projection projects nothing"
+        );
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that could not read the cluster must not retire what it owns"
+        );
+    }
+
+    /// The retire path still works: an answer that CARRIES the projection,
+    /// empty included, is a read that succeeded and replaces the whole set.
+    #[test]
+    fn a_check_in_answered_with_an_empty_projection_clears_the_recorded_one() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false,"backupSchedules":{}}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert_eq!(
+            outcome.backup_schedules,
+            Some(Default::default()),
+            "an empty projection is an answer the machine acts on"
+        );
+        crate::daemon::checkin::record_cluster_schedules_in(
+            Some(tmp.path()),
+            outcome
+                .backup_schedules
+                .as_ref()
+                .expect("the answer carried a projection"),
+        );
+        assert!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .is_empty(),
+            "a cluster that stopped scheduling a unit retires its cadence"
         );
     }
 

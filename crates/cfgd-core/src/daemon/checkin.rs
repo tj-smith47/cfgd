@@ -32,8 +32,14 @@ pub struct CheckinServerResponse {
     /// server config, which the next reconcile consumes.
     #[serde(default)]
     pub desired_config: Option<serde_json::Value>,
+    /// The cadences the cluster owns for this machine, as the gateway answered.
+    ///
+    /// Absent when the gateway could not read the cluster, and from an older
+    /// gateway's answer: either way this machine learned nothing, and a set it
+    /// already recorded stays. Present and empty is an answer, and retires
+    /// them.
     #[serde(default)]
-    pub backup_schedules: crate::backup::ScheduleProjections,
+    pub backup_schedules: Option<crate::backup::ScheduleProjections>,
 }
 
 /// What a check-in produced: whether the gateway reports the config changed,
@@ -43,8 +49,8 @@ pub struct CheckinServerResponse {
 /// that took only the bool left the projection on the floor — the whole reason
 /// the response carries it.
 #[derive(Debug, Default)]
-pub(crate) struct CheckinOutcome {
-    pub(crate) config_changed: bool,
+pub struct CheckinOutcome {
+    pub config_changed: bool,
     /// The projection the gateway ANSWERED with, `None` for a check-in that
     /// never got an answer.
     ///
@@ -52,7 +58,7 @@ pub(crate) struct CheckinOutcome {
     /// replaced and being lost: recording is a whole-set replace, so folding a
     /// failed round-trip into an empty map would let one unreachable gateway
     /// delete every cadence the cluster owns for this machine.
-    pub(crate) backup_schedules: Option<crate::backup::ScheduleProjections>,
+    pub backup_schedules: Option<crate::backup::ScheduleProjections>,
 }
 
 /// Compute a SHA256 hash of the resolved profile serialized to YAML.
@@ -135,7 +141,10 @@ pub(crate) fn server_checkin(
                         tracing::debug!(
                             server_status = %resp.status,
                             config_changed = resp.config_changed,
-                            cluster_scheduled_units = resp.backup_schedules.len(),
+                            cluster_scheduled_units = resp
+                                .backup_schedules
+                                .as_ref()
+                                .map_or(0, std::collections::BTreeMap::len),
                             "daemon: check-in response"
                         );
                         tracing::info!(
@@ -156,7 +165,7 @@ pub(crate) fn server_checkin(
                         }
                         CheckinOutcome {
                             config_changed: resp.config_changed,
-                            backup_schedules: Some(resp.backup_schedules),
+                            backup_schedules: resp.backup_schedules,
                         }
                     }
                     Err(e) => {
@@ -197,7 +206,7 @@ pub(crate) fn find_server_url(config: &CfgdConfig) -> Option<String> {
 /// A configured origin the machine holds no enrolment for is a logged skip
 /// rather than an anonymous post: the gateway would refuse it, and a request
 /// that cannot be authenticated is one the operator has to be told about.
-pub(crate) fn try_server_checkin(
+pub fn try_server_checkin(
     config: &CfgdConfig,
     resolved: &ResolvedProfile,
     facts: crate::server_client::CheckinFacts,

@@ -159,12 +159,13 @@ pub(super) async fn run_daemon_loop(
     let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
     let mut pull_echoes = PullEchoes::default();
     let debounce = Duration::from_millis(DEBOUNCE_MS);
+    // The handle is created with the daemon's state and never replaced, so it
+    // is taken once for the loop's life rather than under the state lock on
+    // every turn.
+    let backup_reresolve = { ctx.state.lock().await.backup_reresolve() };
 
     loop {
         let backup_deadline = tokio::time::Instant::from_std(next_backup_deadline(&backup_timers));
-        // Taken fresh each turn, and outside the select so the branch below
-        // borrows nothing the other branches lock.
-        let backup_reresolve = { ctx.state.lock().await.backup_reresolve() };
 
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {

@@ -175,11 +175,17 @@ pub(super) async fn find_machine_config_for_device(
 ) -> String {
     find_machine_config_ref(client, hostname)
         .await
+        .ok()
+        .flatten()
         .map_or_else(|| format!("{}-mc", hostname), |(_, name)| name)
 }
 
 /// The `(namespace, name)` of the MachineConfig whose `spec.hostname` is
-/// `hostname`, or `None` when the cluster holds none and when the list fails.
+/// `hostname`: `Ok(None)` when the cluster holds none, `Err` when the list
+/// failed.
+///
+/// The two are kept apart because a caller answering a device about what the
+/// cluster owns must not report an outage as an empty cluster.
 ///
 /// A live read, deliberately: the gateway answers a device's request about the
 /// machine it is right now, and it holds no reflector of its own — a cache
@@ -192,21 +198,21 @@ pub(super) async fn find_machine_config_for_device(
 pub(super) async fn find_machine_config_ref(
     client: &kube::Client,
     hostname: &str,
-) -> Option<(String, String)> {
+) -> Result<Option<(String, String)>, kube::Error> {
     use crate::crds::MachineConfig;
     use kube::ResourceExt;
     use kube::api::{Api, ListParams};
 
     let machines: Api<MachineConfig> = Api::all(client.clone());
     match machines.list(&ListParams::default()).await {
-        Ok(list) => list
+        Ok(list) => Ok(list
             .items
             .iter()
             .find(|mc| mc.spec.hostname == hostname)
-            .and_then(|mc| mc.namespace().map(|ns| (ns, mc.name_any()))),
+            .and_then(|mc| mc.namespace().map(|ns| (ns, mc.name_any())))),
         Err(e) => {
             tracing::warn!(error = %e, "failed to list MachineConfigs for device lookup");
-            None
+            Err(e)
         }
     }
 }

@@ -734,36 +734,79 @@ fn checkin_body_reporting(
     })
 }
 
-/// The three calls a check-in makes against a cluster that holds a
-/// MachineConfig for `host-1`, with no policy to project.
+/// The MachineConfig status path a `host-1` check-in resolves to.
+const MACHINE_STATUS_PATH: &str =
+    "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status";
+
+/// One status apply, its field manager named. A map's manager is the ONLY
+/// writer of its field, so a fixture states which manager it expects rather
+/// than accepting whichever apply came first.
+fn expect_status_apply(field_manager: &str) -> ExpectedCall {
+    ExpectedCall::patch_status(MACHINE_STATUS_PATH).with_query_contains(format!(
+        "fieldManager={}",
+        field_manager.replace('/', "%2F")
+    ))
+}
+
+/// The calls a check-in reporting BOTH maps makes against a cluster that holds
+/// a MachineConfig for `host-1`, with no policy to project: one apply per map,
+/// each under its own manager.
 fn checkin_kube_calls() -> Vec<ExpectedCall> {
     vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
             .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
-        ExpectedCall::patch_status(
-            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
-        ),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
             .returning_json(&backup_policy_list(vec![])),
     ]
 }
 
-/// The status body the check-in applied.
-fn applied_status(
+/// Every status apply the check-in made, as `(fieldManager, body)`.
+fn status_applies(
     report: &crate::controllers::test_kube_harness::HarnessReport,
+) -> Vec<(String, serde_json::Value)> {
+    report
+        .captured
+        .iter()
+        .filter(|r| {
+            r.method == http::Method::PATCH
+                && r.path.ends_with("/machineconfigs/workstation-1-mc/status")
+        })
+        .map(|r| {
+            assert!(
+                r.query.contains("force=true"),
+                "each manager is the sole writer of its one field, so its apply is forced ({})",
+                r.query
+            );
+            let manager = r
+                .query
+                .split('&')
+                .find_map(|p| p.strip_prefix("fieldManager="))
+                .expect("an apply always names its field manager")
+                .replace("%2F", "/");
+            (manager, r.body_json())
+        })
+        .collect()
+}
+
+/// The body applied under `field_manager`, or a panic naming what was applied
+/// instead.
+fn applied_under(
+    report: &crate::controllers::test_kube_harness::HarnessReport,
+    field_manager: &str,
 ) -> serde_json::Value {
-    let patch = report
-        .find(
-            http::Method::PATCH,
-            "/machineconfigs/workstation-1-mc/status",
-        )
-        .expect("the check-in patches the MachineConfig the hostname resolved to");
-    assert!(
-        !patch.query.contains("force"),
-        "the apply is never forced: a conflict is something to report, not overwrite ({})",
-        patch.query
-    );
-    patch.body_json()
+    let applies = status_applies(report);
+    applies
+        .iter()
+        .find(|(manager, _)| manager == field_manager)
+        .map(|(_, body)| body.clone())
+        .unwrap_or_else(|| {
+            panic!(
+                "no apply under {field_manager}; the check-in applied {:?}",
+                applies.iter().map(|(m, _)| m).collect::<Vec<_>>()
+            )
+        })
 }
 
 #[tokio::test]
@@ -772,16 +815,7 @@ async fn checkin_patches_the_devices_machine_config_status() {
     unsafe {
         std::env::remove_var("CFGD_API_KEY");
     }
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
-            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
-        ExpectedCall::patch_status(
-            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
-        )
-        .with_query_contains("fieldManager=cfgd-operator%2Fgateway"),
-        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
-            .returning_json(&backup_policy_list(vec![])),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
     let token = enrolled_device(&state, "dev-1", "host-1").await;
 
@@ -796,17 +830,119 @@ async fn checkin_patches_the_devices_machine_config_status() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let report = harness.finish().await;
-    let body = applied_status(&report);
-    assert_eq!(body["status"]["packageVersions"]["brew/git"], "2.45.1");
+    let packages = applied_under(&report, "cfgd-operator/gateway/packages");
+    assert_eq!(packages["status"]["packageVersions"]["brew/git"], "2.45.1");
+    let backups = applied_under(&report, "cfgd-operator/gateway/backups");
     assert_eq!(
-        body["status"]["backupScheduleOwners"]["notes"],
+        backups["status"]["backupScheduleOwners"]["notes"],
         serde_json::json!("local")
     );
     // An apply body is a whole object: the API server reads the type and the
     // name from it, and a fragment would be rejected.
-    assert_eq!(body["apiVersion"], "cfgd.io/v1alpha1");
-    assert_eq!(body["kind"], "MachineConfig");
-    assert_eq!(body["metadata"]["name"], "workstation-1-mc");
+    for body in [&packages, &backups] {
+        assert_eq!(body["apiVersion"], "cfgd.io/v1alpha1");
+        assert_eq!(body["kind"], "MachineConfig");
+        assert_eq!(body["metadata"]["name"], "workstation-1-mc");
+    }
+}
+
+/// A manager owns exactly one field. A server-side apply removes the fields its
+/// own manager stops naming, so two maps under one manager would make a
+/// check-in that observed only one delete the other; two managers make the
+/// unobserved map unreportable rather than blanked.
+#[tokio::test]
+#[serial]
+async fn each_reported_map_is_applied_under_its_own_field_manager() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body_reporting(
+                "dev-1",
+                "host-1",
+                serde_json::json!({ "brew/git": "2.45.1" }),
+                serde_json::json!({ "dotfiles": "cluster" }),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let applies = status_applies(&report);
+    assert_eq!(
+        applies.len(),
+        2,
+        "one apply per observed map, never one carrying both"
+    );
+    let packages = applied_under(&report, "cfgd-operator/gateway/packages");
+    assert!(
+        packages["status"]["backupScheduleOwners"].is_null(),
+        "the packages manager never names the map it does not own: {packages}"
+    );
+    let backups = applied_under(&report, "cfgd-operator/gateway/backups");
+    assert!(
+        backups["status"]["packageVersions"].is_null(),
+        "the backups manager never names the map it does not own: {backups}"
+    );
+}
+
+/// A device whose managers could not be queried reports the owners alone. Only
+/// the backups manager writes, and the versions the cluster holds are left
+/// where they are, because the manager that owns them named nothing this time.
+#[tokio::test]
+#[serial]
+async fn a_device_reporting_one_map_leaves_the_others_field_manager_silent() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/backups"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "configHash": "abc",
+                "backupScheduleOwners": { "dotfiles": "cluster" },
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let applies = status_applies(&report);
+    assert_eq!(
+        applies.len(),
+        1,
+        "a map the device did not observe produces no apply for its manager"
+    );
+    assert_eq!(applies[0].0, "cfgd-operator/gateway/backups");
+    assert!(
+        applies[0].1["status"]["packageVersions"].is_null(),
+        "the body names nothing the packages manager owns: {}",
+        applies[0].1
+    );
 }
 
 /// The device dropped a `spec.backups[]` unit, so its next check-in reports the
@@ -840,7 +976,9 @@ async fn a_device_that_stops_reporting_a_unit_clears_its_row() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let report = harness.finish().await;
-    let owners = applied_status(&report)["status"]["backupScheduleOwners"].clone();
+    let owners =
+        applied_under(&report, "cfgd-operator/gateway/backups")["status"]["backupScheduleOwners"]
+            .clone();
     assert_eq!(
         owners,
         serde_json::json!({ "dotfiles": "cluster" }),
@@ -876,10 +1014,12 @@ async fn a_device_that_reports_no_units_clears_the_map() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let report = harness.finish().await;
-    let body = applied_status(&report);
-    assert_eq!(body["status"]["packageVersions"], serde_json::json!({}));
     assert_eq!(
-        body["status"]["backupScheduleOwners"],
+        applied_under(&report, "cfgd-operator/gateway/packages")["status"]["packageVersions"],
+        serde_json::json!({})
+    );
+    assert_eq!(
+        applied_under(&report, "cfgd-operator/gateway/backups")["status"]["backupScheduleOwners"],
         serde_json::json!({})
     );
 }
@@ -921,13 +1061,8 @@ async fn a_device_that_reports_neither_map_writes_no_status() {
 
     let report = harness.finish().await;
     assert!(
-        report
-            .find(
-                http::Method::PATCH,
-                "/machineconfigs/workstation-1-mc/status"
-            )
-            .is_none(),
-        "a check-in that observed nothing writes nothing"
+        status_applies(&report).is_empty(),
+        "a check-in that observed nothing writes nothing, under either manager"
     );
 }
 
@@ -984,10 +1119,10 @@ async fn checkin_succeeds_when_the_status_patch_is_refused() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
             .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
-        ExpectedCall::patch_status(
-            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
-        )
-        .returning_server_error(403, "machineconfigs.cfgd.io is forbidden"),
+        expect_status_apply("cfgd-operator/gateway/packages")
+            .returning_server_error(403, "machineconfigs.cfgd.io is forbidden"),
+        expect_status_apply("cfgd-operator/gateway/backups")
+            .returning_server_error(403, "machineconfigs.cfgd.io is forbidden"),
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
             .returning_json(&backup_policy_list(vec![])),
     ]);
@@ -1064,9 +1199,8 @@ async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
             .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
-        ExpectedCall::patch_status(
-            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
-        ),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
             .returning_json(&backup_policy_list(vec![policy])),
     ]);
@@ -1134,9 +1268,8 @@ async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
             .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
-        ExpectedCall::patch_status(
-            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
-        ),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
             .returning_json(&backup_policy_list(policies)),
     ]);
@@ -1155,5 +1288,115 @@ async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
         serde_json::from_slice(&body_bytes(response).await).expect("json body");
     assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "daily");
     assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 7);
+    harness.finish().await;
+}
+
+/// A read that succeeded and found no policy scheduling this machine is an
+/// ANSWER: the field is present and empty, and the device retires the cadences
+/// it last held. Without it a machine dropped from every policy would keep
+/// running the cluster's old cadence forever.
+#[tokio::test]
+#[serial]
+async fn a_cluster_that_schedules_nothing_answers_with_an_empty_projection() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(
+        body["backupSchedules"],
+        serde_json::json!({}),
+        "a read that found nothing is an answer, not silence: {body}"
+    );
+    harness.finish().await;
+}
+
+/// The gateway could not list MachineConfigs, so it does not know which machine
+/// this is, let alone what schedules it. It answers with NO projection at all:
+/// the device replaces its whole recorded set from an answer, and an outage
+/// must not retire the cadences the cluster still owns.
+#[tokio::test]
+#[serial]
+async fn a_machine_config_list_that_fails_answers_with_no_projection() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_server_error(503, "the apiserver is unavailable"),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the device's check-in never depends on the cluster being readable"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert!(
+        body.get("backupSchedules").is_none(),
+        "a gateway that could not read the cluster says nothing about it: {body}"
+    );
+    harness.finish().await;
+}
+
+/// The same rule one list down: the machine resolved, its status was written,
+/// and only the policy list failed. The gateway still cannot say what the
+/// cluster owns, so it answers with no projection.
+#[tokio::test]
+#[serial]
+async fn a_backup_policy_list_that_fails_answers_with_no_projection() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_server_error(403, "backuppolicies.cfgd.io is forbidden"),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert!(
+        body.get("backupSchedules").is_none(),
+        "a policy list that failed says nothing about what the cluster owns: {body}"
+    );
     harness.finish().await;
 }

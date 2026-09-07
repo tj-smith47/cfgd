@@ -98,7 +98,11 @@ alternating between two.
 
 A check-in that never reached the gateway, or whose answer could not be read, records nothing:
 the machine keeps the cadences it was last given, because one unreachable gateway must not
-retire what the cluster still owns.
+retire what the cluster still owns. A gateway that answered but could not read the cluster
+itself, its MachineConfig or BackupPolicy list failing, sends no `backupSchedules` at all for the
+same reason, and a standalone gateway with no cluster behind it sends none either. An answer
+that carries the field, empty included, is a read that succeeded, and the machine replaces its
+whole recorded set from it, which is how a cadence the cluster stopped owning is retired.
 
 The machine holds the answer alongside its profile and never inside it: the projection decides
 when a cluster-owned unit is next due, and `cfgd backup list` shows it in the Schedule and

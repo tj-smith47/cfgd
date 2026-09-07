@@ -66,10 +66,13 @@ pub struct CheckinResponse {
     #[serde(default)]
     pub desired_config: Option<serde_json::Value>,
     /// The cadences a cluster `BackupPolicy` owns for this machine, keyed by
-    /// unit name. Absent from an older gateway's answer, which leaves every
-    /// unit on the cadence its own profile declares.
+    /// unit name.
+    ///
+    /// Absent from an older gateway's answer, and from one that could not read
+    /// the cluster: either way this machine learned nothing and keeps the set
+    /// it recorded. Present and empty is an answer, and retires them.
     #[serde(default)]
-    pub backup_schedules: crate::backup::ScheduleProjections,
+    pub backup_schedules: Option<crate::backup::ScheduleProjections>,
 }
 
 #[derive(Debug, Serialize)]

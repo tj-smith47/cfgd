@@ -2322,9 +2322,11 @@ The payload also carries what only this machine can answer: `packageVersions`, t
 version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
 managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
-in the cluster, applied whole: a key this machine stopped reporting is retired there, and a
-machine holding none of what it declares sends the empty map that clears it. A manager that cannot
-be queried leaves its packages out rather than reporting a version cfgd did not read.
+in the cluster, each applied whole under its own field manager: a key this machine stopped
+reporting is retired there, and a machine holding none of what it declares sends the empty map
+that clears it. A manager that cannot be queried leaves its packages out rather than reporting a
+version cfgd did not read, and a map left out produces no write at all, so the versions the
+cluster holds survive a machine that could not look.
 
 The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
 authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
@@ -2332,7 +2334,9 @@ authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit
 pinned `scheduleOwner: Local` ignores them, and nothing rewrites the profile on disk.
-[`cfgd backup list`](#cfgd-backup) shows the value in force.
+[`cfgd backup list`](#cfgd-backup) shows the value in force. An answer that omits the cadences
+entirely is a gateway that could not read the cluster, and the machine keeps the set it already
+recorded rather than retiring it.
 
 ### `cfgd enroll`
 

@@ -136,8 +136,8 @@ fn checkin_response_without_backup_schedules_projects_nothing() {
         .checkin("hash", None, Default::default(), &printer)
         .expect("the gateway answered");
     assert!(
-        resp.backup_schedules.is_empty(),
-        "an absent projection must read as none, not fail to parse"
+        resp.backup_schedules.is_none(),
+        "an absent projection is a gateway that said nothing, not one that said none"
     );
 }
 
@@ -160,7 +160,8 @@ fn checkin_response_carries_the_cluster_owned_projection() {
         .expect("the gateway answered");
     let projected = resp
         .backup_schedules
-        .get("dotfiles")
+        .as_ref()
+        .and_then(|s| s.get("dotfiles"))
         .expect("the unit the gateway scheduled");
     assert_eq!(projected.schedule, "0 3 * * *");
     assert_eq!(projected.retention, Some(7));

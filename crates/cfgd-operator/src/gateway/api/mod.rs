@@ -132,11 +132,16 @@ pub struct CheckinResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desired_config: Option<serde_json::Value>,
     /// The cadences a cluster `BackupPolicy` owns for this device's machine,
-    /// keyed by unit name. Omitted when empty, which is what a standalone
-    /// gateway and a machine no policy schedules both answer with.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    /// keyed by unit name.
+    ///
+    /// Absent when the gateway could not read the cluster: a failed list, or a
+    /// standalone gateway that holds no client at all. Present and empty when a
+    /// read succeeded and nothing schedules this machine, which is the answer
+    /// that retires the cadences it last held. The device replaces its whole
+    /// recorded set from this field, so the two cases cannot share a spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_schedules:
-        std::collections::BTreeMap<String, cfgd_core::backup::BackupScheduleProjection>,
+        Option<std::collections::BTreeMap<String, cfgd_core::backup::BackupScheduleProjection>>,
 }
 
 #[derive(Debug, Deserialize)]

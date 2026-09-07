@@ -32,14 +32,23 @@ use crate::crds::{
 
 pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
-/// Field manager for the `MachineConfig.status` fields the DEVICE reports and
-/// the gateway writes on its behalf (`packageVersions`,
-/// `backupScheduleOwners`).
+/// Field manager for `MachineConfig.status.packageVersions`, the versions the
+/// DEVICE reports and the gateway writes on its behalf.
 ///
 /// Distinct from [`FIELD_MANAGER_STATUS`]: the controller computes the rest of
-/// that status and preserves these two, so a shared manager would let one
-/// side's apply take ownership of the other's fields.
-pub(crate) const FIELD_MANAGER_GATEWAY: &str = "cfgd-operator/gateway";
+/// that status and preserves the device-reported maps, so a shared manager
+/// would let one side's apply take ownership of the other's fields.
+///
+/// Distinct from [`FIELD_MANAGER_GATEWAY_BACKUPS`] for the same reason one map
+/// down: a server-side apply removes the fields its manager stops naming, so a
+/// manager owning both maps would retire one whenever the device reported only
+/// the other. One field per manager makes an unreported map unreportable
+/// rather than blanked.
+pub(crate) const FIELD_MANAGER_GATEWAY_PACKAGES: &str = "cfgd-operator/gateway/packages";
+/// Field manager for `MachineConfig.status.backupScheduleOwners`, the owner
+/// words the DEVICE reports; the backups half of the split
+/// [`FIELD_MANAGER_GATEWAY_PACKAGES`] describes.
+pub(crate) const FIELD_MANAGER_GATEWAY_BACKUPS: &str = "cfgd-operator/gateway/backups";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
 pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";

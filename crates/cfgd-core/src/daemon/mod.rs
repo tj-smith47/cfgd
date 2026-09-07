@@ -747,6 +747,12 @@ mod sync;
 /// must parse, and neither crate can see the other's spelling on its own.
 #[cfg(any(test, feature = "test-helpers"))]
 pub use checkin::{CheckinPayload, CheckinServerResponse};
+
+/// The daemon's own periodic check-in, for the pin that reads it beside the
+/// CLI's: the two are separate crates, and only a test holding both can say
+/// they do the same thing with a configuration the gateway pushed.
+#[cfg(any(test, feature = "test-helpers"))]
+pub use checkin::{CheckinOutcome, try_server_checkin};
 pub(crate) mod tick_cache;
 
 #[cfg(test)]

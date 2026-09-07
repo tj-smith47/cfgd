@@ -398,7 +398,8 @@ fn the_gateways_checkin_answer_is_what_the_daemon_parses() {
             },
         )]
         .into_iter()
-        .collect(),
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into(),
     };
     let wire = serde_json::to_string(&answer).expect("the gateway serializes its answer");
     let parsed: cfgd_core::daemon::CheckinServerResponse =
@@ -407,20 +408,15 @@ fn the_gateways_checkin_answer_is_what_the_daemon_parses() {
     assert_eq!(parsed.status, "ok");
     assert!(parsed.config_changed);
     assert_eq!(parsed.desired_config, answer.desired_config);
+    let projected = parsed
+        .backup_schedules
+        .as_ref()
+        .expect("a read that succeeded reaches the daemon as an answer");
     assert_eq!(
-        parsed
-            .backup_schedules
-            .get("dotfiles")
-            .map(|p| p.schedule.as_str()),
+        projected.get("dotfiles").map(|p| p.schedule.as_str()),
         Some("0 3 * * *")
     );
-    assert_eq!(
-        parsed
-            .backup_schedules
-            .get("dotfiles")
-            .and_then(|p| p.retention),
-        Some(3)
-    );
+    assert_eq!(projected.get("dotfiles").and_then(|p| p.retention), Some(3));
 }
 
 // --- EnrollRequest deserialization ---

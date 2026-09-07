@@ -110,12 +110,17 @@ impl StateStore {
             let changed = self.cluster_backup_schedules()? != *projections;
             self.conn
                 .execute("DELETE FROM cluster_backup_schedules", [])?;
+            let mut insert = self.conn.prepare(
+                "INSERT INTO cluster_backup_schedules (name, schedule, retention, checked_in_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
             for (name, projection) in projections {
-                self.conn.execute(
-                    "INSERT INTO cluster_backup_schedules (name, schedule, retention, checked_in_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![name, projection.schedule, projection.retention, checked_in_at],
-                )?;
+                insert.execute(params![
+                    name,
+                    projection.schedule,
+                    projection.retention,
+                    checked_in_at
+                ])?;
             }
             Ok(changed)
         })

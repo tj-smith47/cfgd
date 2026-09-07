@@ -1,6 +1,6 @@
 //! The per-run memo of what each package manager reports as installed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::{PackageInfo, PackageManager};
@@ -21,7 +21,6 @@ use crate::errors::Result;
 /// predicate instead of two filters.
 #[derive(Default)]
 pub struct InstalledPackages {
-    identities: HashSet<String>,
     listed: Vec<PackageInfo>,
     /// Identity to the position in `listed` that first claimed it, so a
     /// declared-name lookup is a hash probe rather than a scan that folds every
@@ -33,17 +32,15 @@ pub struct InstalledPackages {
 
 impl InstalledPackages {
     pub(super) fn from_listing(manager: &dyn PackageManager, listed: Vec<PackageInfo>) -> Self {
-        let mut identities = HashSet::with_capacity(listed.len());
         let mut by_identity = HashMap::with_capacity(listed.len());
         for (position, pkg) in listed.iter().enumerate() {
-            let identity = manager.listed_identity(&pkg.name);
             // First claim wins, matching the scan this index replaced: two rows
             // folding to one identity are one package listed twice.
-            by_identity.entry(identity.clone()).or_insert(position);
-            identities.insert(identity);
+            by_identity
+                .entry(manager.listed_identity(&pkg.name))
+                .or_insert(position);
         }
         Self {
-            identities,
             listed,
             by_identity,
         }
@@ -53,12 +50,15 @@ impl InstalledPackages {
     /// already mapped into the manager's identity space — usually by
     /// [`PackageManager::package_identity`] for a declared entry.
     pub fn contains(&self, identity: &str) -> bool {
-        self.identities.contains(identity)
+        self.by_identity.contains_key(identity)
     }
 
     /// Every installed package, in the identity space the planner diffs in.
-    pub fn identities(&self) -> &HashSet<String> {
-        &self.identities
+    ///
+    /// The index IS the identity set, so there is no second structure to keep
+    /// in step and no listing-sized clone to build one.
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        self.by_identity.keys().map(String::as_str)
     }
 
     /// Every installed package as the manager listed it, with its version.
@@ -220,7 +220,6 @@ mod tests {
 
     fn listing(names: &[&str]) -> InstalledPackages {
         InstalledPackages {
-            identities: names.iter().map(|n| (*n).to_string()).collect(),
             by_identity: names
                 .iter()
                 .enumerate()

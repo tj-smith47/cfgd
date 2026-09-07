@@ -437,21 +437,32 @@ rather than posting anonymously.
 
 It also carries the two facts only the device can answer: `packageVersions`, the versions it
 holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
-which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes both
-onto the `MachineConfig.status` whose `spec.hostname` matches the device, under the field manager
-`cfgd-operator/gateway`. The write is best-effort: a refused patch, an unreachable API server or
-a hostname no MachineConfig names is logged and the check-in still returns `200`, because the
-device's own reconcile does not depend on the cluster accepting a status. A standalone gateway
-holds no client and writes nothing. A map the device did not report is omitted rather than sent
-empty, so a fact the cluster already holds is never blanked by a device that could not observe it.
+which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes each
+onto the `MachineConfig.status` whose `spec.hostname` matches the device, one server-side apply
+per map, each under its own field manager: `cfgd-operator/gateway/packages` owns
+`status.packageVersions` and `cfgd-operator/gateway/backups` owns `status.backupScheduleOwners`.
+The write is best-effort: a refused patch, an unreachable API server or a hostname no
+MachineConfig names is logged and the check-in still returns `200`, because the device's own
+reconcile does not depend on the cluster accepting a status. A standalone gateway holds no
+client and writes nothing. A map the device did not report is omitted from the body and produces
+no apply for its manager, so a fact the cluster already holds is never blanked by a device that
+could not observe it.
 
-A map the device DID report arrives whole, empty included, and the gateway applies it whole
-(server-side apply, never forced): a key the machine stopped reporting is retired, and a device
-that now holds none of what it declares clears the map. The two maps are the gateway's alone, so
-an apply that carries them cannot disturb the status fields the controllers own.
+A map the device DID report arrives whole, empty included, and the gateway applies it whole: a
+key the machine stopped reporting is retired, and a device that now holds none of what it
+declares clears the map. One field per manager is what makes that safe, because an apply also
+removes the fields its own manager stops naming: a single manager holding both maps would delete
+the map this check-in could not observe. Each apply is forced, since its manager is the sole
+writer of its one field and yielding to an ownership entry an older release left behind would
+strand the device's status. The status fields the controllers own are never disturbed, because
+neither gateway manager names them.
 
 The response answers with `backupSchedules`, the cadences a cluster
-[`BackupPolicy`](backup-policy.md) owns for that machine.
+[`BackupPolicy`](backup-policy.md) owns for that machine. The key is absent when the gateway
+could not read the cluster (a failed list, or a standalone gateway with no client), and present
+but empty when a read succeeded and no policy schedules that machine. The device replaces its
+whole recorded set from a present answer and keeps what it holds when the key is absent, so an
+outage never retires a fleet cadence.
 
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>

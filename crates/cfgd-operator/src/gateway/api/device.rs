@@ -104,19 +104,25 @@ pub(super) async fn checkin(
     // Kubernetes, after the database transaction and never inside it: a
     // cluster that is unreachable, or absent entirely (a standalone gateway),
     // costs the fleet its view of this device, never the device its check-in.
+    // A projection is what the cluster OWNS, so a gateway that could not read
+    // the cluster answers with none rather than with an empty one: the device
+    // executes an answer as a whole-set replace, and "I could not look" must
+    // not retire every cadence the fleet set.
     let backup_schedules = match &state.kube_client {
-        Some(client) => {
-            match find_machine_config_ref(client, &req.hostname).await {
-                Some((namespace, name)) => {
-                    report_device_status(client, &namespace, &name, &req).await;
-                    policy_owned_schedules(client, &namespace, &req.hostname).await
-                }
-                // No MachineConfig names this hostname: there is nothing to
-                // write a status onto and no namespace to look for policies in.
-                None => BTreeMap::new(),
+        Some(client) => match find_machine_config_ref(client, &req.hostname).await {
+            Ok(Some((namespace, name))) => {
+                report_device_status(client, &namespace, &name, &req).await;
+                policy_owned_schedules(client, &namespace, &req.hostname).await
             }
-        }
-        None => BTreeMap::new(),
+            // No MachineConfig names this hostname: there is nothing to write a
+            // status onto and no namespace to look for policies in, which is a
+            // read that succeeded and found nothing scheduled.
+            Ok(None) => Some(BTreeMap::new()),
+            Err(_) => None,
+        },
+        // A standalone gateway holds no client, so it knows nothing about a
+        // cluster's policies rather than knowing there are none.
+        None => None,
     };
 
     Ok((
@@ -131,70 +137,126 @@ pub(super) async fn checkin(
 }
 
 /// Apply the device-reported halves of `MachineConfig.status` onto the object
-/// the hostname resolved to.
+/// the hostname resolved to, one map per write.
 ///
-/// A failure is a `warn` and nothing more: the check-in's outcome is the
-/// device's, and it does not depend on the cluster accepting a status.
+/// A failure is logged and nothing more: the check-in's outcome is the
+/// device's, and it does not depend on the cluster accepting a status. It is
+/// logged at `error` because the visible symptom of a refused write is a status
+/// that silently stops moving, which a reader has no other way to notice.
 ///
-/// Server-side apply under the gateway's own field manager, so the two maps are
-/// OWNED here: a key the device stopped reporting — a package it uninstalled, a
-/// backup unit it no longer declares — is pruned by the same write that carries
-/// the rest, and the fields the controller computes are left alone because this
-/// manager never claimed them. The apply is not forced: a conflict means
-/// something else took these fields, which is a fact to report rather than
-/// overwrite.
+/// Each map goes out under its OWN field manager, and a map the device did not
+/// observe produces no write at all. Server-side apply removes the fields a
+/// manager stops naming, which is exactly how a key the device stopped
+/// reporting is retired inside a map it did report; one manager owning both
+/// maps would apply that same rule one level up and delete the whole map the
+/// device could not observe this time. `packageVersions` and
+/// `backupScheduleOwners` are facts the controller cannot see for itself, so an
+/// older agent, or one whose managers could not be queried, must not blank what
+/// the cluster still holds.
 ///
-/// A map the device did not OBSERVE is absent from the request, and absent from
-/// the body: `packageVersions` and `backupScheduleOwners` are facts the
-/// controller cannot see for itself, so an older agent, or one whose managers
-/// could not be queried, must not blank what the cluster still holds. Because an
-/// apply prunes what it omits, a check-in that observed neither map writes
-/// nothing at all, and one that observed only some writes only those.
+/// The applies are forced. Each manager is the sole writer of its one field, so
+/// a conflict can only be an ownership entry left by an older release, whose
+/// whole-status merge patch claimed `packageVersions` under the controller's
+/// manager; yielding to it would strand the device's status forever.
 async fn report_device_status(
     client: &kube::Client,
     namespace: &str,
     name: &str,
     req: &CheckinRequest,
 ) {
-    use crate::controllers::FIELD_MANAGER_GATEWAY;
+    use crate::controllers::{FIELD_MANAGER_GATEWAY_BACKUPS, FIELD_MANAGER_GATEWAY_PACKAGES};
+
+    if let Some(ref versions) = req.package_versions {
+        apply_status_map(
+            client,
+            namespace,
+            name,
+            &req.device_id,
+            FIELD_MANAGER_GATEWAY_PACKAGES,
+            DeviceReportedStatus {
+                package_versions: Some(versions),
+                backup_schedule_owners: None,
+            },
+        )
+        .await;
+    }
+    if let Some(ref owners) = req.backup_schedule_owners {
+        apply_status_map(
+            client,
+            namespace,
+            name,
+            &req.device_id,
+            FIELD_MANAGER_GATEWAY_BACKUPS,
+            DeviceReportedStatus {
+                package_versions: None,
+                backup_schedule_owners: Some(owners),
+            },
+        )
+        .await;
+    }
+}
+
+/// The status an apply carries: the one map its field manager owns, and nothing
+/// else. A field left `None` is absent from the body, which is what keeps a
+/// manager from claiming the other manager's map.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceReportedStatus<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_versions: Option<&'a BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup_schedule_owners: Option<&'a BTreeMap<String, String>>,
+}
+
+/// An apply body is a whole object, not a fragment: the API server reads the
+/// type and the name from it. The maps are borrowed straight into the encoder,
+/// so a check-in does not clone its own report to send it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MachineConfigStatusApply<'a> {
+    api_version: String,
+    kind: String,
+    metadata: ApplyMetadata<'a>,
+    status: DeviceReportedStatus<'a>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ApplyMetadata<'a> {
+    name: &'a str,
+}
+
+/// One map, one manager, one forced apply.
+async fn apply_status_map(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+    device_id: &str,
+    field_manager: &str,
+    status: DeviceReportedStatus<'_>,
+) {
     use crate::crds::MachineConfig;
     use kube::api::{Api, Patch, PatchParams};
 
-    let mut status = serde_json::Map::new();
-    if let Some(ref versions) = req.package_versions {
-        status.insert("packageVersions".to_string(), serde_json::json!(versions));
-    }
-    if let Some(ref owners) = req.backup_schedule_owners {
-        status.insert(
-            "backupScheduleOwners".to_string(),
-            serde_json::json!(owners),
-        );
-    }
-    if status.is_empty() {
-        return;
-    }
-
     let machines: Api<MachineConfig> = Api::namespaced(client.clone(), namespace);
-    // An apply body is a whole object, not a fragment: the API server reads the
-    // type and the name from it.
-    let patch = serde_json::json!({
-        "apiVersion": <MachineConfig as kube::Resource>::api_version(&()),
-        "kind": <MachineConfig as kube::Resource>::kind(&()),
-        "metadata": { "name": name },
-        "status": serde_json::Value::Object(status),
-    });
+    let body = MachineConfigStatusApply {
+        api_version: <MachineConfig as kube::Resource>::api_version(&()).into_owned(),
+        kind: <MachineConfig as kube::Resource>::kind(&()).into_owned(),
+        metadata: ApplyMetadata { name },
+        status,
+    };
     if let Err(e) = machines
         .patch_status(
             name,
-            &PatchParams::apply(FIELD_MANAGER_GATEWAY),
-            &Patch::Apply(patch),
+            &PatchParams::apply(field_manager).force(),
+            &Patch::Apply(&body),
         )
         .await
     {
-        tracing::warn!(
+        tracing::error!(
             machine_config = %name,
             namespace = %namespace,
-            device_id = %req.device_id,
+            device_id = %device_id,
+            field_manager = %field_manager,
             error = %e,
             "device-reported MachineConfig status was not written; the check-in still succeeded"
         );
@@ -221,7 +283,7 @@ async fn policy_owned_schedules(
     client: &kube::Client,
     namespace: &str,
     hostname: &str,
-) -> BTreeMap<String, BackupScheduleProjection> {
+) -> Option<BTreeMap<String, BackupScheduleProjection>> {
     use crate::crds::{BackupPolicy, ScheduleOwner};
     use kube::ResourceExt;
     use kube::api::{Api, ListParams};
@@ -233,16 +295,16 @@ async fn policy_owned_schedules(
             tracing::warn!(
                 namespace = %namespace,
                 error = %e,
-                "failed to list BackupPolicies for a device check-in; no cluster schedule was sent"
+                "failed to list BackupPolicies for a device check-in; the device is told nothing rather than that the cluster owns nothing"
             );
-            return BTreeMap::new();
+            return None;
         }
     };
 
     let mut ordered: Vec<&BackupPolicy> = list.items.iter().collect();
     // Name breaks a timestamp tie, so two policies created in the same second
     // still resolve to one winner on every check-in.
-    ordered.sort_by_key(|p| (p.creation_timestamp(), p.name_any()));
+    ordered.sort_by_cached_key(|p| (p.creation_timestamp(), p.name_any()));
 
     let mut projected: BTreeMap<String, BackupScheduleProjection> = BTreeMap::new();
     let mut claimed_by: BTreeMap<String, String> = BTreeMap::new();
@@ -285,7 +347,7 @@ async fn policy_owned_schedules(
             }
         }
     }
-    projected
+    Some(projected)
 }
 
 pub(super) async fn list_devices(

@@ -989,10 +989,9 @@ fn collect_watched_package_manager_checks(
 
     let mut checks: Vec<ComplianceCheck> = installed
         .identities()
-        .iter()
         .map(|pkg| ComplianceCheck {
             category: "watchPackage".into(),
-            name: Some(pkg.clone()),
+            name: Some(pkg.to_owned()),
             manager: Some(manager_name.to_owned()),
             status: ComplianceStatus::Compliant,
             detail: Some("installed".into()),
