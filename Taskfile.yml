@@ -222,26 +222,42 @@ tasks:
       - '${ANODIZER_BIN:-anodizer} check version-files'
 
   chart:tags:check:
-    desc: Verify every first-party image the chart renders by default exists on ghcr (CI drift guard).
+    desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
       # The chart's three components version independently (agent = appVersion,
-      # operator/csi = their own crate versions), so a bump that lands on one literal
-      # and not another renders a tag nobody ever pushed. Rendering with every
-      # first-party component enabled and asking the registry is the only check that
-      # cannot be fooled by the literals agreeing with each other.
+      # operator/csi = their own crate versions). The agent pin is swept by
+      # anodizer's version_files at tag time; the operator and CSI pins are kept
+      # by hand, so on a release branch each must already name the version the
+      # release cut from this commit publishes (`anodizer tag --dry-run`), and
+      # off one it may run ahead of the released version, which the release
+      # branch's own run then checks exactly. Anything else is asked of ghcr.
       - cmd: |
           set -e
-          missing=0
+          predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
+          current=$(for f in crates/*/Cargo.toml; do yq -p toml -o json -I=0 '{.package.name: .package.version}' "$f"; done | jq -sc add)
+          swept=$(yq -o=json -I=0 '[.workspaces[].crates[] | select((.version_files // []) | length > 0) | .name]' .anodizer.yaml)
+          if git symbolic-ref -q --short HEAD | grep -qx -f <(yq '.tag.release_branches[]' .anodizer.yaml); then on_release=1; else on_release=0; fi
+          failed=0
           for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
               | sed -n 's/^ *image: *"\{0,1\}\(ghcr\.io\/tj-smith47\/cfgd[^" ]*\)"\{0,1\} *$/\1/p' | sort -u); do
-            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+            image=${ref##*/}; crate=${image%%:*}; tag=${image##*:}
+            now=$(jq -rn --argjson m "$current" --arg c "$crate" '$m[$c] // empty')
+            next=$(jq -rn --argjson m "${predicted:-{\}}" --arg c "$crate" '$m[$c] // empty')
+            hand=$(jq -rn --argjson s "$swept" --arg c "$crate" '$s | index($c) == null')
+            if [ "$hand" = true ] && [ -n "$next" ]; then expected=$next; else expected=$now; fi
+            if [ "$tag" = "$expected" ] && [ "$tag" = "$next" ]; then
+              echo "OK       $ref (published by the release cut from this commit)"
+            elif [ "$tag" = "$expected" ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "OK       $ref"
+            elif [ "$tag" = "$expected" ]; then
+              echo "MISSING  $ref"; failed=1
+            elif [ "$hand" = true ] && [ "$on_release" = 0 ] && [ "$(printf '%s\n%s\n' "$now" "$tag" | sort -V | tail -1)" = "$tag" ]; then
+              echo "OK       $ref (ahead of the released $now; the release branch checks it against the release it cuts)"
             else
-              echo "MISSING  $ref"
-              missing=1
+              echo "STALE    $ref (expected $crate $expected)"; failed=1
             fi
           done
-          exit $missing
+          exit $failed
 
   gen:crds:
     desc: Regenerate every CRD copy (Helm chart + OLM bundle + schemas/crds.yaml) from the cfgd-crd spec types.

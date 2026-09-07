@@ -71,11 +71,6 @@ jobs:
       - name: Chart CRD drift guard
         run: task gen:crds:check
 
-      # The chart's three components version independently, so agreeing literals
-      # prove nothing; render with every first-party image enabled and ask ghcr.
-      - name: Chart image tag guard
-        run: task chart:tags:check
-
   test:
     name: Tests (${{ matrix.os }})
     strategy:
@@ -150,6 +145,9 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.3"
+          # rustc compiling cfgd-core's test crate was SIGKILLed on the default
+          # guest memory (run 34063783806); the 16 GB runner can spare 10.
+          mem: 10240
           usesh: "true"
           prepare: |
             # vmactions flips the image to the `latest` branch, which dropped
@@ -175,6 +173,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # The chart image tag guard asks anodizer which versions the release
+          # cut from this commit publishes; that prediction walks the tags.
+          fetch-depth: 0
 
       - name: Install go-task
         uses: go-task/setup-task@v2
@@ -199,6 +201,13 @@ jobs:
         with:
           version: ${{ env.ANODIZER_VERSION }}
           args: check version-files
+
+      # The chart's three components version independently, so agreeing literals
+      # prove nothing; render with every first-party image enabled and hold each
+      # pin to the version its crate released or the one this commit's release
+      # publishes. Runs here, after the action above put anodizer on PATH.
+      - name: Chart image tag guard
+        run: task chart:tags:check
 
   msrv:
     name: MSRV check
