@@ -92,8 +92,8 @@ are left in place; each file is written atomically and is independently valid.
 ```console
 $ cfgd skill list
 Installed skills (project scope)
-  ✓ claude-code/Module: ~/repo/.claude/skills/cfgd-module/SKILL.md (0.9.0)
-  ✓ codex/Module: ~/repo/AGENTS.md (0.9.0)
+  ✓ claude-code/Module: ~/repo/.claude/skills/cfgd-module/SKILL.md (0.10.0)
+  ✓ codex/Module: ~/repo/AGENTS.md (0.10.0)
 ```
 
 A skill rendered by an older cfgd is flagged stale (it carries a version stamp):
@@ -145,7 +145,7 @@ CI and scripts can parse the per-provider outcome:
 ```console
 $ cfgd skill install module -o json
 {
-  "cfgdVersion": "0.9.0",
+  "cfgdVersion": "0.10.0",
   "kind": "Module",
   "results": [
     {

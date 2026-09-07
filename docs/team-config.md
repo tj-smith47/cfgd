@@ -63,7 +63,7 @@ A platform engineer creates a TeamConfig. Crossplane generates one MachineConfig
 - `function-cfgd` composition function installed:
   ```sh
   # Install from the published Crossplane package
-  crossplane xpkg install function ghcr.io/tj-smith47/function-cfgd:v0.9.0
+  crossplane xpkg install function ghcr.io/tj-smith47/function-cfgd:v0.10.0
   ```
   The tag is the cfgd release the function ships with; check the one you run with
   `cfgd --version`.

@@ -104,7 +104,7 @@ and `cfgd upgrade` resolve the matching asset for your platform automatically.
 
 ```sh
 curl -L -o cfgd.tar.gz \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.9.0-linux-amd64.tar.gz
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.10.0-linux-amd64.tar.gz
 tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
@@ -169,7 +169,7 @@ in CI runners or developer images). `choco upgrade cfgd` upgrades, and
 ### Direct download
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.9.0-windows-amd64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.10.0-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath C:\Tools\cfgd
 # Add C:\Tools\cfgd to your PATH (System Properties → Environment Variables)
 ```
@@ -199,7 +199,7 @@ sensible version:
 
 ```sh
 $ cfgd --version
-cfgd 0.9.0
+cfgd 0.10.0
 ```
 
 To verify the signature on a downloaded archive by hand, see
@@ -209,7 +209,7 @@ To verify the signature on a downloaded archive by hand, see
 
 Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor):
 there is no long-lived public key to trust. For every archive `<archive>` (for
-example `cfgd-0.9.0-linux-amd64.tar.gz`) the release publishes:
+example `cfgd-0.10.0-linux-amd64.tar.gz`) the release publishes:
 
 | Asset | Purpose |
 |---|---|
@@ -221,7 +221,7 @@ To verify a download, run the two steps below. This is exactly what
 `cfgd upgrade` performs internally:
 
 ```sh
-VER=0.9.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
+VER=0.10.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
 A="cfgd-${VER}-${OS}-${ARCH}.tar.gz"
 base="https://github.com/tj-smith47/cfgd/releases/download/v${VER}"
 curl -fsSLO "$base/$A"
@@ -372,18 +372,18 @@ lookup, that field degrades gracefully (`not connected` / `not deployed` /
 
 ```sh
 $ kubectl cfgd version
-Client        0.9.0
+Client        0.10.0
 Server (k8s)  1.31
 Operator      0.8.0
 CSI           0.7.1
 
 $ kubectl cfgd version --namespace cfgd-system -o json
 {
-  "version": "0.9.0",
+  "version": "0.10.0",
   "kubectl": "1.31",
   "operator": "0.8.0",
   "csi": "0.7.1",
-  "cfgd": "0.9.0"
+  "cfgd": "0.10.0"
 }
 ```
 
