@@ -462,24 +462,27 @@ target: \"\"\n";
         );
     }
 
+    /// The local parser names an entry by its own target, so both halves of a
+    /// collision spell the same subject: a message pairing them would read
+    /// `module file '~/.vimrc' ... duplicates module file '~/.vimrc'`, which
+    /// tells a reader nothing the first clause did not.
     #[test]
     fn module_file_entries_reject_two_files_claiming_one_target() {
-        let entry = |source: &str| ModuleFileEntry {
-            source: source.to_string(),
-            target: "~/.vimrc".to_string(),
-            strategy: None,
-            private: false,
-            encryption: None,
-            permissions: None,
-            patch: None,
-        };
-        let err =
-            validate_module_file_entries(&[entry("vimrc"), entry("vimrc.local")]).unwrap_err();
-        assert!(
-            err.to_string().contains(
-                "module file '~/.vimrc': target '~/.vimrc' duplicates module file '~/.vimrc'"
-            ),
-            "unexpected error: {err}"
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: m
+spec:
+  files:
+    - source: vimrc
+      target: ~/.vimrc
+    - source: vimrc.local
+      target: ~/.vimrc
+"#;
+        let err = parse_module(yaml).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config error: invalid config: module file '~/.vimrc': declared twice"
         );
     }
 

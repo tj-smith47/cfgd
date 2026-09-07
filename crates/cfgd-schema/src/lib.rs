@@ -528,10 +528,12 @@ pub fn validate_file_patch_shape(
 /// The Module CRD declares `spec.files` an SSA map keyed by `target`, so two
 /// entries sharing a target make the API server refuse the whole resource with
 /// a message naming neither of them. Both refusals name their entry by the
-/// caller's own `subject`, and a duplicate names the earlier claimant too, so a
-/// reader is sent to both halves of the collision rather than to one of them.
-/// `seen` is the caller's own map, carried across its loop, so one pass answers
-/// both questions for a whole list.
+/// caller's own `subject`. A duplicate is a fact about the PAIR: where the two
+/// subjects differ the message names both halves of the collision, and where
+/// the caller derives its subject from the target itself, so both halves spell
+/// the same thing, it says the entry was declared twice instead. `seen` is the
+/// caller's own map, carried across its loop, so one pass answers both
+/// questions for a whole list.
 pub fn validate_file_target<'a>(
     subject: &str,
     target: &'a str,
@@ -543,9 +545,11 @@ pub fn validate_file_target<'a>(
         )));
     }
     if let Some(first) = seen.get(target) {
-        return Err(FileShapeError(format!(
-            "{subject}: target '{target}' duplicates {first}"
-        )));
+        return Err(FileShapeError(if first == subject {
+            format!("{subject}: declared twice")
+        } else {
+            format!("{subject}: target '{target}' duplicates {first}")
+        }));
     }
     seen.insert(target, subject.to_string());
     Ok(())
