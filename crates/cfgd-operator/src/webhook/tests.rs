@@ -1999,3 +1999,172 @@ fn build_patches_skips_an_env_entry_gated_off_a_linux_container() {
         "a tag the webhook cannot answer withholds the entry: {patch_json}"
     );
 }
+
+/// A module gated to another platform is skipped whole: no CSI volume, no
+/// volumeMount, no env, no init container. A sibling the gate admits is still
+/// injected, and the pod is told which module it lost.
+#[test]
+fn a_module_gated_to_another_platform_is_not_injected() {
+    let pod = serde_json::json!({
+        "metadata": {"annotations": {cfgd_core::MODULES_ANNOTATION: "maconly:1.0,tools:1.0"}},
+        "spec": {
+            "containers": [
+                {"name": "app", "image": "busybox"}
+            ]
+        }
+    });
+    let modules = vec![
+        (
+            "maconly".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                platforms: vec!["macos".to_string()],
+                oci_artifact: Some("ghcr.io/org/maconly:1.0".to_string()),
+                env: vec![crate::crds::ModuleEnvVar {
+                    name: "MAC_EDITOR".to_string(),
+                    value: "bbedit".to_string(),
+                    append: false,
+                    platforms: vec![],
+                }],
+                scripts: crate::crds::ModuleScripts {
+                    post_apply: Some("mac-setup.sh".to_string()),
+                },
+                ..Default::default()
+            },
+        ),
+        (
+            "tools".to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                oci_artifact: Some("ghcr.io/org/tools:1.0".to_string()),
+                ..Default::default()
+            },
+        ),
+    ];
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+
+    assert!(
+        !patch_json.contains("cfgd-module-maconly"),
+        "a gated module stages no CSI volume: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("/cfgd-modules/maconly"),
+        "a gated module is mounted nowhere: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("MAC_EDITOR"),
+        "a gated module contributes no env: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("initContainers"),
+        "a gated module runs no init container: {patch_json}"
+    );
+
+    assert!(
+        patch_json.contains("cfgd-module-tools"),
+        "the sibling module is still injected: {patch_json}"
+    );
+
+    assert!(
+        patch_json.contains("cfgd.io~1skipped-modules"),
+        "the pod is annotated with what it lost: {patch_json}"
+    );
+    assert!(
+        patch_json.contains("\"maconly\""),
+        "the annotation names the skipped module: {patch_json}"
+    );
+}
+
+/// The gate admits an ungated module, one naming `linux`, and one naming
+/// `linux` among others; none of the three is annotated as skipped.
+#[test]
+fn a_module_gated_to_linux_or_ungated_is_injected() {
+    let pod = serde_json::json!({
+        "spec": {
+            "containers": [
+                {"name": "app", "image": "busybox"}
+            ]
+        }
+    });
+    let module = |name: &str, platforms: &[&str]| {
+        (
+            name.to_string(),
+            "1.0".to_string(),
+            ModuleSpec {
+                platforms: platforms.iter().map(|t| t.to_string()).collect(),
+                ..Default::default()
+            },
+        )
+    };
+    let modules = vec![
+        module("ungated", &[]),
+        module("linuxonly", &["linux"]),
+        module("linuxamong", &["macos", "linux"]),
+    ];
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+
+    for name in ["ungated", "linuxonly", "linuxamong"] {
+        assert!(
+            patch_json.contains(&format!("cfgd-module-{name}")),
+            "{name} must be injected: {patch_json}"
+        );
+    }
+    assert!(
+        !patch_json.contains("skipped-modules"),
+        "nothing was skipped, so no annotation: {patch_json}"
+    );
+}
+
+/// The platform skip is judged ahead of `mountPolicy`, so a `Debug` policy on a
+/// module gated to another platform stages no volume either — `Debug` is a
+/// narrower mount, not a bypass of the gate.
+#[test]
+fn the_platform_skip_outranks_a_debug_mount_policy() {
+    let pod = serde_json::json!({
+        "spec": {
+            "containers": [
+                {"name": "app", "image": "busybox"}
+            ]
+        }
+    });
+    let modules = vec![(
+        "tcpdump".to_string(),
+        "4.0".to_string(),
+        ModuleSpec {
+            mount_policy: MountPolicy::Debug,
+            platforms: vec!["macos".to_string()],
+            oci_artifact: Some("ghcr.io/org/tcpdump:4.0".to_string()),
+            ..Default::default()
+        },
+    )];
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+
+    assert!(
+        !patch_json.contains("cfgd-module-tcpdump"),
+        "a Debug policy does not stage a gated module's volume: {patch_json}"
+    );
+    assert!(
+        patch_json.contains("cfgd.io~1skipped-modules"),
+        "the skip is still announced: {patch_json}"
+    );
+}
+
+/// The module gate and the env gate are ONE predicate. Two spellings of "does
+/// this `platforms:` list admit a Linux container" drift the moment one grows a
+/// tag the other does not, so the tag literal lives in `injects_on_linux` alone
+/// and both call sites name it.
+#[test]
+fn the_env_gate_and_the_module_gate_share_one_predicate() {
+    let src = include_str!("mod.rs");
+    let calls = src.matches("injects_on_linux(&").count();
+    assert_eq!(
+        calls, 3,
+        "expected the module gate, the env gate and the init-container filter to call \
+         injects_on_linux and nothing else to spell the rule"
+    );
+    assert_eq!(
+        src.matches("\"linux\"").count(),
+        1,
+        "the `linux` tag literal belongs to injects_on_linux alone"
+    );
+}

@@ -29,6 +29,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `API_VERSION` — canonical API version (`cfgd.io/v1alpha1`); never a string literal.
 - `CSI_DRIVER_NAME` — canonical CSI driver name (`csi.cfgd.io`).
 - `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`).
+- `SKIPPED_MODULES_ANNOTATION` — the pod annotation naming what the mutating webhook declined to inject (`cfgd.io/skipped-modules`); never a raw string.
 - `LABEL_MACHINE_CONFIG` / `LABEL_DEVICE_ID` — k8s label keys; use in gateway/controllers instead of raw strings.
 - `OCI_ANNOTATION_PLATFORM` — OCI manifest annotation key; use in `oci.rs` instead of the raw string.
 - `PROFILE_SCRIPT_TIMEOUT` (5m) / `COMMAND_TIMEOUT` (2m) / `GIT_NETWORK_TIMEOUT` (5m) — never hardcode the durations.

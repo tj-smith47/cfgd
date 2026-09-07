@@ -3,6 +3,12 @@ pub const API_VERSION: &str = "cfgd.io/v1alpha1";
 pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
 pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
+/// The pod annotation naming every module the mutating webhook declined to
+/// inject, comma-separated. A pod whose `cfgd.io/modules` annotation asked for
+/// a module the webhook skipped is told which one here, rather than finding
+/// the mount silently absent.
+pub const SKIPPED_MODULES_ANNOTATION: &str = "cfgd.io/skipped-modules";
+
 /// The manager name a module package carries when its "install" is an inline
 /// script rather than a manager command. It names no registry entry, so no
 /// manager map holds it, no live listing reports it and no drift row is minted

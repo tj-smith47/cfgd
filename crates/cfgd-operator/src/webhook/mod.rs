@@ -393,6 +393,17 @@ fn load_private_key(
 // ---------------------------------------------------------------------------
 
 const MODULES_ANNOTATION: &str = cfgd_core::MODULES_ANNOTATION;
+const SKIPPED_MODULES_ANNOTATION: &str = cfgd_core::SKIPPED_MODULES_ANNOTATION;
+
+/// Whether a `platforms:` list admits injection into a pod. A pod is a Linux
+/// container, so the webhook can answer an `os` tag and nothing else: a list
+/// naming anything but `linux` is the author saying "not here", and the gated
+/// entry is left out rather than injected regardless. The ONE predicate behind
+/// both gates the webhook applies — a module's own `spec.platforms` and each
+/// `spec.env[].platforms`.
+fn injects_on_linux(platforms: &[String]) -> bool {
+    platforms.is_empty() || platforms.iter().any(|tag| tag == "linux")
+}
 
 /// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
 /// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
@@ -533,7 +544,22 @@ fn build_injection_patches(
         }
     }
 
+    let mut skipped: Vec<&str> = Vec::new();
+
     for (name, version, spec) in modules {
+        // Judged ahead of the CSI volume and of `mountPolicy`, so a module the
+        // author gated away from Linux stages nothing at all — a `Debug` policy
+        // on it still puts no volume on the pod.
+        if !injects_on_linux(&spec.platforms) {
+            warn!(
+                module = name,
+                platforms = ?spec.platforms,
+                "module gated to another platform — not injected into pod"
+            );
+            skipped.push(name);
+            continue;
+        }
+
         let safe_name = cfgd_core::sanitize_k8s_name(name);
         let vol_name = format!("cfgd-module-{safe_name}");
         let mount_path = format!("/cfgd-modules/{safe_name}");
@@ -581,12 +607,7 @@ fn build_injection_patches(
             }));
 
             for env_var in &spec.env {
-                // A pod is a Linux container: the webhook can answer an `os`
-                // tag and nothing else, so an entry gated to anything but
-                // `linux` is not injected rather than injected regardless.
-                if !env_var.platforms.is_empty()
-                    && !env_var.platforms.iter().any(|tag| tag == "linux")
-                {
+                if !injects_on_linux(&env_var.platforms) {
                     continue;
                 }
                 if env_var.append {
@@ -617,7 +638,9 @@ fn build_injection_patches(
     // Add init containers for modules with postApply scripts
     let script_modules: Vec<_> = modules
         .iter()
-        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some())
+        .filter(|(_, _, spec)| {
+            spec.scripts.post_apply.is_some() && injects_on_linux(&spec.platforms)
+        })
         .collect();
 
     if !script_modules.is_empty() {
@@ -665,6 +688,21 @@ fn build_injection_patches(
                 }),
             }));
         }
+    }
+
+    if !skipped.is_empty() {
+        if pod.pointer("/metadata/annotations").is_none() {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr("/metadata/annotations"),
+                value: serde_json::json!({}),
+            }));
+        }
+        let mut path = ptr("/metadata/annotations");
+        path.push_back(jsonptr::Token::new(SKIPPED_MODULES_ANNOTATION));
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path,
+            value: serde_json::Value::String(skipped.join(",")),
+        }));
     }
 
     patches

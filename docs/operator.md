@@ -193,7 +193,7 @@ spec:
 | `ociArtifact` | string | OCI reference the module's content is pulled from. Omitted, the module carries its content inline |
 | `signature` | object | `cosign` block (`publicKey`, `keyless`, `certificateIdentity`, `certificateOidcIssuer`) the artifact is verified against |
 | `mountPolicy` | `Always` \| `Debug` | How the module is exposed to pod containers (default `Always`) |
-| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS) |
+| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS) and, cluster-side, the pod webhook injects the module only when the list is empty or names `linux`; a skipped module is named on the pod's `cfgd.io/skipped-modules` annotation |
 | `depends` | list of string | Names of other `Module` resources applied first |
 | `packages` | list | Packages the module declares: `name`, per-manager name overrides in `aliases`, `minVersion`, a `prefer` manager order, a `deny` manager list, and per-entry `platforms` gates |
 | `files` | list | Files the module declares: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
@@ -205,8 +205,9 @@ spec:
 
 Who reads what: the cfgd agent reconciles `platforms`, `depends`, `packages`, `files`, `env`,
 `aliases`, `system` and `hooks` from the artifact it pulls onto its own machine; the CSI node
-plugin mounts the module's content into a pod; and the pod-mutating webhook reads `mountPolicy`
-to decide on that mount, plus `env` and `scripts.postApply` to build the init container.
+plugin mounts the module's content into a pod; and the pod-mutating webhook reads `platforms`
+and `mountPolicy` to decide on that mount, plus `env` and `scripts.postApply` to build the init
+container.
 
 > `spec.scripts.postApply` and `spec.hooks.postApply` are different things and both may be set.
 > `scripts.postApply` is a relative path inside the artifact, joined into an init container
@@ -318,6 +319,12 @@ kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh
 ```
 
 A `ConfigPolicy` or `ClusterConfigPolicy` can add modules the pod never asked for, through `requiredModules` (mounted) and `debugModules` (staged only). Label a pod `cfgd.io/skip-injection` to exempt it.
+
+A pod is a Linux container, so a module whose `spec.platforms` names anything but `linux` is injected into no pod at all: no CSI volume, no volumeMount, no env, no init container, whatever its `mountPolicy` says. The webhook names every module it skipped this way on the pod's `cfgd.io/skipped-modules` annotation, so a pod that asked for a module by name can say why it is not mounted:
+
+```sh
+kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'
+```
 
 Two settings matter in production:
 
