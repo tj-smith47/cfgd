@@ -2038,12 +2038,23 @@ log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
 # resolved nothing", so a cold cache or a renamed package would reach the same
 # green a clean tree does. The same vacuous-green shape require_dirs and the
 # ripgrep preamble above exist to prevent.
-if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>&1)"; then
+# cargo announces a contended build lock on stderr ("Blocking waiting for file
+# lock on package cache"), and a merged stream splices that line into the
+# block-buffered stdout it interrupts: `awk '{print $1}'` then reads `Blocking`
+# where a crate name belongs, and the spliced line can equally hide a kube crate
+# from the grep below. The diagnostic is kept, on its own file, and printed only
+# where it explains a failure.
+csi_stderr="$(mktemp)"
+if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>"$csi_stderr")"; then
     log_error "cargo tree -p cfgd-csi did not resolve, so the kube gate proved nothing:"
     printf '%s\n' "$csi_tree"
+    cat "$csi_stderr"
+    rm -f "$csi_stderr"
 elif ! printf '%s\n' "$csi_tree" | awk '{print $1}' | grep -qx 'cfgd-core'; then
-    log_error "cfgd-csi's tree does not name cfgd-core; the gate is reading the wrong tree"
+    rm -f "$csi_stderr"
+    log_error "the resolution named no \`cfgd-core\` line: a wrong tree, or a polluted capture"
 else
+    rm -f "$csi_stderr"
     csi_heavy="$(printf '%s\n' "$csi_tree" | awk '{print $1}' | sort -u \
       | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
     if [ -n "$csi_heavy" ]; then
