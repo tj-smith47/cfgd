@@ -21,7 +21,7 @@ kubectl get backuppolicies          # short name: bpol
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `selector` | object | no | Which MachineConfigs in this namespace the policy schedules backups for. Empty (the default) matches all of them. Same `matchLabels` / `matchExpressions` shape as [`ConfigPolicy.spec.targetSelector`](spec/configpolicy.md) |
-| `units` | list | yes | Schedule overrides, each naming a backup unit the matched machine's own profile defines. At least one entry: a policy that schedules nothing sets no cadence anywhere, so an empty list is refused at admission |
+| `units` | list | yes | Schedule overrides, each naming a backup unit the matched machine's own profile defines. At least one entry: a policy that schedules nothing sets no cadence anywhere, so the CRD schema requires the field and an empty list is refused at admission |
 
 `spec.units[]`:
 

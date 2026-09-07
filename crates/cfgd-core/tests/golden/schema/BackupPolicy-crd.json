@@ -97,14 +97,16 @@
       "description": "Which MachineConfigs in this namespace the policy schedules backups for. Empty, it applies to all of them."
     },
     "units": {
-      "default": [],
-      "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines. At least one entry is required: a policy that schedules nothing sets no cadence anywhere.",
+      "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines. Required, and at least one entry: a policy that schedules nothing sets no cadence anywhere.",
       "items": {
         "$ref": "#/definitions/BackupPolicyUnit"
       },
       "type": "array"
     }
   },
+  "required": [
+    "units"
+  ],
   "title": "BackupPolicySpec",
   "type": "object"
 }

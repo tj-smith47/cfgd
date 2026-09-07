@@ -733,6 +733,28 @@ mod tests {
         node.get("type").and_then(Value::as_str).map(str::to_string)
     }
 
+    /// A BackupPolicy with no `spec.units` schedules nothing, so the rendered
+    /// schema names `units` under `required` and the API server refuses that
+    /// shape with no webhook in the path. `BackupPolicySpec::validate` still
+    /// refuses the EMPTY list, which a required field cannot judge.
+    #[test]
+    fn the_rendered_backup_policy_requires_the_units_it_schedules() {
+        let doc = super::render_each()
+            .expect("render CRDs")
+            .into_iter()
+            .find(|d| d.name == "backuppolicies.cfgd.io")
+            .expect("the BackupPolicy CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+        let required = crd
+            .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/required")
+            .and_then(Value::as_array)
+            .expect("the BackupPolicy spec states its required fields");
+        assert!(
+            required.iter().any(|f| f == "units"),
+            "the rendered spec must require `units`: {required:?}"
+        );
+    }
+
     /// Walk every `additionalPrinterColumns` entry on every CRD and refuse any
     /// column bound to a list. The API server's table converter hands the
     /// column's raw JSON value to `fmt.Sprintf("%v", …)`, so an array renders

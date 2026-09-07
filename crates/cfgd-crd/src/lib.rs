@@ -762,9 +762,8 @@ pub struct BackupPolicySpec {
     #[serde(default)]
     pub selector: LabelSelector,
     /// Schedule overrides, each naming a backup unit the matched machine's own
-    /// profile defines. At least one entry is required: a policy that
+    /// profile defines. Required, and at least one entry: a policy that
     /// schedules nothing sets no cadence anywhere.
-    #[serde(default)]
     pub units: Vec<BackupPolicyUnit>,
 }
 

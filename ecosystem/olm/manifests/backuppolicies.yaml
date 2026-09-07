@@ -94,10 +94,9 @@ spec:
                     type: object
                 type: object
               units:
-                default: []
                 description: |-
                   Schedule overrides, each naming a backup unit the matched machine's own
-                  profile defines. At least one entry is required: a policy that
+                  profile defines. Required, and at least one entry: a policy that
                   schedules nothing sets no cadence anywhere.
                 items:
                   description: One backup unit's cluster-side schedule.
@@ -129,6 +128,8 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+            required:
+            - units
             type: object
           status:
             nullable: true
