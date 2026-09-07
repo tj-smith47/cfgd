@@ -1070,59 +1070,25 @@ fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a backup `name`.
+/// Validate a backup `name`, relabelling [`cfgd_schema::validate_backup_unit_name`]'s
+/// refusal as a [`ConfigError::Invalid`].
 ///
-/// The name is a directory component (`<state_dir>/backups/<name>/`), a lock
-/// filename (`<state_dir>/locks/backup-<name>.lock`), and the key the retention
-/// pass prunes by — three roots cfgd creates and later deletes wholesale — so it
-/// goes through [`crate::validate_plain_name`], the shared gate for exactly that
-/// class. Only the single-component rule is checked here on top: `validate_plain_name`
-/// accepts a nested `daily/2026`, which a backup name must not be.
+/// The grammar itself lives in the leaf crate, because the cluster-side
+/// `BackupPolicy` names the same units and cannot reach into this crate.
 pub(crate) fn validate_backup_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        return Err(ConfigError::Invalid {
-            message: "backup name must not be empty or whitespace-only".to_string(),
-        }
-        .into());
-    }
-    if name.contains('/') || name.contains('\\') {
-        return Err(ConfigError::Invalid {
-            message: format!(
-                "backup name '{name}' must not contain path separators ('/' or '\\'); it is used as a directory component (<state_dir>/backups/<name>/)"
-            ),
-        }
-        .into());
-    }
-    if let Err(why) = crate::validate_plain_name(name) {
-        return Err(ConfigError::Invalid {
-            message: format!(
-                "backup name '{name}' is not usable as a name: {why}; it becomes a directory component (<state_dir>/backups/<name>/) and a lock file (<state_dir>/locks/backup-<name>.lock)"
-            ),
-        }
-        .into());
-    }
+    cfgd_schema::validate_backup_unit_name(name)
+        .map_err(|message| ConfigError::Invalid { message })?;
     Ok(())
 }
 
-/// Validate a backup `schedule`: it must parse as either a
-/// [`crate::parse_duration_str`] interval or a `croner` cron expression.
-/// Naming both attempted interpretations' errors on failure so a typo in
-/// either form is diagnosable from the message alone.
+/// Validate a backup `schedule` through the shared grammar
+/// [`cfgd_schema::validate_backup_schedule_grammar`], prefixing the subject the
+/// local document can name and the CRD cannot.
 fn validate_backup_schedule(subject: &str, schedule: &str) -> Result<()> {
-    let duration_err = match crate::parse_duration_str(schedule) {
-        Ok(_) => return Ok(()),
-        Err(e) => e,
-    };
-    let cron_err = match schedule.parse::<croner::Cron>() {
-        Ok(_) => return Ok(()),
-        Err(e) => e,
-    };
-    Err(ConfigError::Invalid {
-        message: format!(
-            "{subject}: schedule '{schedule}' is not a valid interval ({duration_err}) and not a valid cron expression ({cron_err})"
-        ),
-    }
-    .into())
+    cfgd_schema::validate_backup_schedule_grammar(schedule).map_err(|e| ConfigError::Invalid {
+        message: format!("{subject}: {e}"),
+    })?;
+    Ok(())
 }
 
 /// Validate `spec.backups[]`: `name` is non-empty, path-safe, and unique
@@ -1134,7 +1100,7 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
     for spec in specs {
         validate_backup_name(&spec.name)?;
         let subject = format!("backup '{}'", spec.name);
-        if !seen_names.insert(spec.name.as_str()) {
+        if !seen_names.insert(spec.name.trim()) {
             return Err(ConfigError::Invalid {
                 message: format!(
                     "duplicate backup name '{}': names must be unique across spec.backups",

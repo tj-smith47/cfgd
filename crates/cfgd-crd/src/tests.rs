@@ -1019,6 +1019,60 @@ fn backup_policy_rejects_a_retention_of_zero() {
     assert!(spec.validate().is_ok(), "1 is the smallest kept snapshot");
 }
 
+/// A policy exists only to set a cadence, so a schedule the machine's own
+/// scheduler cannot parse is refused where it is written rather than projecting
+/// onto a unit that then silently never fires. Ground truth is the shared
+/// grammar itself, which the local `spec.backups[]` parser calls too.
+#[test]
+fn backup_policy_refuses_a_schedule_the_machine_cannot_parse() {
+    let expected = cfgd_schema::validate_backup_schedule_grammar("nightly")
+        .expect_err("'nightly' is neither an interval nor a cron expression")
+        .to_string();
+    let errs = backup_policy(vec![policy_unit("dotfiles", "nightly")])
+        .validate()
+        .unwrap_err();
+    assert!(
+        errs.contains(&format!("spec.units[0].{expected}")),
+        "the policy states the shared grammar's own refusal: {errs:?}"
+    );
+    for good in ["0 3 * * *", "6h", "90"] {
+        assert!(
+            backup_policy(vec![policy_unit("dotfiles", good)])
+                .validate()
+                .is_ok(),
+            "{good} is a schedule the machine parses"
+        );
+    }
+}
+
+/// The name is matched against a unit the machine's own profile defines, so a
+/// name no local profile could legally carry matches nothing anywhere. The
+/// duplicate check keys on the trimmed name for the same reason: one unit
+/// written twice is one unit, whatever the whitespace around it.
+#[test]
+fn backup_policy_refuses_a_unit_name_no_local_profile_could_carry() {
+    let errs = backup_policy(vec![policy_unit("daily/2026", "6h")])
+        .validate()
+        .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("spec.units[0].name:") && e.contains("path separators")),
+        "a nested name is refused by the shared grammar: {errs:?}"
+    );
+
+    let errs = backup_policy(vec![
+        policy_unit("dotfiles", "6h"),
+        policy_unit(" dotfiles ", "0 3 * * *"),
+    ])
+    .validate()
+    .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("spec.units[1].name") && e.contains("twice")),
+        "the duplicate check keys on the trimmed name: {errs:?}"
+    );
+}
+
 /// One unit spans one status row per machine, so the summary the `Units`
 /// column reads names each unit once, ordered by name rather than by the
 /// list's own (hostname, name) order.

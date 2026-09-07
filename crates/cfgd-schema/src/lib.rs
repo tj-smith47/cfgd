@@ -647,9 +647,314 @@ where
     Ok(tags)
 }
 
+// ---------------------------------------------------------------------------
+// Backup unit grammar
+// ---------------------------------------------------------------------------
+
+/// Parse a duration string like "30s", "5m", "1h", or a plain number (as seconds).
+///
+/// Returns an error description on invalid input.
+pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    const SUFFIXES: &[(char, u64)] = &[('s', 1), ('m', 60), ('h', 3600), ('d', 86400)];
+    for &(suffix, multiplier) in SUFFIXES {
+        if let Some(n) = s.strip_suffix(suffix) {
+            return n
+                .trim()
+                .parse::<u64>()
+                .map(|v| std::time::Duration::from_secs(v * multiplier))
+                .map_err(|_| format!("invalid timeout: {}", s));
+        }
+    }
+    s.parse::<u64>()
+        .map(std::time::Duration::from_secs)
+        .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
+}
+
+/// Validate that `raw` is a plain relative name: at least one segment, every
+/// segment an ordinary name.
+///
+/// For strings that *name something being created* (a snapshot, a cache
+/// directory for a source), where `.` is not path-writing convenience but a lie
+/// about what is named. `daily/2026` is accepted; `.`, `daily/.`, `./daily`,
+/// `/daily`, `daily/`, `daily//x`, `C:/daily` and `C:daily` are not.
+///
+/// Judged on the raw string rather than [`std::path::Path::components`], which
+/// normalizes `.` away: `"daily/."` iterates as the single plain component
+/// `daily` while the joined path still ends in `/.` and resolves to `daily`
+/// itself — so a caller that then removes the "new" path removes the parent of
+/// everything already inside it.
+pub fn validate_plain_name(raw: &str) -> Result<(), String> {
+    if raw.is_empty() {
+        return Err("it is empty".to_string());
+    }
+    let rooted = |kind: &str| {
+        Err(format!(
+            "it starts from {kind}; a name is resolved inside the directory it belongs to, \
+             and `Path::join` throws the parent away when the value is rooted"
+        ))
+    };
+    for component in std::path::Path::new(raw).components() {
+        match component {
+            std::path::Component::Prefix(_) => return rooted("a drive or share"),
+            std::path::Component::RootDir => return rooted("a filesystem root"),
+            _ => {}
+        }
+    }
+    for segment in raw.split(['/', '\\']) {
+        if segment.is_empty() {
+            return Err(
+                "it has an empty path segment; every segment must name something".to_string(),
+            );
+        }
+        if segment == "." || segment == ".." {
+            return Err(format!(
+                "the segment '{segment}' is a directory reference, not a name"
+            ));
+        }
+        // Windows reads `C:name` as drive-relative and `name:stream` as an NTFS
+        // alternate data stream, and unix parses neither as a prefix — so the
+        // shape is refused on every host, keeping a name written on one OS valid
+        // on the others rather than only where it happened to be created.
+        if segment.contains(':') {
+            return Err(format!(
+                "the segment '{segment}' contains ':', a drive or data-stream separator on Windows"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A schedule that reads as neither of the two forms cfgd accepts. Carries both
+/// attempted interpretations' own errors, so a typo in either form is
+/// diagnosable from the message alone.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ScheduleGrammarError(pub String);
+
+/// Validate a backup unit's `schedule`: it must parse as either a
+/// [`parse_duration_str`] interval or a `croner` cron expression.
+///
+/// The ONE grammar behind both the machine's own `spec.backups[].schedule` and
+/// the cluster-side `BackupPolicy.spec.units[].schedule`. A policy exists only
+/// to set a cadence, so a value the machine's scheduler cannot parse is refused
+/// where it is written rather than projecting onto a unit that then silently
+/// never fires.
+pub fn validate_backup_schedule_grammar(schedule: &str) -> Result<(), ScheduleGrammarError> {
+    let duration_err = match parse_duration_str(schedule) {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    let cron_err = match schedule.parse::<croner::Cron>() {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    Err(ScheduleGrammarError(format!(
+        "schedule '{schedule}' is not a valid interval ({duration_err}) and not a valid cron expression ({cron_err})"
+    )))
+}
+
+/// Validate a backup unit's `name`.
+///
+/// The name is a directory component (`<state_dir>/backups/<name>/`), a lock
+/// filename (`<state_dir>/locks/backup-<name>.lock`), and the key the retention
+/// pass prunes by — three roots cfgd creates and later deletes wholesale — so it
+/// goes through [`validate_plain_name`], the shared gate for exactly that class.
+/// Only the single-component rule is checked here on top: `validate_plain_name`
+/// accepts a nested `daily/2026`, which a backup name must not be.
+///
+/// The ONE grammar behind both the machine's own `spec.backups[].name` and the
+/// cluster-side `BackupPolicy.spec.units[].name`: a policy naming a unit no
+/// local profile could legally define matches nothing on any machine.
+pub fn validate_backup_unit_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("backup name must not be empty or whitespace-only".to_string());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "backup name '{name}' must not contain path separators ('/' or '\\'); it is used as a directory component (<state_dir>/backups/<name>/)"
+        ));
+    }
+    if let Err(why) = validate_plain_name(name) {
+        return Err(format!(
+            "backup name '{name}' is not usable as a name: {why}; it becomes a directory component (<state_dir>/backups/<name>/) and a lock file (<state_dir>/locks/backup-<name>.lock)"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ONE cadence grammar both `spec.backups[].schedule` and
+    /// `BackupPolicy.spec.units[].schedule` answer to; a refusal names both
+    /// attempted interpretations so a typo in either form is diagnosable.
+    #[test]
+    fn a_backup_schedule_is_an_interval_or_a_cron_expression() {
+        for good in ["6h", "30s", "90", "0 3 * * *", "*/15 * * * *"] {
+            assert!(
+                validate_backup_schedule_grammar(good).is_ok(),
+                "{good} is a schedule cfgd parses"
+            );
+        }
+        for bad in ["", "  ", "nightly", "0 3 * *", "every day"] {
+            let why = validate_backup_schedule_grammar(bad)
+                .expect_err("{bad} is neither form")
+                .to_string();
+            assert!(
+                why.contains("not a valid interval") && why.contains("not a valid cron expression"),
+                "the refusal names both interpretations: {why}"
+            );
+        }
+    }
+
+    /// The ONE name grammar both sides answer to: a backup name becomes a
+    /// directory component and a lock filename, so it is one plain segment.
+    #[test]
+    fn a_backup_unit_name_is_one_plain_segment() {
+        for good in ["dotfiles", "daily-notes", "a.b.c"] {
+            assert!(
+                validate_backup_unit_name(good).is_ok(),
+                "{good} is a usable unit name"
+            );
+        }
+        for bad in ["", "   ", "daily/2026", r"daily\2026", ".", "..", "C:evil"] {
+            assert!(
+                validate_backup_unit_name(bad).is_err(),
+                "{bad} is not a usable unit name"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_duration_str_seconds() {
+        let d = parse_duration_str("30s").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_duration_str_minutes() {
+        let d = parse_duration_str("5m").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn parse_duration_str_hours() {
+        let d = parse_duration_str("1h").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_duration_str_plain_seconds() {
+        let d = parse_duration_str("60").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parse_duration_str_whitespace() {
+        let d = parse_duration_str(" 10 s ").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parse_duration_str_days() {
+        let d = parse_duration_str("30d").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30 * 86400));
+    }
+
+    #[test]
+    fn parse_duration_str_invalid() {
+        assert!(
+            parse_duration_str("abc")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "bare letters should fail with a useful message"
+        );
+        assert!(
+            parse_duration_str("")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "empty string should fail"
+        );
+        assert!(
+            parse_duration_str("xs")
+                .unwrap_err()
+                .contains("invalid timeout"),
+            "non-numeric prefix should fail"
+        );
+    }
+
+    #[test]
+    fn parse_duration_str_zero() {
+        assert_eq!(
+            parse_duration_str("0s").unwrap(),
+            std::time::Duration::from_secs(0)
+        );
+        assert_eq!(
+            parse_duration_str("0").unwrap(),
+            std::time::Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn parse_duration_str_negative() {
+        assert!(
+            parse_duration_str("-5s").is_err(),
+            "negative durations should be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_plain_name_accepts_ordinary_names() {
+        for candidate in ["snapshot", "daily/2026", "a.b.c", "..hidden", "x..y"] {
+            assert!(
+                validate_plain_name(candidate).is_ok(),
+                "'{candidate}' should be a usable name"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_plain_name_rejects_every_directory_reference() {
+        // `daily/.` is the one `Path::components()` cannot see: it normalizes to the
+        // single component `daily` while the joined path still resolves to `daily`
+        // itself rather than to something new inside it.
+        for candidate in [".", "..", "daily/.", "./daily", "a/../b", "/daily", "a//b"] {
+            assert!(
+                validate_plain_name(candidate).is_err(),
+                "'{candidate}' does not name something new and must be rejected"
+            );
+        }
+        assert!(validate_plain_name("").is_err());
+        // Windows separators are judged too — the check runs before any `Path` parse,
+        // where a `\` would otherwise be an ordinary character on unix.
+        assert!(validate_plain_name(r"daily\.").is_err());
+    }
+
+    #[test]
+    fn validate_plain_name_rejects_a_rooted_value_on_every_host() {
+        // `Path::join` discards the base for a rooted right-hand side, so any of
+        // these would silently relocate whatever the caller was building. Windows
+        // shapes are rejected on unix too: the name may have been written into
+        // shared state by a Windows host.
+        for candidate in [
+            "/abs",
+            r"\abs",
+            "C:/evil",
+            r"C:\evil",
+            "C:evil",
+            r"\\server\share",
+        ] {
+            assert!(
+                validate_plain_name(candidate).is_err(),
+                "'{candidate}' is rooted and must not be accepted as a name"
+            );
+        }
+        // A colon anywhere is an NTFS alternate-data-stream selector, not a name.
+        assert!(validate_plain_name("notes.txt:hidden").is_err());
+        assert!(validate_plain_name("daily/C:evil").is_err());
+    }
 
     #[test]
     fn a_patch_entry_declaring_encryption_is_refused() {

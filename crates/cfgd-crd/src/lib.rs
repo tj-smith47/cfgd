@@ -9,7 +9,7 @@
 //! Kubernetes client/runtime, no HTTP server, and no telemetry — only the
 //! schema-bearing types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -239,11 +239,11 @@ pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
     /// `namespace/name` of the MachineConfigs currently violating this policy,
-    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-    /// `PolicyViolation` event fires on the transition into violation rather
-    /// than once per observation — an in-process memory would re-announce every
-    /// machine after an operator restart. `nonCompliantCount` is the exact
-    /// total and is never capped.
+    /// sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+    /// fires on the transition into violation rather than once per observation —
+    /// an in-process memory would re-announce every machine after an operator
+    /// restart. `nonCompliantCount` is the exact total and is never capped.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
     #[serde(default)]
     #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
@@ -404,11 +404,11 @@ pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
     /// `namespace/name` of the MachineConfigs currently violating this policy,
-    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-    /// `PolicyViolation` event fires on the transition into violation rather
-    /// than once per observation — an in-process memory would re-announce every
-    /// machine after an operator restart. `nonCompliantCount` is the exact
-    /// total and is never capped.
+    /// sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+    /// fires on the transition into violation rather than once per observation —
+    /// an in-process memory would re-announce every machine after an operator
+    /// restart. `nonCompliantCount` is the exact total and is never capped.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
     #[serde(default)]
     #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
@@ -786,8 +786,9 @@ pub struct BackupPolicyStatus {
     /// describes the PREVIOUS spec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
-    /// Sorted by (hostname, name) and capped at MAX_NON_COMPLIANT_MACHINES — the shared
-    /// etcd enumeration ceiling; `machinesMatched` stays exact.
+    /// Sorted by (hostname, name) and capped at 500 rows; `machinesMatched`
+    /// stays exact.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
     #[serde(default)]
     #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub units: Vec<BackupPolicyUnitStatus>,
@@ -846,8 +847,7 @@ impl BackupPolicyStatus {
     /// changed.
     #[must_use]
     pub fn summarize_units(units: &[BackupPolicyUnitStatus]) -> Option<String> {
-        let names: std::collections::BTreeSet<&str> =
-            units.iter().map(|u| u.name.as_str()).collect();
+        let names: BTreeSet<&str> = units.iter().map(|u| u.name.as_str()).collect();
         (!names.is_empty()).then(|| names.into_iter().collect::<Vec<_>>().join(", "))
     }
 }
@@ -995,20 +995,23 @@ impl BackupPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
-        let mut seen = std::collections::HashSet::with_capacity(self.units.len());
+        let mut seen = HashSet::with_capacity(self.units.len());
         for (i, unit) in self.units.iter().enumerate() {
-            if unit.name.trim().is_empty() {
-                errors.push(format!("spec.units[{i}].name must not be empty"));
-            } else if !seen.insert(unit.name.as_str()) {
-                errors.push(format!(
-                    "spec.units[{i}].name '{}' is declared twice; a unit takes one schedule",
-                    unit.name
-                ));
+            // The name is matched against a unit the machine's own profile
+            // defines, so a name no local profile could legally carry is
+            // refused here rather than reported per machine forever after. A
+            // name that fails the grammar is never asked whether it is a
+            // duplicate: the answer would be about a string no unit can have.
+            let name = unit.name.trim();
+            match cfgd_schema::validate_backup_unit_name(&unit.name) {
+                Err(why) => errors.push(format!("spec.units[{i}].name: {why}")),
+                Ok(()) if !seen.insert(name) => errors.push(format!(
+                    "spec.units[{i}].name '{name}' is declared twice; a unit takes one schedule"
+                )),
+                Ok(()) => {}
             }
-            if unit.schedule.trim().is_empty() {
-                errors.push(format!(
-                    "spec.units[{i}].schedule must not be empty; a policy that sets no schedule projects nothing"
-                ));
+            if let Err(why) = cfgd_schema::validate_backup_schedule_grammar(&unit.schedule) {
+                errors.push(format!("spec.units[{i}].{why}"));
             }
             if unit.retention == Some(0) {
                 errors.push(format!(

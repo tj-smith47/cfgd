@@ -286,6 +286,8 @@ fn inject_cel_rules(crd: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{inject_cel_rules, inject_smd_annotations, render_all};
     use serde_json::{Value, json};
 
@@ -325,18 +327,79 @@ mod tests {
         assert_eq!(yaml.matches("---\n").count(), docs.len() - 1);
     }
 
-    /// Every CRD kind the registry carries is rendered exactly once, and the
-    /// kustomize roster installs exactly what was rendered.
+    /// Read a workspace file, panicking by name when it cannot be read.
     ///
-    /// `kubectl apply -k chart/cfgd/crds/` installs only the files
-    /// `kustomization.yaml` lists by hand, so a kind added to `cfgd-crd` and
-    /// forgotten there ships a chart whose CRD set is one short — a failure
-    /// nothing downstream of the render would notice, because the file itself
-    /// is generated and present.
+    /// A roster this walk cannot read is a roster it cannot judge, and a walk
+    /// that skips what it cannot read is a walk that passes on an empty tree.
+    fn roster_file(relative: &str) -> String {
+        let path = cfgd_core::test_helpers::workspace_root().join(relative);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    }
+
+    /// The `["a", "b"]` inline list a chart RBAC or roster line ends on.
+    fn inline_list(line: &str, file: &str) -> BTreeSet<String> {
+        let open = line
+            .find('[')
+            .unwrap_or_else(|| panic!("{file}: no inline list on line: {line}"));
+        let close = line
+            .rfind(']')
+            .unwrap_or_else(|| panic!("{file}: unterminated inline list on line: {line}"));
+        line[open + 1..close]
+            .split(',')
+            .map(|item| item.trim().trim_matches('"').to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    }
+
+    /// The three `cfgd.io` resource lists of a ClusterRole template, each with
+    /// its subresource suffix stripped, so all three answer the plural set.
+    ///
+    /// The chart templates are Helm, not YAML, so the rule is read off the raw
+    /// line rather than through a parser that would choke on `{{ … }}`.
+    fn cfgd_rbac_resource_sets(relative: &str) -> Vec<BTreeSet<String>> {
+        let body = roster_file(relative);
+        let mut sets = Vec::new();
+        let mut in_cfgd_rule = false;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("- apiGroups:") {
+                in_cfgd_rule = trimmed.contains("\"cfgd.io\"");
+                continue;
+            }
+            if in_cfgd_rule && trimmed.starts_with("resources:") {
+                sets.push(
+                    inline_list(trimmed, relative)
+                        .iter()
+                        .map(|r| {
+                            r.split('/')
+                                .next()
+                                .unwrap_or_else(|| panic!("{relative}: empty resource name"))
+                                .to_string()
+                        })
+                        .collect(),
+                );
+            }
+        }
+        assert_eq!(
+            sets.len(),
+            3,
+            "{relative} must carry three cfgd.io resource rules (CRUD, /status, /finalizers)"
+        );
+        sets
+    }
+
+    /// Every CRD kind the registry carries is rendered exactly once, and every
+    /// hand-maintained roster a kind must join names exactly what was rendered.
+    ///
+    /// Each roster is a list somebody edits by hand, and a kind missing from one
+    /// is silent everywhere else in the tree: `kubectl apply -k` installs only
+    /// what `kustomization.yaml` names, a kind absent from `webhook-config.yaml`
+    /// is admitted into a real cluster with no validation at all, and
+    /// `rbac_parity` proves only that the chart and the CSV agree — both can
+    /// lack the same kind together.
     #[test]
     fn every_crd_kind_in_the_registry_is_rendered() {
-        use std::collections::BTreeSet;
-
         let registered: BTreeSet<&str> = cfgd_core::schema::KIND_REGISTRY
             .iter()
             .filter(|e| e.crd)
@@ -350,7 +413,7 @@ mod tests {
 
         let docs = super::render_each().expect("render CRDs");
         let mut rendered: BTreeSet<String> = BTreeSet::new();
-        let mut roster: BTreeSet<String> = BTreeSet::new();
+        let mut plurals: BTreeSet<String> = BTreeSet::new();
         for doc in &docs {
             let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
             let kind = crd["spec"]["names"]["kind"]
@@ -365,34 +428,134 @@ mod tests {
                 .name
                 .strip_suffix(".cfgd.io")
                 .unwrap_or_else(|| panic!("{} is not a cfgd.io CRD name", doc.name));
-            roster.insert(format!("{plural}.yaml"));
+            plurals.insert(plural.to_string());
         }
         assert_eq!(
             rendered.iter().map(String::as_str).collect::<BTreeSet<_>>(),
             registered,
             "every CRD kind in the registry is rendered, and nothing else is"
         );
+        // The webhook path a kind registers under is its own kind lowercased —
+        // the spelling `webhook/mod.rs` routes and `webhook-config.yaml` names.
+        let singulars: BTreeSet<String> = rendered.iter().map(|k| k.to_lowercase()).collect();
+        let crd_files: BTreeSet<String> = plurals.iter().map(|p| format!("{p}.yaml")).collect();
+        let crd_names: BTreeSet<String> = plurals.iter().map(|p| format!("{p}.cfgd.io")).collect();
 
-        let path =
-            cfgd_core::test_helpers::workspace_root().join("chart/cfgd/crds/kustomization.yaml");
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        let listed: BTreeSet<String> = serde_yaml::from_str::<Value>(&body)
-            .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()))
+        let kustomization = "chart/cfgd/crds/kustomization.yaml";
+        let listed: BTreeSet<String> = serde_yaml::from_str::<Value>(&roster_file(kustomization))
+            .unwrap_or_else(|e| panic!("cannot parse {kustomization}: {e}"))
             .get("resources")
             .and_then(Value::as_array)
-            .unwrap_or_else(|| panic!("{} carries no resources list", path.display()))
+            .unwrap_or_else(|| panic!("{kustomization} carries no resources list"))
             .iter()
             .map(|r| {
                 r.as_str()
-                    .unwrap_or_else(|| panic!("{} lists a non-string resource", path.display()))
+                    .unwrap_or_else(|| panic!("{kustomization} lists a non-string resource"))
                     .to_string()
             })
             .collect();
         assert_eq!(
-            listed, roster,
-            "chart/cfgd/crds/kustomization.yaml must list exactly the rendered CRDs — \
+            listed, crd_files,
+            "{kustomization} must list exactly the rendered CRDs — \
              `kubectl apply -k` installs only what it names"
+        );
+
+        let csv = "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml";
+        let csv_doc = serde_yaml::from_str::<Value>(&roster_file(csv))
+            .unwrap_or_else(|e| panic!("cannot parse {csv}: {e}"));
+        let owned = csv_doc["spec"]["customresourcedefinitions"]["owned"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{csv} carries no customresourcedefinitions.owned list"));
+        let owned_names: BTreeSet<String> = owned
+            .iter()
+            .map(|e| {
+                e["name"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an owned entry declares no name"))
+                    .to_string()
+            })
+            .collect();
+        let owned_kinds: BTreeSet<String> = owned
+            .iter()
+            .map(|e| {
+                e["kind"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an owned entry declares no kind"))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(owned_names, crd_names, "{csv} owned: names every CRD");
+        assert_eq!(owned_kinds, rendered, "{csv} owned: names every CRD's kind");
+
+        let webhook_config = "chart/cfgd/templates/webhook-config.yaml";
+        let body = roster_file(webhook_config);
+        let mut hooked_singulars = BTreeSet::new();
+        let mut hooked_plurals = BTreeSet::new();
+        for line in body.lines() {
+            let Some(rest) = line.trim().strip_prefix("(dict \"singular\" ") else {
+                continue;
+            };
+            let mut quoted = rest.split('"').skip(1).step_by(2);
+            let singular = quoted
+                .next()
+                .unwrap_or_else(|| panic!("{webhook_config}: a dict entry names no singular"));
+            let plural = quoted
+                .nth(1)
+                .unwrap_or_else(|| panic!("{webhook_config}: a dict entry names no plural"));
+            hooked_singulars.insert(singular.to_string());
+            hooked_plurals.insert(plural.to_string());
+        }
+        assert_eq!(
+            hooked_singulars, singulars,
+            "{webhook_config} must register a validating webhook for every kind — \
+             a kind it omits is admitted with no validation at all"
+        );
+        assert_eq!(
+            hooked_plurals, plurals,
+            "{webhook_config} must name every kind's plural"
+        );
+
+        for rbac in [
+            "chart/cfgd/templates/rbac.yaml",
+            "chart/cfgd/templates/rbac-examples/platform-admin.yaml",
+        ] {
+            for resources in cfgd_rbac_resource_sets(rbac) {
+                assert_eq!(
+                    resources, plurals,
+                    "{rbac} must grant every cfgd.io resource, its /status and its /finalizers"
+                );
+            }
+        }
+
+        let taskfile = "Taskfile.yml";
+        let body = roster_file(taskfile);
+        let loop_line = body
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("for f in ") && l.ends_with("; do"))
+            .unwrap_or_else(|| panic!("{taskfile}: gen:crds:check declares no file loop"));
+        let looped: BTreeSet<String> = loop_line
+            .trim_start_matches("for f in ")
+            .trim_end_matches("; do")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            looped, plurals,
+            "{taskfile}: gen:crds:check must diff every rendered CRD copy"
+        );
+
+        let connection = "chart/cfgd/templates/tests/test-connection.yaml";
+        let body = roster_file(connection);
+        let probed: BTreeSet<String> = body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("kubectl get crd "))
+            .filter_map(|l| l.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            probed, crd_names,
+            "{connection} must check every CRD is established"
         );
     }
 

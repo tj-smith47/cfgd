@@ -91,10 +91,23 @@ fn is_schema_sketch(body: &str) -> bool {
 
 /// A real cfgd resource block begins with the cfgd `apiVersion` and is not a
 /// schema sketch.
+///
+/// A block may open on a comment naming the layer the example belongs to
+/// (`# Cluster: fleet-wide schedule policy`), so the `apiVersion` test skips
+/// leading comment and blank lines rather than reading the block's first byte —
+/// a doc's flagship example is exactly the one most likely to be introduced
+/// that way, and it is the one that most needs validating.
 fn is_cfgd_resource(body: &str) -> bool {
-    body.trim_start()
-        .starts_with("apiVersion: cfgd.io/v1alpha1")
+    opens_on_a_comment_or_not(body)
+        .is_some_and(|line| line.starts_with("apiVersion: cfgd.io/v1alpha1"))
         && !is_schema_sketch(body)
+}
+
+/// The block's first line that is neither blank nor a comment.
+fn opens_on_a_comment_or_not(body: &str) -> Option<&str> {
+    body.lines()
+        .map(str::trim_start)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
 /// Kinds that carry the cfgd `apiVersion` but are owned by another control plane
@@ -126,6 +139,7 @@ fn every_docs_resource_example_validates() {
     files.sort();
 
     let mut validated = 0usize;
+    let mut comment_led = 0usize;
     for file in &files {
         let text = std::fs::read_to_string(file)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
@@ -149,13 +163,23 @@ fn every_docs_resource_example_validates() {
                     .unwrap_or("(no error message)")
             );
             validated += 1;
+            if !block.body.trim_start().starts_with("apiVersion:") {
+                comment_led += 1;
+            }
         }
     }
 
     // A zero (or near-zero) count means the extractor silently stopped matching
     // real blocks — a guard that proves nothing. Pin a sane floor.
     assert!(
-        validated >= 5,
-        "expected to validate at least 5 docs resource examples, found {validated}"
+        validated >= 7,
+        "expected to validate at least 7 docs resource examples, found {validated}"
+    );
+    // Both comment-led blocks in the tree (`docs/configuration.md`,
+    // `docs/backup-policy.md`) are reached by the widened extractor; a
+    // regression that re-reads the block's first byte drops them silently.
+    assert!(
+        comment_led >= 2,
+        "expected at least 2 comment-led resource examples to validate, found {comment_led}"
     );
 }

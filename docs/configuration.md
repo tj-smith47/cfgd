@@ -21,7 +21,9 @@ wrote it. Add a modeline to the top of the file:
 # yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v<version>/schemas/cfgd-config.schema.json
 apiVersion: cfgd.io/v1alpha1
 kind: Config
-# ...
+metadata:
+  name: cfgd
+spec: {}
 ```
 
 Swap `<version>` for the cfgd release that wrote the file (`cfgd --version`), and

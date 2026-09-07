@@ -177,8 +177,8 @@ spec:
               units:
                 default: []
                 description: |-
-                  Sorted by (hostname, name) and capped at MAX_NON_COMPLIANT_MACHINES — the shared
-                  etcd enumeration ceiling; `machinesMatched` stays exact.
+                  Sorted by (hostname, name) and capped at 500 rows; `machinesMatched`
+                  stays exact.
                 items:
                   description: One machine's copy of one backup unit, as the policy last observed it.
                   properties:

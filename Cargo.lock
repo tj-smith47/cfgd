@@ -768,6 +768,7 @@ dependencies = [
 name = "cfgd-schema"
 version = "0.1.0"
 dependencies = [
+ "croner",
  "schemars",
  "serde",
  "serde_json",

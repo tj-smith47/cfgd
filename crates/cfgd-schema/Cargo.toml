@@ -25,3 +25,6 @@ serde_json = "1"
 serde_yaml = "0.9"
 schemars = "1.2"
 thiserror = "2"
+# The backup schedule grammar is one function both the local parser and the
+# BackupPolicy CRD call, so the cron half lives beside the interval half here.
+croner = "3"
