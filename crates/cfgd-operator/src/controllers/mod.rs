@@ -420,22 +420,6 @@ impl ControllerStores {
         })))
     }
 
-    /// Every BackupPolicy in `namespace`.
-    ///
-    /// `pub` where its five siblings are `pub(super)`: the reconcile loop
-    /// reaches a policy through its own watch stream, so this read is for a
-    /// caller outside the loop, which is the per-request LIST the cache exists
-    /// to spare.
-    pub async fn backup_policies_in(
-        &self,
-        namespace: &str,
-    ) -> Result<Vec<Arc<BackupPolicy>>, OperatorError> {
-        ready_store(&self.backup_policies, "BackupPolicy").await?;
-        Ok(in_stable_order(self.backup_policies.state_filter(|bp| {
-            bp.metadata.namespace.as_deref() == Some(namespace)
-        })))
-    }
-
     /// Every DriftAlert in `namespace`, or across the cluster when `namespace`
     /// is empty.
     pub(super) async fn drift_alerts_in(

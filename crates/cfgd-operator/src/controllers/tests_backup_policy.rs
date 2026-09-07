@@ -13,7 +13,8 @@ use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
 use crate::crds::{
-    BackupPolicyStatus, LabelSelector, MachineConfig, MachineConfigStatus, ScheduleOwner,
+    BackupPolicyStatus, LabelSelector, MAX_NON_COMPLIANT_MACHINES, MachineConfig,
+    MachineConfigStatus, ScheduleOwner,
 };
 use crate::metrics::ReconcileLabels;
 
@@ -32,16 +33,20 @@ fn stores_with(machine_configs: Vec<MachineConfig>) -> ControllerStores {
     }
 }
 
-/// A machine whose device reported that it owns `unit`'s schedule itself.
-fn pinning(mut mc: MachineConfig, unit: &str) -> MachineConfig {
+/// A machine whose device reported `owner` as the layer owning `unit`'s
+/// schedule. The value is whatever the device wrote, not a parsed enum: the
+/// wire carries a plain string.
+fn reporting(mut mc: MachineConfig, unit: &str, owner: &str) -> MachineConfig {
     mc.status = Some(MachineConfigStatus {
-        backup_schedule_owners: BTreeMap::from([(
-            unit.to_string(),
-            ScheduleOwner::Local.label().to_string(),
-        )]),
+        backup_schedule_owners: BTreeMap::from([(unit.to_string(), owner.to_string())]),
         ..Default::default()
     });
     mc
+}
+
+/// A machine whose device reported that it owns `unit`'s schedule itself.
+fn pinning(mc: MachineConfig, unit: &str) -> MachineConfig {
+    reporting(mc, unit, ScheduleOwner::Local.label())
 }
 
 /// The status body of the patch the reconcile sent, as the typed object the
@@ -85,10 +90,18 @@ async fn reconcile_backup_policy_projects_a_units_schedule_onto_every_selected_m
     assert_eq!(status.conditions[0].condition_type, "Applied");
     assert_eq!(status.conditions[0].status, "True");
     assert_eq!(status.conditions[0].reason, "Projected");
+    // One unit over two machines is two rows and one unit: the clause counts
+    // the units it names, not the rows they span.
+    assert_eq!(
+        status.conditions[0].message,
+        "1 backup unit scheduled across 2 machines"
+    );
 }
 
 /// The guard against the one failure mode a fleet schedule must never have: a
-/// machine that pinned the unit locally reads as scheduled by the cluster.
+/// machine that pinned the unit locally reads as scheduled by the cluster. The
+/// word arrives as a plain string a device wrote, so every casing of it is the
+/// same answer.
 #[tokio::test]
 async fn reconcile_backup_policy_reports_a_locally_pinned_unit_instead_of_claiming_to_apply() {
     let policy = backup_policy("nightly", NS, vec![backup_unit("dotfiles", "0 3 * * *")]);
@@ -100,6 +113,14 @@ async fn reconcile_backup_policy_reports_a_locally_pinned_unit_instead_of_claimi
         ],
         stores_with(vec![
             pinning(machine_config("mc-laptop", NS), "dotfiles"),
+            // What serde writes for `spec.backups[].scheduleOwner`, and a
+            // shouted spelling of it: the same pin either way.
+            reporting(
+                machine_config("mc-pascal", NS),
+                "dotfiles",
+                ScheduleOwner::Local.as_str(),
+            ),
+            reporting(machine_config("mc-shout", NS), "dotfiles", "LOCAL"),
             machine_config("mc-nuc", NS),
         ]),
     );
@@ -110,22 +131,28 @@ async fn reconcile_backup_policy_reports_a_locally_pinned_unit_instead_of_claimi
 
     let report = harness.finish().await;
     let status = patched_status(&report.captured[0].body_json());
-    let pinned = status
-        .units
-        .iter()
-        .find(|row| row.hostname == "mc-laptop.test")
-        .expect("the pinning machine still gets a row");
-    assert_eq!(pinned.owner, ScheduleOwner::Local.label());
-    assert!(
-        pinned.schedule.is_none(),
-        "a pinned row states no schedule this policy did not set"
-    );
-    assert!(pinned.retention.is_none());
-    let message = pinned.message.as_deref().expect("a pinned row says why");
-    assert!(
-        message.contains("pins this unit's schedule") && message.contains("does not apply"),
-        "the message must name the pin and the declined apply: {message}"
-    );
+    for hostname in ["mc-laptop.test", "mc-pascal.test", "mc-shout.test"] {
+        let pinned = status
+            .units
+            .iter()
+            .find(|row| row.hostname == hostname)
+            .unwrap_or_else(|| panic!("{hostname} still gets a row"));
+        assert_eq!(
+            pinned.owner,
+            ScheduleOwner::Local.label(),
+            "{hostname} pinned the unit whatever the casing it reported"
+        );
+        assert!(
+            pinned.schedule.is_none(),
+            "a pinned row states no schedule this policy did not set"
+        );
+        assert!(pinned.retention.is_none());
+        let message = pinned.message.as_deref().expect("a pinned row says why");
+        assert!(
+            message.contains("pins this unit's schedule") && message.contains("does not apply"),
+            "the message must name the pin and the declined apply: {message}"
+        );
+    }
 
     let projected = status
         .units
@@ -135,13 +162,164 @@ async fn reconcile_backup_policy_reports_a_locally_pinned_unit_instead_of_claimi
     assert_eq!(projected.owner, ScheduleOwner::Cluster.label());
     assert_eq!(projected.schedule.as_deref(), Some("0 3 * * *"));
 
-    // The condition counts what was scheduled apart from what was pinned, so a
-    // reader learns the split without walking `status.units`.
-    let message = &status.conditions[0].message;
+    // The condition counts what was scheduled apart from what the machines
+    // pinned, so a reader learns the split without walking `status.units`.
+    assert_eq!(
+        status.conditions[0].message,
+        "1 backup unit scheduled across 1 machine; 1 unit pinned on 3 machines"
+    );
+}
+
+/// A schedule owner no layer spells is the one case where the controller
+/// cannot tell what the machine did, so it takes the only safe reading: report
+/// the unit, apply nothing, and say so on the object as well as in the row.
+#[tokio::test]
+async fn reconcile_backup_policy_reports_a_machine_whose_schedule_owner_it_cannot_read() {
+    let policy = backup_policy("nightly", NS, vec![backup_unit("dotfiles", "0 3 * * *")]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            expect_event_post(NS),
+            ExpectedCall::patch_status(backup_policy_status_path("nightly"))
+                .returning_json(&policy),
+        ],
+        stores_with(vec![
+            reporting(machine_config("mc-laptop", NS), "dotfiles", "Locale"),
+            machine_config("mc-nuc", NS),
+        ]),
+    );
+
+    reconcile_backup_policy(Arc::new(policy), ctx)
+        .await
+        .expect("an unreadable owner is reported, not an error");
+
+    let report = harness.finish().await;
+    let event = report.captured[0].body_json();
+    let event_note = serde_json::to_string(&event).expect("the event serializes");
     assert!(
-        message.contains("1 backup unit scheduled across 2 machines")
-            && message.contains("1 unit pinned by the machine"),
-        "the Applied message must state both halves: {message}"
+        event_note.contains("UnreadableScheduleOwner")
+            && event_note.contains("mc-laptop.test")
+            && event_note.contains("Locale"),
+        "the warning names the machine and the word it could not read: {event_note}"
+    );
+
+    let status = patched_status(&report.captured[1].body_json());
+    let unreadable = status
+        .units
+        .iter()
+        .find(|row| row.hostname == "mc-laptop.test")
+        .expect("the machine still gets a row");
+    assert_eq!(
+        unreadable.owner,
+        ScheduleOwner::Local.label(),
+        "a word this policy cannot read never reads as its own schedule applying"
+    );
+    assert!(unreadable.schedule.is_none());
+    let message = unreadable.message.as_deref().expect("the row says why");
+    assert!(
+        message.contains("unreadable schedule owner")
+            && message.contains("Locale")
+            && message.contains("does not apply"),
+        "the row names the value it could not read: {message}"
+    );
+    assert_eq!(
+        status.conditions[0].message,
+        "1 backup unit scheduled across 1 machine; 1 unit pinned on 1 machine"
+    );
+}
+
+/// A unit spans one row per machine, so a message counting rows would call
+/// three machines running one unit three units. Three machines, two units, one
+/// of them pinned everywhere: six rows, and not one count in the message is a
+/// six.
+#[tokio::test]
+async fn reconcile_backup_policy_counts_distinct_units_rather_than_projection_rows() {
+    let policy = backup_policy(
+        "nightly",
+        NS,
+        vec![
+            backup_unit("dotfiles", "0 3 * * *"),
+            backup_unit("notes", "6h"),
+        ],
+    );
+
+    let machines: Vec<MachineConfig> = ["mc-a", "mc-b", "mc-c"]
+        .into_iter()
+        .map(|name| pinning(machine_config(name, NS), "dotfiles"))
+        .collect();
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(backup_policy_status_path("nightly"))
+                .returning_json(&policy),
+        ],
+        stores_with(machines),
+    );
+
+    reconcile_backup_policy(Arc::new(policy), ctx)
+        .await
+        .expect("three machines reconcile");
+
+    let report = harness.finish().await;
+    let status = patched_status(&report.captured[0].body_json());
+    assert_eq!(status.units.len(), 6, "three machines, two units each");
+    assert_eq!(
+        status.conditions[0].message,
+        "1 backup unit scheduled across 3 machines; 1 unit pinned on 3 machines"
+    );
+}
+
+/// `status.units` carries `maxItems: 500`, so the enumeration is what the cap
+/// bounds and the matched count stays exact above it. Rows are machines times
+/// units, so the cap is reachable at half that many machines.
+#[tokio::test]
+async fn reconcile_backup_policy_caps_the_unit_rows_but_not_the_matched_count() {
+    let policy = backup_policy(
+        "nightly",
+        NS,
+        vec![
+            backup_unit("dotfiles", "0 3 * * *"),
+            backup_unit("notes", "6h"),
+        ],
+    );
+
+    let over_cap = MAX_NON_COMPLIANT_MACHINES / 2 + 1;
+    let machines: Vec<MachineConfig> = (0..over_cap)
+        .map(|i| machine_config(&format!("mc-{i:04}"), NS))
+        .collect();
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(backup_policy_status_path("nightly"))
+                .returning_json(&policy),
+        ],
+        stores_with(machines),
+    );
+
+    reconcile_backup_policy(Arc::new(policy), ctx)
+        .await
+        .expect("a fleet over the cap reconciles");
+
+    let report = harness.finish().await;
+    let status = patched_status(&report.captured[0].body_json());
+    assert_eq!(
+        status.machines_matched,
+        u32::try_from(over_cap).expect("the fixture fleet fits a u32"),
+        "the matched count is the exact total and is never capped"
+    );
+    assert_eq!(
+        status.units.len(),
+        MAX_NON_COMPLIANT_MACHINES,
+        "the enumeration is bounded at the cap"
+    );
+    assert_eq!(
+        status.units[0].hostname, "mc-0000.test",
+        "truncation follows the sort, so which rows fall outside is deterministic"
+    );
+    assert_eq!(
+        status.conditions[0].message,
+        format!("2 backup units scheduled across {over_cap} machines"),
+        "the condition counts the whole fleet, not the truncated enumeration"
     );
 }
 
@@ -401,40 +579,5 @@ async fn reconcile_backup_policy_awaits_change_on_a_deleted_policy() {
     assert!(
         report.captured.is_empty(),
         "a deleted policy writes nothing"
-    );
-}
-
-/// The cache read a caller outside the reconcile loop takes: namespace-scoped,
-/// stably ordered, and refusing to answer at all from a cache that has not
-/// completed its initial list — "no policies" and "not listed yet" are the same
-/// snapshot otherwise.
-#[tokio::test(start_paused = true)]
-async fn backup_policies_in_answers_one_namespace_and_refuses_an_unpopulated_cache() {
-    let mine = backup_policy("nightly", NS, vec![backup_unit("dotfiles", "6h")]);
-    let elsewhere = backup_policy("nightly", "other-ns", vec![backup_unit("dotfiles", "6h")]);
-    let stores = ControllerStores {
-        backup_policies: seeded_store(vec![mine, elsewhere]),
-        ..empty_stores()
-    };
-
-    let found = stores
-        .backup_policies_in(NS)
-        .await
-        .expect("a populated cache answers");
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].metadata.namespace.as_deref(), Some(NS));
-
-    let (backup_policies, _writer) = unready_store();
-    let unready = ControllerStores {
-        backup_policies,
-        ..empty_stores()
-    };
-    let err = unready
-        .backup_policies_in(NS)
-        .await
-        .expect_err("an unpopulated cache must not answer");
-    assert!(
-        err.to_string().contains("BackupPolicy watch cache"),
-        "{err}"
     );
 }

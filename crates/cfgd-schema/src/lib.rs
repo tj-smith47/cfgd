@@ -10,6 +10,8 @@
 
 mod enum_de;
 
+pub use enum_de::UnknownVariant;
+
 // `case_insensitive_enum!` is `#[macro_export]`ed, so its expansion lands in
 // crates that need not depend on serde themselves; `$crate::serde` is how it
 // names the one this crate already has.
@@ -1084,6 +1086,35 @@ mod tests {
             "the canonical wire spelling survives the round trip: {rendered}"
         );
         assert_eq!(pinned.schedule_owner.label(), "local");
+    }
+
+    /// A word read as a plain string — one a device reported, one another
+    /// component stored — reaches the enum through the same matcher a document
+    /// does, so the two cannot read one value two ways. The refusal names the
+    /// value and every token that would have been taken.
+    #[test]
+    fn a_string_valued_enum_parses_every_casing_and_names_what_it_refuses() {
+        for word in ["Local", "local", "LOCAL", "lOcAl"] {
+            assert_eq!(
+                word.parse::<ScheduleOwner>().expect("a casing of a token"),
+                ScheduleOwner::Local,
+                "{word} is the same answer as {}",
+                ScheduleOwner::Local.as_str()
+            );
+        }
+        assert_eq!(
+            "cluster".parse::<ScheduleOwner>().expect("the other token"),
+            ScheduleOwner::Cluster
+        );
+
+        let refused = "Locale"
+            .parse::<ScheduleOwner>()
+            .expect_err("no variant spells 'Locale'")
+            .to_string();
+        assert!(
+            refused.contains("Locale") && refused.contains("Cluster") && refused.contains("Local"),
+            "the refusal names the value and the tokens: {refused}"
+        );
     }
 
     #[test]

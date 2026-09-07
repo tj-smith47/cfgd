@@ -962,6 +962,24 @@ fn backup_policy(units: Vec<BackupPolicyUnit>) -> BackupPolicySpec {
     }
 }
 
+/// A policy exists to set a cadence. One declaring no units matches machines,
+/// reports an empty projection and changes nothing, which reads as a policy
+/// that applied — so it is refused where it is written.
+#[test]
+fn backup_policy_rejects_no_units() {
+    let errs = backup_policy(Vec::new()).validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units")),
+        "should name the empty unit list: {errs:?}"
+    );
+    assert!(
+        backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")])
+            .validate()
+            .is_ok(),
+        "one unit is enough"
+    );
+}
+
 #[test]
 fn backup_policy_rejects_a_unit_with_an_empty_name_or_schedule() {
     let errs = backup_policy(vec![

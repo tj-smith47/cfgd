@@ -1984,7 +1984,8 @@ spec:
                 default: []
                 description: |-
                   Schedule overrides, each naming a backup unit the matched machine's own
-                  profile defines.
+                  profile defines. At least one entry is required: a policy that
+                  schedules nothing sets no cadence anywhere.
                 items:
                   description: One backup unit's cluster-side schedule.
                   properties:
@@ -2078,8 +2079,9 @@ spec:
                       type: string
                     message:
                       description: |-
-                        Why this row is not what the policy asked for: the unit is unknown to
-                        the machine's profile, or its schedule is pinned local.
+                        Why this row is not what the policy asked for: the machine pinned the
+                        unit's schedule itself, or it reported an owner for the unit that no
+                        layer spells. Absent on a row the policy scheduled.
                       nullable: true
                       type: string
                     name:

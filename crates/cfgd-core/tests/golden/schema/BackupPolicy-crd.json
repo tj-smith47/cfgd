@@ -98,7 +98,7 @@
     },
     "units": {
       "default": [],
-      "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines.",
+      "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines. At least one entry is required: a policy that schedules nothing sets no cadence anywhere.",
       "items": {
         "$ref": "#/definitions/BackupPolicyUnit"
       },

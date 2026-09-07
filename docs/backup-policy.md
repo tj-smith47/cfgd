@@ -21,7 +21,7 @@ kubectl get backuppolicies          # short name: bpol
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `selector` | object | no | Which MachineConfigs in this namespace the policy schedules backups for. Empty (the default) matches all of them. Same `matchLabels` / `matchExpressions` shape as [`ConfigPolicy.spec.targetSelector`](spec/configpolicy.md) |
-| `units` | list | no | Schedule overrides, each naming a backup unit the matched machine's own profile defines |
+| `units` | list | yes | Schedule overrides, each naming a backup unit the matched machine's own profile defines. At least one entry: a policy that schedules nothing sets no cadence anywhere, so an empty list is refused at admission |
 
 `spec.units[]`:
 
@@ -80,6 +80,11 @@ The BackupPolicy controller reads it and nothing else: a unit reported `local` g
 unit is projected with the policy's own schedule. A machine that never checks in through a
 gateway reports nothing, so its units are projected as `cluster`.
 
+The word is read case-insensitively, so `local`, `Local` and `LOCAL` are one answer. A word no
+layer spells is read the safe way round: the unit is reported with `owner: local` and a message
+naming the value, and the policy raises a `Warning` event `UnreadableScheduleOwner` against
+itself naming the machine. A policy never claims a schedule it cannot show the machine took.
+
 ## Example
 
 ```yaml
@@ -101,14 +106,14 @@ status:
   machinesMatched: 2
   units:
     - name: dotfiles
+      hostname: laptop-01
+      owner: local
+      message: the machine pins this unit's schedule; this policy reports it and does not apply
+    - name: dotfiles
       hostname: nuc-01
       owner: cluster
       schedule: "0 3 * * *"
       retention: 14
-    - name: dotfiles
-      hostname: laptop-01
-      owner: local
-      message: the machine pins this unit's schedule; this policy reports it and does not apply
 ```
 
 The unit the policy schedules, as the machine's own profile defines it:

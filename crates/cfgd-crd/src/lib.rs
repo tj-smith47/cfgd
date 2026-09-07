@@ -762,7 +762,8 @@ pub struct BackupPolicySpec {
     #[serde(default)]
     pub selector: LabelSelector,
     /// Schedule overrides, each naming a backup unit the matched machine's own
-    /// profile defines.
+    /// profile defines. At least one entry is required: a policy that
+    /// schedules nothing sets no cadence anywhere.
     #[serde(default)]
     pub units: Vec<BackupPolicyUnit>,
 }
@@ -837,8 +838,9 @@ pub struct BackupPolicyUnitStatus {
     /// When the unit is next due, as an RFC 3339 timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<String>,
-    /// Why this row is not what the policy asked for: the unit is unknown to
-    /// the machine's profile, or its schedule is pinned local.
+    /// Why this row is not what the policy asked for: the machine pinned the
+    /// unit's schedule itself, or it reported an owner for the unit that no
+    /// layer spells. Absent on a row the policy scheduled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -1001,6 +1003,12 @@ impl BackupPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        if self.units.is_empty() {
+            errors.push(
+                "spec.units must declare at least one unit; a policy that schedules nothing sets no cadence anywhere"
+                    .to_string(),
+            );
+        }
         let mut seen = HashSet::with_capacity(self.units.len());
         for (i, unit) in self.units.iter().enumerate() {
             // The name is matched against a unit the machine's own profile

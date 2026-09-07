@@ -11,7 +11,7 @@ use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
 use super::{ControllerStores, MACHINE_CONFIG_FINALIZER};
-use crate::crds::{Condition, DriftAlert, MachineConfigStatus, ModuleRef};
+use crate::crds::{Condition, DriftAlert, MachineConfigStatus, ModuleRef, ScheduleOwner};
 use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
@@ -742,9 +742,12 @@ async fn reconcile_machine_config_preserves_device_reported_backup_schedule_owne
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
-        backup_schedule_owners: [("dotfiles".to_string(), "local".to_string())]
-            .into_iter()
-            .collect(),
+        backup_schedule_owners: [(
+            "dotfiles".to_string(),
+            ScheduleOwner::Local.label().to_string(),
+        )]
+        .into_iter()
+        .collect(),
         observed_generation: Some(1),
         conditions: vec![],
         package_versions: Default::default(),

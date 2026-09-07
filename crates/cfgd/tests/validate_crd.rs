@@ -27,8 +27,7 @@ const VALID_CLUSTERCONFIGPOLICY: &str =
 const VALID_DRIFTALERT: &str = "apiVersion: cfgd.io/v1alpha1\nkind: DriftAlert\nmetadata:\n  name: da\nspec:\n  deviceId: dev-1\n  machineConfigRef:\n    name: mc\n  severity: High\n";
 const VALID_MODULE_CRD: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec: {}\n";
-const VALID_BACKUPPOLICY: &str =
-    "apiVersion: cfgd.io/v1alpha1\nkind: BackupPolicy\nmetadata:\n  name: bp\nspec: {}\n";
+const VALID_BACKUPPOLICY: &str = "apiVersion: cfgd.io/v1alpha1\nkind: BackupPolicy\nmetadata:\n  name: bp\nspec:\n  units:\n    - name: dotfiles\n      schedule: \"0 3 * * *\"\n";
 
 /// Ground-truth guard: the committed bad-path fixture must equal the producer's
 /// current serialization, so a drift in `MachineConfigSpec`'s fields fails loudly
