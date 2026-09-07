@@ -136,6 +136,82 @@ spec:
     allowUnsigned: false
 ```
 
+### Module
+
+A reusable configuration bundle, cluster-scoped so one registration serves every namespace. Its
+`spec` carries the same surface a local `module.yaml` declares: `cfgd module push --apply` builds
+the resource straight from the module directory, and every field an author wrote reaches the
+cluster. Full field reference for the local document: [spec/module.md](spec/module.md).
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  ociArtifact: "ghcr.io/acme/nvim:v1"
+  platforms: [linux]
+  depends: [base]
+  packages:
+    - name: neovim
+      minVersion: "0.9"
+      prefer: [brew, apt]
+      platforms:
+        brew: neovim
+        apt: neovim
+  files:
+    - source: files/init.lua
+      target: ~/.config/nvim/init.lua
+      strategy: Copy
+      permissions: "644"
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini
+        ensure:
+          user:
+            name: Ada
+  env:
+    - name: EDITOR
+      value: nvim
+  aliases:
+    - name: vi
+      command: nvim
+  system:
+    shell:
+      defaultShell: zsh
+  hooks:
+    postApply:
+      - nvim --headless "+Lazy! sync" +qa
+  mountPolicy: Always
+```
+
+#### Module Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `ociArtifact` | string | OCI reference the module's content is pulled from. Omitted, the module carries its content inline |
+| `signature` | object | `cosign` block (`publicKey`, `keyless`, `certificateIdentity`, `certificateOidcIssuer`) the artifact is verified against |
+| `mountPolicy` | `Always` \| `Debug` | How the module is exposed to pod containers (default `Always`) |
+| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS) |
+| `depends` | list of string | Names of other `Module` resources applied first |
+| `packages` | list | Packages to install: `name`, per-manager name overrides in `platforms`, `minVersion`, and a `prefer` manager order |
+| `files` | list | Files to deploy: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
+| `env` | list | Environment variables: `name`, `value`, `append`, and per-entry `platforms` gates |
+| `aliases` | list | Shell aliases: `name`, `command`, and per-entry `platforms` gates |
+| `system` | map | System configurator settings, keyed by configurator name (`shell`, `sysctl`, `macosDefaults`, …) |
+| `scripts.postApply` | string | A script PATH inside the artifact, run by the mutating webhook in a pod init container |
+| `hooks` | object | The cfgd agent's lifecycle hooks — `preApply`, `postApply`, `preReconcile`, `postReconcile`, `onDrift`, `onChange` — each a list of inline command bodies |
+
+> `spec.scripts.postApply` and `spec.hooks.postApply` are different things and both may be set.
+> `scripts.postApply` is a relative path inside the artifact, joined into an init container
+> command by the pod-mutating webhook and run inside the pod. `hooks` is the agent's hook set:
+> inline command bodies, with their own `onlyIf` / `unless` / `creates` guards, `timeout` and
+> `shell`, run on a machine reconciling the module. Nothing in a pod runs a `hooks` body.
+
+> The script-install knobs of a package entry (`script`, `onlyIf`, `unless`, `creates`, `deny`)
+> stay off the CRD: they steer a shell install on a machine, and nothing cluster-side runs one.
+
 ### DriftAlert
 
 Created by the gateway when a device reports drifted **system settings** during check-in. A

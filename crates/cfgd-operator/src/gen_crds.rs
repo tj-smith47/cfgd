@@ -36,6 +36,9 @@ fn render_crd(mut crd: serde_json::Value, inject_cel: bool) -> Result<RenderedCr
         inject_cel_rules(&mut crd);
     }
     inject_smd_annotations(&mut crd);
+    if let Some(schema) = crd.pointer_mut("/spec/versions/0/schema/openAPIV3Schema") {
+        sanitize_structural(schema);
+    }
     let name = crd
         .pointer("/metadata/name")
         .and_then(serde_json::Value::as_str)
@@ -68,6 +71,65 @@ pub fn render_all() -> Result<String, GenCrdsError> {
         .collect::<Vec<_>>()
         .join("---\n");
     Ok(joined)
+}
+
+/// Fold a schemars-derived schema into a Kubernetes STRUCTURAL schema.
+///
+/// The API server refuses a CRD whose schema is not structural, so two shapes
+/// schemars emits have to be folded away before the document is written:
+///
+/// - `additionalProperties: false`, which `#[serde(deny_unknown_fields)]`
+///   produces. Kubernetes rejects it wherever `properties` is also set, and
+///   the CRD's own pruning already drops unknown fields, so the constraint is
+///   redundant as well as illegal.
+/// - a schema node with no single OpenAPI type: the free-form `patch.ensure`
+///   arm, which carries no `type` at all, and the untagged `ScriptEntry`
+///   union, whose `anyOf` contradicts the `type` schemars emits beside it.
+///   Those become `x-kubernetes-preserve-unknown-fields: true`, the API
+///   server's own spelling for "keep whatever is here and validate no
+///   further".
+///
+/// The walk descends only through the child positions that are themselves
+/// schemas (`properties`, `items`, `additionalProperties`, `patternProperties`)
+/// — the same positions the structural rules require a `type` at. A blind walk
+/// over every nested object would reach a `default: {}` literal or an
+/// `x-kubernetes-validations` rule and rewrite data that is not a schema.
+fn sanitize_structural(schema: &mut serde_json::Value) {
+    let Some(map) = schema.as_object_mut() else {
+        return;
+    };
+    if map.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+        map.remove("additionalProperties");
+    }
+    // schemars renders an untagged enum as its object arm's own `type` and
+    // `properties` alongside an `anyOf` naming every arm. The `type` is then a
+    // claim the union does not keep — `ScriptEntry`'s bare-string arm is not an
+    // object — and the API server enforces it, rejecting exactly the shorthand
+    // the local YAML documents. Drop the claim and let the clause below mark
+    // the node free-form.
+    if map.contains_key("anyOf") || map.contains_key("oneOf") {
+        map.remove("type");
+    }
+    if !map.contains_key("type") && !map.contains_key("$ref") && !map.contains_key("allOf") {
+        map.insert(
+            "x-kubernetes-preserve-unknown-fields".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    for key in ["properties", "patternProperties"] {
+        if let Some(children) = map.get_mut(key).and_then(serde_json::Value::as_object_mut) {
+            for child in children.values_mut() {
+                sanitize_structural(child);
+            }
+        }
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(child) = map.get_mut(key)
+            && child.is_object()
+        {
+            sanitize_structural(child);
+        }
+    }
 }
 
 fn inject_smd_annotations(crd: &mut serde_json::Value) {
@@ -106,16 +168,22 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
-    // files list: merge by map key — "path" for MachineConfig, "source" for Module
+    // files list: merge by map key — "path" for MachineConfig, "target" for Module
     if let Some(files) = crd.pointer_mut(&format!("{spec_base}/spec/properties/files")) {
         files["x-kubernetes-list-type"] = serde_json::json!("map");
         // Determine map key from the items schema: Module files have "source"+"target",
         // MachineConfig files have "path"+"content"+"source"+"mode".
+        //
+        // A Module file is keyed by its TARGET, the one field every entry
+        // carries: a `strategy: Patch` entry rewrites the target in place and
+        // declares no source at all, so several of them in one module would
+        // collide on an empty `source` and the API server would refuse the
+        // whole resource.
         let has_path_property = files.pointer("/items/properties/path").is_some();
         if has_path_property {
             files["x-kubernetes-list-map-keys"] = serde_json::json!(["path"]);
         } else {
-            files["x-kubernetes-list-map-keys"] = serde_json::json!(["source"]);
+            files["x-kubernetes-list-map-keys"] = serde_json::json!(["target"]);
         }
     }
 
@@ -478,8 +546,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_smd_annotations_files_list_keys_by_source_when_items_lack_path_property() {
+    fn inject_smd_annotations_files_list_keys_by_target_when_items_lack_path_property() {
         // Module shape: items.properties has "source"+"target" but not "path".
+        // A `strategy: Patch` entry declares no source, so `target` is the one
+        // field every entry fills and the only safe server-side merge key.
         let mut crd = json!({
             "spec": {"versions": [{"schema": {"openAPIV3Schema": {"properties": {"spec": {
                 "properties": {
@@ -498,7 +568,7 @@ mod tests {
         );
         assert_eq!(
             smd(&crd, files, "x-kubernetes-list-map-keys"),
-            Some(json!(["source"]))
+            Some(json!(["target"]))
         );
     }
 
@@ -544,6 +614,120 @@ mod tests {
             crd.pointer(&format!("{base}/spec/properties/depends"))
                 .is_none()
         );
+    }
+
+    /// Walk every rendered document for `additionalProperties: false`, which
+    /// `#[serde(deny_unknown_fields)]` on a shared value type can reintroduce
+    /// at any schemars upgrade. The API server refuses a CRD carrying it
+    /// beside `properties`, and a CRD that fails to install is not something
+    /// any unit test downstream of the render would notice.
+    #[test]
+    fn no_rendered_crd_carries_additional_properties_false() {
+        fn find_false(node: &Value, path: &str, hits: &mut Vec<String>) {
+            match node {
+                Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "additionalProperties" && value == &Value::Bool(false) {
+                            hits.push(path.to_string());
+                        }
+                        find_false(value, &format!("{path}.{key}"), hits);
+                    }
+                }
+                Value::Array(items) => {
+                    for (i, value) in items.iter().enumerate() {
+                        find_false(value, &format!("{path}[{i}]"), hits);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let docs = super::render_each().expect("render CRDs");
+        assert_eq!(docs.len(), 5, "every CRD must be walked");
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let mut hits = Vec::new();
+            find_false(&crd, "", &mut hits);
+            assert!(
+                hits.is_empty(),
+                "{} carries `additionalProperties: false` at {hits:?}; \
+                 the API server rejects it alongside `properties`",
+                doc.name
+            );
+        }
+    }
+
+    /// `patch.ensure` is a free-form YAML mapping: the keys a user merges into
+    /// their own config file, which no schema can enumerate. It reaches the
+    /// API server as `x-kubernetes-preserve-unknown-fields`, without which the
+    /// whole CRD is refused for having a typeless node.
+    #[test]
+    fn a_free_form_schema_is_marked_preserve_unknown_fields() {
+        let docs = super::render_each().expect("render CRDs");
+        let module = docs
+            .iter()
+            .find(|d| d.name == "modules.cfgd.io")
+            .expect("the Module CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&module.yaml).expect("parse rendered CRD");
+
+        let ensure = crd
+            .pointer(
+                "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/files\
+                 /items/properties/patch/properties/ensure",
+            )
+            .expect("the patch.ensure schema is rendered");
+
+        assert_eq!(
+            ensure.get("x-kubernetes-preserve-unknown-fields"),
+            Some(&json!(true)),
+            "a schema node with no OpenAPI type must be marked preserve-unknown-fields: {ensure:?}"
+        );
+        assert!(
+            ensure.get("type").is_none(),
+            "a preserved node carries no type to contradict: {ensure:?}"
+        );
+    }
+
+    /// The untagged `ScriptEntry` accepts a bare command string as readily as
+    /// the mapping form, and schemars renders the mapping arm's `type: object`
+    /// beside the `anyOf` naming both. Left alone, the API server enforces that
+    /// `type` and rejects every module whose hook is written the short way —
+    /// which is what `cfgd module push --apply` emits.
+    #[test]
+    fn a_union_typed_schema_keeps_no_type_its_arms_contradict() {
+        let docs = super::render_each().expect("render CRDs");
+        let module = docs
+            .iter()
+            .find(|d| d.name == "modules.cfgd.io")
+            .expect("the Module CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&module.yaml).expect("parse rendered CRD");
+
+        let hooks = crd
+            .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/hooks/properties")
+            .and_then(Value::as_object)
+            .expect("the hooks schema is rendered");
+        assert_eq!(
+            hooks.len(),
+            6,
+            "every lifecycle hook is rendered: {hooks:?}"
+        );
+
+        for (hook, schema) in hooks {
+            let items = schema.get("items").expect("a hook list has items");
+            assert!(
+                items.get("anyOf").is_some(),
+                "{hook} items keep both arms of the union: {items:?}"
+            );
+            assert!(
+                items.get("type").is_none(),
+                "{hook} items must claim no single type, or the bare-string arm is refused: {items:?}"
+            );
+            assert_eq!(
+                items.get("x-kubernetes-preserve-unknown-fields"),
+                Some(&json!(true)),
+                "{hook} items must be marked preserve-unknown-fields: {items:?}"
+            );
+        }
     }
 
     #[test]

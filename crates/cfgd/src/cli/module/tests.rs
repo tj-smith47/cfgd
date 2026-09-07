@@ -4609,15 +4609,20 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
 }
 
 #[test]
-fn build_module_crd_json_packages_emit_only_name_field() {
-    // The Module CRD's package entries only carry `name` (resolution lives on
-    // the operator side via the module CRD's downstream reconcile). Other
-    // ModulePackageEntry fields (minVersion, prefer, aliases, etc.) MUST NOT
-    // leak into the CRD payload — that would either be silently ignored or
-    // (worse) trip strict-schema rejection on a future CRD version.
+fn build_module_crd_json_packages_carry_their_resolution_hints_but_no_script_install() {
+    // A package entry reaches the CRD with everything a machine needs to
+    // resolve it: the name, the per-manager aliases, the version floor and the
+    // manager preference order. The script-install knobs stay behind — they
+    // are a shell body and the guards that decide whether to run it, and
+    // nothing cluster-side installs a package. `deny` goes with them: it only
+    // narrows a manager choice the cluster never makes.
     let mut pkg = make_pkg("ripgrep");
     pkg.min_version = Some("13.0".into());
     pkg.prefer = vec!["brew".into(), "cargo".into()];
+    pkg.script = Some("curl -fsSL https://example.invalid/rg.sh | sh".into());
+    pkg.only_if = Some("command -v curl".into());
+    pkg.unless = Some("command -v rg".into());
+    pkg.creates = Some("~/.local/bin/rg".into());
     pkg.deny = vec!["apt".into()];
     pkg.platforms = vec!["darwin".into()];
 
@@ -4626,39 +4631,52 @@ fn build_module_crd_json_packages_emit_only_name_field() {
 
     let pkgs = v["spec"]["packages"].as_array().expect("packages array");
     assert_eq!(pkgs.len(), 1);
-    let entry = pkgs[0].as_object().expect("package entry object");
-    assert_eq!(entry.len(), 1, "package entry must contain only `name`");
-    assert_eq!(entry.get("name").unwrap(), "ripgrep");
-    assert!(!entry.contains_key("minVersion"));
-    assert!(!entry.contains_key("prefer"));
-    assert!(!entry.contains_key("deny"));
-    assert!(!entry.contains_key("platforms"));
+    assert_eq!(
+        pkgs[0],
+        serde_json::json!({
+            "name": "ripgrep",
+            "minVersion": "13.0",
+            "prefer": ["brew", "cargo"],
+        }),
+        "the resolution hints travel; the script-install knobs, the manager \
+         denylist and the gating tags do not"
+    );
 }
 
 #[test]
-fn build_module_crd_json_files_emit_only_source_and_target() {
-    // Module CRD file entries are source+target pairs only. Per-file `strategy`,
-    // `private`, `encryption` etc. are local-side concerns and must not leak.
+fn build_module_crd_json_files_carry_every_local_deployment_knob() {
+    // A file entry reaches the CRD whole: the strategy that deploys it, the
+    // permissions it lands with, whether its source is local-only, and the
+    // encryption its source must satisfy. A module read back out of the
+    // cluster deploys the same file the same way.
     let f = config::ModuleFileEntry {
         patch: None,
         source: "vimrc".into(),
         target: "~/.vimrc".into(),
         strategy: Some(config::FileStrategy::Symlink),
         private: true,
-        encryption: None,
-        permissions: None,
+        encryption: Some(config::EncryptionSpec {
+            backend: "sops".into(),
+            mode: config::EncryptionMode::InRepo,
+        }),
+        permissions: Some("600".into()),
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
     let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let files = v["spec"]["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1);
-    let entry = files[0].as_object().expect("file entry object");
-    assert_eq!(entry.len(), 2, "file entry must contain only source+target");
-    assert_eq!(entry.get("source").unwrap(), "vimrc");
-    assert_eq!(entry.get("target").unwrap(), "~/.vimrc");
-    assert!(!entry.contains_key("strategy"));
-    assert!(!entry.contains_key("private"));
+    assert_eq!(
+        files[0],
+        serde_json::json!({
+            "source": "vimrc",
+            "target": "~/.vimrc",
+            "strategy": "Symlink",
+            "private": true,
+            "encryption": { "backend": "sops", "mode": "InRepo" },
+            "permissions": "600",
+        })
+    );
 }
 
 #[test]

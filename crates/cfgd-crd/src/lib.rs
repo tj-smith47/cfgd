@@ -429,17 +429,47 @@ pub struct PackageEntry {
     /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub platforms: BTreeMap<String, String>,
+    /// Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+    /// An installed copy below this is treated as not satisfying the module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+    /// Manager preference order for this package, overriding the machine's
+    /// default manager priority (e.g. `[brew, apt]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefer: Vec<String>,
 }
 
 /// A file managed by a Module.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleFileSpec {
-    /// Path to the file inside the module artifact.
+    /// Path to the file inside the module artifact. Empty only when
+    /// `strategy` is `Patch`, which rewrites the target's own content and
+    /// reads no source.
+    #[serde(default)]
     pub source: String,
     /// Destination path the file is deployed to inside the pod or on the
     /// machine.
     pub target: String,
+    /// Per-file deployment strategy override. Omitted, the machine-wide
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<cfgd_schema::FileStrategy>,
+    /// The source file is local-only: auto-added to .gitignore, and silently
+    /// skipped on a machine where it does not exist. Default: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// Encryption the source file must satisfy. Rejected on a `Patch` entry,
+    /// which has no source to encrypt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<cfgd_schema::EncryptionSpec>,
+    /// Unix permission bits (e.g. "600", "644") applied after deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    /// Structured merge or rewriting script for `strategy: Patch`. Required
+    /// when `strategy` is `Patch`, rejected otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<cfgd_schema::PatchSpec>,
 }
 
 /// Scripts that run during module lifecycle.
@@ -470,6 +500,23 @@ pub struct ModuleEnvVar {
     /// Linux container, so the pod-mutating webhook injects an entry only when
     /// this is empty or names `linux` — nothing about a pod can answer a
     /// distro or arch tag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+}
+
+/// A shell alias a Module contributes.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleAlias {
+    /// Alias name, as typed at the shell prompt.
+    pub name: String,
+    /// Command the alias expands to, written in the syntax of the shell it is
+    /// generated for. cfgd quotes the whole value per dialect when it writes
+    /// the alias definition, so the text reaches the shell exactly as declared.
+    pub command: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 }
@@ -550,6 +597,29 @@ pub struct ModuleSpec {
     ///   Only accessible via ephemeral debug containers (`kubectl cfgd debug`).
     #[serde(default)]
     pub mount_policy: MountPolicy,
+    /// Platform tags gating the whole module on a machine reconciling it.
+    /// When non-empty and the machine matches none of them, the module is
+    /// skipped entirely (it appears as a skipped action rather than
+    /// vanishing). Tags are matched against the machine's OS, distro, and
+    /// arch; use `macos` for macOS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+    /// Shell aliases this module contributes to the machines that apply it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<ModuleAlias>,
+    /// System configurator settings this module contributes, keyed by
+    /// configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
+    /// into the profile's system map, module values winning at leaf level.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub system: BTreeMap<String, serde_json::Value>,
+    /// Lifecycle hooks the cfgd agent runs around this module's deployment,
+    /// each a list of inline command bodies with their own guards and
+    /// timeouts. Distinct from `scripts.postApply`, which is a script PATH
+    /// inside the artifact that the pod-mutating webhook runs in an init
+    /// container: these bodies are for the agent applying the module to a
+    /// machine, and nothing in a pod runs them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<cfgd_schema::ScriptSpec>,
 }
 
 /// Controls how a module is exposed to pod containers.
@@ -796,6 +866,18 @@ impl ModuleSpec {
         for (i, pkg) in self.packages.iter().enumerate() {
             if pkg.name.is_empty() {
                 errors.push(format!("spec.packages[{i}].name must not be empty"));
+            }
+        }
+        for (i, file) in self.files.iter().enumerate() {
+            if let Err(e) = cfgd_schema::validate_file_patch_shape(
+                &format!("spec.files[{i}]"),
+                file.source.is_empty(),
+                file.strategy,
+                file.patch.as_ref(),
+                file.encryption.is_some(),
+                file.private,
+            ) {
+                errors.push(e.to_string());
             }
         }
         for (i, dep) in self.depends.iter().enumerate() {

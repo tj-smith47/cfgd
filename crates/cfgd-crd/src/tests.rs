@@ -624,10 +624,13 @@ fn module_validate_accepts_full() {
         packages: vec![PackageEntry {
             name: "vim".to_string(),
             platforms: BTreeMap::new(),
+            min_version: Some("9.0".to_string()),
+            prefer: vec!["brew".to_string()],
         }],
         files: vec![ModuleFileSpec {
             source: "vimrc".to_string(),
             target: "~/.vimrc".to_string(),
+            ..Default::default()
         }],
         scripts: ModuleScripts {
             post_apply: Some("echo done".to_string()),
@@ -652,11 +655,65 @@ fn module_validate_accepts_full() {
 }
 
 #[test]
+fn module_spec_rejects_a_patch_file_with_no_patch_block() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            target: "~/.gitconfig".to_string(),
+            strategy: Some(cfgd_schema::FileStrategy::Patch),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a patch file with no patch block must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec.files[0]: strategy 'patch' requires a 'patch' block".to_string()],
+        "the CRD states a file-shape refusal in the words the local parser uses, so a \
+         module rejected on a machine is rejected in the cluster with the same sentence"
+    );
+}
+
+#[test]
+fn module_spec_rejects_encryption_on_a_patch_file() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            target: "~/.gitconfig".to_string(),
+            strategy: Some(cfgd_schema::FileStrategy::Patch),
+            patch: Some(cfgd_schema::PatchSpec {
+                format: None,
+                ensure: None,
+                script: Some("cat".to_string()),
+                blocked_by: None,
+            }),
+            encryption: Some(cfgd_schema::EncryptionSpec {
+                backend: "sops".to_string(),
+                mode: cfgd_schema::EncryptionMode::InRepo,
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("encryption on a patch file must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec.files[0]: 'encryption' is not supported with strategy 'patch'".to_string()],
+    );
+}
+
+#[test]
 fn module_validate_rejects_empty_package_name() {
     let spec = ModuleSpec {
         packages: vec![PackageEntry {
             name: String::new(),
-            platforms: BTreeMap::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };

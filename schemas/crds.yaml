@@ -892,6 +892,33 @@ spec:
         properties:
           spec:
             properties:
+              aliases:
+                description: Shell aliases this module contributes to the machines that apply it.
+                items:
+                  description: A shell alias a Module contributes.
+                  properties:
+                    command:
+                      description: |-
+                        Command the alias expands to, written in the syntax of the shell it is
+                        generated for. cfgd quotes the whole value per dialect when it writes
+                        the alias definition, so the text reaches the shell exactly as declared.
+                      type: string
+                    name:
+                      description: Alias name, as typed at the shell prompt.
+                      type: string
+                    platforms:
+                      description: |-
+                        Platform tags gating this entry alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - command
+                  - name
+                  type: object
+                type: array
               depends:
                 default: []
                 description: Names of other `Module` resources that must be applied first.
@@ -944,8 +971,82 @@ spec:
                 items:
                   description: A file managed by a Module.
                   properties:
+                    encryption:
+                      description: |-
+                        Encryption the source file must satisfy. Rejected on a `Patch` entry,
+                        which has no source to encrypt.
+                      nullable: true
+                      properties:
+                        backend:
+                          description: The encryption backend to use (e.g. "sops", "age").
+                          type: string
+                        mode:
+                          default: InRepo
+                          description: When encryption must be enforced. Defaults to `InRepo`.
+                          enum:
+                          - InRepo
+                          - Always
+                          type: string
+                      required:
+                      - backend
+                      type: object
+                    patch:
+                      description: |-
+                        Structured merge or rewriting script for `strategy: Patch`. Required
+                        when `strategy` is `Patch`, rejected otherwise.
+                      nullable: true
+                      properties:
+                        ensure:
+                          description: |-
+                            Keys/values to deep-merge into the target, leaving unmentioned keys
+                            untouched. Values are literal (no template rendering). Mutually
+                            exclusive with `script`.
+                          x-kubernetes-preserve-unknown-fields: true
+                        format:
+                          description: File format used to interpret and re-serialize a `Patch`-strategy target.
+                          enum:
+                          - Ini
+                          - Json
+                          - Yaml
+                          - Toml
+                          nullable: true
+                          type: string
+                        script:
+                          description: |-
+                            A script path or an inline command that receives the target's current
+                            content on stdin and writes the new content to stdout. A relative path
+                            resolves against the module directory for a module file
+                            (`spec.files[]`) and against the config directory for a profile file
+                            (`spec.files.managed[]`); a value that resolves to no file is run as an
+                            inline command. Mutually exclusive with `ensure`.
+                          nullable: true
+                          type: string
+                      type: object
+                    permissions:
+                      description: Unix permission bits (e.g. "600", "644") applied after deployment.
+                      nullable: true
+                      type: string
+                    private:
+                      description: |-
+                        The source file is local-only: auto-added to .gitignore, and silently
+                        skipped on a machine where it does not exist. Default: `false`.
+                      type: boolean
                     source:
-                      description: Path to the file inside the module artifact.
+                      default: ''
+                      description: |-
+                        Path to the file inside the module artifact. Empty only when
+                        `strategy` is `Patch`, which rewrites the target's own content and
+                        reads no source.
+                      type: string
+                    strategy:
+                      description: File deployment strategy.
+                      enum:
+                      - Symlink
+                      - Copy
+                      - Template
+                      - Hardlink
+                      - Patch
+                      nullable: true
                       type: string
                     target:
                       description: |-
@@ -953,13 +1054,599 @@ spec:
                         machine.
                       type: string
                   required:
-                  - source
                   - target
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:
-                - source
+                - target
                 x-kubernetes-list-type: map
+              hooks:
+                description: |-
+                  Lifecycle hooks the cfgd agent runs around this module's deployment,
+                  each a list of inline command bodies with their own guards and
+                  timeouts. Distinct from `scripts.postApply`, which is a script PATH
+                  inside the artifact that the pod-mutating webhook runs in an init
+                  container: these bodies are for the agent applying the module to a
+                  machine, and nothing in a pod runs them.
+                nullable: true
+                properties:
+                  onChange:
+                    default: []
+                    description: Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  onDrift:
+                    default: []
+                    description: Run when the daemon detects drift, before any auto-apply decision.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  postApply:
+                    default: []
+                    description: Run once after every action in an apply completes.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  postReconcile:
+                    default: []
+                    description: Run once after a daemon reconcile tick completes.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  preApply:
+                    default: []
+                    description: Run once before any action in an apply.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  preReconcile:
+                    default: []
+                    description: Run once before a daemon reconcile tick begins.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                type: object
               mountPolicy:
                 default: Always
                 description: |-
@@ -986,6 +1673,12 @@ spec:
                 items:
                   description: An entry in a Module's package list with optional per-platform overrides.
                   properties:
+                    minVersion:
+                      description: |-
+                        Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+                        An installed copy below this is treated as not satisfying the module.
+                      nullable: true
+                      type: string
                     name:
                       description: |-
                         Default package name, used on every platform `platforms` names no
@@ -996,6 +1689,13 @@ spec:
                         type: string
                       description: 'Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).'
                       type: object
+                    prefer:
+                      description: |-
+                        Manager preference order for this package, overriding the machine's
+                        default manager priority (e.g. `[brew, apt]`).
+                      items:
+                        type: string
+                      type: array
                   required:
                   - name
                   type: object
@@ -1003,6 +1703,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              platforms:
+                description: |-
+                  Platform tags gating the whole module on a machine reconciling it.
+                  When non-empty and the machine matches none of them, the module is
+                  skipped entirely (it appears as a skipped action rather than
+                  vanishing). Tags are matched against the machine's OS, distro, and
+                  arch; use `macos` for macOS.
+                items:
+                  type: string
+                type: array
               scripts:
                 default: {}
                 description: Lifecycle commands run around the module's deployment.
@@ -1043,6 +1753,13 @@ spec:
                         nullable: true
                         type: string
                     type: object
+                type: object
+              system:
+                additionalProperties: true
+                description: |-
+                  System configurator settings this module contributes, keyed by
+                  configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
+                  into the profile's system map, module values winning at leaf level.
                 type: object
             type: object
           status:
