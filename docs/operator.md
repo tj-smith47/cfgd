@@ -274,6 +274,7 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 - **MachineConfig controller**: validates specs, checks compliance against ConfigPolicy, tracks status conditions
 - **ConfigPolicy controller**: evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts
 - **DriftAlert controller**: tracks acknowledgment and resolution state
+- **BackupPolicy controller**: projects each policy's backup schedules onto every MachineConfig its selector matches, reporting rather than overriding a unit the machine pins locally. Reconciles every 60s, retries a failed reconcile after 30s
 
 ## Admission Webhook
 

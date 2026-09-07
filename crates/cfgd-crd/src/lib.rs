@@ -135,6 +135,12 @@ pub struct MachineConfigStatus {
     /// Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
+    /// Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by
+    /// unit name (`{"dotfiles": "local"}`). Device-reported, like
+    /// `packageVersions`: no controller computes it, and a reconcile that
+    /// cannot observe it preserves it.
+    #[serde(default)]
+    pub backup_schedule_owners: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]

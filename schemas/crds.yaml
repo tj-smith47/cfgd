@@ -151,6 +151,16 @@ spec:
           status:
             nullable: true
             properties:
+              backupScheduleOwners:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: |-
+                  Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by
+                  unit name (`{"dotfiles": "local"}`). Device-reported, like
+                  `packageVersions`: no controller computes it, and a reconcile that
+                  cannot observe it preserves it.
+                type: object
               conditions:
                 default: []
                 items:

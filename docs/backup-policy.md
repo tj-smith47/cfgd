@@ -51,10 +51,34 @@ Written by the operator, never set in `spec`:
 | Field | Type | Description |
 |---|---|---|
 | `observedGeneration` | integer | The `metadata.generation` the rest of the status was computed from |
-| `units` | list | One row per (machine, unit): `name`, `hostname`, `owner` (`cluster` or `local`), `schedule`, `retention`, `lastRun`, `nextRun`, `message`. Sorted by (hostname, name) and capped at 500 rows |
+| `units` | list | One row per (machine, unit): `name`, `hostname`, `owner` (`cluster` or `local`), `schedule`, `retention`, `lastRun`, `nextRun`, `message`. Sorted by (hostname, name) and capped at 500 rows. The rows are merged by (hostname, name), so two MachineConfigs naming one hostname describe one machine and produce one row |
+| `units[].schedule` | string | The schedule this policy set, absent on a row the machine pins: a policy states no cadence it did not choose |
+| `units[].lastRun` / `units[].nextRun` | string | When the unit last ran and is next due. Absent until a device reports them |
 | `unitsSummary` | string | The unit names in `units`, deduplicated and comma-joined. What the `Units` printer column shows |
 | `machinesMatched` | integer | How many machines the selector matched, exact and never capped |
-| `conditions` | list | Standard condition list, carrying `Applied` |
+| `conditions` | list | Standard condition list, carrying `Applied`: `True` / `Projected` once the selector matches a machine, `False` / `NoMatchingMachines` while it matches none. The message counts what the policy scheduled apart from what the machines pinned |
+
+The operator reconciles a policy every 60 seconds, and retries a reconcile that failed (an invalid spec, an unreachable API server) after 30 seconds.
+
+## How a machine pins a unit
+
+A machine reports the units it schedules itself in `MachineConfig.status.backupScheduleOwners`,
+a map of unit name to owning layer:
+
+```yaml
+status:
+  backupScheduleOwners:
+    dotfiles: local          # this machine keeps its own window
+```
+
+The field is written by the device gateway on every check-in, from the machine's own
+[`spec.backups[].scheduleOwner`](backups.md#scheduleowner). No controller computes it, and a
+reconcile that cannot observe it carries it forward rather than blanking it.
+
+The BackupPolicy controller reads it and nothing else: a unit reported `local` gets a row with
+`owner: local`, no `schedule`, and a message saying the policy declined to apply. Every other
+unit is projected with the policy's own schedule. A machine that never checks in through a
+gateway reports nothing, so its units are projected as `cluster`.
 
 ## Example
 
@@ -73,11 +97,18 @@ spec:
       schedule: "0 3 * * *"
       retention: 14
 status:
+  unitsSummary: dotfiles
+  machinesMatched: 2
   units:
     - name: dotfiles
       hostname: nuc-01
-      lastRun: "2026-08-02T03:00:11Z"
-      nextRun: "2026-08-03T03:00:00Z"
+      owner: cluster
+      schedule: "0 3 * * *"
+      retention: 14
+    - name: dotfiles
+      hostname: laptop-01
+      owner: local
+      message: the machine pins this unit's schedule; this policy reports it and does not apply
 ```
 
 The unit the policy schedules, as the machine's own profile defines it:

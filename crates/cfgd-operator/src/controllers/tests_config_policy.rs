@@ -209,6 +209,7 @@ async fn reconcile_config_policy_marks_non_compliant_when_package_version_does_n
     // Status reports installed version 1.28 (does not satisfy >=1.30)
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![],
         package_versions: [("kubectl".to_string(), "1.28.0".to_string())]
@@ -433,6 +434,7 @@ async fn reconcile_config_policy_writes_nothing_when_the_evaluation_is_unchanged
     let mut mc = machine_config("mc-bad", NS);
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "steady-policy")],
         package_versions: Default::default(),
@@ -555,6 +557,7 @@ async fn reconcile_config_policy_emits_violation_event_only_for_newly_violating_
     let mut known = machine_config("mc-known", NS);
     known.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "transition-policy")],
         package_versions: Default::default(),
@@ -623,6 +626,7 @@ async fn reconcile_config_policy_preserves_sibling_conditions_on_the_machine() {
     let mut mc = machine_config("mc-sib", NS);
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Reconciled".to_string(),
@@ -706,6 +710,7 @@ async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
             let mut mc = machine_config(&format!("mc-{i:04}"), NS);
             mc.status = Some(crate::crds::MachineConfigStatus {
                 last_reconciled: None,
+                backup_schedule_owners: Default::default(),
                 observed_generation: Some(1),
                 conditions: vec![compliant_condition("False", "cap-policy")],
                 package_versions: Default::default(),
@@ -787,6 +792,7 @@ async fn reconcile_config_policy_refires_violation_events_for_machines_past_the_
             let mut mc = machine_config(&format!("mc-{i:04}"), NS);
             mc.status = Some(crate::crds::MachineConfigStatus {
                 last_reconciled: None,
+                backup_schedule_owners: Default::default(),
                 observed_generation: Some(1),
                 conditions: vec![compliant_condition("False", "refire-policy")],
                 package_versions: Default::default(),
@@ -912,6 +918,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     let mut judged = machine_config("mc-judged", NS);
     judged.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![
             Condition {
@@ -1036,6 +1043,7 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
     });
     relabelled.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "recall-policy")],
         package_versions: Default::default(),
@@ -1089,6 +1097,7 @@ async fn a_machine_the_api_server_refuses_does_not_strand_the_deleted_policy() {
         let mut mc = machine_config(name, NS);
         mc.status = Some(crate::crds::MachineConfigStatus {
             last_reconciled: None,
+            backup_schedule_owners: Default::default(),
             observed_generation: Some(1),
             conditions: vec![compliant_condition("False", "refused-policy")],
             package_versions: Default::default(),
@@ -1143,6 +1152,7 @@ async fn a_repeat_deletion_reconcile_does_not_rewrite_an_already_cleared_verdict
     let mut cleared = machine_config("mc-cleared", NS);
     cleared.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),
@@ -1262,6 +1272,7 @@ async fn a_machine_whose_policy_was_deleted_reaches_steady_state() {
     mc.metadata.finalizers = Some(vec![super::MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),

@@ -128,6 +128,15 @@ pub(super) async fn reconcile_machine_config(
         .map(|s| s.package_versions.clone())
         .unwrap_or_default();
 
+    // Same contract for the backup schedule owners: the device reports which
+    // units it pins, and the BackupPolicy controller reads them to decide
+    // whether it may schedule a unit at all. Blanking them here would report
+    // a locally pinned unit as cluster-scheduled until the machine checked in
+    // again.
+    let existing_backup_schedule_owners = existing_status
+        .map(|s| s.backup_schedule_owners.clone())
+        .unwrap_or_default();
+
     // `Compliant` belongs to the policy controllers: its status, reason AND
     // message are all theirs, and this controller only carries them through.
     // Rewriting any of the three is not cosmetic — a `Condition` compares by
@@ -190,6 +199,7 @@ pub(super) async fn reconcile_machine_config(
             ),
         ],
         package_versions: existing_package_versions,
+        backup_schedule_owners: existing_backup_schedule_owners,
     };
 
     // Everything the reconcile observed is already recorded — write nothing and
