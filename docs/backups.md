@@ -87,11 +87,10 @@ $ cfgd backup run missing-name
 
 $ cfgd backup list
 Backups
-
-Name      Source                         Schedule   Retention  Snapshots  Status   Last Run  Next Run
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db  -          7          1          Success  4h ago    -
-journal   ~/Documents/journal            0 3 * * *  3          1          Success  4h ago    in 11h
+Name      Source                         Schedule   Schedule Owner  Retention  Snapshots  Status   Last Run  Next Run
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          cluster         7          1          Success  just now  -
+journal   ~/Documents/journal            0 3 * * *  local           3          1          Success  just now  in 22h
 
 $ cfgd --output json backup run notes-db
 [
@@ -347,22 +346,22 @@ backups:
 
 ### `scheduleOwner`
 
-Which layer owns the unit's schedule. `cluster` (the default) leaves the unit open to the
+Which layer owns the unit's schedule. `Cluster` (the default) leaves the unit open to the
 cluster's [`BackupPolicy`](backup-policy.md), which may set or replace its `schedule` and
-`retention`; `local` pins the unit to this machine, so the policy still reports the unit but
-projects no schedule onto it.
+`retention`; `Local` pins the unit to this machine, so the policy still reports the unit but
+projects no schedule onto it. `cfgd backup list` names it in the `Schedule Owner` column.
 
 ```yaml
 backups:
   - name: notes-db
     source: ~/.local/share/notes/notes.db
     schedule: "0 12 * * *"   # noon local, while the laptop is awake
-    scheduleOwner: local     # a fleet policy's 3am window would never fire here
+    scheduleOwner: Local     # a fleet policy's 3am window would never fire here
 ```
 
 A fleet-wide `0 3 * * *` is written for machines that are on at 3am. A laptop that is asleep
 then would take the policy's window, miss every run, and report a unit that never fires; pinning
-the unit `local` keeps the schedule the person at the keyboard chose.
+the unit `Local` keeps the schedule the person at the keyboard chose.
 
 ### `preBackup` / `postBackup`
 

@@ -345,9 +345,12 @@ pub fn backup_list_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 
 /// Write the shared `withbackups` profile (a schedule-less `docs` and a cron
 /// `weekly`) declaring `source` for both, plus the `cfgd.yaml` selecting it.
+///
+/// `weekly` pins `scheduleOwner: Local` so the listing goldens drive both arms
+/// of the field through the real command, config to cell to payload.
 fn write_backup_profile(config_dir: &tempfile::TempDir, source: &str) {
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      scheduleOwner: Local\n      retention: 3\n",
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();

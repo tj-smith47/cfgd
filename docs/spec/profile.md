@@ -829,7 +829,7 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
 | `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
-| `scheduleOwner` | enum | No | `cluster` | Which layer owns this unit's schedule. `cluster` lets the cluster's `BackupPolicy` set or replace this unit's `schedule` and `retention`; `local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively. |
+| `scheduleOwner` | enum | No | `Cluster` | Which layer owns this unit's schedule. `Cluster` lets the cluster's `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively. |
 | `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |
 | `postBackup` | list | No | `[]` | Scripts run after the copy step, and after a failed `preBackup` — always attempted, so whatever `preBackup` stopped gets restarted. Same shape as [spec.scripts](#specscripts) entries. |
@@ -842,7 +842,7 @@ backups:
     destination: ~/backups/notes          # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
     schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
-    scheduleOwner: local                  # optional; default cluster; local pins the schedule to this machine
+    scheduleOwner: Local                  # optional; default Cluster; Local pins the schedule to this machine
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -852,7 +852,7 @@ backups:
 
 `spec.backups[]` defines the unit and lives only in the profile; the cluster's `BackupPolicy`
 (see [Backup policies](../backup-policy.md)) may override a named unit's `schedule`/`retention`
-unless the profile pins `scheduleOwner: local`.
+unless the profile pins `scheduleOwner: Local`.
 
 Every run is recorded in the state database's `backup_runs` table (source, destination, size,
 status, error, start/finish timestamps), and retention pruning walks those records rather than

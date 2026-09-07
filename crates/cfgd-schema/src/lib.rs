@@ -384,7 +384,7 @@ case_insensitive_enum!(ScheduleOwner {
 });
 
 impl ScheduleOwner {
-    /// The lowercase word a listing's OWNER cell shows. Distinct from
+    /// The lowercase word a listing's Schedule Owner cell shows. Distinct from
     /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this is
     /// the ONE display spelling, so every surface naming the owning layer
     /// cannot drift on casing the way an inline `.as_str().to_lowercase()` at
@@ -458,9 +458,9 @@ pub struct BackupSpec {
     /// out of apply; omitted means "run on every apply".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    /// Which layer owns this unit's schedule. `cluster` (the default) lets a
+    /// Which layer owns this unit's schedule. `Cluster` (the default) lets a
     /// cluster `BackupPolicy` set or replace this unit's `schedule` and
-    /// `retention`; `local` pins the unit to the machine, so a policy reports
+    /// `retention`; `Local` pins the unit to the machine, so a policy reports
     /// it but projects no schedule onto it. Parsed case-insensitively.
     #[serde(default)]
     pub schedule_owner: ScheduleOwner,
@@ -682,17 +682,83 @@ mod tests {
         assert_eq!(rendered.trim(), "Yaml");
     }
 
-    /// The two display-label enums this crate owns each state a lowercase word
-    /// beside the canonical PascalCase token, and a hand-written arm returning
-    /// anything else compiles. Walking both populations is what keeps a new
-    /// variant's label from being spelled by hand.
+    /// Every label-bearing type this crate owns, with the `(canonical token,
+    /// display label)` pairs read off its own `ALL` — so a new VARIANT is
+    /// covered by construction. The type list is the only hand-written half,
+    /// and the walk below checks it against the source.
+    fn labelled_types() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+        vec![
+            (
+                "FileStrategy",
+                FileStrategy::ALL
+                    .iter()
+                    .map(|v| (v.as_str(), v.method_label()))
+                    .collect(),
+            ),
+            (
+                "ScheduleOwner",
+                ScheduleOwner::ALL
+                    .iter()
+                    .map(|v| (v.as_str(), v.label()))
+                    .collect(),
+            ),
+        ]
+    }
+
+    /// A display label is the ASCII-lowercase of the canonical token beside it,
+    /// on every label-bearing type this crate owns: a hand-written arm
+    /// returning anything else compiles, and one that reads `Local` where the
+    /// listing prints `local` would make the two spellings of one value drift.
+    /// The variant population comes from each type's `ALL`; the TYPE population
+    /// is read back off the source, so a third label-bearing type cannot be
+    /// invisible to this walk the way a hand-listed pair of enums would let it
+    /// be.
     #[test]
     fn every_display_label_is_the_lowercase_of_its_canonical_token() {
-        for s in FileStrategy::ALL {
-            assert_eq!(s.method_label(), s.as_str().to_ascii_lowercase());
+        let table = labelled_types();
+        for (ty, pairs) in &table {
+            assert!(!pairs.is_empty(), "{ty} states no variants");
+            for (token, label) in pairs {
+                assert_eq!(
+                    *label,
+                    token.to_ascii_lowercase(),
+                    "{ty}::{token}'s label is not its token lowercased"
+                );
+            }
         }
-        for o in ScheduleOwner::ALL {
-            assert_eq!(o.label(), o.as_str().to_ascii_lowercase());
+
+        // The trailing test module carries these very literals, so the walk
+        // reads the production region alone.
+        let production = include_str!("lib.rs")
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("a source has a first region");
+        let mut current = None;
+        let mut sites: Vec<&str> = Vec::new();
+        for line in production.lines() {
+            if let Some(rest) = line.strip_prefix("impl ") {
+                current = rest.split_whitespace().next();
+            }
+            if line.contains("pub fn label(") || line.contains("pub fn method_label(") {
+                sites.push(current.unwrap_or_else(|| panic!("a label fn outside an impl: {line}")));
+            }
+        }
+        assert!(
+            sites.len() >= 2,
+            "the walk no longer reaches the crate's label fns — it found {sites:?}"
+        );
+        let listed: Vec<&str> = table.iter().map(|(ty, _)| *ty).collect();
+        for site in &sites {
+            assert!(
+                listed.contains(site),
+                "{site} states a display label no walk checks; add it to `labelled_types`"
+            );
+        }
+        for ty in &listed {
+            assert!(
+                sites.contains(ty),
+                "{ty} is listed but states no display label in this crate"
+            );
         }
     }
 

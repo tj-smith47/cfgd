@@ -522,16 +522,19 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
         .find(|l| l.trim_start().starts_with("Name"))
         .unwrap_or_else(|| panic!("no header in:\n{human}"));
     let owner_col = header
-        .find("Owner")
-        .unwrap_or_else(|| panic!("no Owner column in: {header}"));
+        .find("Schedule Owner")
+        .unwrap_or_else(|| panic!("no Schedule Owner column in: {header}"));
     for (name, owner) in [("docs", "cluster"), ("keys", "local")] {
         let row = human
             .lines()
             .find(|l| l.trim_start().starts_with(name))
             .unwrap_or_else(|| panic!("no {name} row in:\n{human}"));
+        let cell = row
+            .get(owner_col..)
+            .unwrap_or_else(|| panic!("{name}'s row ends before the column: {row}"));
         assert!(
-            row[owner_col..].starts_with(owner),
-            "{name}'s owner must sit under the Owner column: {row}"
+            cell.starts_with(owner),
+            "{name}'s owner must sit under the Schedule Owner column: {row}"
         );
     }
 }

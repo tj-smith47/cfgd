@@ -621,7 +621,7 @@ or cron) and the hook, retention and destination semantics, live in
 [Declarative Backups](backups.md); the field table is in the
 [Profile spec](spec/profile.md#specbackups). A unit is open to the cluster's
 [`BackupPolicy`](backup-policy.md) unless the profile pins it with
-`scheduleOwner: local`.
+`scheduleOwner: Local`.
 
 ## File locations
 

@@ -11,7 +11,7 @@
     "nextRunAt": "<NEXT_RUN>",
     "retention": 3,
     "schedule": "0 3 * * *",
-    "scheduleOwner": "cluster",
+    "scheduleOwner": "local",
     "snapshots": 0,
     "source": "<SOURCE>"
   }

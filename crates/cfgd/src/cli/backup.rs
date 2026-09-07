@@ -144,12 +144,10 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     // `Snapshots` sits beside `Retention` because the two are one fact read
     // twice: how many this unit holds, and how many it is allowed to keep.
     let mut t = Table::new([
-        // owner-column-ok: this Owner names the layer that owns the unit's
-        // schedule (`cluster` / `local`), not a `kind:name` owner token.
         "Name",
         "Source",
         "Schedule",
-        "Owner",
+        "Schedule Owner",
         "Retention",
         "Snapshots",
         "Status",

@@ -250,7 +250,7 @@
           "type": "string"
         },
         {
-          "description": "Which layer owns this unit's schedule. `cluster` (the default) lets a cluster `BackupPolicy` set or replace this unit's `schedule` and `retention`; `local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively.",
+          "description": "Which layer owns this unit's schedule. `Cluster` (the default) lets a cluster `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively.",
           "enum": [
             "Cluster",
             "Local"
