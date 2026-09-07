@@ -862,7 +862,7 @@ async fn handle_mutate_pods(
 }
 
 #[cfg(test)]
-mod test_router;
+pub(crate) mod test_router;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

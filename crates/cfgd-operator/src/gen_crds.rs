@@ -389,6 +389,40 @@ mod tests {
         sets
     }
 
+    /// Every list the rendered schema caps states that cap in its own
+    /// description, counting each one it judged.
+    ///
+    /// The descriptions are user documentation and spell the number out, so a
+    /// changed ceiling would otherwise leave them promising a bound the API
+    /// server no longer enforces.
+    fn capped_lists_state_their_cap(node: &Value, file: &str, found: &mut usize) {
+        match node {
+            Value::Object(map) => {
+                if let Some(max) = map.get("maxItems").and_then(Value::as_u64) {
+                    let description = map
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_else(|| panic!("{file}: a capped list carries no description"));
+                    assert!(
+                        description.contains(&max.to_string()),
+                        "{file}: a capped list's description must state its own cap of {max}: \
+                         {description}"
+                    );
+                    *found += 1;
+                }
+                for value in map.values() {
+                    capped_lists_state_their_cap(value, file, found);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    capped_lists_state_their_cap(item, file, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Every CRD kind the registry carries is rendered exactly once, and every
     /// hand-maintained roster a kind must join names exactly what was rendered.
     ///
@@ -398,8 +432,8 @@ mod tests {
     /// is admitted into a real cluster with no validation at all, and
     /// `rbac_parity` proves only that the chart and the CSV agree — both can
     /// lack the same kind together.
-    #[test]
-    fn every_crd_kind_in_the_registry_is_rendered() {
+    #[tokio::test]
+    async fn every_crd_kind_in_the_registry_is_rendered() {
         let registered: BTreeSet<&str> = cfgd_core::schema::KIND_REGISTRY
             .iter()
             .filter(|e| e.crd)
@@ -414,6 +448,7 @@ mod tests {
         let docs = super::render_each().expect("render CRDs");
         let mut rendered: BTreeSet<String> = BTreeSet::new();
         let mut plurals: BTreeSet<String> = BTreeSet::new();
+        let mut capped = 0usize;
         for doc in &docs {
             let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
             let kind = crd["spec"]["names"]["kind"]
@@ -424,6 +459,7 @@ mod tests {
                 rendered.insert(kind.clone()),
                 "{kind} is rendered more than once"
             );
+            capped_lists_state_their_cap(&crd, &doc.name, &mut capped);
             let plural = doc
                 .name
                 .strip_suffix(".cfgd.io")
@@ -434,6 +470,10 @@ mod tests {
             rendered.iter().map(String::as_str).collect::<BTreeSet<_>>(),
             registered,
             "every CRD kind in the registry is rendered, and nothing else is"
+        );
+        assert!(
+            capped >= 3,
+            "only {capped} capped lists were judged, so the cap walk proves nothing"
         );
         // The webhook path a kind registers under is its own kind lowercased —
         // the spelling `webhook/mod.rs` routes and `webhook-config.yaml` names.
@@ -486,6 +526,71 @@ mod tests {
             .collect();
         assert_eq!(owned_names, crd_names, "{csv} owned: names every CRD");
         assert_eq!(owned_kinds, rendered, "{csv} owned: names every CRD's kind");
+
+        // OLM installs the webhooks from the bundle rather than from the chart,
+        // so this list is the OLM path's `webhook-config.yaml` and omitting a
+        // kind admits it unvalidated there. The pod-mutating entry names no
+        // cfgd.io kind and is skipped.
+        let mut olm_hooked_singulars = BTreeSet::new();
+        let mut olm_hooked_plurals = BTreeSet::new();
+        for hook in csv_doc["spec"]["webhookdefinitions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{csv} carries no webhookdefinitions list"))
+        {
+            if hook["type"].as_str() != Some("ValidatingAdmissionWebhook") {
+                continue;
+            }
+            let path = hook["webhookPath"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{csv}: a webhook definition declares no webhookPath"));
+            let singular = path
+                .strip_prefix("/validate-")
+                .unwrap_or_else(|| panic!("{csv}: {path} is no validating webhook path"));
+            olm_hooked_singulars.insert(singular.to_string());
+            for rule in hook["rules"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{csv}: {path} declares no rules"))
+            {
+                for resource in rule["resources"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{csv}: {path} declares no resources"))
+                {
+                    olm_hooked_plurals.insert(
+                        resource
+                            .as_str()
+                            .unwrap_or_else(|| panic!("{csv}: {path} names a non-string resource"))
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            olm_hooked_singulars, singulars,
+            "{csv} webhookdefinitions: a kind it omits is admitted unvalidated on the OLM \
+             install path"
+        );
+        assert_eq!(
+            olm_hooked_plurals, plurals,
+            "{csv} webhookdefinitions: every kind's plural is under a validating rule"
+        );
+
+        let examples = csv_doc["metadata"]["annotations"]["alm-examples"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{csv} carries no alm-examples annotation"));
+        let example_kinds: BTreeSet<String> = serde_json::from_str::<Vec<Value>>(examples)
+            .unwrap_or_else(|e| panic!("cannot parse {csv} alm-examples: {e}"))
+            .iter()
+            .map(|e| {
+                e["kind"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an alm-examples entry declares no kind"))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            example_kinds, rendered,
+            "{csv} alm-examples: OLM's install form offers a sample of every kind"
+        );
 
         let webhook_config = "chart/cfgd/templates/webhook-config.yaml";
         let body = roster_file(webhook_config);
@@ -557,6 +662,30 @@ mod tests {
             probed, crd_names,
             "{connection} must check every CRD is established"
         );
+
+        // Both rosters above name a path per kind; the server has to answer it.
+        // An unrouted path 404s at admission, and `failurePolicy: Fail` turns
+        // that into a blanket rejection of every write to the kind. The body is
+        // deliberately not a review: only the route's existence is under test.
+        let (router, _metrics) = crate::webhook::test_router::test_webhook_router();
+        for singular in &singulars {
+            let path = format!("/validate-{singular}");
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .expect("request must build");
+            let status = tower::ServiceExt::oneshot(router.clone(), request)
+                .await
+                .expect("the webhook router answers")
+                .status();
+            assert_ne!(
+                status,
+                axum::http::StatusCode::NOT_FOUND,
+                "the webhook server serves no {path}, so every write to that kind is rejected"
+            );
+        }
     }
 
     /// Split a printer-column jsonPath into `(field, is_indexed)` segments,

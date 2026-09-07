@@ -1465,17 +1465,20 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_rejects_duplicate_names() {
+        // The second name is the first with surrounding blanks: a name is one
+        // unit whatever it is padded with, matching how the cluster-side
+        // BackupPolicy reads its own units.
         let specs = vec![
             backup("db"),
             BackupSpec {
                 source: PathBuf::from("/b"),
-                ..backup("db")
+                ..backup(" db ")
             },
         ];
         let err = validate_backup_specs(&specs).expect_err("duplicate names must be rejected");
         let msg = format!("{err}");
         assert!(msg.contains("duplicate backup name"), "got: {msg}");
-        assert!(msg.contains("'db'"), "got: {msg}");
+        assert!(msg.contains("' db '"), "got: {msg}");
     }
 
     #[test]
