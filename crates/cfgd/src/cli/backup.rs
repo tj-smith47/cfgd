@@ -144,9 +144,12 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     // `Snapshots` sits beside `Retention` because the two are one fact read
     // twice: how many this unit holds, and how many it is allowed to keep.
     let mut t = Table::new([
+        // owner-column-ok: this Owner names the layer that owns the unit's
+        // schedule (`cluster` / `local`), not a `kind:name` owner token.
         "Name",
         "Source",
         "Schedule",
+        "Owner",
         "Retention",
         "Snapshots",
         "Status",
@@ -178,6 +181,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
                     .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 None,
             ),
+            (e.schedule_owner.clone(), None),
             (e.retention.to_string(), None),
             (
                 e.snapshots
@@ -352,6 +356,7 @@ pub fn cmd_backup_list(
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
+                schedule_owner: spec.schedule_owner.label().to_string(),
                 retention: spec.retention,
                 last_run_status: last.as_ref().map(|r| r.status.as_str().to_string()),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),

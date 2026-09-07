@@ -1409,6 +1409,7 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
                 destination: None,
                 name_pattern: "{filename}.{timestamp}".to_string(),
                 schedule: None,
+                schedule_owner: Default::default(),
                 retention: 10,
                 pre_backup: vec![],
                 post_backup: vec![],

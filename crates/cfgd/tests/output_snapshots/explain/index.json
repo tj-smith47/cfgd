@@ -1077,6 +1077,17 @@
             "type": "string"
           },
           {
+            "description": "Which layer owns this unit's schedule. `cluster` (the default) lets a cluster `BackupPolicy` set or replace this unit's `schedule` and `retention`; `local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively.",
+            "enum": [
+              "Cluster",
+              "Local"
+            ],
+            "name": "scheduleOwner",
+            "required": false,
+            "type": "string",
+            "typeName": "ScheduleOwner"
+          },
+          {
             "description": "File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
             "name": "source",
             "required": true,

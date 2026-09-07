@@ -2128,7 +2128,8 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout:
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+`{ name, source, schedule?, scheduleOwner, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
+where `scheduleOwner` is `cluster` or `local` and is present on every unit.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
 where `name` is the snapshot's path relative to the backup's `destination`. A restore's safety
 copy is a sidecar beside the source, so it appears in neither list and is never the unit's

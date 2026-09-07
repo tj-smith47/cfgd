@@ -363,6 +363,40 @@ impl ScriptSpec {
     }
 }
 
+/// Which layer owns a backup unit's schedule.
+///
+/// `Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`,
+/// which may set or replace its `schedule` and `retention`. `Local` pins the
+/// unit to the machine: the policy still reports it, but projects no schedule
+/// onto it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
+pub enum ScheduleOwner {
+    /// A cluster `BackupPolicy` may override this unit's schedule (default).
+    #[default]
+    Cluster,
+    /// The profile keeps this unit's schedule; no policy projects onto it.
+    Local,
+}
+
+case_insensitive_enum!(ScheduleOwner {
+    "Cluster" => ScheduleOwner::Cluster,
+    "Local" => ScheduleOwner::Local,
+});
+
+impl ScheduleOwner {
+    /// The lowercase word a listing's OWNER cell shows. Distinct from
+    /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this is
+    /// the ONE display spelling, so every surface naming the owning layer
+    /// cannot drift on casing the way an inline `.as_str().to_lowercase()` at
+    /// each call site would invite.
+    pub fn label(self) -> &'static str {
+        match self {
+            ScheduleOwner::Cluster => "cluster",
+            ScheduleOwner::Local => "local",
+        }
+    }
+}
+
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///
@@ -424,6 +458,12 @@ pub struct BackupSpec {
     /// out of apply; omitted means "run on every apply".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// Which layer owns this unit's schedule. `cluster` (the default) lets a
+    /// cluster `BackupPolicy` set or replace this unit's `schedule` and
+    /// `retention`; `local` pins the unit to the machine, so a policy reports
+    /// it but projects no schedule onto it. Parsed case-insensitively.
+    #[serde(default)]
+    pub schedule_owner: ScheduleOwner,
     /// Number of newest snapshots to keep for this backup; older snapshots are
     /// pruned from disk and from the run history. Must be at least 1 (`0` would
     /// keep no backups, which is a misconfiguration rather than a supported
@@ -640,6 +680,39 @@ mod tests {
         assert_eq!(parsed, PatchFormat::Yaml);
         let rendered = serde_yaml::to_string(&parsed).expect("serialize");
         assert_eq!(rendered.trim(), "Yaml");
+    }
+
+    /// The two display-label enums this crate owns each state a lowercase word
+    /// beside the canonical PascalCase token, and a hand-written arm returning
+    /// anything else compiles. Walking both populations is what keeps a new
+    /// variant's label from being spelled by hand.
+    #[test]
+    fn every_display_label_is_the_lowercase_of_its_canonical_token() {
+        for s in FileStrategy::ALL {
+            assert_eq!(s.method_label(), s.as_str().to_ascii_lowercase());
+        }
+        for o in ScheduleOwner::ALL {
+            assert_eq!(o.label(), o.as_str().to_ascii_lowercase());
+        }
+    }
+
+    #[test]
+    fn schedule_owner_defaults_to_cluster_and_parses_case_insensitively() {
+        let absent: BackupSpec =
+            serde_yaml::from_str("name: db\nsource: /var/lib/db\n").expect("backup spec parses");
+        assert_eq!(absent.schedule_owner, ScheduleOwner::Cluster);
+
+        let pinned: BackupSpec =
+            serde_yaml::from_str("name: db\nsource: /var/lib/db\nscheduleOwner: LOCAL\n")
+                .expect("a shouted token parses");
+        assert_eq!(pinned.schedule_owner, ScheduleOwner::Local);
+
+        let rendered = serde_yaml::to_string(&pinned).expect("serialize");
+        assert!(
+            rendered.contains("scheduleOwner: Local\n"),
+            "the canonical wire spelling survives the round trip: {rendered}"
+        );
+        assert_eq!(pinned.schedule_owner.label(), "local");
     }
 
     #[test]

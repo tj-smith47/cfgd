@@ -698,6 +698,11 @@ pub struct BackupListEntry {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// Which layer owns this unit's schedule, as the lowercase word
+    /// `ScheduleOwner::label` spells (`cluster` / `local`). Never skipped: a
+    /// constant key is what a consumer gates on to tell a unit a cluster
+    /// `BackupPolicy` may reschedule from one the profile pinned.
+    pub schedule_owner: String,
     pub retention: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_status: Option<String>,

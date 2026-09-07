@@ -164,6 +164,29 @@ fn parse_profile_yaml() {
 }
 
 #[test]
+fn backup_spec_schedule_owner_round_trips() {
+    let yaml = "\
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  backups:
+    - name: notes
+      source: ~/notes
+      scheduleOwner: local
+";
+    let doc: ProfileDocument = serde_yaml::from_str(yaml).expect("profile parses");
+    assert_eq!(doc.spec.backups[0].schedule_owner, ScheduleOwner::Local);
+
+    let rendered = serde_yaml::to_string(&doc.spec.backups[0]).expect("serialize");
+    assert!(
+        rendered.contains("scheduleOwner: Local\n"),
+        "the pin survives a re-serialize: {rendered}"
+    );
+}
+
+#[test]
 fn merge_env_override() {
     let layer1 = ProfileLayer {
         source: "local".into(),

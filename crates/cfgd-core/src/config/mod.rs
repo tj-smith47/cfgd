@@ -59,7 +59,7 @@ pub use profile_spec::{
 // `cfgd_core::config::*` paths so the CRD sharing them changes no caller here.
 pub use cfgd_schema::{
     BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchFormat, PatchSpec,
-    ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
+    ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{

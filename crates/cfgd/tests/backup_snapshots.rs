@@ -482,6 +482,61 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
 }
 
 #[test]
+fn backup_list_names_the_schedule_owner_of_every_unit() {
+    // The word is the unit's own, not the listing's: a cluster `BackupPolicy`
+    // may reschedule the first and never the second, and the column is the
+    // only place a reader can tell them apart.
+    let entries = vec![
+        BackupListEntry {
+            name: "docs".to_string(),
+            source: "/home/t/docs".to_string(),
+            schedule: None,
+            schedule_owner: "cluster".to_string(),
+            retention: 3,
+            last_run_status: None,
+            last_run_at: None,
+            last_run_clean: None,
+            next_run_at: None,
+            snapshots: None,
+        },
+        BackupListEntry {
+            name: "keys".to_string(),
+            source: "/home/t/keys".to_string(),
+            schedule: Some("0 3 * * *".to_string()),
+            schedule_owner: "local".to_string(),
+            retention: 3,
+            last_run_status: None,
+            last_run_at: None,
+            last_run_clean: None,
+            next_run_at: None,
+            snapshots: None,
+        },
+    ];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
+    drop(printer);
+
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    let header = human
+        .lines()
+        .find(|l| l.trim_start().starts_with("Name"))
+        .unwrap_or_else(|| panic!("no header in:\n{human}"));
+    let owner_col = header
+        .find("Owner")
+        .unwrap_or_else(|| panic!("no Owner column in: {header}"));
+    for (name, owner) in [("docs", "cluster"), ("keys", "local")] {
+        let row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{human}"));
+        assert!(
+            row[owner_col..].starts_with(owner),
+            "{name}'s owner must sit under the Owner column: {row}"
+        );
+    }
+}
+
+#[test]
 fn build_backup_list_doc_json_matches_serde_roundtrip() {
     // Pure data-roundtrip test on `BackupListEntry`/`build_backup_list_doc` —
     // pins the `-o json` shape without standing up config/state fixtures.
@@ -489,6 +544,7 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         name: "docs".to_string(),
         source: "/home/t/docs".to_string(),
         schedule: None,
+        schedule_owner: "cluster".to_string(),
         retention: 3,
         last_run_status: Some("success".to_string()),
         last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
@@ -505,6 +561,11 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
     assert_eq!(
         actual, expected,
         "emit -o json must match serde_json::to_value(Vec<BackupListEntry>)"
+    );
+    assert_eq!(
+        actual[0]["scheduleOwner"],
+        serde_json::json!("cluster"),
+        "the owning layer is a constant key, present on every unit: {actual}"
     );
 }
 

@@ -376,6 +376,7 @@ fn backup_fixture(name: &str) -> BackupSpec {
         destination: None,
         name_pattern: "{filename}.{timestamp}".to_string(),
         schedule: None,
+        schedule_owner: Default::default(),
         retention: 3,
         pre_backup: Vec::new(),
         post_backup: Vec::new(),

@@ -1172,6 +1172,7 @@ mod tests {
             destination: None,
             name_pattern: default_backup_name_pattern(),
             schedule: None,
+            schedule_owner: Default::default(),
             retention: default_backup_retention(),
             pre_backup: vec![],
             post_backup: vec![],
