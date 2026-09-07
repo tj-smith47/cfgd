@@ -405,6 +405,31 @@ fn injects_on_linux(platforms: &[String]) -> bool {
     platforms.is_empty() || platforms.iter().any(|tag| tag == "linux")
 }
 
+/// Whether a module reaches the pod's own containers: admitted by
+/// [`injects_on_linux`] AND mounted rather than merely staged. The ONE
+/// surviving-set predicate behind everything a mounted module gets — its
+/// volumeMount, its env, the `cfgd-scripts` emptyDir and the init container
+/// that reads it. A `Debug` module stages its volume and is reached only from
+/// an ephemeral container, so an init container built for one would mount an
+/// emptyDir the loop never added and the API server would reject the pod.
+fn mounts_into_containers(spec: &ModuleSpec) -> bool {
+    injects_on_linux(&spec.platforms) && spec.mount_policy != MountPolicy::Debug
+}
+
+/// The modules an injection reached, as the complement of the set it skipped.
+/// The handler logs both halves off this one split, so no module can be
+/// reported injected two frames after a `warn!` said it was not.
+fn injected_names<'m>(
+    modules: &'m [(String, String, ModuleSpec)],
+    skipped: &[&str],
+) -> Vec<&'m str> {
+    modules
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .filter(|name| !skipped.contains(name))
+        .collect()
+}
+
 /// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
 /// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
 fn parse_module_annotations(value: &str) -> Vec<(String, String)> {
@@ -501,10 +526,12 @@ fn ptr(path: &str) -> jsonptr::PointerBuf {
 }
 
 /// Build JSON patch operations to inject CSI volumes, volumeMounts, and env vars.
-fn build_injection_patches(
+/// The patch operations injecting `modules` into `pod`, and the names of the
+/// modules the platform gate skipped whole.
+fn build_injection_patches<'m>(
     pod: &serde_json::Value,
-    modules: &[(String, String, ModuleSpec)],
-) -> Vec<json_patch::PatchOperation> {
+    modules: &'m [(String, String, ModuleSpec)],
+) -> (Vec<json_patch::PatchOperation>, Vec<&'m str>) {
     let mut patches = Vec::new();
     let containers = pod
         .pointer("/spec/containers")
@@ -515,7 +542,7 @@ fn build_injection_patches(
     let has_init_containers = pod.pointer("/spec/initContainers").is_some();
 
     if modules.is_empty() {
-        return patches;
+        return (patches, Vec::new());
     }
 
     // Ensure /spec/volumes exists
@@ -591,7 +618,7 @@ fn build_injection_patches(
 
         // Debug modules: volume only, no volumeMount/env on declared containers.
         // They are only accessible via ephemeral debug containers.
-        if spec.mount_policy == MountPolicy::Debug {
+        if !mounts_into_containers(spec) {
             continue;
         }
 
@@ -638,9 +665,7 @@ fn build_injection_patches(
     // Add init containers for modules with postApply scripts
     let script_modules: Vec<_> = modules
         .iter()
-        .filter(|(_, _, spec)| {
-            spec.scripts.post_apply.is_some() && injects_on_linux(&spec.platforms)
-        })
+        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some() && mounts_into_containers(spec))
         .collect();
 
     if !script_modules.is_empty() {
@@ -705,7 +730,7 @@ fn build_injection_patches(
         }));
     }
 
-    patches
+    (patches, skipped)
 }
 
 async fn handle_mutate_pods(
@@ -803,7 +828,7 @@ async fn handle_mutate_pods(
     }
 
     // Build JSON patches
-    let patches = build_injection_patches(&pod_obj, &resolved);
+    let (patches, skipped) = build_injection_patches(&pod_obj, &resolved);
 
     let resp = match AdmissionResponse::from(&req).with_patch(json_patch::Patch(patches)) {
         Ok(r) => r,
@@ -814,10 +839,10 @@ async fn handle_mutate_pods(
         }
     };
 
-    let module_names: Vec<_> = resolved.iter().map(|(n, _, _)| n.as_str()).collect();
     info!(
         namespace = namespace,
-        modules = ?module_names,
+        modules = ?injected_names(&resolved, &skipped),
+        skipped = ?skipped,
         "injected modules into pod"
     );
 

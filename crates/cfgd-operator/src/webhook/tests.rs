@@ -492,7 +492,7 @@ fn build_patches_injects_csi_volume() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
 
     // Should have: add /spec/volumes, add volume, add volumeMount
     assert!(patches.len() >= 3);
@@ -527,7 +527,7 @@ fn build_patches_with_env_vars() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     assert!(patch_json.contains("EDITOR"));
     assert!(patch_json.contains("vim"));
@@ -552,7 +552,7 @@ fn build_patches_with_post_apply_script() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     assert!(patch_json.contains("initContainers"));
     assert!(patch_json.contains("cfgd-init-setup"));
@@ -583,7 +583,7 @@ fn build_patches_with_append_env_var() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Should use $(PATH) expansion, not $(PATH_ORIG)
     assert!(patch_json.contains("/cfgd-modules/tools/bin:$(PATH)"));
@@ -597,7 +597,7 @@ fn build_patches_empty_modules_returns_empty() {
             "containers": [{"name": "app"}]
         }
     });
-    let patches = build_injection_patches(&pod, &[]);
+    let (patches, _skipped) = build_injection_patches(&pod, &[]);
     assert!(patches.is_empty());
 }
 
@@ -612,7 +612,7 @@ fn build_patches_multiple_containers() {
         }
     });
     let modules = vec![("mod1".to_string(), "1.0".to_string(), ModuleSpec::default())];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Should have volumeMount patches for both containers (indices 0 and 1)
     assert!(patch_json.contains("/spec/containers/0/volumeMounts/-"));
@@ -637,7 +637,7 @@ fn build_patches_debug_module_volume_only() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
 
     // Should have CSI volume
@@ -677,7 +677,7 @@ fn build_patches_mixed_always_and_debug() {
             },
         ),
     ];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
 
     // Both should have CSI volumes
@@ -1186,7 +1186,7 @@ fn build_patches_pod_with_existing_volumes_and_mounts() {
         "1.0".to_string(),
         ModuleSpec::default(),
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
 
     // Should NOT add /spec/volumes (already exists)
@@ -1210,7 +1210,7 @@ fn build_patches_no_containers() {
         "spec": {}
     });
     let modules = vec![("mod1".to_string(), "1.0".to_string(), ModuleSpec::default())];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Should still add the volume
     assert!(patch_json.contains("cfgd-module-mod1"));
@@ -1264,18 +1264,22 @@ fn build_patches_multiple_modules_with_env_vars() {
             },
         ),
     ];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     assert!(patch_json.contains("MOD_A_PATH"));
     assert!(patch_json.contains("MOD_B_HOME"));
     assert!(patch_json.contains("/cfgd-modules/mod-b/bin:$(PATH)"));
 }
 
+/// A `Debug` module is staged, never mounted, so it gets no init container:
+/// one built for it would mount the `cfgd-scripts` emptyDir the mounted-module
+/// path never adds, and the API server would reject the pod on
+/// `volumeMounts[1].name: Not found`. The init-container filter and the loop
+/// read one predicate, so neither can offer the other a volume it did not add.
 #[test]
-fn build_patches_debug_module_with_scripts_no_emptydir() {
-    // Debug modules do NOT set needs_scripts_emptydir (they continue before that check),
-    // but the script_modules filter still picks them up for init container creation.
+fn a_debug_module_with_a_post_apply_script_gets_no_init_container() {
     let pod = serde_json::json!({
+        "metadata": {},
         "spec": {
             "containers": [
                 {"name": "app", "image": "busybox"}
@@ -1293,19 +1297,22 @@ fn build_patches_debug_module_with_scripts_no_emptydir() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
-    // Should have CSI volume
-    assert!(patch_json.contains("cfgd-module-debug-tool"));
-    // The init container is still added (script_modules filter doesn't check mount_policy)
-    assert!(patch_json.contains("cfgd-init-debug-tool"));
-    // But the scripts emptyDir volume is NOT added (needs_scripts_emptydir stays false)
+
     assert!(
-        !patch_json.contains("\"name\":\"cfgd-scripts\",\"emptyDir\""),
-        "debug module alone should not trigger scripts emptyDir volume"
+        patch_json.contains("cfgd-module-debug-tool"),
+        "a Debug module is still staged: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("initContainers"),
+        "a staged module runs no init container: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("cfgd-scripts"),
+        "and nothing references the emptyDir the mounted path would have added: {patch_json}"
     );
 }
-
 #[test]
 fn build_patches_module_without_oci_artifact() {
     let pod = serde_json::json!({
@@ -1323,7 +1330,7 @@ fn build_patches_module_without_oci_artifact() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Should still create volume (without ociRef in volumeAttributes)
     assert!(patch_json.contains("cfgd-module-local-mod"));
@@ -1353,7 +1360,7 @@ fn build_patches_multiple_containers_with_env() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Both containers should get env var patches
     assert!(patch_json.contains("/spec/containers/0/env/-"));
@@ -1385,7 +1392,7 @@ fn build_patches_existing_init_containers() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Should NOT add /spec/initContainers (already exists)
     assert!(
@@ -1848,7 +1855,7 @@ fn build_patches_multiple_modules_with_scripts_share_scripts_emptydir() {
             },
         ),
     ];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     // Both should have init containers
     assert!(patch_json.contains("cfgd-init-mod-a"));
@@ -1882,7 +1889,7 @@ fn build_patches_default_post_apply_script_path() {
             ..Default::default()
         },
     )];
-    let patches = build_injection_patches(&pod, &modules);
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
     let patch_json = serde_json::to_string(&patches).unwrap();
     assert!(
         patch_json.contains("custom-setup.sh"),
@@ -1986,7 +1993,7 @@ fn build_patches_skips_an_env_entry_gated_off_a_linux_container() {
             ..Default::default()
         },
     )];
-    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules).0).unwrap();
     assert!(patch_json.contains("UNGATED"), "{patch_json}");
     assert!(patch_json.contains("LINUX_ONLY"), "{patch_json}");
     assert!(patch_json.contains("LINUX_AMONG_OTHERS"), "{patch_json}");
@@ -2041,7 +2048,13 @@ fn a_module_gated_to_another_platform_is_not_injected() {
             },
         ),
     ];
-    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+    let (patches, skipped) = build_injection_patches(&pod, &modules);
+    let patch_json = serde_json::to_string(&patches).unwrap();
+
+    // The two halves the handler logs, off the one split: a module named as
+    // skipped is never also named as injected.
+    assert_eq!(skipped, vec!["maconly"]);
+    assert_eq!(injected_names(&modules, &skipped), vec!["tools"]);
 
     assert!(
         !patch_json.contains("cfgd-module-maconly"),
@@ -2101,7 +2114,7 @@ fn a_module_gated_to_linux_or_ungated_is_injected() {
         module("linuxonly", &["linux"]),
         module("linuxamong", &["macos", "linux"]),
     ];
-    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules).0).unwrap();
 
     for name in ["ungated", "linuxonly", "linuxamong"] {
         assert!(
@@ -2121,6 +2134,7 @@ fn a_module_gated_to_linux_or_ungated_is_injected() {
 #[test]
 fn the_platform_skip_outranks_a_debug_mount_policy() {
     let pod = serde_json::json!({
+        "metadata": {},
         "spec": {
             "containers": [
                 {"name": "app", "image": "busybox"}
@@ -2137,7 +2151,7 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
             ..Default::default()
         },
     )];
-    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules)).unwrap();
+    let patch_json = serde_json::to_string(&build_injection_patches(&pod, &modules).0).unwrap();
 
     assert!(
         !patch_json.contains("cfgd-module-tcpdump"),
@@ -2152,19 +2166,21 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
 /// The module gate and the env gate are ONE predicate. Two spellings of "does
 /// this `platforms:` list admit a Linux container" drift the moment one grows a
 /// tag the other does not, so the tag literal lives in `injects_on_linux` alone
-/// and both call sites name it.
+/// and every other site composes it.
 #[test]
 fn the_env_gate_and_the_module_gate_share_one_predicate() {
     let src = include_str!("mod.rs");
-    let calls = src.matches("injects_on_linux(&").count();
-    assert_eq!(
-        calls, 3,
-        "expected the module gate, the env gate and the init-container filter to call \
-         injects_on_linux and nothing else to spell the rule"
-    );
     assert_eq!(
         src.matches("\"linux\"").count(),
         1,
         "the `linux` tag literal belongs to injects_on_linux alone"
+    );
+    // A floor, not an exact count: the module gate and the env gate are the two
+    // that must route here, and a third caller composing the predicate
+    // (`mounts_into_containers`) is the shape this is protecting, not a
+    // violation of it.
+    assert!(
+        src.matches("injects_on_linux(&").count() >= 2,
+        "both gates must call injects_on_linux rather than spell the rule again"
     );
 }

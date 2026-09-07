@@ -30,6 +30,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `CSI_DRIVER_NAME` — canonical CSI driver name (`csi.cfgd.io`).
 - `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`).
 - `SKIPPED_MODULES_ANNOTATION` — the pod annotation naming what the mutating webhook declined to inject (`cfgd.io/skipped-modules`); never a raw string.
+- `injects_on_linux(platforms)` + `mounts_into_containers(spec)` (`cfgd-operator/src/webhook/mod.rs`) — the ONE reading of a `platforms:` list in a pod (a pod is Linux, so only an empty list or one naming `linux` admits) and the surviving-set predicate composing it with `mountPolicy`, read by the module gate, the env gate and the init-container filter alike. `the_env_gate_and_the_module_gate_share_one_predicate` walks the file for a second spelling of the tag.
 - `LABEL_MACHINE_CONFIG` / `LABEL_DEVICE_ID` — k8s label keys; use in gateway/controllers instead of raw strings.
 - `OCI_ANNOTATION_PLATFORM` — OCI manifest annotation key; use in `oci.rs` instead of the raw string.
 - `PROFILE_SCRIPT_TIMEOUT` (5m) / `COMMAND_TIMEOUT` (2m) / `GIT_NETWORK_TIMEOUT` (5m) — never hardcode the durations.
