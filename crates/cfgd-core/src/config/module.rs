@@ -263,12 +263,13 @@ pub struct ModuleFileEntry {
 /// `validate_file_patch_shape`) and the `target` the cluster-side SSA merge
 /// keys on (see [`cfgd_schema::validate_file_target`]).
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
-    let mut seen = std::collections::HashSet::with_capacity(entries.len());
-    for (i, entry) in entries.iter().enumerate() {
-        cfgd_schema::validate_file_target(&format!("spec.files[{i}]"), &entry.target, &mut seen)
+    let mut seen = std::collections::HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let subject = format!("module file '{}'", entry.target);
+        cfgd_schema::validate_file_target(&subject, &entry.target, &mut seen)
             .map_err(|e| ConfigError::Invalid { message: e.0 })?;
         validate_file_patch_shape(
-            &format!("module file '{}'", entry.target),
+            &subject,
             entry.source.is_empty(),
             entry.strategy,
             entry.patch.as_ref(),
@@ -456,7 +457,7 @@ target: \"\"\n";
         let err = validate_module_file_entries(&[entry]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("spec.files[0].target must not be empty"),
+                .contains("module file '': target must not be empty"),
             "unexpected error: {err}"
         );
     }
@@ -476,7 +477,7 @@ target: \"\"\n";
             validate_module_file_entries(&[entry("vimrc"), entry("vimrc.local")]).unwrap_err();
         assert!(
             err.to_string().contains(
-                "spec.files[1].target '~/.vimrc' is already declared by an earlier entry"
+                "module file '~/.vimrc': target '~/.vimrc' duplicates module file '~/.vimrc'"
             ),
             "unexpected error: {err}"
         );

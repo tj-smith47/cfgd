@@ -1668,8 +1668,10 @@ spec:
               packages:
                 default: []
                 description: |-
-                  Packages this module installs, each with optional per-platform name
-                  overrides.
+                  Packages this module installs. Each entry names the package and the
+                  hints that decide which manager installs it: per-manager name
+                  overrides, a version floor, a manager preference order, a manager
+                  denylist, and the platform tags gating the entry.
                 items:
                   description: |-
                     An entry in a Module's package list: the package to install plus the hints

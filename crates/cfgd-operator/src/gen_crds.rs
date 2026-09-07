@@ -846,6 +846,55 @@ mod tests {
         );
     }
 
+    /// The tell that a union spans more than the type rendered beside it is an
+    /// arm that is the EMPTY schema. A union whose arms all agree on a type
+    /// keeps its claim — stripping `type` there would hand the API server a
+    /// node it can enforce nothing about, and earn a free-form marker on a
+    /// shape the author fully described.
+    #[test]
+    fn a_union_whose_arms_agree_on_a_type_keeps_it_and_a_flattened_one_does_not() {
+        let mut schema = json!({
+            "properties": {
+                "typed_arms": {
+                    "type": "object",
+                    "anyOf": [
+                        { "type": "object", "properties": { "a": { "type": "string" } } },
+                        { "type": "object", "properties": { "b": { "type": "string" } } }
+                    ]
+                },
+                "flattened": {
+                    "type": "object",
+                    "anyOf": [{}, { "required": ["run"] }]
+                }
+            }
+        });
+        super::sanitize_structural(&mut schema);
+
+        let typed = &schema["properties"]["typed_arms"];
+        assert_eq!(
+            typed.get("type"),
+            Some(&json!("object")),
+            "a union whose arms agree on a type keeps the claim: {typed:?}"
+        );
+        assert_eq!(
+            typed.get("x-kubernetes-preserve-unknown-fields"),
+            None,
+            "a fully described union earns no free-form marker: {typed:?}"
+        );
+
+        let flattened = &schema["properties"]["flattened"];
+        assert_eq!(
+            flattened.get("type"),
+            None,
+            "an empty arm means the union spans more than the type beside it: {flattened:?}"
+        );
+        assert_eq!(
+            flattened.get("x-kubernetes-preserve-unknown-fields"),
+            Some(&json!(true)),
+            "the node the pass untyped has to carry the marker: {flattened:?}"
+        );
+    }
+
     #[test]
     fn inject_cel_rules_attaches_hostname_validation_when_spec_path_exists() {
         let mut crd = full_crd_shape();

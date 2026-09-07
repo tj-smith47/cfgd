@@ -576,7 +576,7 @@
     },
     "packages": {
       "default": [],
-      "description": "Packages this module installs, each with optional per-platform name overrides.",
+      "description": "Packages this module installs. Each entry names the package and the hints that decide which manager installs it: per-manager name overrides, a version floor, a manager preference order, a manager denylist, and the platform tags gating the entry.",
       "items": {
         "$ref": "#/definitions/PackageEntry"
       },

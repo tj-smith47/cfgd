@@ -829,7 +829,10 @@ for errors_file in $(errors_file_candidates); do
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
-        if echo "$from_variants" | grep -qw "$variant" 2>/dev/null; then
+        # A here-string, not a pipe: `grep -q` exits on its first match, and
+        # under `pipefail` the producer it kills with SIGPIPE makes the whole
+        # pipeline report failure — a match would read as a miss.
+        if grep -qw "$variant" <<<"$from_variants" 2>/dev/null; then
             continue
         fi
         uses=$(production_construction_sites "$variant")
@@ -2050,12 +2053,12 @@ if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>"$cs
     printf '%s\n' "$csi_tree"
     cat "$csi_stderr"
     rm -f "$csi_stderr"
-elif ! printf '%s\n' "$csi_tree" | awk '{print $1}' | grep -qx 'cfgd-core'; then
+elif ! grep -qx 'cfgd-core' <<<"$(awk '{print $1}' <<<"$csi_tree")"; then
     rm -f "$csi_stderr"
     log_error "the resolution named no \`cfgd-core\` line: a wrong tree, or a polluted capture"
 else
     rm -f "$csi_stderr"
-    csi_heavy="$(printf '%s\n' "$csi_tree" | awk '{print $1}' | sort -u \
+    csi_heavy="$(awk '{print $1}' <<<"$csi_tree" | sort -u \
       | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
     if [ -n "$csi_heavy" ]; then
         log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"

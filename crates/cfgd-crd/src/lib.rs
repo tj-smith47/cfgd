@@ -576,8 +576,10 @@ pub struct ModuleSignature {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSpec {
-    /// Packages this module installs, each with optional per-platform name
-    /// overrides.
+    /// Packages this module installs. Each entry names the package and the
+    /// hints that decide which manager installs it: per-manager name
+    /// overrides, a version floor, a manager preference order, a manager
+    /// denylist, and the platform tags gating the entry.
     #[serde(default)]
     pub packages: Vec<PackageEntry>,
     /// Files this module deploys out of its artifact.
@@ -872,10 +874,10 @@ impl DriftAlertSpec {
 
 /// Collect a `platforms:` list's refusals under the field path that holds it,
 /// so a tag no host can match is named where it was written.
-fn push_tag_errors(errors: &mut Vec<String>, subject: &str, tags: &[String]) {
+fn push_tag_errors(errors: &mut Vec<String>, subject: impl Fn() -> String, tags: &[String]) {
     for (i, tag) in tags.iter().enumerate() {
         if let Err(e) = cfgd_schema::validate_platform_tag(tag) {
-            errors.push(format!("{subject}[{i}]: {e}"));
+            errors.push(format!("{}[{i}]: {e}", subject()));
         }
     }
 }
@@ -890,11 +892,11 @@ impl ModuleSpec {
             }
             push_tag_errors(
                 &mut errors,
-                &format!("spec.packages[{i}].platforms"),
+                || format!("spec.packages[{i}].platforms"),
                 &pkg.platforms,
             );
         }
-        let mut seen_targets = std::collections::HashSet::with_capacity(self.files.len());
+        let mut seen_targets = std::collections::HashMap::with_capacity(self.files.len());
         for (i, file) in self.files.iter().enumerate() {
             let subject = format!("spec.files[{i}]");
             if let Err(e) =
@@ -913,18 +915,22 @@ impl ModuleSpec {
                 errors.push(e.to_string());
             }
         }
-        push_tag_errors(&mut errors, "spec.platforms", &self.platforms);
+        push_tag_errors(
+            &mut errors,
+            || "spec.platforms".to_string(),
+            &self.platforms,
+        );
         for (i, alias) in self.aliases.iter().enumerate() {
             push_tag_errors(
                 &mut errors,
-                &format!("spec.aliases[{i}].platforms"),
+                || format!("spec.aliases[{i}].platforms"),
                 &alias.platforms,
             );
         }
         for (i, var) in self.env.iter().enumerate() {
             push_tag_errors(
                 &mut errors,
-                &format!("spec.env[{i}].platforms"),
+                || format!("spec.env[{i}].platforms"),
                 &var.platforms,
             );
         }

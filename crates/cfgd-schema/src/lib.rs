@@ -527,23 +527,27 @@ pub fn validate_file_patch_shape(
 ///
 /// The Module CRD declares `spec.files` an SSA map keyed by `target`, so two
 /// entries sharing a target make the API server refuse the whole resource with
-/// a message naming neither of them. `seen` is the caller's own set, carried
-/// across its loop, so one pass answers both questions for a whole list.
+/// a message naming neither of them. Both refusals name their entry by the
+/// caller's own `subject`, and a duplicate names the earlier claimant too, so a
+/// reader is sent to both halves of the collision rather than to one of them.
+/// `seen` is the caller's own map, carried across its loop, so one pass answers
+/// both questions for a whole list.
 pub fn validate_file_target<'a>(
     subject: &str,
     target: &'a str,
-    seen: &mut std::collections::HashSet<&'a str>,
+    seen: &mut std::collections::HashMap<&'a str, String>,
 ) -> Result<(), FileShapeError> {
     if target.is_empty() {
         return Err(FileShapeError(format!(
-            "{subject}.target must not be empty"
+            "{subject}: target must not be empty"
         )));
     }
-    if !seen.insert(target) {
+    if let Some(first) = seen.get(target) {
         return Err(FileShapeError(format!(
-            "{subject}.target '{target}' is already declared by an earlier entry"
+            "{subject}: target '{target}' duplicates {first}"
         )));
     }
+    seen.insert(target, subject.to_string());
     Ok(())
 }
 

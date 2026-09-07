@@ -742,7 +742,7 @@ fn module_validate_rejects_an_empty_file_target() {
         .expect_err("an empty SSA map key must be refused");
 
     assert!(
-        errors.contains(&"spec.files[0].target must not be empty".to_string()),
+        errors.contains(&"spec.files[0]: target must not be empty".to_string()),
         "{errors:?}"
     );
 }
@@ -764,9 +764,7 @@ fn module_validate_rejects_two_files_claiming_one_target() {
         .expect_err("a duplicate SSA map key must be refused");
 
     assert!(
-        errors.contains(
-            &"spec.files[1].target '~/.vimrc' is already declared by an earlier entry".to_string()
-        ),
+        errors.contains(&"spec.files[1]: target '~/.vimrc' duplicates spec.files[0]".to_string()),
         "{errors:?}"
     );
 }

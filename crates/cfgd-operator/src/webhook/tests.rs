@@ -1429,7 +1429,7 @@ fn validate_module_rejects_empty_file_path() {
     let err = result.expect_err("an unkeyable SSA entry must be refused at admission");
     assert!(
         err.to_string()
-            .contains("spec.files[0].target must not be empty"),
+            .contains("spec.files[0]: target must not be empty"),
         "the refusal must name the entry that wrote the empty key: {err}"
     );
 }
