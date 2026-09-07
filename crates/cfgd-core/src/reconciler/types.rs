@@ -1080,10 +1080,10 @@ pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usi
 /// Two surfaces read this and they must not disagree: the dispatch order
 /// ([`Phase::dispatch_order`]) partitions the phase by it, and the dispatcher
 /// releases a tier only once the tier above it has *completed*. Manager
-/// provisioning is a `Bootstrap`-phase [`ManagerAction`] node now, ahead
-/// of the whole `Packages` phase, so nothing in this phase blocks on a
-/// same-phase bootstrap any more — module work still runs first because a
-/// profile install may consume a package a module just installed.
+/// provisioning is a `Bootstrap`-phase [`ManagerAction`] node, ahead of the
+/// whole `Packages` phase, so nothing in this phase blocks on a same-phase
+/// bootstrap — module work still runs first because a profile install may
+/// consume a package a module just installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
     /// Module-owned package work.

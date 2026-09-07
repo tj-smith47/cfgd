@@ -1092,13 +1092,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                # one owner group\n  cfgd apply --skip bootstrap.session                        # skip the broadcast half\n  cfgd apply --skip bootstrap.brew                            # skip one manager\n  cfgd apply --module nettools                                    # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools               # several modules\n  cfgd apply --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                       # one owner group\n  cfgd plan --skip bootstrap.session                         # skip the broadcast half\n  cfgd plan --module nettools                                     # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -2549,7 +2549,7 @@ impl std::fmt::Display for PhaseArg {
             }
             phase => <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
                 .map(|pv| pv.get_name().to_string())
-                .unwrap_or_else(|| PhaseName::Bootstrap.as_str().to_string()),
+                .unwrap_or_default(),
         };
         write!(f, "{name}")?;
         match &self.selector {
@@ -2684,10 +2684,12 @@ fn resolve_phase_filter(
     // Keyed on clap's own name for the variant, and worded from the one table
     // `--skip`/`--only` reads, so a token cannot be deprecated on one flag and
     // silently accepted — or explained differently — on another.
-    let token = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
-        .map(|pv| pv.get_name().to_string())
+    let possible = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase);
+    let token = possible
+        .as_ref()
+        .map(clap::builder::PossibleValue::get_name)
         .unwrap_or_default();
-    if let Some(reason) = plan_ops::legacy_phase_reason(&token) {
+    if let Some(reason) = plan_ops::legacy_phase_reason(token) {
         printer.deprecation(format!(
             "`--phase {token}` is deprecated: {reason}. Use `--phase {}`.",
             PhaseName::Bootstrap.as_str()
@@ -2705,9 +2707,6 @@ fn resolve_phase_filter(
         );
     };
     if name != PhaseName::Bootstrap {
-        let phase_label = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
-            .map(|pv| pv.get_name().to_string())
-            .unwrap_or_default();
         if name == PhaseName::Packages {
             anyhow::bail!(
                 "`--phase packages.{selector}` is not valid: package manager work lives in \
@@ -2715,7 +2714,7 @@ fn resolve_phase_filter(
             );
         }
         anyhow::bail!(
-            "`--phase {phase_label}.{selector}` is not valid: `{phase_label}` has no dotted \
+            "`--phase {token}.{selector}` is not valid: `{token}` has no dotted \
              selector grammar. Selectors are only valid on `--phase bootstrap`."
         );
     }

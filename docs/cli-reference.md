@@ -119,25 +119,25 @@ See [bootstrap.md](bootstrap.md) for the full init flow.
 Apply the configuration plan.
 
 ```sh
-cfgd apply                          # apply with confirmation
-cfgd apply --dry-run                # preview without applying
-cfgd apply --yes                    # skip confirmation
-cfgd apply --phase packages         # single phase
-cfgd apply --phase modules          # every module-owned action, in every phase
-cfgd apply --phase bootstrap.managers  # one owner group within a phase
-cfgd apply --module nvim            # nvim + deps, isolated from the profile
-cfgd apply --module nvim --module tmux   # union of both, still isolated
-cfgd apply --module nvim --with-profile  # full profile PLUS nvim
-cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
+cfgd apply                              # apply with confirmation
+cfgd apply --dry-run                    # preview without applying
+cfgd apply --yes                        # skip confirmation
+cfgd apply --phase packages             # single phase
+cfgd apply --phase modules              # every module-owned action, in every phase
+cfgd apply --phase bootstrap.managers   # one owner group within a phase
+cfgd apply --module nvim                # nvim + deps, isolated from the profile
+cfgd apply --module nvim --module tmux  # union of both, still isolated
+cfgd apply --module nvim --with-profile # full profile PLUS nvim
+cfgd apply --only packages.brew         # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
-cfgd apply --skip module:nvim       # one module, every phase
-cfgd apply --skip cfgd:managers     # every package-manager bootstrap
-cfgd apply --skip bootstrap.session  # skip the live-session broadcast
-cfgd apply --skip bootstrap.brew     # skip one manager (family-collapsed)
-cfgd apply --skip system.sysctl     # skip specific items
-cfgd apply --skip-scripts           # apply without running any hooks
-cfgd apply --yes --on-conflict backup    # copy every stranger aside, then write
-cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wrote
+cfgd apply --skip module:nvim           # one module, every phase
+cfgd apply --skip cfgd:managers         # every package-manager bootstrap
+cfgd apply --skip bootstrap.session     # skip the live-session broadcast
+cfgd apply --skip bootstrap.brew        # skip one manager (family-collapsed)
+cfgd apply --skip system.sysctl         # skip specific items
+cfgd apply --skip-scripts               # apply without running any hooks
+cfgd apply --yes --on-conflict backup   # copy every stranger aside, then write
+cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrote
 ```
 
 | Flag | Description |
@@ -225,8 +225,8 @@ cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # nvim + deps, isolated from the profile
 cfgd plan --module nvim --with-profile  # full profile PLUS nvim
-cfgd plan --phase bootstrap.managers  # one owner group within a phase
-cfgd plan --skip bootstrap.session  # skip the live-session broadcast
+cfgd plan --phase bootstrap.managers    # one owner group within a phase
+cfgd plan --skip bootstrap.session      # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
 ```

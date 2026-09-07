@@ -7142,19 +7142,10 @@ fn cmd_apply_dry_run_each_phase() {
     // Every spelling `--phase` accepts, the two deprecated ones included: a
     // retired spelling that still parses but no longer applies would fail here
     // rather than on the machine of whoever kept writing it.
-    let all_phases = [
-        ApplyPhase::PreScripts,
-        ApplyPhase::Bootstrap,
-        ApplyPhase::Prerequisites,
-        ApplyPhase::Env,
-        ApplyPhase::Modules,
-        ApplyPhase::Packages,
-        ApplyPhase::System,
-        ApplyPhase::Files,
-        ApplyPhase::Secrets,
-        ApplyPhase::PostScripts,
-    ];
-    for phase in all_phases {
+    for phase in <ApplyPhase as clap::ValueEnum>::value_variants()
+        .iter()
+        .copied()
+    {
         let args = ApplyArgs {
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
@@ -7176,8 +7167,6 @@ fn cmd_apply_dry_run_each_phase() {
             phase.as_str()
         );
     }
-    // Verify all 10 phase names are accepted (no unknown-phase errors)
-    assert_eq!(all_phases.len(), 10);
 }
 
 // --- Verify after real apply ---
@@ -26728,8 +26717,12 @@ fn every_legacy_phase_token_is_rewritten_by_both_deprecation_sites() {
         .filter(|phase| {
             super::apply_phase_to_filter(**phase) == PhaseFilter::Phase(PhaseName::Bootstrap)
         })
-        .filter_map(clap::ValueEnum::to_possible_value)
-        .map(|pv| pv.get_name().to_string())
+        .map(|phase| {
+            <super::ApplyPhase as clap::ValueEnum>::to_possible_value(phase)
+                .expect("every ApplyPhase variant is a spelling the user can type")
+                .get_name()
+                .to_string()
+        })
         .filter(|name| name != PhaseName::Bootstrap.as_str())
         .collect();
     aliases.sort();
@@ -26804,9 +26797,11 @@ fn every_legacy_phase_token_is_rewritten_by_both_deprecation_sites() {
 /// A preview's next step re-states the run's flags in the CURRENT spelling.
 ///
 /// The hint is the command the reader runs next, so echoing back the retired
-/// token they typed hands them a second deprecation for taking the advice.
+/// pattern they typed hands them a second deprecation for taking the advice.
+/// Both retired grammars a `--skip`/`--only` pattern can open on are covered:
+/// the phase segment and the pre-routing `modules.<name>`.
 #[test]
-fn a_preview_hint_restates_a_retired_phase_spelling_as_the_current_one() {
+fn a_preview_hint_restates_a_retired_pattern_as_its_current_spelling() {
     use cfgd_core::reconciler::PhaseName;
     use std::str::FromStr;
 
@@ -26836,6 +26831,37 @@ fn a_preview_hint_restates_a_retired_phase_spelling_as_the_current_one() {
             "and never the retired one:\n{hint}"
         );
     }
+
+    let skip = ["modules.nvim".to_string()];
+    let hint = super::perform_preview_hint(&super::PreviewScope {
+        module: &[],
+        with_profile: false,
+        phase: None,
+        only: &[],
+        skip: &skip,
+        skip_scripts: false,
+    });
+    assert!(
+        hint.contains("--skip module:nvim") && !hint.contains("--skip modules.nvim"),
+        "a retired module pattern must be re-stated as the routed one:\n{hint}"
+    );
+
+    // Bare `modules` names every module in every phase, which no routed
+    // pattern spells, so it survives the fold rather than being rewritten to
+    // something that selects a different set.
+    let skip = ["modules".to_string()];
+    let hint = super::perform_preview_hint(&super::PreviewScope {
+        module: &[],
+        with_profile: false,
+        phase: None,
+        only: &[],
+        skip: &skip,
+        skip_scripts: false,
+    });
+    assert!(
+        hint.contains("--skip modules"),
+        "a retired pattern with no current spelling passes through:\n{hint}"
+    );
 }
 
 #[test]
@@ -27030,6 +27056,30 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_bootstrap() {
     assert!(
         msg.contains("--phase packages.brew") && msg.contains("--phase bootstrap.brew"),
         "error must name the rejected combo and point at the bootstrap spelling:\n{msg}"
+    );
+}
+
+/// A phase with no dotted grammar names itself in its own refusal.
+///
+/// The refusal spells the phase from clap's own name for the variant, the same
+/// derivation the deprecation notice above it reads: a second spelling here
+/// would send a reader looking for a flag they never typed.
+#[test]
+fn resolve_phase_filter_names_the_phase_it_refuses_a_selector_on() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Files,
+            selector: Some("nvim".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("`--phase files.nvim` is not valid: `files` has no dotted"),
+        "the refusal must name the phase clap parsed:\n{msg}"
     );
 }
 

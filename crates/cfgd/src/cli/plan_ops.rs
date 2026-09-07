@@ -1067,16 +1067,26 @@ fn legacy_phase_pattern_rewritten(pattern: &str) -> Option<(String, &'static str
     })
 }
 
-/// `pattern` as it would be typed today: a retired phase segment rewritten to
-/// the phase's current name, anything else unchanged.
+/// The CURRENT spelling of `pattern`: a retired phase segment rewritten to the
+/// phase's current name, a retired `modules.<name>` rewritten to `module:<name>`,
+/// anything else unchanged.
 ///
 /// What a hint re-stating the flags a run was given composes with, so the
 /// command it hands back re-parses without earning the deprecation the run it
 /// describes already printed.
+///
+/// Bare [`LEGACY_MODULE_PATTERN`] is the one retired pattern with no current
+/// spelling to rewrite to: it names every module in every phase, a selection no
+/// single pattern of the routed grammar makes, so it passes through and keeps
+/// its deprecation.
 pub(in crate::cli) fn current_pattern_spelling(pattern: &str) -> String {
-    legacy_phase_pattern_rewritten(pattern)
-        .map(|(rewritten, _)| rewritten)
-        .unwrap_or_else(|| pattern.to_string())
+    if let Some((rewritten, _)) = legacy_phase_pattern_rewritten(pattern) {
+        return rewritten;
+    }
+    if let Some(name) = pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
+        return format!("module:{name}");
+    }
+    pattern.to_string()
 }
 
 /// Rewrite every legacy phase segment to the phase's current name, announcing
