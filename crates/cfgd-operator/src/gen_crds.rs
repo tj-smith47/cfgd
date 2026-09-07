@@ -1,6 +1,6 @@
 //! CRD YAML generation for the Helm chart.
 //!
-//! Sources the five CRD spec types from `cfgd-crd` (via the operator re-export)
+//! Sources the CRD spec types from `cfgd-crd` (via the operator re-export)
 //! and renders kube's `CustomResourceExt::crd()` output to YAML, injecting the
 //! `x-kubernetes-list-type` / CEL structural-merge annotations that schemars
 //! cannot express. [`render_all`] is the testable library entry point; the
@@ -9,7 +9,9 @@
 use kube::CustomResourceExt;
 use thiserror::Error;
 
-use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+use crate::crds::{
+    BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module,
+};
 
 /// Failure rendering a CRD to YAML. Both arms are infallible in practice (the
 /// CRD shapes are derived, not user-supplied) but the rule against `expect` in
@@ -48,8 +50,9 @@ fn render_crd(mut crd: serde_json::Value, inject_cel: bool) -> Result<RenderedCr
     Ok(RenderedCrd { name, yaml })
 }
 
-/// Render all five CRDs, each as a [`RenderedCrd`], in the chart's canonical
-/// order (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy, Module).
+/// Render every CRD, each as a [`RenderedCrd`], in the chart's canonical order
+/// (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy, Module,
+/// BackupPolicy).
 pub fn render_each() -> Result<Vec<RenderedCrd>, GenCrdsError> {
     Ok(vec![
         // MachineConfig is the only kind carrying the hostname / files CEL rules.
@@ -58,10 +61,11 @@ pub fn render_each() -> Result<Vec<RenderedCrd>, GenCrdsError> {
         render_crd(serde_json::to_value(DriftAlert::crd())?, false)?,
         render_crd(serde_json::to_value(ClusterConfigPolicy::crd())?, false)?,
         render_crd(serde_json::to_value(Module::crd())?, false)?,
+        render_crd(serde_json::to_value(BackupPolicy::crd())?, false)?,
     ])
 }
 
-/// Render all five CRDs into a single `---\n`-joined YAML document — the exact
+/// Render every CRD into a single `---\n`-joined YAML document — the exact
 /// bytes the `cfgd-gen-crds` binary emits on stdout for the Helm chart.
 pub fn render_all() -> Result<String, GenCrdsError> {
     let docs = render_each()?;
@@ -213,6 +217,19 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         }
     }
 
+    // units lists (BackupPolicy only): the policy's own overrides merge by the
+    // unit name; the status carries one row per (machine, unit), so its key is
+    // the pair — several machines report the same unit name, and a map list
+    // whose keys repeat is refused by the API server outright.
+    if let Some(units) = crd.pointer_mut(&format!("{spec_base}/spec/properties/units")) {
+        units["x-kubernetes-list-type"] = serde_json::json!("map");
+        units["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
+    }
+    if let Some(units) = crd.pointer_mut(&format!("{spec_base}/status/properties/units")) {
+        units["x-kubernetes-list-type"] = serde_json::json!("map");
+        units["x-kubernetes-list-map-keys"] = serde_json::json!(["hostname", "name"]);
+    }
+
     // driftDetails list: merge by "field" key (DriftAlert only)
     if let Some(details) = crd.pointer_mut(&format!("{spec_base}/spec/properties/driftDetails")) {
         details["x-kubernetes-list-type"] = serde_json::json!("map");
@@ -272,8 +289,18 @@ mod tests {
     use super::{inject_cel_rules, inject_smd_annotations, render_all};
     use serde_json::{Value, json};
 
+    /// How many CRD kinds the registry carries — the count every walk over the
+    /// rendered documents holds itself to, so a kind added to `cfgd-crd`
+    /// widens the walks instead of leaving them passing over a stale number.
+    fn registered_crd_kinds() -> usize {
+        cfgd_core::schema::KIND_REGISTRY
+            .iter()
+            .filter(|e| e.crd)
+            .count()
+    }
+
     #[test]
-    fn render_all_covers_all_five_crds() {
+    fn render_all_covers_every_crd() {
         let yaml = render_all().expect("render CRDs");
         for k in [
             "machineconfigs",
@@ -281,6 +308,7 @@ mod tests {
             "clusterconfigpolicies",
             "driftalerts",
             "modules",
+            "backuppolicies",
         ] {
             assert!(
                 yaml.contains(&format!("name: {k}.cfgd.io")),
@@ -292,8 +320,80 @@ mod tests {
     #[test]
     fn render_all_preserves_dashed_document_separator() {
         let yaml = render_all().expect("render CRDs");
-        // Five CRDs joined by `---\n` => exactly four separators.
-        assert_eq!(yaml.matches("---\n").count(), 4);
+        let docs = super::render_each().expect("render CRDs");
+        // N documents joined by `---\n` => exactly N-1 separators.
+        assert_eq!(yaml.matches("---\n").count(), docs.len() - 1);
+    }
+
+    /// Every CRD kind the registry carries is rendered exactly once, and the
+    /// kustomize roster installs exactly what was rendered.
+    ///
+    /// `kubectl apply -k chart/cfgd/crds/` installs only the files
+    /// `kustomization.yaml` lists by hand, so a kind added to `cfgd-crd` and
+    /// forgotten there ships a chart whose CRD set is one short — a failure
+    /// nothing downstream of the render would notice, because the file itself
+    /// is generated and present.
+    #[test]
+    fn every_crd_kind_in_the_registry_is_rendered() {
+        use std::collections::BTreeSet;
+
+        let registered: BTreeSet<&str> = cfgd_core::schema::KIND_REGISTRY
+            .iter()
+            .filter(|e| e.crd)
+            .map(|e| e.kind)
+            .collect();
+        assert!(
+            registered.len() >= 6,
+            "the registry carries only {} CRD kinds, so this walk proves nothing",
+            registered.len()
+        );
+
+        let docs = super::render_each().expect("render CRDs");
+        let mut rendered: BTreeSet<String> = BTreeSet::new();
+        let mut roster: BTreeSet<String> = BTreeSet::new();
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let kind = crd["spec"]["names"]["kind"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{} declares no spec.names.kind", doc.name))
+                .to_string();
+            assert!(
+                rendered.insert(kind.clone()),
+                "{kind} is rendered more than once"
+            );
+            let plural = doc
+                .name
+                .strip_suffix(".cfgd.io")
+                .unwrap_or_else(|| panic!("{} is not a cfgd.io CRD name", doc.name));
+            roster.insert(format!("{plural}.yaml"));
+        }
+        assert_eq!(
+            rendered.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+            registered,
+            "every CRD kind in the registry is rendered, and nothing else is"
+        );
+
+        let path =
+            cfgd_core::test_helpers::workspace_root().join("chart/cfgd/crds/kustomization.yaml");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let listed: BTreeSet<String> = serde_yaml::from_str::<Value>(&body)
+            .unwrap_or_else(|e| panic!("cannot parse {}: {e}", path.display()))
+            .get("resources")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{} carries no resources list", path.display()))
+            .iter()
+            .map(|r| {
+                r.as_str()
+                    .unwrap_or_else(|| panic!("{} lists a non-string resource", path.display()))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            listed, roster,
+            "chart/cfgd/crds/kustomization.yaml must list exactly the rendered CRDs — \
+             `kubectl apply -k` installs only what it names"
+        );
     }
 
     /// Split a printer-column jsonPath into `(field, is_indexed)` segments,
@@ -414,6 +514,7 @@ mod tests {
                                         "requiredModules": {"items": {}},
                                         "debugModules": {"items": {}},
                                         "driftDetails": {"items": {}},
+                                        "units": {"items": {}},
                                         "env": {"items": {}},
                                         "depends": {"items": {}},
                                         "files": {
@@ -444,7 +545,8 @@ mod tests {
                                 },
                                 "status": {
                                     "properties": {
-                                        "conditions": {"items": {}}
+                                        "conditions": {"items": {}},
+                                        "units": {"items": {}}
                                     }
                                 }
                             }
@@ -502,6 +604,27 @@ mod tests {
                 "{field} list-map-keys"
             );
         }
+
+        // units: the spec's by name, the status's by the (hostname, name) pair
+        // one machine's copy of a unit is identified by.
+        let spec_units = format!("{base}/spec/properties/units");
+        assert_eq!(
+            smd(&crd, &spec_units, "x-kubernetes-list-type"),
+            Some(json!("map"))
+        );
+        assert_eq!(
+            smd(&crd, &spec_units, "x-kubernetes-list-map-keys"),
+            Some(json!(["name"]))
+        );
+        let status_units = format!("{base}/status/properties/units");
+        assert_eq!(
+            smd(&crd, &status_units, "x-kubernetes-list-type"),
+            Some(json!("map"))
+        );
+        assert_eq!(
+            smd(&crd, &status_units, "x-kubernetes-list-map-keys"),
+            Some(json!(["hostname", "name"]))
+        );
 
         // driftDetails: map by "field"
         let drift = format!("{base}/spec/properties/driftDetails");
@@ -669,7 +792,11 @@ mod tests {
         }
 
         let docs = super::render_each().expect("render CRDs");
-        assert_eq!(docs.len(), 5, "every CRD must be walked");
+        assert_eq!(
+            docs.len(),
+            registered_crd_kinds(),
+            "every CRD must be walked"
+        );
         for doc in &docs {
             let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
             let mut hits = Vec::new();
@@ -708,10 +835,14 @@ mod tests {
         }
     }
 
-    /// Every rendered schema node, over all five documents.
+    /// Every rendered schema node, over every rendered document.
     fn every_rendered_schema_node() -> Vec<(String, Value)> {
         let docs = super::render_each().expect("render CRDs");
-        assert_eq!(docs.len(), 5, "every CRD must be walked");
+        assert_eq!(
+            docs.len(),
+            registered_crd_kinds(),
+            "every CRD must be walked"
+        );
         let mut all = Vec::new();
         for doc in &docs {
             let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");

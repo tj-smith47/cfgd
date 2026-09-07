@@ -26,6 +26,7 @@ fn api_version_helper_matches_every_kind_derive() {
         ClusterConfigPolicy::api_version(&()),
         DriftAlert::api_version(&()),
         Module::api_version(&()),
+        BackupPolicy::api_version(&()),
     ] {
         assert_eq!(got, shared, "every cfgd CRD kind must share one apiVersion");
     }
@@ -943,5 +944,99 @@ fn the_driftalert_schema_names_the_class_of_drift_a_device_reports() {
     assert!(
         details.to_lowercase().contains("system setting"),
         "driftDetails must name what each entry is: {details}"
+    );
+}
+
+fn policy_unit(name: &str, schedule: &str) -> BackupPolicyUnit {
+    BackupPolicyUnit {
+        name: name.to_string(),
+        schedule: schedule.to_string(),
+        retention: None,
+    }
+}
+
+fn backup_policy(units: Vec<BackupPolicyUnit>) -> BackupPolicySpec {
+    BackupPolicySpec {
+        selector: LabelSelector::default(),
+        units,
+    }
+}
+
+#[test]
+fn backup_policy_rejects_a_unit_with_an_empty_name_or_schedule() {
+    let errs = backup_policy(vec![
+        policy_unit("", "0 3 * * *"),
+        policy_unit("notes", "  "),
+    ])
+    .validate()
+    .unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units[0].name")),
+        "should name the empty unit name: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units[1].schedule")),
+        "should name the blank schedule: {errs:?}"
+    );
+}
+
+/// Two units sharing a name leave no answer to "which schedule does `dotfiles`
+/// run on", and the rendered CRD merges `spec.units` by that same name.
+#[test]
+fn backup_policy_rejects_two_units_sharing_a_name() {
+    let errs = backup_policy(vec![
+        policy_unit("dotfiles", "0 3 * * *"),
+        policy_unit("dotfiles", "6h"),
+    ])
+    .validate()
+    .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("spec.units[1].name") && e.contains("twice")),
+        "should reject the duplicate at its own index: {errs:?}"
+    );
+}
+
+/// A policy overrides a cadence; the unit it names is defined on the machine,
+/// so a policy that states no retention leaves the profile's own in force.
+#[test]
+fn backup_policy_accepts_a_unit_that_omits_retention() {
+    let spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);
+    assert_eq!(spec.units[0].retention, None);
+    assert!(spec.validate().is_ok(), "{:?}", spec.validate());
+}
+
+#[test]
+fn backup_policy_rejects_a_retention_of_zero() {
+    let mut spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);
+    spec.units[0].retention = Some(0);
+    let errs = spec.validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units[0].retention")),
+        "should name the zero retention: {errs:?}"
+    );
+    spec.units[0].retention = Some(1);
+    assert!(spec.validate().is_ok(), "1 is the smallest kept snapshot");
+}
+
+/// One unit spans one status row per machine, so the summary the `Units`
+/// column reads names each unit once, ordered by name rather than by the
+/// list's own (hostname, name) order.
+#[test]
+fn backup_policy_units_summary_names_each_unit_once() {
+    let row = |name: &str, hostname: &str| BackupPolicyUnitStatus {
+        name: name.to_string(),
+        hostname: hostname.to_string(),
+        owner: ScheduleOwner::Cluster.label().to_string(),
+        ..Default::default()
+    };
+    assert_eq!(BackupPolicyStatus::summarize_units(&[]), None);
+    assert_eq!(
+        BackupPolicyStatus::summarize_units(&[
+            row("notes", "nuc-01"),
+            row("dotfiles", "nuc-01"),
+            row("notes", "nuc-02"),
+        ]),
+        Some("dotfiles, notes".to_string())
     );
 }

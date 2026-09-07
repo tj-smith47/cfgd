@@ -10,6 +10,7 @@ ConfigPolicy         cfgd.io/v1alpha1/ConfigPolicy         ConfigPolicy CRD
 ClusterConfigPolicy  cfgd.io/v1alpha1/ClusterConfigPolicy  ClusterConfigPolicy CRD
 DriftAlert           cfgd.io/v1alpha1/DriftAlert           DriftAlert CRD
 Module (CRD)         cfgd.io/v1alpha1/Module               Module CRD
+BackupPolicy         cfgd.io/v1alpha1/BackupPolicy         BackupPolicy CRD
 TeamConfig           cfgd.io/v1alpha1/TeamConfig           Crossplane Composite Resource (XR)
 
 → Run `cfgd explain <resource>` for details

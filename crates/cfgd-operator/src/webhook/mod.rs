@@ -26,8 +26,8 @@ use tracing::{info, warn};
 // (the CLI's typed CRD-construction tests) exercise the exact same predicate
 // without pulling in axum/hyper.
 use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
-    MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
+    BackupPolicySpec, ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec,
+    DriftAlertSpec, MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
@@ -146,6 +146,10 @@ fn build_webhook_router(state: WebhookState) -> Router {
             post(handle_validate_cluster_config_policy),
         )
         .route("/validate-driftalert", post(handle_validate_drift_alert))
+        .route(
+            "/validate-backuppolicy",
+            post(handle_validate_backup_policy),
+        )
         .route("/validate-module", post(handle_validate_module))
         .route("/mutate-pods", post(handle_mutate_pods))
         .route("/healthz", axum::routing::get(liveness_ok))
@@ -224,6 +228,13 @@ async fn handle_validate_drift_alert(
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
     handle_validate::<DriftAlertSpec>("validate_driftalert", &state.metrics, review)
+}
+
+async fn handle_validate_backup_policy(
+    axum::extract::State(state): axum::extract::State<WebhookState>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    handle_validate::<BackupPolicySpec>("validate_backuppolicy", &state.metrics, review)
 }
 
 async fn handle_validate_module(

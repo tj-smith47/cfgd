@@ -15,6 +15,7 @@ API group: `cfgd.io/v1alpha1`
 | `ClusterConfigPolicy` | Cluster | [spec](spec/clusterconfigpolicy.md) | Cluster-wide mandates across selected namespaces, plus module-provenance policy |
 | `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Drifted system settings reported by devices — severity, expected vs actual |
 | `Module` | Cluster | [spec](spec/module.md) | Reusable configuration bundle — packages, files, env, scripts; OCI-distributable |
+| `BackupPolicy` | Namespaced | [spec](backup-policy.md) | Fleet-wide backup schedules — overrides the cadence of units the machines already define |
 
 ### Installing the CRDs
 
@@ -241,6 +242,29 @@ spec:
     - field: sysctl.net.ipv4.ip_forward
       expected: "1"
       actual: "0"
+```
+
+### BackupPolicy
+
+Sets the cadence of backup units the selected machines already define. The policy overrides a
+named unit's `schedule` and `retention`; the machine's own profile still defines what the unit
+is, and a unit pinned `scheduleOwner: Local` is reported without being scheduled. Full field
+reference and precedence table in [backup-policy.md](backup-policy.md).
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: BackupPolicy
+metadata:
+  name: nightly-dotfiles
+  namespace: teams
+spec:
+  selector:
+    matchLabels:
+      cfgd.io/profile: workstation
+  units:
+    - name: dotfiles
+      schedule: "0 3 * * *"
+      retention: 14
 ```
 
 ## Controllers

@@ -8351,6 +8351,93 @@
   },
   {
     "apiVersion": "cfgd.io/v1alpha1",
+    "description": "Fleet-wide backup schedules projected onto selected machines.",
+    "docs": "docs/backup-policy.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/backup-policy.md#fields",
+    "fields": [
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Label key this requirement tests.",
+                "name": "key",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "How `values` is compared against the key: `In`, `NotIn`, `Exists`, or `DoesNotExist`.",
+                "enum": [
+                  "In",
+                  "NotIn",
+                  "Exists",
+                  "DoesNotExist"
+                ],
+                "name": "operator",
+                "required": true,
+                "type": "string",
+                "typeName": "SelectorOperator"
+              },
+              {
+                "description": "Values the key is tested against. Required for `In` and `NotIn`, and must be empty for `Exists` and `DoesNotExist`.",
+                "name": "values",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Set-based requirements a resource must satisfy, evaluated alongside `matchLabels`. Every requirement must hold.",
+            "name": "matchExpressions",
+            "required": false,
+            "type": "[]object",
+            "typeName": "LabelSelectorRequirement"
+          },
+          {
+            "description": "Labels a resource must carry verbatim to match. Every entry must match; an empty map matches everything.",
+            "name": "matchLabels",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Which MachineConfigs in this namespace the policy schedules backups for. Empty, it applies to all of them.",
+        "name": "selector",
+        "required": false,
+        "type": "object",
+        "typeName": "LabelSelector"
+      },
+      {
+        "children": [
+          {
+            "description": "Name of the unit in the machine's own `spec.backups[]` this entry schedules. Unique within the list.",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "How many snapshots the unit keeps. Omitted, the machine's own profile decides.",
+            "name": "retention",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "description": "Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on, evaluated against the machine's local clock — a nightly window means 3am where each machine sits, not 3am in the cluster's timezone.",
+            "name": "schedule",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines.",
+        "name": "units",
+        "required": false,
+        "type": "[]object",
+        "typeName": "BackupPolicyUnit"
+      }
+    ],
+    "kind": "BackupPolicy",
+    "location": "BackupPolicy CRD",
+    "name": "BackupPolicy"
+  },
+  {
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
     "docs": "docs/spec/teamconfig.md#fields",
     "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/teamconfig.md#fields",

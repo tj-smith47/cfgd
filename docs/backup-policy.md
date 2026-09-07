@@ -1,0 +1,100 @@
+# BackupPolicy
+
+A namespaced CRD that sets the cadence of backup units the machines it selects already define.
+A policy overrides a named unit's `schedule` and `retention`. It never defines a unit: `source`
+and `destination` are machine-local paths a cluster object cannot know, so a unit the policy
+names on a machine whose profile does not define it is reported and otherwise left alone.
+
+The unit itself stays in the machine's own profile, under [`spec.backups[]`](backups.md). The
+schedule is evaluated on the machine's local clock, so a fleet-wide `0 3 * * *` means 3am where
+each machine sits (not 3am in the cluster's timezone), and an interval schedule seeds from that
+machine's own last recorded run.
+
+```sh
+kubectl get backuppolicies          # short name: bpol
+```
+
+## Fields
+
+`spec`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `selector` | object | no | Which MachineConfigs in this namespace the policy schedules backups for. Empty (the default) matches all of them. Same `matchLabels` / `matchExpressions` shape as [`ConfigPolicy.spec.targetSelector`](spec/configpolicy.md) |
+| `units` | list | no | Schedule overrides, each naming a backup unit the matched machine's own profile defines |
+
+`spec.units[]`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Name of the unit in the machine's `spec.backups[]`. Unique within the list: two entries sharing a name leave no answer for which schedule the unit runs on, and the CRD merges the list server-side by this field |
+| `schedule` | string | yes | Cron expression (`0 3 * * *`) or interval (`6h`), evaluated on the machine's local clock |
+| `retention` | integer | no | How many snapshots the unit keeps. Omitted, the machine's own profile decides. Must be at least 1: a `0` would prune every snapshot the unit takes |
+
+## Precedence
+
+| Layer | Owns | Wins |
+|---|---|---|
+| local profile `spec.backups[]` | the unit: `source`, `destination`, `namePattern`, `retention`, `preBackup`/`postBackup` | always — the cluster never defines a unit |
+| cluster `BackupPolicy.spec.units[]` | `schedule`, `retention` override for a named unit | when the profile does not set `scheduleOwner: Local` |
+
+[`scheduleOwner: Local`](backups.md#scheduleowner) is the user-facing control, and it exists
+because there is a real case the cluster cannot know: a laptop is asleep at 3am, so a fleet-wide
+nightly window is wrong for it and only its owner knows that. A unit pinned `Local` still appears
+in `status.units` with `owner: local`, so a policy reports the unit it declined to schedule
+rather than appearing to have applied.
+
+## Status
+
+Written by the operator, never set in `spec`:
+
+| Field | Type | Description |
+|---|---|---|
+| `observedGeneration` | integer | The `metadata.generation` the rest of the status was computed from |
+| `units` | list | One row per (machine, unit): `name`, `hostname`, `owner` (`cluster` or `local`), `schedule`, `retention`, `lastRun`, `nextRun`, `message`. Sorted by (hostname, name) and capped at 500 rows |
+| `unitsSummary` | string | The unit names in `units`, deduplicated and comma-joined. What the `Units` printer column shows |
+| `machinesMatched` | integer | How many machines the selector matched, exact and never capped |
+| `conditions` | list | Standard condition list, carrying `Applied` |
+
+## Example
+
+```yaml
+# Cluster: fleet-wide schedule policy, selector-matched.
+apiVersion: cfgd.io/v1alpha1
+kind: BackupPolicy
+metadata:
+  name: nightly-dotfiles
+spec:
+  selector:
+    matchLabels:
+      cfgd.io/profile: workstation
+  units:
+    - name: dotfiles          # matches a unit in the machine's local profile
+      schedule: "0 3 * * *"
+      retention: 14
+status:
+  units:
+    - name: dotfiles
+      hostname: nuc-01
+      lastRun: "2026-08-02T03:00:11Z"
+      nextRun: "2026-08-03T03:00:00Z"
+```
+
+The unit the policy schedules, as the machine's own profile defines it:
+
+```yaml
+# Local profile: still the definition of what a unit IS.
+spec:
+  backups:
+    - name: dotfiles
+      source: ~/.config
+      destination: /var/backups/cfgd
+      schedule: "0 3 * * *"
+      scheduleOwner: Local     # this machine keeps its own window
+      retention: 7
+```
+
+## See also
+
+- [Declarative Backups](backups.md): the unit definition, hook ordering, retention, restoring
+- [Operator](operator.md): CRD installation, the admission webhook, controllers

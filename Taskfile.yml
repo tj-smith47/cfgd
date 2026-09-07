@@ -277,7 +277,7 @@ tasks:
           trap 'rm -rf "$tmp"' EXIT
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir "$tmp"
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds > "$tmp/crds.yaml"
-          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules; do
+          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules backuppolicies; do
             for tree in chart/cfgd/crds ecosystem/olm/manifests; do
               if ! diff -u "$tree/$f.yaml" "$tmp/$f.yaml"; then
                 echo ""

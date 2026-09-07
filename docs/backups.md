@@ -472,8 +472,11 @@ failure, not a second error object.
 ## Daemon scheduling
 
 A backup with a `schedule` gets a timer in the [daemon](daemon.md) alongside the reconcile and sync
-tasks. Nothing else changes: the timer dispatches the same engine `cfgd backup run` does, so a
-scheduled run writes the same `backup_runs` row, runs the same hooks, and prunes to the same
+tasks. On a machine the operator manages, that schedule can come from the cluster instead: a
+[`BackupPolicy`](backup-policy.md) sets the cadence of units the profile already defines, for
+every unit not pinned with [`scheduleOwner: Local`](#scheduleowner). Nothing else changes: the
+timer dispatches the same engine `cfgd backup run` does, so a scheduled run writes the same
+`backup_runs` row, runs the same hooks, and prunes to the same
 `retention`. Only `CFGD_CONTEXT` differs: `reconcile` for a daemon-driven run, `apply`
 for a CLI-driven one.
 

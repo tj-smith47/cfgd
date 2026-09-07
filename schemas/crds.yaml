@@ -1876,3 +1876,258 @@ spec:
     storage: true
     subresources:
       status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: backuppolicies.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: BackupPolicy
+    plural: backuppolicies
+    shortNames:
+    - bpol
+    singular: backuppolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.unitsSummary
+      name: Units
+      type: string
+    - jsonPath: .status.machinesMatched
+      name: Machines
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BackupPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              A fleet-wide backup schedule, applied to the machines its selector matches.
+
+              A policy overrides the cadence of a backup unit the machine's own profile
+              already defines; it never defines the unit. `source` and `destination` are
+              machine-local paths a cluster object cannot know, so a unit this policy
+              names on a machine whose profile does not define it is reported and
+              otherwise left alone.
+            properties:
+              selector:
+                default:
+                  matchExpressions: []
+                  matchLabels: {}
+                description: |-
+                  Which MachineConfigs in this namespace the policy schedules backups
+                  for. Empty, it applies to all of them.
+                properties:
+                  matchExpressions:
+                    default: []
+                    description: |-
+                      Set-based requirements a resource must satisfy, evaluated alongside
+                      `matchLabels`. Every requirement must hold.
+                    items:
+                      description: A single requirement for label selector expressions.
+                      properties:
+                        key:
+                          description: Label key this requirement tests.
+                          type: string
+                        operator:
+                          description: |-
+                            How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+                            `DoesNotExist`.
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          default: []
+                          description: |-
+                            Values the key is tested against. Required for `In` and `NotIn`, and
+                            must be empty for `Exists` and `DoesNotExist`.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: |-
+                      Labels a resource must carry verbatim to match. Every entry must match;
+                      an empty map matches everything.
+                    type: object
+                type: object
+              units:
+                default: []
+                description: |-
+                  Schedule overrides, each naming a backup unit the matched machine's own
+                  profile defines.
+                items:
+                  description: One backup unit's cluster-side schedule.
+                  properties:
+                    name:
+                      description: |-
+                        Name of the unit in the machine's own `spec.backups[]` this entry
+                        schedules. Unique within the list.
+                      type: string
+                    retention:
+                      description: |-
+                        How many snapshots the unit keeps. Omitted, the machine's own profile
+                        decides.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    schedule:
+                      description: |-
+                        Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on,
+                        evaluated against the machine's local clock — a nightly window means
+                        3am where each machine sits, not 3am in the cluster's timezone.
+                      type: string
+                  required:
+                  - name
+                  - schedule
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              machinesMatched:
+                description: How many machines the selector matched, exact and never capped.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              observedGeneration:
+                description: |-
+                  The `metadata.generation` every other field here was computed from. A
+                  status whose `observedGeneration` is behind `metadata.generation`
+                  describes the PREVIOUS spec.
+                format: int64
+                nullable: true
+                type: integer
+              units:
+                default: []
+                description: |-
+                  Sorted by (hostname, name) and capped at MAX_NON_COMPLIANT_MACHINES — the shared
+                  etcd enumeration ceiling; `machinesMatched` stays exact.
+                items:
+                  description: One machine's copy of one backup unit, as the policy last observed it.
+                  properties:
+                    hostname:
+                      description: Hostname of the machine this row reports on.
+                      type: string
+                    lastRun:
+                      description: When the unit last ran, as an RFC 3339 timestamp.
+                      nullable: true
+                      type: string
+                    message:
+                      description: |-
+                        Why this row is not what the policy asked for: the unit is unknown to
+                        the machine's profile, or its schedule is pinned local.
+                      nullable: true
+                      type: string
+                    name:
+                      description: Name of the backup unit.
+                      type: string
+                    nextRun:
+                      description: When the unit is next due, as an RFC 3339 timestamp.
+                      nullable: true
+                      type: string
+                    owner:
+                      description: |-
+                        Which layer owns this unit's schedule on that machine: `cluster` when
+                        this policy's schedule projects onto it, `local` when the machine's own
+                        profile pinned the unit with `scheduleOwner: Local` and the policy
+                        reports it without scheduling it.
+                      type: string
+                    retention:
+                      description: The retention in force on the machine.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    schedule:
+                      description: |-
+                        The schedule in force on the machine. Absent while the machine has not
+                        reported the unit yet.
+                      nullable: true
+                      type: string
+                  required:
+                  - hostname
+                  - name
+                  - owner
+                  type: object
+                maxItems: 500
+                type: array
+                x-kubernetes-list-map-keys:
+                - hostname
+                - name
+                x-kubernetes-list-type: map
+              unitsSummary:
+                description: |-
+                  The unit names in `units`, deduplicated and comma-joined, and the only
+                  field the `Units` printer column may be bound to: a column resolving to
+                  an array prints the Go rendering of the slice, so an empty one reads as
+                  the literal `[]` where an absent value leaves the cell empty. Absent
+                  when no unit has been reported.
+                nullable: true
+                type: string
+            required:
+            - machinesMatched
+            type: object
+        required:
+        - spec
+        title: BackupPolicy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

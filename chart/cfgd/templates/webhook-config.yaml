@@ -20,6 +20,7 @@ webhooks:
     (dict "singular" "clusterconfigpolicy" "plural" "clusterconfigpolicies")
     (dict "singular" "driftalert" "plural" "driftalerts")
     (dict "singular" "module" "plural" "modules")
+    (dict "singular" "backuppolicy" "plural" "backuppolicies")
   }}
   - name: validate-{{ .singular }}.cfgd.io
     admissionReviewVersions: ["v1"]

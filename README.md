@@ -216,6 +216,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
 | [Declarative Backups](docs/backups.md) | `spec.backups[]` snapshots, hook ordering, retention, restoring |
+| [Backup Policy](docs/backup-policy.md) | Fleet-wide backup schedules, the precedence table, `scheduleOwner` |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Installation](docs/installation.md) | Every install channel, verifying signed downloads, self-upgrade |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |

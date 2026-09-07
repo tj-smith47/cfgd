@@ -272,6 +272,66 @@ async fn validate_driftalert_allows_minimal_valid_spec() {
 }
 
 // -----------------------------------------------------------------------
+// validate-backuppolicy
+// -----------------------------------------------------------------------
+
+/// A policy exists to set a cadence, so a unit with no schedule projects
+/// nothing and is refused at admission — with the spec's own message, not a
+/// second wording the webhook invented.
+#[tokio::test]
+async fn backup_policy_route_denies_a_unit_with_no_schedule() {
+    use cfgd_crd::Validatable;
+
+    let spec = cfgd_crd::BackupPolicySpec {
+        selector: Default::default(),
+        units: vec![cfgd_crd::BackupPolicyUnit {
+            name: "dotfiles".to_string(),
+            schedule: String::new(),
+            retention: Some(14),
+        }],
+    };
+    let expected = Validatable::validate(&spec)
+        .expect_err("a unit with no schedule is refused")
+        .join("; ");
+
+    let (router, _metrics) = test_webhook_router();
+    let body = admission_review_body(
+        "BackupPolicy",
+        "backuppolicies",
+        serde_json::to_value(&spec).expect("serialize the rejecting spec"),
+    );
+
+    let response = router
+        .oneshot(post("/validate-backuppolicy", body))
+        .await
+        .unwrap();
+    let review = parse_response(response).await;
+    let resp = review.response.unwrap();
+    assert!(!resp.allowed, "{}", resp.result.message);
+    assert_eq!(resp.result.message, expected);
+}
+
+#[tokio::test]
+async fn backup_policy_route_allows_a_scheduled_unit() {
+    let (router, _metrics) = test_webhook_router();
+    let body = admission_review_body(
+        "BackupPolicy",
+        "backuppolicies",
+        serde_json::json!({
+            "selector": {"matchLabels": {"cfgd.io/profile": "workstation"}},
+            "units": [{"name": "dotfiles", "schedule": "0 3 * * *", "retention": 14}],
+        }),
+    );
+
+    let response = router
+        .oneshot(post("/validate-backuppolicy", body))
+        .await
+        .unwrap();
+    let review = parse_response(response).await;
+    assert!(review.response.unwrap().allowed);
+}
+
+// -----------------------------------------------------------------------
 // validate-machineconfig — bad request body
 // -----------------------------------------------------------------------
 

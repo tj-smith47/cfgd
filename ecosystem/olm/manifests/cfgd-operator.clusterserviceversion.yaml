@@ -51,6 +51,15 @@ metadata:
             "severity": "Medium",
             "driftDetails": [{ "field": "spec.packages[0].version", "expected": "1.28.0", "actual": "1.27.5" }]
           }
+        },
+        {
+          "apiVersion": "cfgd.io/v1alpha1",
+          "kind": "BackupPolicy",
+          "metadata": { "name": "nightly-dotfiles", "namespace": "default" },
+          "spec": {
+            "selector": { "matchLabels": { "cfgd.io/profile": "workstation" } },
+            "units": [{ "name": "dotfiles", "schedule": "0 3 * * *", "retention": 14 }]
+          }
         }
       ]
     categories: Developer Tools, Application Runtime
@@ -197,13 +206,13 @@ spec:
         - serviceAccountName: cfgd-operator
           rules:
             - apiGroups: ["cfgd.io"]
-              resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts", "modules"]
+              resources: ["machineconfigs", "configpolicies", "clusterconfigpolicies", "driftalerts", "modules", "backuppolicies"]
               verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
             - apiGroups: ["cfgd.io"]
-              resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status", "modules/status"]
+              resources: ["machineconfigs/status", "configpolicies/status", "clusterconfigpolicies/status", "driftalerts/status", "modules/status", "backuppolicies/status"]
               verbs: ["get", "update", "patch"]
             - apiGroups: ["cfgd.io"]
-              resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers", "modules/finalizers"]
+              resources: ["machineconfigs/finalizers", "configpolicies/finalizers", "clusterconfigpolicies/finalizers", "driftalerts/finalizers", "modules/finalizers", "backuppolicies/finalizers"]
               verbs: ["update"]
             - apiGroups: [""]
               resources: ["namespaces"]
@@ -326,3 +335,8 @@ spec:
         kind: Module
         displayName: Module
         description: Reusable configuration module with OCI distribution
+      - name: backuppolicies.cfgd.io
+        version: v1alpha1
+        kind: BackupPolicy
+        displayName: Backup Policy
+        description: Fleet-wide backup schedules for selected machines

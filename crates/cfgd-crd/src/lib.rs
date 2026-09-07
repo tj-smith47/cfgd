@@ -1,7 +1,8 @@
 //! cfgd Custom Resource Definition spec types.
 //!
 //! This crate hosts the `cfgd.io/v1alpha1` CRD spec types (`MachineConfig`,
-//! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`), their
+//! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`,
+//! `BackupPolicy`), their
 //! `schemars`-derived JSON schemas, and the cross-field `validate()` impls used
 //! by both the admission webhook and the CLI. It sits at the bottom of the
 //! workspace dependency graph (depended on by `cfgd-core`), so it carries no
@@ -716,6 +717,142 @@ impl ModuleStatus {
 }
 
 // ---------------------------------------------------------------------------
+// BackupPolicy
+// ---------------------------------------------------------------------------
+
+/// Which layer owns a backup unit's schedule. Re-exported from `cfgd-schema`
+/// so the word a policy status reports and the word the machine's own
+/// `spec.backups[].scheduleOwner` serializes are one vocabulary.
+pub use cfgd_schema::ScheduleOwner;
+
+/// A fleet-wide backup schedule, applied to the machines its selector matches.
+///
+/// A policy overrides the cadence of a backup unit the machine's own profile
+/// already defines; it never defines the unit. `source` and `destination` are
+/// machine-local paths a cluster object cannot know, so a unit this policy
+/// names on a machine whose profile does not define it is reported and
+/// otherwise left alone.
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[kube(
+    group = "cfgd.io",
+    version = "v1alpha1",
+    kind = "BackupPolicy",
+    namespaced,
+    status = "BackupPolicyStatus",
+    shortname = "bpol",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Units", "type": "string", "jsonPath": ".status.unitsSummary"}"#,
+    printcolumn = r#"{"name": "Machines", "type": "integer", "jsonPath": ".status.machinesMatched"}"#,
+    printcolumn = r#"{"name": "Applied", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Applied\")].status"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
+)]
+// See the note on ConfigPolicySpec: `deny_unknown_fields` stays off so schemars
+// does not emit `additionalProperties: false`, which the API server rejects
+// beside `properties:`.
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicySpec {
+    /// Which MachineConfigs in this namespace the policy schedules backups
+    /// for. Empty, it applies to all of them.
+    #[serde(default)]
+    pub selector: LabelSelector,
+    /// Schedule overrides, each naming a backup unit the matched machine's own
+    /// profile defines.
+    #[serde(default)]
+    pub units: Vec<BackupPolicyUnit>,
+}
+
+/// One backup unit's cluster-side schedule.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyUnit {
+    /// Name of the unit in the machine's own `spec.backups[]` this entry
+    /// schedules. Unique within the list.
+    pub name: String,
+    /// Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on,
+    /// evaluated against the machine's local clock — a nightly window means
+    /// 3am where each machine sits, not 3am in the cluster's timezone.
+    pub schedule: String,
+    /// How many snapshots the unit keeps. Omitted, the machine's own profile
+    /// decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyStatus {
+    /// The `metadata.generation` every other field here was computed from. A
+    /// status whose `observedGeneration` is behind `metadata.generation`
+    /// describes the PREVIOUS spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+    /// Sorted by (hostname, name) and capped at MAX_NON_COMPLIANT_MACHINES — the shared
+    /// etcd enumeration ceiling; `machinesMatched` stays exact.
+    #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
+    pub units: Vec<BackupPolicyUnitStatus>,
+    /// The unit names in `units`, deduplicated and comma-joined, and the only
+    /// field the `Units` printer column may be bound to: a column resolving to
+    /// an array prints the Go rendering of the slice, so an empty one reads as
+    /// the literal `[]` where an absent value leaves the cell empty. Absent
+    /// when no unit has been reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units_summary: Option<String>,
+    /// How many machines the selector matched, exact and never capped.
+    pub machines_matched: u32,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+}
+
+/// One machine's copy of one backup unit, as the policy last observed it.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyUnitStatus {
+    /// Name of the backup unit.
+    pub name: String,
+    /// Hostname of the machine this row reports on.
+    pub hostname: String,
+    /// Which layer owns this unit's schedule on that machine: `cluster` when
+    /// this policy's schedule projects onto it, `local` when the machine's own
+    /// profile pinned the unit with `scheduleOwner: Local` and the policy
+    /// reports it without scheduling it.
+    pub owner: String,
+    /// The schedule in force on the machine. Absent while the machine has not
+    /// reported the unit yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// The retention in force on the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<u32>,
+    /// When the unit last ran, as an RFC 3339 timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<String>,
+    /// When the unit is next due, as an RFC 3339 timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run: Option<String>,
+    /// Why this row is not what the policy asked for: the unit is unknown to
+    /// the machine's profile, or its schedule is pinned local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl BackupPolicyStatus {
+    /// The ONE derivation of [`BackupPolicyStatus::units_summary`] from
+    /// [`BackupPolicyStatus::units`]. Every writer of the status goes through
+    /// it, so the column and the list it summarizes cannot disagree. One unit
+    /// spans one row per machine, so the names are deduplicated; they are
+    /// ordered by name rather than by the list's (hostname, name) order, which
+    /// would otherwise reshuffle the cell whenever the matched machine set
+    /// changed.
+    #[must_use]
+    pub fn summarize_units(units: &[BackupPolicyUnitStatus]) -> Option<String> {
+        let names: std::collections::BTreeSet<&str> =
+            units.iter().map(|u| u.name.as_str()).collect();
+        (!names.is_empty()).then(|| names.into_iter().collect::<Vec<_>>().join(", "))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------
 
@@ -846,6 +983,39 @@ impl ClusterConfigPolicySpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let errors = validate_policy_fields(&self.packages, &self.required_modules, &self.settings);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+impl BackupPolicySpec {
+    /// Validate the spec, returning all validation errors found.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        let mut seen = std::collections::HashSet::with_capacity(self.units.len());
+        for (i, unit) in self.units.iter().enumerate() {
+            if unit.name.trim().is_empty() {
+                errors.push(format!("spec.units[{i}].name must not be empty"));
+            } else if !seen.insert(unit.name.as_str()) {
+                errors.push(format!(
+                    "spec.units[{i}].name '{}' is declared twice; a unit takes one schedule",
+                    unit.name
+                ));
+            }
+            if unit.schedule.trim().is_empty() {
+                errors.push(format!(
+                    "spec.units[{i}].schedule must not be empty; a policy that sets no schedule projects nothing"
+                ));
+            }
+            if unit.retention == Some(0) {
+                errors.push(format!(
+                    "spec.units[{i}].retention must be at least 1; 0 would prune every snapshot the unit takes"
+                ));
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1002,6 +1172,12 @@ impl Validatable for DriftAlertSpec {
 impl Validatable for ModuleSpec {
     fn validate(&self) -> Result<(), Vec<String>> {
         ModuleSpec::validate(self)
+    }
+}
+
+impl Validatable for BackupPolicySpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        BackupPolicySpec::validate(self)
     }
 }
 

@@ -15,6 +15,7 @@ fn explain_covers_every_kind_incl_clusterpolicy_and_module_crd() {
         "ConfigPolicy",
         "ClusterConfigPolicy",
         "DriftAlert",
+        "BackupPolicy",
     ] {
         assert!(find_schema(k).is_some(), "explain missing {k}");
     }
