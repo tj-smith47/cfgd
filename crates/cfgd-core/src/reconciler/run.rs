@@ -1167,7 +1167,7 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 ///
 /// Per REPORT, not per phase. The trailing column is the one thing a reader's
 /// eye scans straight down, and measuring it inside each phase moved it
-/// between `Prerequisites` and `Packages` of the same apply — correct within
+/// between `Bootstrap` and `Packages` of the same apply — correct within
 /// each block, a wobble across the page. Both trees call this with the same
 /// plan and the same filter, so a preview and the apply that follows it pad to
 /// one column too.

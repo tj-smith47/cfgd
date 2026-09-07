@@ -270,7 +270,7 @@ fn apply_with_failures_human() {
     );
 }
 
-/// The phase tree at the CLI boundary: a `Prerequisites` phase whose one lane
+/// The phase tree at the CLI boundary: a `Bootstrap` phase whose one lane
 /// group is labelled above its nodes, a `Packages` phase whose install renders
 /// under the profile's own label, and a serial `Files` phase below both. The
 /// golden pins structure, order and labels — a capture sink never wraps, so

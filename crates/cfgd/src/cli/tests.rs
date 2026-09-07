@@ -5396,7 +5396,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("Actions exist in phase: Prerequisites"),
+        output.contains("Actions exist in phase: Bootstrap"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -7139,9 +7139,14 @@ fn cmd_apply_dry_run_each_phase() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
+    // Every spelling `--phase` accepts, the two deprecated ones included: a
+    // retired spelling that still parses but no longer applies would fail here
+    // rather than on the machine of whoever kept writing it.
     let all_phases = [
         ApplyPhase::PreScripts,
+        ApplyPhase::Bootstrap,
         ApplyPhase::Prerequisites,
+        ApplyPhase::Env,
         ApplyPhase::Modules,
         ApplyPhase::Packages,
         ApplyPhase::System,
@@ -7171,8 +7176,8 @@ fn cmd_apply_dry_run_each_phase() {
             phase.as_str()
         );
     }
-    // Verify all 8 phase names are accepted (no unknown-phase errors)
-    assert_eq!(all_phases.len(), 8);
+    // Verify all 10 phase names are accepted (no unknown-phase errors)
+    assert_eq!(all_phases.len(), 10);
 }
 
 // --- Verify after real apply ---
@@ -14223,7 +14228,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
             phase: Some(&retired),
             ..PreviewScope::unscoped()
         }),
-        "Run `cfgd apply --phase prerequisites` to make these changes"
+        "Run `cfgd apply --phase bootstrap` to make these changes"
     );
 }
 
@@ -21374,8 +21379,8 @@ fn action_path_env_write() {
         vars: 0,
         aliases: 0,
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap:/home/user/.config/cfgd/env.sh");
 }
 
 // -----------------------------------------------------------------------
@@ -22348,8 +22353,8 @@ fn action_path_manager_provision() {
         batched: vec![],
         depends_on: vec![],
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites.brew");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap.brew");
 }
 
 #[test]
@@ -22429,8 +22434,8 @@ fn action_path_env_inject_source_line() {
         rc_path: PathBuf::from("/home/user/.zshrc"),
         line: ". ~/.cfgd.env".into(),
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites:/home/user/.zshrc");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap:/home/user/.zshrc");
 }
 
 #[test]
@@ -26579,6 +26584,7 @@ mod cmd_source_add_local {
 fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     let cases = [
         (super::ApplyPhase::PreScripts, "pre-scripts"),
+        (super::ApplyPhase::Bootstrap, "bootstrap"),
         (super::ApplyPhase::Prerequisites, "prerequisites"),
         (super::ApplyPhase::Env, "env"),
         (super::ApplyPhase::Modules, "modules"),
@@ -26595,6 +26601,15 @@ fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     );
     for (phase, label) in cases {
         assert_eq!(phase.as_str(), label);
+        // And the label IS the token clap parses, deprecated spellings
+        // included: a value name that drifted from it would leave every
+        // caller composing a `--phase` out of `as_str` printing one nobody
+        // can type.
+        assert_eq!(
+            <super::ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+                .map(|pv| pv.get_name().to_string()),
+            Some(label.to_string())
+        );
     }
 }
 
@@ -26607,14 +26622,18 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
             PhaseFilter::Phase(PhaseName::PreScripts),
         ),
         (
-            super::ApplyPhase::Prerequisites,
-            PhaseFilter::Phase(PhaseName::Prerequisites),
+            super::ApplyPhase::Bootstrap,
+            PhaseFilter::Phase(PhaseName::Bootstrap),
         ),
-        // The deprecated spelling resolves to the same phase, so a script
-        // written against it keeps selecting the work it always selected.
+        // Each deprecated spelling resolves to the same phase, so a script
+        // written against either keeps selecting the work it always selected.
+        (
+            super::ApplyPhase::Prerequisites,
+            PhaseFilter::Phase(PhaseName::Bootstrap),
+        ),
         (
             super::ApplyPhase::Env,
-            PhaseFilter::Phase(PhaseName::Prerequisites),
+            PhaseFilter::Phase(PhaseName::Bootstrap),
         ),
         // The one variant that is NOT a plan phase: module work applies in the
         // phase whose kind it is.
@@ -26653,26 +26672,30 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
 #[test]
 fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+    use std::str::FromStr;
 
-    let (printer, buf) = test_printer_capture();
-    let filter = super::resolve_phase_filter(
-        Some(super::PhaseArg::bare(super::ApplyPhase::Env)),
-        &ProviderRegistry::new(),
-        &printer,
-    )
-    .unwrap();
-    printer.flush();
-    let out = cfgd_core::test_helpers::captured_text(&buf);
+    for (token, reason) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let (printer, buf) = test_printer_capture();
+        let filter = super::resolve_phase_filter(
+            Some(super::PhaseArg::from_str(token).unwrap()),
+            &ProviderRegistry::new(),
+            &printer,
+        )
+        .unwrap();
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
 
-    assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
-    assert!(
-        out.contains("`--phase env` is deprecated") && out.contains("--phase prerequisites"),
-        "the notice must name both the spelling and its replacement:\n{out}"
-    );
+        assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Bootstrap)));
+        assert!(
+            out.contains(&format!("`--phase {token}` is deprecated: {reason}."))
+                && out.contains("--phase bootstrap"),
+            "the notice must name the spelling, its reason and its replacement:\n{out}"
+        );
+    }
 
     let (printer, buf) = test_printer_capture();
     super::resolve_phase_filter(
-        Some(super::PhaseArg::bare(super::ApplyPhase::Prerequisites)),
+        Some(super::PhaseArg::bare(super::ApplyPhase::Bootstrap)),
         &ProviderRegistry::new(),
         &printer,
     )
@@ -26684,22 +26707,153 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     );
 }
 
+/// Both deprecation sites word a retired phase spelling the same way.
+///
+/// `--phase` resolves through clap's `ApplyPhase`, `--skip`/`--only` through a
+/// leading path segment `filter_plan` rewrites, so the two reach the table by
+/// different routes: a token explained one way by the flag that rejects it and
+/// another by the flag that rewrites it would read as two different retirements.
+#[test]
+fn every_legacy_phase_token_is_rewritten_by_both_deprecation_sites() {
+    use cfgd_core::reconciler::{
+        Action, ManagerAction, Owner, Phase, PhaseFilter, PhaseName, Plan,
+    };
+    use std::str::FromStr;
+
+    // The table is what BOTH sites word themselves from, so an alias clap
+    // still accepts while the table has forgotten it would deprecate itself
+    // silently on every flag at once.
+    let mut aliases: Vec<String> = <super::ApplyPhase as clap::ValueEnum>::value_variants()
+        .iter()
+        .filter(|phase| {
+            super::apply_phase_to_filter(**phase) == PhaseFilter::Phase(PhaseName::Bootstrap)
+        })
+        .filter_map(clap::ValueEnum::to_possible_value)
+        .map(|pv| pv.get_name().to_string())
+        .filter(|name| name != PhaseName::Bootstrap.as_str())
+        .collect();
+    aliases.sort();
+    let mut worded: Vec<String> = super::plan_ops::LEGACY_PHASE_TOKENS
+        .iter()
+        .map(|(token, _)| (*token).to_string())
+        .collect();
+    worded.sort();
+    assert_eq!(
+        aliases, worded,
+        "every spelling clap still resolves to the phase needs its retirement worded here"
+    );
+
+    for (token, reason) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let (printer, buf) = test_printer_capture();
+        let filter = super::resolve_phase_filter(
+            Some(super::PhaseArg::from_str(token).unwrap()),
+            &ProviderRegistry::new(),
+            &printer,
+        )
+        .unwrap();
+        printer.flush();
+        let phase_site = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(
+            filter,
+            Some(PhaseFilter::Phase(PhaseName::Bootstrap)),
+            "`--phase {token}` must still select the phase it always selected"
+        );
+
+        let mut plan = Plan {
+            phases: vec![Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    declared: None,
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            )],
+            warnings: vec![],
+        };
+        let (printer, buf) = test_printer_capture();
+        super::plan_ops::filter_plan(
+            &mut plan,
+            &[format!("{token}.managers")],
+            &[],
+            None,
+            &printer,
+            &ProviderRegistry::new(),
+            &std::collections::HashSet::new(),
+        );
+        printer.flush();
+        let skip_site = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            plan.phases.iter().all(|p| p.action_count() == 0),
+            "`--skip {token}.managers` must still reach the group it always reached: {:?}",
+            plan.phases
+        );
+
+        assert!(
+            phase_site.contains(&format!("`--phase {token}` is deprecated: {reason}."))
+                && skip_site.contains(&format!(
+                    "`--skip {token}.managers` is deprecated: {reason}."
+                )),
+            "both sites must give the token the same reason:\n{phase_site}\n{skip_site}"
+        );
+    }
+}
+
+/// A preview's next step re-states the run's flags in the CURRENT spelling.
+///
+/// The hint is the command the reader runs next, so echoing back the retired
+/// token they typed hands them a second deprecation for taking the advice.
+#[test]
+fn a_preview_hint_restates_a_retired_phase_spelling_as_the_current_one() {
+    use cfgd_core::reconciler::PhaseName;
+    use std::str::FromStr;
+
+    let current = PhaseName::Bootstrap.as_str();
+    for (token, _) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let phase = super::PhaseArg::from_str(token).unwrap();
+        let skip = [format!("{token}.managers")];
+        let only = [format!("{token}.env")];
+        let hint = super::perform_preview_hint(&super::PreviewScope {
+            module: &[],
+            with_profile: false,
+            phase: Some(&phase),
+            only: &only,
+            skip: &skip,
+            skip_scripts: false,
+        });
+        assert!(
+            hint.contains(&format!("--phase {current}"))
+                && hint.contains(&format!("--only {current}.env"))
+                && hint.contains(&format!("--skip {current}.managers")),
+            "the hint must name the current spelling on every flag:\n{hint}"
+        );
+        assert!(
+            !hint.contains(&format!("--phase {token}"))
+                && !hint.contains(&format!("--only {token}."))
+                && !hint.contains(&format!("--skip {token}.")),
+            "and never the retired one:\n{hint}"
+        );
+    }
+}
+
 #[test]
 fn phase_arg_parses_the_dotted_grammar() {
     use std::str::FromStr;
 
-    let bare = super::PhaseArg::from_str("prerequisites").unwrap();
-    assert!(matches!(bare.phase, super::ApplyPhase::Prerequisites));
+    let bare = super::PhaseArg::from_str("bootstrap").unwrap();
+    assert!(matches!(bare.phase, super::ApplyPhase::Bootstrap));
     assert_eq!(bare.selector, None);
 
-    let dotted = super::PhaseArg::from_str("prerequisites.managers").unwrap();
-    assert!(matches!(dotted.phase, super::ApplyPhase::Prerequisites));
+    let dotted = super::PhaseArg::from_str("bootstrap.managers").unwrap();
+    assert!(matches!(dotted.phase, super::ApplyPhase::Bootstrap));
     assert_eq!(dotted.selector.as_deref(), Some("managers"));
 
-    let manager_selector = super::PhaseArg::from_str("prerequisites.brew").unwrap();
+    let manager_selector = super::PhaseArg::from_str("bootstrap.brew").unwrap();
     assert!(matches!(
         manager_selector.phase,
-        super::ApplyPhase::Prerequisites
+        super::ApplyPhase::Bootstrap
     ));
     assert_eq!(manager_selector.selector.as_deref(), Some("brew"));
 
@@ -26728,7 +26882,7 @@ fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
         "the hidden legacy spelling must not appear in the possible-values listing:\n{err}"
     );
     assert!(
-        err.contains("prerequisites"),
+        err.contains("bootstrap"),
         "the current spelling must appear in the possible-values listing:\n{err}"
     );
 }
@@ -26737,13 +26891,13 @@ fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
 fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
     use std::str::FromStr;
 
-    // "prerequisites." names no selector after the dot — a likely typo, so it
+    // "bootstrap." names no selector after the dot — a likely typo, so it
     // errors with a message naming the bare-phase and dotted alternatives
     // rather than silently swallowing the dangling '.' or misreporting the
     // whole string (including the dot) as an unrecognized phase name.
-    let err = super::PhaseArg::from_str("prerequisites.").unwrap_err();
+    let err = super::PhaseArg::from_str("bootstrap.").unwrap_err();
     assert!(
-        err.contains("prerequisites.") && err.contains("prerequisites.managers"),
+        err.contains("bootstrap.") && err.contains("bootstrap.managers"),
         "error must name the input and show a valid dotted example:\n{err}"
     );
 }
@@ -26756,12 +26910,12 @@ fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
 fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
     use super::Command;
 
-    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.brew", "--yes"])
-        .expect("--phase prerequisites.brew must parse");
+    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.brew", "--yes"])
+        .expect("--phase bootstrap.brew must parse");
     match cli.command {
         Some(Command::Apply(args)) => {
             let phase = args.phase.expect("--phase must be Some after parse");
-            assert!(matches!(phase.phase, super::ApplyPhase::Prerequisites));
+            assert!(matches!(phase.phase, super::ApplyPhase::Bootstrap));
             assert_eq!(phase.selector.as_deref(), Some("brew"));
         }
         _ => panic!("expected Command::Apply"),
@@ -26770,7 +26924,7 @@ fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
 
 #[test]
 fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
-    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.", "--yes"]) {
+    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.", "--yes"]) {
         Ok(_) => panic!("a trailing '.' must fail parsing"),
         Err(e) => e,
     };
@@ -26786,7 +26940,7 @@ fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
     );
     let rendered = err.to_string();
     assert!(
-        rendered.contains("prerequisites.") && rendered.contains("prerequisites.managers"),
+        rendered.contains("bootstrap.") && rendered.contains("bootstrap.managers"),
         "the rendered clap error must still carry the FromStr message:\n{rendered}"
     );
 }
@@ -26809,7 +26963,7 @@ fn phase_flag_help_lists_the_phase_vocabulary() {
         "--phase must carry a possible-values list for --help / completions"
     );
     assert!(
-        rendered.contains("prerequisites") && rendered.contains("packages"),
+        rendered.contains("bootstrap") && rendered.contains("packages"),
         "--help must list the phase vocabulary:\n{rendered}"
     );
     assert!(
@@ -26825,7 +26979,7 @@ fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("managers".to_string()),
         }),
         &ProviderRegistry::new(),
@@ -26835,7 +26989,7 @@ fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
     assert_eq!(
         filter,
         Some(PhaseFilter::Selector(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             "managers".to_string()
         ))
     );
@@ -26861,7 +27015,7 @@ fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
 }
 
 #[test]
-fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites() {
+fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_bootstrap() {
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -26874,8 +27028,8 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("--phase packages.brew") && msg.contains("--phase prerequisites.brew"),
-        "error must name the rejected combo and point at the prerequisites spelling:\n{msg}"
+        msg.contains("--phase packages.brew") && msg.contains("--phase bootstrap.brew"),
+        "error must name the rejected combo and point at the bootstrap spelling:\n{msg}"
     );
 }
 
@@ -26883,7 +27037,7 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites
 /// `ProviderRegistry::manager_names()` to answer with a specific set without
 /// depending on a real `PackageManager` implementation. The second field names
 /// the tools its bootstrap cascade shells out to — the population a
-/// `Prerequisites` node is keyed on, and so part of the selector vocabulary.
+/// `Bootstrap` node is keyed on, and so part of the selector vocabulary.
 struct NamedManagerStub(&'static str, &'static [&'static str]);
 
 impl cfgd_core::providers::PackageManager for NamedManagerStub {
@@ -26950,7 +27104,7 @@ fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabula
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("bogus".to_string()),
         }),
         &registry,
@@ -26969,7 +27123,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
 
     // `ManagerAction::filter_subject` keys a prerequisite node on its TOOL, and
-    // `--skip prerequisites.curl` has always accepted that spelling — but the
+    // `--skip bootstrap.curl` has always accepted that spelling — but the
     // `--phase` validator listed manager families only, so one grammar was
     // legal on one flag and rejected on the other.
     let mut registry = ProviderRegistry::new();
@@ -26977,7 +27131,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("curl".to_string()),
         }),
         &registry,
@@ -26987,7 +27141,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     assert_eq!(
         filter,
         Some(PhaseFilter::Selector(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             "curl".to_string()
         ))
     );
@@ -26996,7 +27150,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     // refused, and the tool now appears in what the refusal offers.
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("bogus".to_string()),
         }),
         &registry,

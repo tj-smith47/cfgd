@@ -988,7 +988,7 @@ pub(super) fn package_missing_drift(
 /// Render the package half of a drift report, one owner group per owner.
 ///
 /// `manager_actions` is the same `ManagerAction` planner output the
-/// Prerequisites phase runs (`reconciler::plan_managers`) — a missing manager
+/// Bootstrap phase runs (`reconciler::plan_managers`) — a missing manager
 /// this run would provision, or refuses to, is drift the same way a missing
 /// package is, and reads under `cfgd:managers` exactly as it would in the
 /// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an

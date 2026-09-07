@@ -999,7 +999,7 @@ impl<T: PackageManager + ?Sized> PackageManagerExt for T {
 }
 
 /// The tools a system manager installs under a package of the same name — the
-/// closed population a `Prerequisites` node may run `<system manager> install
+/// closed population a `Bootstrap` node may run `<system manager> install
 /// <tool>` for.
 ///
 /// Deliberately not "every tool a cascade names": `pip3` is a cascade

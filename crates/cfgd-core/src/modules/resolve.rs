@@ -41,7 +41,7 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 /// wins over the platform default, so the entry is satisfied rather than
 /// re-installed as a second copy through the default. `None` (a surface with
 /// no state to read) keeps the platform default. The in-run twin of this rule
-/// is `Reconciler::provisioned`: a tool THIS run's own `Prerequisites` phase
+/// is `Reconciler::provisioned`: a tool THIS run's own `Bootstrap` phase
 /// delivered is not yet in any listing when the plan is read, so
 /// `Reconciler::package_survives_elision` elides it from the run's own record
 /// of what it provisioned instead. Resolution answers "already here before

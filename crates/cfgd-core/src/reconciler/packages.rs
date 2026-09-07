@@ -384,7 +384,7 @@ impl<'x> PackageExec<'x> {
     /// cannot run — distinguishing "never registered" from "registered but
     /// not currently available", since only the latter names a recovery: a
     /// name typo has none, while an unprovisioned manager's fix is always
-    /// the `Prerequisites` phase this run's filter skipped.
+    /// the `Bootstrap` phase this run's filter skipped.
     fn package_manager_missing_error(&self, manager: &str) -> crate::errors::CfgdError {
         let registered = self
             .registry
@@ -444,7 +444,7 @@ impl<'x> PackageExec<'x> {
     /// asked.
     ///
     /// The planner elided every entry the manager already carried, but it did so
-    /// before the `Prerequisites` phase ran, and that phase installs packages:
+    /// before the `Bootstrap` phase ran, and that phase installs packages:
     /// `apt install npm pipx` provisions two managers and lands two apt packages
     /// a module is free to declare as well. Re-reading the machine is what keeps
     /// the two phases from installing one package twice — the truth, rather than
@@ -777,7 +777,7 @@ impl<'x> PackageExec<'x> {
         // A manager-backed install counts as changed only for the entries the
         // machine still lacks. The planner dropped everything the manager
         // reported installed (`Reconciler::diffing_installed`), but it did so
-        // BEFORE the `Prerequisites` phase ran, and that phase installs
+        // BEFORE the `Bootstrap` phase ran, and that phase installs
         // packages — `apt install npm pipx` provisions two managers and lands
         // two apt packages this module may declare itself. The set is re-read
         // below; an action left with nothing to install ran and changed

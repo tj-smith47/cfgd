@@ -158,7 +158,7 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// is one string across the preview bullet, the alignment column and the
 /// executed row) and so does the recorded description, which is a wire
 /// contract. What the executed row alone can differ on is the COUNT, and it
-/// only learns it at execute time: the `Prerequisites` phase installs packages,
+/// only learns it at execute time: the `Bootstrap` phase installs packages,
 /// so an install re-reads the machine and drops every entry that is already
 /// there. `installed` is that re-read's answer, carried out of the executor on
 /// [`ActionRun`]; `None` is a preview, which has no answer yet.
@@ -182,7 +182,7 @@ fn installed_packages_summary(
     let planned = planned_package_count(action)?;
     let landed = installed.filter(|landed| *landed < planned)?;
     // `already installed` is the vocabulary for state this run did not
-    // create. An entry the run's own `Prerequisites` phase put on the machine
+    // create. An entry the run's own `Bootstrap` phase put on the machine
     // (`provision npm via brew` IS a `brew install node`) reads as delivered
     // by the run, or the row says cfgd declared one tool twice and wasted
     // half the install twelve lines under the provision that landed it.
@@ -216,7 +216,7 @@ fn planned_package_count(action: &Action) -> Option<usize> {
 ///
 /// A provision node promises an AVAILABLE manager, not a second run of an
 /// installer that is minutes of work and idempotent for nobody — so an earlier
-/// node, or the `Prerequisites` phase, may have already delivered one of the
+/// node, or the `Bootstrap` phase, may have already delivered one of the
 /// managers this node names. The subject stays the planned set in both trees
 /// (it is one string across the preview bullet, the alignment column and the
 /// executed row), so the count is the only seam that can say the run landed
@@ -633,7 +633,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
     // states a fact about the MACHINE — brew put its completions in one
     // directory, once — and a run that provisions a manager in
-    // `Prerequisites` and uses it again in `Packages` files that one fact
+    // `Bootstrap` and uses it again in `Packages` files that one fact
     // under two owners, so the section printed it twice with nothing but the
     // owner heading to distinguish the copies. Attributing a machine-level
     // fact to an owner is what produces the duplicate; the first occurrence
@@ -757,13 +757,13 @@ fn action_key(action: &Action) -> usize {
 ///
 /// The ONE partition, so the phase's two halves cannot both claim an action or
 /// both disown it: all of `Packages`, and only the `cfgd:managers` group of
-/// `Prerequisites` — its other two groups write the env file and refresh the
+/// `Bootstrap` — its other two groups write the env file and refresh the
 /// live session, which are one file and one session and contend with each
 /// other rather than with a manager's binary.
 fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
     match phase {
         PhaseName::Packages => true,
-        PhaseName::Prerequisites => owner.is_managers(),
+        PhaseName::Bootstrap => owner.is_managers(),
         _ => false,
     }
 }
@@ -792,7 +792,7 @@ pub(super) fn hash_sorted_parts(mut parts: Vec<String>) -> String {
 /// phase-equality semantics.
 ///
 /// `PhaseFilter::Selector(name, selector)` (the `<phase>.<selector>` grammar,
-/// e.g. `prerequisites.managers`) is stricter still: it never inherits the
+/// e.g. `bootstrap.managers`) is stricter still: it never inherits the
 /// post/pre-scripts cross-phase leak above, because a selector already names
 /// something narrower than a whole phase.
 pub fn action_matches_phase_filter(
@@ -825,12 +825,12 @@ pub fn action_matches_phase_filter(
 /// rather than through `Owner`, because every [`ManagerAction`] shares the
 /// single `cfgd:managers` owner — the manager identity lives on the action,
 /// not the owner. Sub-managers are already collapsed onto their family at
-/// plan time (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s
+/// plan time (`managers.rs`), so `bootstrap.brew` matching `brew-cask`'s
 /// plan node costs nothing extra here. `filter_subject` (not
 /// [`ManagerAction::manager`]) keys a prerequisite node on its TOOL rather
 /// than its installer, so this matcher agrees with `cfgd`'s own
 /// `action_path`/`pattern_matches_action` on which node
-/// `prerequisites.curl` reaches.
+/// `bootstrap.curl` reaches.
 fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
     if super::types::CFGD_GROUP_ORDER.contains(&selector) {
         return owner.kind == OwnerKind::Cfgd && owner.name == selector;
@@ -974,7 +974,7 @@ pub(super) fn merge_env_result(
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
         // `env:write:`/`env:inject:` result sits.
-        phase: PhaseName::Prerequisites.as_str().to_string(),
+        phase: PhaseName::Bootstrap.as_str().to_string(),
         description,
         success: true,
         error: None,
@@ -1184,7 +1184,7 @@ impl<'a> super::Reconciler<'a> {
         // `plan()` folds a to-be-provisioned manager's OWN declared dirs into
         // the Env phase's write (`managers::fold_provision_path_dirs`), so
         // this baseline must fold the SAME way against the SAME
-        // Prerequisites-phase Provision actions — otherwise it is a pre-run
+        // Bootstrap-phase Provision actions — otherwise it is a pre-run
         // snapshot missing every manager this run is about to bootstrap, and
         // the comparison below flags ordinary, successful provisioning as
         // drift.
@@ -1192,7 +1192,7 @@ impl<'a> super::Reconciler<'a> {
             self.registry,
             plan.phases
                 .iter()
-                .find(|phase| phase.name == PhaseName::Prerequisites)
+                .find(|phase| phase.name == PhaseName::Bootstrap)
                 .into_iter()
                 .flat_map(|phase| phase.actions()),
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions),
@@ -1287,7 +1287,7 @@ impl<'a> super::Reconciler<'a> {
                 subjects: &subjects,
             };
             // The concurrent actions of this phase — all of `Packages`, and the
-            // `cfgd:managers` group of `Prerequisites`, whose nodes are a DAG
+            // `cfgd:managers` group of `Bootstrap`, whose nodes are a DAG
             // over the same family lanes. The rest of the phase runs
             // sequentially AFTER them: `cfgd:env` publishes where the binaries
             // the managers group just created live, so producer precedes
@@ -1299,7 +1299,7 @@ impl<'a> super::Reconciler<'a> {
             // the serial half streams after it, so the phase reads in
             // `Owner::sort_key` order only while every lane group sorts above
             // every serial one. `Packages` hands everything to a lane and
-            // `Prerequisites` leads with `cfgd:managers`; a third partition
+            // `Bootstrap` leads with `cfgd:managers`; a third partition
             // that did not would print its groups out of order.
             debug_assert!(
                 lane_dispatch.iter().all(|(lane_owner, _, _)| {
@@ -1336,7 +1336,7 @@ impl<'a> super::Reconciler<'a> {
             let mut pre_script_stop: Option<String> = None;
 
             // The one owner every lane action of this phase belongs to, when
-            // there is one. `Prerequisites` always has one (`cfgd:managers`);
+            // there is one. `Bootstrap` always has one (`cfgd:managers`);
             // `Packages` has one per module plus the profile's.
             let mut lane_owners = lane_dispatch.iter().map(|(owner, _, _)| *owner);
             let sole_lane_owner = lane_owners
@@ -1456,7 +1456,7 @@ impl<'a> super::Reconciler<'a> {
                 );
                 // Committed HERE, not at phase close: whatever the phase does
                 // next renders below the live region, so the region has to be
-                // down first. `Prerequisites` is the phase that needs it — its
+                // down first. `Bootstrap` is the phase that needs it — its
                 // `cfgd:env` and `cfgd:session` groups run in the serial half
                 // below and stream their own lines, which would land ABOVE the
                 // managers group they follow if this waited.
@@ -1803,7 +1803,7 @@ impl<'a> super::Reconciler<'a> {
                                 .status(Role::Fail, "regenerate shell env files")
                                 .detail(e.to_string());
                             results.push(ActionResult {
-                                phase: PhaseName::Prerequisites.as_str().to_string(),
+                                phase: PhaseName::Bootstrap.as_str().to_string(),
                                 description: format!(
                                     "env:{}:regenerate",
                                     super::env_engine::ENV_VERB_WRITE

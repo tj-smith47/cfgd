@@ -11,7 +11,7 @@ Apply runs in a fixed phase order:
 
 1. **Modules**: modules skipped because they do not apply to this host (a `platform:` gate that excluded it), reported before any work starts
 2. **Pre-Scripts**: `preApply` or `preReconcile` hooks (context-dependent)
-3. **Prerequisites**: everything the run needs before it can install anything. Refresh the index of each package manager that keeps one, provision the managers that are missing (and install the tools their installers shell out to), then write env vars, shell aliases, and the PATH entries cfgd recorded as its own for a package manager (bootstrapped by cfgd, or a prefix cfgd created for it during an install) to `~/.cfgd.env`, and inject shell rc source lines
+3. **Bootstrap**: everything the run needs before it can install anything. Refresh the index of each package manager that keeps one, provision the managers that are missing (and install the tools their installers shell out to), then write env vars, shell aliases, and the PATH entries cfgd recorded as its own for a package manager (bootstrapped by cfgd, or a prefix cfgd created for it during an install) to `~/.cfgd.env`, and inject shell rc source lines
 4. **Packages**: install/uninstall across all package managers
 5. **Files**: copy, template, set permissions
 6. **System**: shell, macOS defaults, launch agents, systemd units, gsettings, kdeConfig, xfconf, environment, Windows registry, Windows services, sysctl, kernelModules, containerd, kubelet, apparmor, seccomp, certificates
@@ -42,7 +42,7 @@ read producer-before-consumer: `cfgd:managers` creates the binaries, `cfgd:env` 
 where they live, `cfgd:session` broadcasts it. **Execution order in `Packages` is
 deliberately not the displayed order**: module-owned package work runs first, then
 profile-owned package work, so a module's dependency is present before a module's own
-hooks need it. `Prerequisites` is the other exception: its `cfgd:managers` group is a
+hooks need it. `Bootstrap` is the other exception: its `cfgd:managers` group is a
 graph, described below. Everywhere else, execution follows the displayed order.
 
 Those three tiers are also a barrier: a tier starts only once every action in the tier
@@ -67,7 +67,7 @@ The concurrency bound is the number of distinct manager families with work in th
 There is nothing to tune: a machine that declares only `brew` packages still runs one
 `brew` at a time, and one that declares `brew`, `apt` and `cargo` runs three.
 
-Index refreshes and manager provisioning are actions in the `Prerequisites` phase, named in
+Index refreshes and manager provisioning are actions in the `Bootstrap` phase, named in
 the plan and reported where they ran; see [packages.md](packages.md#index-refresh). A run
 that filters that phase out does not refresh behind your back: the refresh belongs to the
 phase you excluded, and a run narrowed some other way (a per-module daemon tick, a
@@ -91,7 +91,7 @@ then changes state in place (waiting, running with its command's output beneath 
 settled) without ever moving.
 
 ```text
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh apt index                       (9.5s)
     ⠹ provision brew via homebrew installer
@@ -139,17 +139,17 @@ writes its tree in plan order when it closes.
 Each phase can be applied independently with `cfgd apply --phase <name>`; `--phase modules`
 selects every module-owned action in every phase. A phase-scoped apply only touches the
 surfaces that phase owns: manager provisioning and index refresh both belong to the
-`Prerequisites` phase, so `--phase packages` performs no manager work at all: an install
+`Bootstrap` phase, so `--phase packages` performs no manager work at all: an install
 whose manager is not yet available is reported as blocked on it rather than bootstrapping
 it on the spot.
 
 A full apply needs no second run for that: the plan already folds a to-be-provisioned manager's
-declared PATH directories into the `Prerequisites` phase's `~/.cfgd.env` write, so for most
+declared PATH directories into the `Bootstrap` phase's `~/.cfgd.env` write, so for most
 managers the file is correct before `Packages` even runs. The one manager whose install location
 is only knowable once its bootstrap finishes (npm's global prefix) still converges inside the same
 apply: cfgd re-derives the file once every phase completes and the real directory is recorded.
 
-**What a `postApply` script sees in the env files.** The `Prerequisites` phase runs long before
+**What a `postApply` script sees in the env files.** The `Bootstrap` phase runs long before
 `Post-Scripts`, so every `spec.env` value cfgd could resolve up front is already in `~/.cfgd.env`
 when a post-script reads it. The re-derivation described above is the exception: it runs after
 *every* phase, `Post-Scripts` included, because its two inputs only exist once the phases have run
@@ -182,9 +182,9 @@ Plan
   Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Prerequisites, Packages, Files, System, Post-Scripts
+  Phases   Bootstrap, Packages, Files, System, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
     - provision nix via nix installer
@@ -231,39 +231,41 @@ installs, then `module:nvim`. Execution reverses those two (see the note above).
 ```sh
 cfgd apply --phase packages              # single phase
 cfgd apply --phase modules               # every module-owned action, in every phase
-cfgd apply --phase prerequisites.managers  # one owner group within a phase
+cfgd apply --phase bootstrap.managers  # one owner group within a phase
 cfgd apply --module nvim                 # nvim + deps, isolated from the profile
 cfgd apply --module nvim --with-profile  # full profile PLUS nvim
 cfgd apply --only packages.brew          # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim   # a module's package work
 cfgd apply --skip module:nvim            # one module, every phase
 cfgd apply --skip cfgd:managers          # every index refresh and manager cfgd provisions
-cfgd apply --skip prerequisites.session  # skip the live-session broadcast
-cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
+cfgd apply --skip bootstrap.session  # skip the live-session broadcast
+cfgd apply --skip bootstrap.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl          # skip specific items
 ```
 
 The owner segment (`module:nvim`) is what keeps a module named `brew` distinct from the
 `brew` package manager: `--only packages.brew` selects the manager, `--only
 packages.module:brew` selects the module. The pre-routing spellings `modules` and
-`modules.<name>` still work and print a deprecation naming their replacement.
+`modules.<name>` still work and print a deprecation naming their replacement, as do
+the phase's earlier spellings, `prerequisites` and `env`, which both still select
+`bootstrap`.
 
 `--phase`/`--skip`/`--only` also take the dotted grammar one level up, scoped to a
 single phase: `<phase>.<selector>`, where the selector names an owner group
-(`managers`, `env`, `session`: the three `Prerequisites` always carries), a
-manager (family-collapsed, so `prerequisites.brew` also covers `brew-tap`/`brew-cask`,
+(`managers`, `env`, `session`: the three `Bootstrap` always carries), a
+manager (family-collapsed, so `bootstrap.brew` also covers `brew-tap`/`brew-cask`,
 but never a prerequisite tool a manager's installer merely depends on), or that
-tool itself: `curl` is keyed on its own name, `prerequisites.curl`, not on
+tool itself: `curl` is keyed on its own name, `bootstrap.curl`, not on
 whichever manager needed it.
-`prerequisites.managers` is the whole-group equivalent of `cfgd:managers`, scoped to
+`bootstrap.managers` is the whole-group equivalent of `cfgd:managers`, scoped to
 that one phase. Managers one mediator delivers by an ordinary package install share
 a single node (`provision npm, pipx via apt`), and a manager selector still names
-exactly one of them: `--skip prerequisites.npm` leaves `provision pipx via apt`
-behind, `--phase prerequisites.pipx` provisions `pipx` alone. A selector is only valid scoped to `prerequisites`; naming one after
+exactly one of them: `--skip bootstrap.npm` leaves `provision pipx via apt`
+behind, `--phase bootstrap.pipx` provisions `pipx` alone. A selector is only valid scoped to `bootstrap`; naming one after
 any other phase (`--phase packages.brew`) errors rather than silently matching
 nothing, and points at the phase the selector actually belongs to.
 
-Skipping a manager's bootstrap (`prerequisites.managers`, `prerequisites.brew`,
+Skipping a manager's bootstrap (`bootstrap.managers`, `bootstrap.brew`,
 `cfgd:managers`) leaves the installs that needed a provisioned manager in the plan:
 cfgd cannot drop those on your behalf, so it strands them, warns, and prints the
 `--skip packages.<manager>` flags that would drop them too. A prerequisite tool that
@@ -273,7 +275,7 @@ manager prunes that manager's now-purposeless bootstrap node with no warning, si
 nothing in the plan needs it anymore.
 
 `--only` never prunes for lack of consumers, in either case above: an `--only`
-selector is explicit selection, so `--only prerequisites.managers` (the recovery
+selector is explicit selection, so `--only bootstrap.managers` (the recovery
 command the stranding warning itself prints) keeps every manager bootstrap node
 even though it empties `Packages` of every install that used to justify them. The
 consumer-prune is a `--skip`-side behavior only.

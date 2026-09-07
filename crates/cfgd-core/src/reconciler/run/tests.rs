@@ -726,7 +726,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     skipped_that_ran.skipped = true;
     result.action_results.push(skipped_that_ran);
     result.action_results.push(ActionResult {
-        phase: "prerequisites".to_string(),
+        phase: "bootstrap".to_string(),
         description: "env:refresh".to_string(),
         success: true,
         error: None,
@@ -867,7 +867,7 @@ fn apply_result_tally_reads_the_reconcilers_planned_total() {
 fn report_align_width_spans_every_phase() {
     let wide = plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![install("apt", &["a-very-long-package-name-indeed"])],
         ),
         phase(
@@ -876,7 +876,7 @@ fn report_align_width_spans_every_phase() {
         ),
     ]);
     let narrow = plan_of(vec![
-        phase(PhaseName::Prerequisites, vec![install("apt", &["sl"])]),
+        phase(PhaseName::Bootstrap, vec![install("apt", &["sl"])]),
         phase(
             PhaseName::Packages,
             vec![module_install("nvim", "brew", "neovim")],
@@ -936,7 +936,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     // A far longer sibling in the SAME report, so the column the short rows
     // pad to is one their own width would never have produced.
     let plan = plan_of(vec![phase(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![
             write_env,
             deploy,
@@ -970,7 +970,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     // executed line commits, under a report that claimed the same column.
     let settled = dash_column(&|printer| {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("cfgd", "env"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1034,7 +1034,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     let previewed_child = child_dash_column(&|printer| render_plan_tree(&plan, None, printer));
     let settled_child = child_dash_column(&|printer| {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1068,7 +1068,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
 fn report_align_width_ignores_a_filtered_out_phase() {
     let plan = plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![install("apt", &["a-very-long-package-name-indeed"])],
         ),
         phase(PhaseName::Files, vec![create("dotfile")]),
@@ -1650,14 +1650,14 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
 
     // The plan tree's arm, reached the way `render_plan_tree` reaches it.
     let planned = line(&|printer| {
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
         owner.action_status(Role::Skipped, subject).detail(reason);
     });
     // The apply tree's arm: the outcome `settle_action` records for the same
     // action, through the writer that commits every settled line.
     let settled = line(&|printer| {
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
         super::super::apply::emit_action_line(
             printer,
@@ -1718,7 +1718,7 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     // children pad to is one the deploy row's own six-character subject
     // would never have produced.
     let plan = plan_of(vec![phase(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![deploy, install("apt", &["a-very-long-package-name-indeed"])],
     )]);
     let width = report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW);
@@ -1751,7 +1751,7 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1852,7 +1852,7 @@ fn a_one_file_deploy_still_enumerates_its_single_child() {
         "a one-file deploy still states a count, never the bare target"
     );
 
-    let plan = plan_of(vec![phase(PhaseName::Prerequisites, vec![deploy])]);
+    let plan = plan_of(vec![phase(PhaseName::Bootstrap, vec![deploy])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_plan_tree(&plan, None, &printer);
     drop(printer);
@@ -2299,7 +2299,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
         aliases: 1,
     });
     let plan = plan_of(vec![
-        phase(PhaseName::Prerequisites, vec![env]),
+        phase(PhaseName::Bootstrap, vec![env]),
         phase(PhaseName::Files, vec![deploy]),
     ]);
 
@@ -2580,7 +2580,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
     });
     plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(crate::reconciler::ManagerAction::RefreshIndex {
                     manager: "apt".to_string(),

@@ -124,7 +124,7 @@ cfgd apply --dry-run                # preview without applying
 cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
 cfgd apply --phase modules          # every module-owned action, in every phase
-cfgd apply --phase prerequisites.managers  # one owner group within a phase
+cfgd apply --phase bootstrap.managers  # one owner group within a phase
 cfgd apply --module nvim            # nvim + deps, isolated from the profile
 cfgd apply --module nvim --module tmux   # union of both, still isolated
 cfgd apply --module nvim --with-profile  # full profile PLUS nvim
@@ -132,8 +132,8 @@ cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
 cfgd apply --skip module:nvim       # one module, every phase
 cfgd apply --skip cfgd:managers     # every package-manager bootstrap
-cfgd apply --skip prerequisites.session  # skip the live-session broadcast
-cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
+cfgd apply --skip bootstrap.session  # skip the live-session broadcast
+cfgd apply --skip bootstrap.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl     # skip specific items
 cfgd apply --skip-scripts           # apply without running any hooks
 cfgd apply --yes --on-conflict backup    # copy every stranger aside, then write
@@ -225,8 +225,8 @@ cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # nvim + deps, isolated from the profile
 cfgd plan --module nvim --with-profile  # full profile PLUS nvim
-cfgd plan --phase prerequisites.managers  # one owner group within a phase
-cfgd plan --skip prerequisites.session  # skip the live-session broadcast
+cfgd plan --phase bootstrap.managers  # one owner group within a phase
+cfgd plan --skip bootstrap.session  # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
 ```
@@ -260,9 +260,9 @@ Plan
   Sources  team
   Profile  work
   Modules  dev-tools, localmod
-  Phases   Prerequisites, Packages, Post-Scripts
+  Phases   Bootstrap, Packages, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
 
@@ -295,33 +295,35 @@ the `brew` package manager never collide:
 
 `--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
 scoped to a single phase: `<phase>.<selector>`, where the selector is either
-an owner group (`managers`, `env`, `session`: the three `Prerequisites`
-always carries), a manager name (family-collapsed, so `prerequisites.brew`
+an owner group (`managers`, `env`, `session`: the three `Bootstrap`
+always carries), a manager name (family-collapsed, so `bootstrap.brew`
 also covers `brew-tap`/`brew-cask`), or a prerequisite tool a registered
-manager's installer shells out to (`prerequisites.curl`). A selector is only valid on
-`prerequisites`: a group or manager name after any other phase errors,
+manager's installer shells out to (`bootstrap.curl`). A selector is only valid on
+`bootstrap`: a group or manager name after any other phase errors,
 naming the input and the legal shapes; `--phase packages.brew` errors
-pointing at `--phase prerequisites.brew` instead, since manager work lives in
-`Prerequisites`, not `Packages`:
+pointing at `--phase bootstrap.brew` instead, since manager work lives in
+`Bootstrap`, not `Packages`:
 
 | Pattern | Selects |
 |---|---|
-| `prerequisites.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
-| `prerequisites.env` | the `~/.cfgd.env`/rc-file write group |
-| `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
-| `prerequisites.brew` | only the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`prerequisites.curl`) rather than on whichever manager's installer happens to need it |
+| `bootstrap.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Bootstrap`) |
+| `bootstrap.env` | the `~/.cfgd.env`/rc-file write group |
+| `bootstrap.session` | the live-session broadcast (`RefreshLiveSession`) |
+| `bootstrap.brew` | only the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`bootstrap.curl`) rather than on whichever manager's installer happens to need it |
 
 A manager name still selects exactly one manager when several share a node.
 Managers one mediator delivers by an ordinary package install collapse onto a
 single node (`provision npm, pipx via apt`; see
 [Package Managers](packages.md)), and every selector still addresses them one
-at a time: `--skip prerequisites.npm` leaves `provision pipx via apt` behind,
-and `--phase prerequisites.pipx` provisions `pipx` alone.
+at a time: `--skip bootstrap.npm` leaves `provision pipx via apt` behind,
+and `--phase bootstrap.pipx` provisions `pipx` alone.
 
 `modules` and `modules.<name>` still work and print a deprecation naming their
-replacement.
+replacement. So do the phase's earlier spellings, `prerequisites` and `env`:
+both still select `bootstrap`, on `--phase`, `--skip` and `--only` alike, and
+each says once per run that it is on the way out.
 
-Skipping a manager's **bootstrap** (`prerequisites.managers`, `prerequisites.brew`,
+Skipping a manager's **bootstrap** (`bootstrap.managers`, `bootstrap.brew`,
 `cfgd:managers`) leaves the package installs that needed it in the plan:
 `cfgd` cannot know whether you meant to drop those too, so it strands them,
 warns with `printer.alert(...)`, and prints the `--skip packages.<manager>`
@@ -334,13 +336,13 @@ package left), silently prunes that manager's now-purposeless bootstrap node
 instead: nothing in the plan needs it anymore, so there is nothing to warn
 about.
 
-**`--only` never prunes for lack of consumers.** `--only prerequisites.managers`
+**`--only` never prunes for lack of consumers.** `--only bootstrap.managers`
 (the recovery command the alert above prints) keeps every manager bootstrap
 node even though it drops every package install that used to justify them:
 an `--only` selector is explicit selection, and a node you named directly is
 its own justification. The consumer-prune described above applies to the
 `--skip` direction alone; `--only cfgd:managers` and `--only
-prerequisites.managers` both keep the full manager set with an empty
+bootstrap.managers` both keep the full manager set with an empty
 `Packages` phase, never an empty plan.
 
 The `-o json` payload carries the same axes the tree draws: a phase holds owner
@@ -386,7 +388,7 @@ A subset counts against the module's declared set (`5 already deployed`); a
 full deploy carries no count at all, its subject already stating how many it
 writes.
 
-A `Prerequisites` action carries a structured `manager` sub-object beside its
+A `Bootstrap` action carries a structured `manager` sub-object beside its
 `description`, so a consumer classifies a manager's state without parsing the
 sentence: `state` is `present` (an already-installed manager's index refresh),
 `provisioned` (a manager this run installs, `via` naming its bootstrap method),
@@ -398,9 +400,9 @@ decided, so `-o json` carries it rather than dropping it silently).
 resolving one-to-one against a sibling action's own `description`:
 
 ```jsonc
-// cfgd plan -o json  →  phases[] entry for Prerequisites
+// cfgd plan -o json  →  phases[] entry for Bootstrap
 {
-  "phase": "Prerequisites",
+  "phase": "Bootstrap",
   "groups": [
     {
       "owner": { "kind": "cfgd", "name": "managers" },
@@ -963,7 +965,7 @@ closing tally counts only the rows the report showed.
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse: not something the profile declared missing, but something `apply` would
-still change. It draws from the same planner the `Prerequisites` phase uses (see
+still change. It draws from the same planner the `Bootstrap` phase uses (see
 [Reconciliation](reconciliation.md#phases)), so a manager never reads
 "converged" here while `apply` still has work to do on it. A manager `apply` can
 self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
@@ -994,7 +996,7 @@ Every file entry also carries `unmanaged` (a bool): `true` when the target holds
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
 
-`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `outdated` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "outdated"` is a package the machine HOLDS whose installed version is below the `minVersion` its declaration pins; it adds `expected` (the declared floor) and `actual` (the version the manager reports). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `outdated` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "outdated"` is a package the machine HOLDS whose installed version is below the `minVersion` its declaration pins; it adds `expected` (the declared floor) and `actual` (the version the manager reports). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Bootstrap` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
 
 ```json
 {

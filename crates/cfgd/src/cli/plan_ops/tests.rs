@@ -548,14 +548,14 @@ fn action_path_module() {
 
 #[test]
 fn action_path_env_write() {
-    let path = action_path(&PhaseName::Prerequisites, &env_write());
-    assert_eq!(path, "prerequisites:/home/user/.cfgd.env");
+    let path = action_path(&PhaseName::Bootstrap, &env_write());
+    assert_eq!(path, "bootstrap:/home/user/.cfgd.env");
 }
 
 #[test]
 fn action_path_env_inject() {
-    let path = action_path(&PhaseName::Prerequisites, &env_inject());
-    assert_eq!(path, "prerequisites:/home/user/.zshrc");
+    let path = action_path(&PhaseName::Bootstrap, &env_inject());
+    assert_eq!(path, "bootstrap:/home/user/.zshrc");
 }
 
 /// `action_path` keys a Prerequisite node on its TOOL (`curl`), not its
@@ -570,14 +570,14 @@ fn action_path_manager_prerequisite_keys_on_its_tool_not_its_installer() {
         required_by: vec!["brew".to_string()],
         depends_on: vec![],
     });
-    let path = action_path(&PhaseName::Prerequisites, &prereq);
+    let path = action_path(&PhaseName::Bootstrap, &prereq);
     assert_eq!(
-        path, "prerequisites.curl",
+        path, "bootstrap.curl",
         "a prerequisite's path names the tool, not the installer that provisions it"
     );
 }
 
-/// The four `--phase`/`--skip` × `prerequisites.brew`/`prerequisites.curl`
+/// The four `--phase`/`--skip` × `bootstrap.brew`/`bootstrap.curl`
 /// combinations for a curl-via-brew prerequisite node: only the TOOL spelling
 /// reaches it under either flag, and the installer spelling reaches brew's
 /// own provision node instead.
@@ -590,15 +590,15 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
         required_by: vec!["brew".to_string()],
         depends_on: vec![],
     });
-    let prereq_path = action_path(&PhaseName::Prerequisites, &prereq);
+    let prereq_path = action_path(&PhaseName::Bootstrap, &prereq);
 
     assert!(
-        pattern_matches_action("prerequisites.curl", &managers_owner, &prereq_path),
-        "`prerequisites.curl` (the tool) must reach the prerequisite node"
+        pattern_matches_action("bootstrap.curl", &managers_owner, &prereq_path),
+        "`bootstrap.curl` (the tool) must reach the prerequisite node"
     );
     assert!(
-        !pattern_matches_action("prerequisites.brew", &managers_owner, &prereq_path),
-        "`prerequisites.brew` (the installer) must NOT reach the prerequisite node — \
+        !pattern_matches_action("bootstrap.brew", &managers_owner, &prereq_path),
+        "`bootstrap.brew` (the installer) must NOT reach the prerequisite node — \
          it names brew's own provision, a different plan node"
     );
 
@@ -609,15 +609,15 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
         batched: vec![],
         depends_on: vec![],
     });
-    let provision_path = action_path(&PhaseName::Prerequisites, &brew_provision);
+    let provision_path = action_path(&PhaseName::Bootstrap, &brew_provision);
 
     assert!(
-        pattern_matches_action("prerequisites.brew", &managers_owner, &provision_path),
-        "`prerequisites.brew` must still reach brew's own provision node"
+        pattern_matches_action("bootstrap.brew", &managers_owner, &provision_path),
+        "`bootstrap.brew` must still reach brew's own provision node"
     );
     assert!(
-        !pattern_matches_action("prerequisites.curl", &managers_owner, &provision_path),
-        "`prerequisites.curl` must not reach brew's provision node"
+        !pattern_matches_action("bootstrap.curl", &managers_owner, &provision_path),
+        "`bootstrap.curl` must not reach brew's provision node"
     );
 }
 
@@ -709,7 +709,7 @@ fn filter_plan_skip_removes_matching_file_actions() {
 #[test]
 fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_out() {
     let mut plan = make_plan(vec![
-        (PhaseName::Prerequisites, vec![env_write(), env_inject()]),
+        (PhaseName::Bootstrap, vec![env_write(), env_inject()]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
     let (printer, buf) = Printer::for_test();
@@ -726,10 +726,7 @@ fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_ou
     let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        !plan
-            .phases
-            .iter()
-            .any(|p| p.name == PhaseName::Prerequisites),
+        !plan.phases.iter().any(|p| p.name == PhaseName::Bootstrap),
         "the pre-merge spelling must still select the phase it always selected: {:?}",
         plan.phases
     );
@@ -739,14 +736,14 @@ fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_ou
         plan.phases
     );
     assert!(
-        out.contains("`--skip env` is deprecated") && out.contains("--skip prerequisites"),
+        out.contains("`--skip env` is deprecated") && out.contains("--skip bootstrap"),
         "the notice must name both the spelling and its replacement:\n{out}"
     );
 }
 
 #[test]
 fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
-    let mut plan = make_plan(vec![(PhaseName::Prerequisites, vec![env_write()])]);
+    let mut plan = make_plan(vec![(PhaseName::Bootstrap, vec![env_write()])]);
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
@@ -776,7 +773,7 @@ fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
 fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
     make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
@@ -807,12 +804,12 @@ fn provision_lines(plan: &cfgd_core::reconciler::Plan) -> Vec<String> {
 #[test]
 fn skipping_one_manager_of_a_batch_leaves_the_others_provisioned() {
     // The whole point of per-member filtering: a batch is a saved command, not
-    // a package deal. `--skip prerequisites.npm` must not take pipx with it.
+    // a package deal. `--skip bootstrap.npm` must not take pipx with it.
     let mut plan = batched_provision_plan();
     let (printer, _buf) = Printer::for_test();
     filter_plan(
         &mut plan,
-        &["prerequisites.npm".to_string()],
+        &["bootstrap.npm".to_string()],
         &[],
         None,
         &printer,
@@ -838,7 +835,7 @@ fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
         &[],
         &[],
         Some(&cfgd_core::reconciler::PhaseFilter::Selector(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             "pipx".to_string(),
         )),
         &printer,
@@ -875,7 +872,7 @@ fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
 fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_it() {
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
@@ -889,7 +886,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
-        &["prerequisites".to_string()],
+        &["bootstrap".to_string()],
         &[],
         None,
         &printer,
@@ -900,15 +897,15 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
     let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        out.contains("`--skip prerequisites` removes 1 bootstrap")
+        out.contains("`--skip bootstrap` removes 1 bootstrap")
             && out.contains("--skip packages.brew"),
         "dropping the node that would have installed brew must name the work it strands:\n{out}"
     );
 }
 
 #[test]
-fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands_nothing() {
-    // The dotted group-selector grammar (`prerequisites.session`) reaches the
+fn filter_plan_skip_bootstrap_session_removes_only_the_broadcast_and_strands_nothing() {
+    // The dotted group-selector grammar (`bootstrap.session`) reaches the
     // cfgd:session owner group by name via `phase_qualified_group_owner_token`
     // — a colon-joined `Action::Env` path never matches this pattern literally,
     // so this pins the alias rather than the fallback literal match. The
@@ -919,7 +916,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
     // mechanism unrelated to the `.session` selector it actually exercises.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
@@ -937,7 +934,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
-        &["prerequisites.session".to_string()],
+        &["bootstrap.session".to_string()],
         &[],
         None,
         &printer,
@@ -950,7 +947,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
     let prereq_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Prerequisites)
+        .find(|p| p.name == PhaseName::Bootstrap)
         .unwrap();
     let remaining: Vec<&Action> = prereq_phase.actions().collect();
     assert_eq!(
@@ -971,7 +968,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
 }
 
 #[test]
-fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
+fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
     // The group-selector grammar reaches the WHOLE cfgd:managers owner group —
     // every registered manager's node — not one manager at a time, and each
     // BOOTSTRAP (`Provision`) it takes down strands its own consumers. Both
@@ -982,7 +979,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
     // needs no warning that it will still be there.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
@@ -1011,7 +1008,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
-        &["prerequisites.managers".to_string()],
+        &["bootstrap.managers".to_string()],
         &[],
         None,
         &printer,
@@ -1022,15 +1019,12 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
     let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        !plan
-            .phases
-            .iter()
-            .any(|p| p.name == PhaseName::Prerequisites),
+        !plan.phases.iter().any(|p| p.name == PhaseName::Bootstrap),
         "both manager nodes should be gone, emptying the phase: {:?}",
         plan.phases
     );
     assert!(
-        out.contains("`--skip prerequisites.managers` removes 2 bootstraps")
+        out.contains("`--skip bootstrap.managers` removes 2 bootstraps")
             && out.contains("--skip packages.brew")
             && out.contains("--skip packages.npm"),
         "the alert must name both stranded managers:\n{out}"
@@ -1038,14 +1032,14 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
 }
 
 #[test]
-fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
+fn filter_plan_skip_bootstrap_brew_leaves_other_managers_untouched() {
     // The literal manager-name selector already worked with zero new code,
     // because `action_path` for a Manager node was already dot-joined as
     // `<phase>.<manager>` and sub-managers are family-collapsed at plan time.
     // Pinned here as a regression guard for the dotted grammar's manager arm.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
@@ -1070,7 +1064,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,
-        &["prerequisites.brew".to_string()],
+        &["bootstrap.brew".to_string()],
         &[],
         None,
         &printer,
@@ -1083,7 +1077,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
     let prereq_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Prerequisites)
+        .find(|p| p.name == PhaseName::Bootstrap)
         .unwrap();
     let remaining: Vec<&Action> = prereq_phase.actions().collect();
     assert_eq!(
@@ -1099,7 +1093,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
         "the surviving node must be npm's: {remaining:?}"
     );
     assert!(
-        out.contains("`--skip prerequisites.brew` removes 1 bootstrap")
+        out.contains("`--skip bootstrap.brew` removes 1 bootstrap")
             && out.contains("--skip packages.brew")
             && !out.contains("--skip packages.npm"),
         "the alert must name only the manager the pattern actually removed:\n{out}"
@@ -1115,7 +1109,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
     // stranding the user needs to be told about.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
@@ -1191,8 +1185,8 @@ fn filter_plan_only_keeps_matching_actions() {
 }
 
 #[test]
-fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
-    // `--only prerequisites.managers` (the docs' own recovery command for a
+fn filter_plan_only_bootstrap_managers_keeps_every_manager_node() {
+    // `--only bootstrap.managers` (the docs' own recovery command for a
     // stranded-install alert) drops every package install — none of them
     // matches the selector — which would leave zero surviving consumers for
     // either manager. Proves the fix for finding 1: `prune_to_surviving_consumers`
@@ -1200,7 +1194,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
     // asked to keep are deleted for having no consumers left.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
@@ -1225,7 +1219,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
     filter_plan(
         &mut plan,
         &[],
-        &["prerequisites.managers".to_string()],
+        &["bootstrap.managers".to_string()],
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
@@ -1235,12 +1229,12 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
     let prereq_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Prerequisites)
-        .expect("both manager nodes must survive; the Prerequisites phase must not be dropped");
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .expect("both manager nodes must survive; the Bootstrap phase must not be dropped");
     assert_eq!(
         prereq_phase.action_count(),
         2,
-        "both manager nodes must survive `--only prerequisites.managers` even \
+        "both manager nodes must survive `--only bootstrap.managers` even \
          though every package consumer fell out of scope: {:?}",
         prereq_phase.actions().collect::<Vec<_>>()
     );
@@ -1254,7 +1248,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
 #[test]
 fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
     // `--only cfgd:managers` is the OWNER-group spelling of the same
-    // recovery command `prerequisites.managers` covers, but it reaches the
+    // recovery command `bootstrap.managers` covers, but it reaches the
     // action through `pattern_matches_action`'s first rule (`owner.token()
     // == pattern`) rather than the phase-qualified group alias
     // (`phase_qualified_group_owner_token`) the dotted form uses — a
@@ -1263,7 +1257,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
     // non-empty, whichever grammar named the managers group.
     let mut plan = make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
@@ -1298,8 +1292,8 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
     let prereq_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Prerequisites)
-        .expect("both manager nodes must survive; the Prerequisites phase must not be dropped");
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .expect("both manager nodes must survive; the Bootstrap phase must not be dropped");
     assert_eq!(
         prereq_phase.action_count(),
         2,
@@ -1861,7 +1855,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
     // `phases[]` gains a `managers` phase object with one group,
     // `cfgd:managers`, whose actions carry `{manager, state, via, requires}`.
     let plan = make_plan(vec![(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![
             Action::Manager(ManagerAction::RefreshIndex {
                 manager: "brew".to_string(),
@@ -3532,14 +3526,14 @@ impl cfgd_core::providers::PackageManager for AvailableManager {
     }
 }
 
-/// The plan the stranded-install warning is derived from: one Prerequisites
+/// The plan the stranded-install warning is derived from: one Bootstrap
 /// provision plus two Packages installs that need the manager it would have
 /// provided, one of them through a sub-manager that has no provision of its
 /// own.
 fn brew_provision_plan() -> Plan {
     make_plan(vec![
         (
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
@@ -3805,7 +3799,7 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
     // `pattern_matches`' segment boundary means `packages.brew` never covers
     // `packages.brew-tap`, so the tap install survives its parent's removal —
     // and the pattern can never reach the shared provision node at all, since
-    // that node lives in `Prerequisites`, not `Packages`. Nothing is stranded:
+    // that node lives in `Bootstrap`, not `Packages`. Nothing is stranded:
     // the manager stays provisioned and brew-tap applies normally.
     let mut plan = brew_provision_plan();
     let (printer, buf) = Printer::for_test();
@@ -3843,7 +3837,7 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
     );
     assert!(
         out.is_empty(),
-        "the provision node lives in Prerequisites, untouched by a \
+        "the provision node lives in Bootstrap, untouched by a \
          `packages.*` pattern, so nothing is stranded: {out}"
     );
 }
@@ -3983,7 +3977,7 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
     );
 
     let plan = make_plan(vec![(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![
             Action::Env(EnvAction::RefreshLiveSession {
                 vars: vec![("EDITOR".to_string(), "nvim".to_string())],

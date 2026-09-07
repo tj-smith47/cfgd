@@ -23,7 +23,7 @@ pub enum PhaseName {
     /// file that publishes where their binaries live (`cfgd:env`), and the live
     /// session broadcast (`cfgd:session`) — in that producer-before-consumer
     /// order.
-    Prerequisites,
+    Bootstrap,
     Modules,
     Packages,
     System,
@@ -36,7 +36,7 @@ impl PhaseName {
     pub fn as_str(&self) -> &str {
         match self {
             PhaseName::PreScripts => "pre-scripts",
-            PhaseName::Prerequisites => "prerequisites",
+            PhaseName::Bootstrap => "bootstrap",
             PhaseName::Modules => "modules",
             PhaseName::Packages => "packages",
             PhaseName::System => "system",
@@ -49,7 +49,7 @@ impl PhaseName {
     pub fn display_name(&self) -> &str {
         match self {
             PhaseName::PreScripts => "Pre-Scripts",
-            PhaseName::Prerequisites => "Prerequisites",
+            PhaseName::Bootstrap => "Bootstrap",
             PhaseName::Modules => "Modules",
             PhaseName::Packages => "Packages",
             PhaseName::System => "System",
@@ -79,10 +79,11 @@ impl FromStr for PhaseName {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "pre-scripts" => Ok(PhaseName::PreScripts),
-            // `env` is the phase's pre-merge spelling: it now names the
-            // `cfgd:env` group of a wider phase, and a filter written against
-            // it still selects the phase that holds that work.
-            "prerequisites" | "env" => Ok(PhaseName::Prerequisites),
+            // `prerequisites` and `env` are the phase's earlier spellings:
+            // `env` named only the `cfgd:env` group a wider phase now holds,
+            // and a filter written against either still selects the phase that
+            // holds that work.
+            "bootstrap" | "prerequisites" | "env" => Ok(PhaseName::Bootstrap),
             "modules" => Ok(PhaseName::Modules),
             "system" => Ok(PhaseName::System),
             "packages" => Ok(PhaseName::Packages),
@@ -130,7 +131,7 @@ pub enum EnvAction {
 }
 
 /// Work on a package manager itself, rather than on a package: the
-/// `cfgd:managers` owner group of the [`PhaseName::Prerequisites`] phase.
+/// `cfgd:managers` owner group of the [`PhaseName::Bootstrap`] phase.
 ///
 /// The group is a DAG, not a list. Each node carries the ids of the nodes it
 /// must follow ([`ManagerAction::depends_on`]), so a scheduler reads the edges
@@ -351,8 +352,8 @@ impl ManagerAction {
     /// needs, while this one answers "what does the user see in the tree"
     /// (`manager:prereq:curl` — the subject is the tool, not brew's name
     /// merely because brew happens to be the installer). Both this crate's
-    /// `action_matches_phase_filter` (`--phase prerequisites.curl`) and the
-    /// `cfgd` binary's `action_path` (`--skip prerequisites.curl`) key on this
+    /// `action_matches_phase_filter` (`--phase bootstrap.curl`) and the
+    /// `cfgd` binary's `action_path` (`--skip bootstrap.curl`) key on this
     /// so the two matchers can never disagree about which node a selector
     /// reaches.
     pub fn filter_subject(&self) -> &str {
@@ -603,8 +604,8 @@ pub enum PhaseFilter {
     Phase(PhaseName),
     ModuleOwners,
     /// `<phase>.<selector>` — one cfgd-owned group (`managers`/`env`/`session`)
-    /// or one manager, scoped to `PhaseName` (`prerequisites.managers`,
-    /// `prerequisites.brew`). Resolved by [`crate::reconciler::action_matches_phase_filter`];
+    /// or one manager, scoped to `PhaseName` (`bootstrap.managers`,
+    /// `bootstrap.brew`). Resolved by [`crate::reconciler::action_matches_phase_filter`];
     /// `ModuleOwners` never carries a selector because it already spans every
     /// phase module work can land in, so nothing single-phase to scope it to.
     Selector(PhaseName, String),
@@ -678,7 +679,7 @@ impl OwnerKind {
 /// meaning to order by, so those still sort by name.
 ///
 /// `pub`, not `pub(super)`: the CLI's `--phase`/`--skip`/`--only` dotted
-/// grammar (`prerequisites.managers`/`.env`/`.session`) and its selector
+/// grammar (`bootstrap.managers`/`.env`/`.session`) and its selector
 /// validation both read this list rather than minting their own copy of it —
 /// two copies is how the group vocabulary drifted between `--phase` (via
 /// `reconciler::action_matches_phase_filter`) and `--skip`/`--only` (via
@@ -1079,7 +1080,7 @@ pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usi
 /// Two surfaces read this and they must not disagree: the dispatch order
 /// ([`Phase::dispatch_order`]) partitions the phase by it, and the dispatcher
 /// releases a tier only once the tier above it has *completed*. Manager
-/// provisioning is a `Prerequisites`-phase [`ManagerAction`] node now, ahead
+/// provisioning is a `Bootstrap`-phase [`ManagerAction`] node now, ahead
 /// of the whole `Packages` phase, so nothing in this phase blocks on a
 /// same-phase bootstrap any more — module work still runs first because a
 /// profile install may consume a package a module just installed.
@@ -1807,9 +1808,16 @@ mod tests {
     #[test]
     fn phase_name_from_str_round_trips() {
         assert_eq!(
-            "env".parse::<PhaseName>().unwrap(),
-            PhaseName::Prerequisites
+            "bootstrap".parse::<PhaseName>().unwrap(),
+            PhaseName::Bootstrap
         );
+        // Both earlier spellings still resolve to the phase that holds their
+        // work, so a stored `phase` column written under either reads back.
+        assert_eq!(
+            "prerequisites".parse::<PhaseName>().unwrap(),
+            PhaseName::Bootstrap
+        );
+        assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Bootstrap);
         assert_eq!("files".parse::<PhaseName>().unwrap(), PhaseName::Files);
         assert_eq!(
             "packages".parse::<PhaseName>().unwrap(),

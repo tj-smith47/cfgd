@@ -413,7 +413,7 @@ Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Sources  acme-corp
   Profile  default
-  Phases   Prerequisites, Packages
+  Phases   Bootstrap, Packages
 
 Pending Decisions (1 item, not included in this plan)
   source:acme-corp
@@ -421,7 +421,7 @@ Pending Decisions (1 item, not included in this plan)
   → Answer each pending decision:
     $ cfgd decide [accept|reject] <resource>
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
 

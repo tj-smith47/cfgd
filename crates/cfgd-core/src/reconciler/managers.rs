@@ -1,4 +1,4 @@
-//! The `cfgd:managers` owner group of the `Prerequisites` phase: one node per
+//! The `cfgd:managers` owner group of the `Bootstrap` phase: one node per
 //! package manager the run's own work depends on, plus the tools cfgd's
 //! bootstrap cascades shell out to, wired into a dependency graph.
 
@@ -594,8 +594,8 @@ fn build_actions(
 /// pruned along with it — the same silent, alert-free bookkeeping as a
 /// purposeless refresh, never the stranded-install alert (that fires only for
 /// a `Provision` a `--skip` pattern matched directly).
-/// Every value a `Prerequisites` node's [`ManagerAction::filter_subject`] can
-/// carry on this host — the vocabulary a `--phase prerequisites.<selector>` is
+/// Every value a `Bootstrap` node's [`ManagerAction::filter_subject`] can
+/// carry on this host — the vocabulary a `--phase bootstrap.<selector>` is
 /// legal against.
 ///
 /// Derived from the registry rather than listed at the CLI, and from the SAME
@@ -603,14 +603,14 @@ fn build_actions(
 /// would be planned under (`node_manager`'s family collapse, which folds
 /// `brew-cask` onto `brew` only when `brew` is itself registered), and a tool
 /// is named by the bootstrap plan that shells out to it. A validator listing
-/// families alone refused `--phase prerequisites.curl` — a spelling
+/// families alone refused `--phase bootstrap.curl` — a spelling
 /// [`ManagerAction::filter_subject`] is written to match and `--skip` already
 /// accepts — so the two halves of one grammar disagreed about what the user
 /// may type.
 ///
 /// Vocabulary, not presence: a tool already installed plans no node, and a
 /// selector naming it matches nothing and does nothing. That is the same
-/// answer `prerequisites.brew` gives on a host with brew already current, and
+/// answer `bootstrap.brew` gives on a host with brew already current, and
 /// it is what keeps this a spelling gate rather than a second planner.
 pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
     let mut selectors = BTreeSet::new();
@@ -758,7 +758,7 @@ fn note_consumer(consumers: &mut BTreeSet<String>, manager: &str) {
 /// Narrow every batched provision in `phase` to the one manager `selector`
 /// names.
 ///
-/// `--phase prerequisites.pipx` asks for pipx's provisioning and nothing else,
+/// `--phase bootstrap.pipx` asks for pipx's provisioning and nothing else,
 /// and a batch is the one node that would answer it with somebody else's
 /// install too — the filter that runs it is a predicate over whole actions, so
 /// the split has to happen in the plan before the predicate ever sees it. A
@@ -1406,8 +1406,8 @@ mod tests {
     #[test]
     fn a_phase_selector_narrows_a_batch_to_the_manager_it_names() {
         let actions = plan_actions(installs(&["apt", "npm", "pipx"]), apt_with_two_mediated());
-        let mut plan = prerequisites_plan(actions);
-        restrict_provision_batches(&mut plan, &PhaseName::Prerequisites, "pipx");
+        let mut plan = bootstrap_plan(actions);
+        restrict_provision_batches(&mut plan, &PhaseName::Bootstrap, "pipx");
         let lines: Vec<String> = plan
             .phases
             .iter()
@@ -1418,7 +1418,7 @@ mod tests {
         assert_eq!(
             lines,
             vec!["provision pipx via apt"],
-            "`--phase prerequisites.pipx` provisions pipx, not whatever else \
+            "`--phase bootstrap.pipx` provisions pipx, not whatever else \
              happens to share its apt command"
         );
     }
@@ -1451,7 +1451,7 @@ mod tests {
                     .mediated_by("apt", &["pipx"]),
             )
             .build();
-        let plan = prerequisites_plan(plan_managers(
+        let plan = bootstrap_plan(plan_managers(
             &harness.registry,
             &installs(&["npm", "pipx"]),
             &[],
@@ -1482,10 +1482,10 @@ mod tests {
 
     /// The planner's manager actions as a one-phase plan, for the passes that
     /// take a `Plan` rather than a loose action list.
-    fn prerequisites_plan(actions: Vec<Action>) -> Plan {
+    fn bootstrap_plan(actions: Vec<Action>) -> Plan {
         Plan {
             phases: vec![Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::cfgd(crate::reconciler::MANAGERS_GROUP),
                 actions,
             )],
@@ -1923,7 +1923,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prerequisites_phase_precedes_packages_and_owns_the_manager_nodes() {
+    fn the_bootstrap_phase_precedes_packages_and_owns_the_manager_nodes() {
         let harness = ReconcilerTestHarness::builder()
             .profile_yaml("packages:\n  brew: [ripgrep]\n")
             .with_package_manager(MockPackageManager::new("brew"))
@@ -1939,13 +1939,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("the plan must carry {name:?}: {phases:?}"))
         };
         assert!(
-            index(PhaseName::Prerequisites) < index(PhaseName::Packages),
+            index(PhaseName::Bootstrap) < index(PhaseName::Packages),
             "a manager is provisioned before the packages needing it: {phases:?}"
         );
         let phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Prerequisites)
+            .find(|p| p.name == PhaseName::Bootstrap)
             .expect("the phase exists whenever a manager node does");
         let owners: Vec<String> = phase
             .owned_actions()
@@ -1974,7 +1974,7 @@ mod tests {
         let phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Prerequisites)
+            .find(|p| p.name == PhaseName::Bootstrap)
             .expect("the phase carries both the manager and the env work");
 
         let mut owners: Vec<String> = Vec::new();
@@ -2105,7 +2105,7 @@ mod tests {
     ) -> Plan {
         let profile = Owner::profile("test");
         let mut phases = vec![Phase::from_actions(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             &profile,
             prereq_and_provision_actions,
         )];
@@ -2132,7 +2132,7 @@ mod tests {
 
     #[test]
     fn prune_to_surviving_consumers_drops_a_prerequisite_whose_sole_dependent_is_gone() {
-        // Mirrors the state left behind by `--skip prerequisites.npm`: the
+        // Mirrors the state left behind by `--skip bootstrap.npm`: the
         // skip removes npm's `Provision` node directly (it matched the
         // pattern), but leaves the npm package install alone (a different
         // pattern), so npm is still a "surviving consumer" by
@@ -2151,12 +2151,9 @@ mod tests {
         prune_to_surviving_consumers(&mut plan);
 
         assert!(
-            !plan
-                .phases
-                .iter()
-                .any(|p| p.name == PhaseName::Prerequisites),
+            !plan.phases.iter().any(|p| p.name == PhaseName::Bootstrap),
             "the prerequisite's sole dependent (npm's provision) is absent from the plan, \
-             so it must be pruned and the now-empty Prerequisites phase dropped with it: {:?}",
+             so it must be pruned and the now-empty Bootstrap phase dropped with it: {:?}",
             plan.phases
         );
     }
@@ -2164,7 +2161,7 @@ mod tests {
     #[test]
     fn prune_to_surviving_consumers_keeps_a_prerequisite_another_manager_still_depends_on() {
         // The companion case: curl is required by both npm and pipx. npm's
-        // provision is gone (as if `--skip prerequisites.npm` ran), but
+        // provision is gone (as if `--skip bootstrap.npm` ran), but
         // pipx's provision — which also depends on the curl prerequisite —
         // survives because pipx still has a package consumer. The shared
         // prerequisite must survive through pipx's edge even though npm's is
@@ -2192,7 +2189,7 @@ mod tests {
         let prereq_phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Prerequisites)
+            .find(|p| p.name == PhaseName::Bootstrap)
             .expect("pipx's provision survives, and the prerequisite it depends on with it");
         assert_eq!(
             prereq_phase.action_count(),
@@ -2346,7 +2343,7 @@ mod tests {
                 "manager:refresh:brew".to_string(),
                 "manager:provision:cargo".to_string(),
             ],
-            "every manager this run names earns a Prerequisites-phase action, present or absent: {ids:?}"
+            "every manager this run names earns a Bootstrap-phase action, present or absent: {ids:?}"
         );
     }
 
@@ -2511,7 +2508,7 @@ mod tests {
         let phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Prerequisites)
+            .find(|p| p.name == PhaseName::Bootstrap)
             .expect("the phase carries both the manager and the env work");
 
         let managers_index = phase
@@ -2702,11 +2699,11 @@ mod tests {
             .expect("the install is still planned under --phase packages");
         assert!(
             !cargo_install.success,
-            "a run that skips Prerequisites cannot have provisioned cargo, so the install fails"
+            "a run that skips Bootstrap cannot have provisioned cargo, so the install fails"
         );
         let error = cargo_install.error.as_deref().unwrap_or_default();
         assert!(
-            error.contains("cargo") && error.contains("cfgd apply --phase prerequisites.managers"),
+            error.contains("cargo") && error.contains("cfgd apply --phase bootstrap.managers"),
             "the failure names the manager and points at the owner-group-scoped fix, not the coarse phase: {error}"
         );
     }
@@ -2732,7 +2729,7 @@ mod tests {
         let phase = plan
             .phases
             .iter()
-            .find(|p| p.name == PhaseName::Prerequisites)
+            .find(|p| p.name == PhaseName::Bootstrap)
             .expect("the manager and env work are both planned");
         let env_write = phase
             .owned_actions()

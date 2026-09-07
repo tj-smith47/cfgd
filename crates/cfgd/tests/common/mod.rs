@@ -89,7 +89,7 @@ pub fn profile_with_module_dependency_setup() -> (tempfile::TempDir, tempfile::T
 }
 
 /// Build a tempdir-backed profile whose plan carries every shape the phase
-/// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
+/// tree renders: a `Bootstrap` manager node, a `Packages` install, and a
 /// serially-applied file write.
 ///
 /// The caller must have a `CFGD_BREW_BIN` shim installed, which is what makes

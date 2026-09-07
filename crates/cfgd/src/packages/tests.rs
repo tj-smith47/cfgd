@@ -629,7 +629,7 @@ fn plan_installs_unavailable_bootstrappable_manager_optimistically() {
 
     // An unavailable-but-bootstrappable manager gets its Install planned
     // optimistically here; provisioning the manager itself is the
-    // Prerequisites phase's job (`ManagerAction::Provision`), planned
+    // Bootstrap phase's job (`ManagerAction::Provision`), planned
     // separately and not visible to this per-manager planner.
     assert_eq!(actions.len(), 1);
     assert!(
@@ -689,7 +689,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
 
     // Should have: Install(brew-tap: some/tap), Install(brew: ripgrep) — the tap
     // registers the source a formula may come from, so it orders first; brew's
-    // own provisioning is a Prerequisites-phase concern this planner never sees.
+    // own provisioning is a Bootstrap-phase concern this planner never sees.
     assert_eq!(actions.len(), 2);
     assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew-tap"));
     assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
@@ -1491,7 +1491,7 @@ fn plan_with_new_managers() {
     )));
 
     // snap: unavailable but bootstrappable → Install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -2545,7 +2545,7 @@ fn plan_packages_mixed_available_and_unavailable() {
     )));
 
     // nix: unavailable + bootstrappable → install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }

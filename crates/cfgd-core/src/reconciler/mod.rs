@@ -217,7 +217,7 @@ pub struct Reconciler<'a> {
     unprovisioned: std::cell::RefCell<Vec<String>>,
     /// Managers a node of THIS run has already PUT on the machine — the
     /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
-    /// own `Prerequisites` phase already deliver this tool".
+    /// own `Bootstrap` phase already deliver this tool".
     ///
     /// A module entry naming a tool cfgd bootstraps (`- name: npm`) with no
     /// `prefer` and no `aliases` is not a route

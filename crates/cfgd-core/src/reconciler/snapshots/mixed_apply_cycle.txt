@@ -1,4 +1,4 @@
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh apt index
     ✓ refresh brew index

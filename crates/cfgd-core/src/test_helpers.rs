@@ -3261,7 +3261,7 @@ pub struct MockPackageManager {
     ///
     /// A real manager reports a package it just installed, and a mock that did
     /// not was the only reason a run could install one package twice without a
-    /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
+    /// test noticing: the `Bootstrap` phase provisions `npm` with `apt
     /// install npm`, and the `Packages` phase then asked apt for `npm` again.
     landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
     /// Whether `version_meets_minimum_checked` fails instead of answering —
@@ -3396,7 +3396,7 @@ impl MockPackageManager {
     }
 
     /// Name the tools this manager's bootstrap plan shells out to — the
-    /// population the `Prerequisites` phase draws a prerequisite node from.
+    /// population the `Bootstrap` phase draws a prerequisite node from.
     pub fn requiring(mut self, tools: &[&str]) -> Self {
         self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
         self
@@ -3833,7 +3833,7 @@ impl ReconcilerTestHarness {
     }
 
     /// Apply a plan under an active `--phase`/`--skip` filter — the shape a
-    /// test needs to reproduce "this run never reached the `Prerequisites`
+    /// test needs to reproduce "this run never reached the `Bootstrap`
     /// phase", since [`Self::apply`] always applies unfiltered.
     pub fn apply_with_filter(
         &self,
@@ -5375,7 +5375,7 @@ mod tests {
             assert_eq!(
                 plan.total_actions(),
                 2,
-                "the install, plus the `Prerequisites` node refreshing the index it reads"
+                "the install, plus the `Bootstrap` node refreshing the index it reads"
             );
         }
 

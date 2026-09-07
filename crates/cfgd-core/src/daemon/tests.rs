@@ -1992,7 +1992,7 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![
                     Action::Manager(ManagerAction::RefreshIndex {
@@ -2055,7 +2055,7 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![Action::Manager(ManagerAction::RefreshIndex {
                     manager: "cargo".to_string(),
@@ -2101,7 +2101,7 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![
                     Action::Manager(ManagerAction::RefreshIndex {
@@ -10402,7 +10402,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
 
     // What the tick REPORTED: one set — header, trigger and rollup all count
     // the pruned plan. Three, not two: the decided package and file, plus the
-    // `cfgd:managers` index refresh the Prerequisites phase plans for cargo.
+    // `cfgd:managers` index refresh the Bootstrap phase plans for cargo.
     let out = harness::captured_text(&buf);
     assert!(
         out.contains("Trigger  drift (3 resources)") && out.contains("Actions  3 planned"),

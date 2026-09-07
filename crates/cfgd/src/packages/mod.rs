@@ -104,7 +104,7 @@ fn uninstall_for_manager(
 
 /// Plan package actions by diffing installed vs desired for all managers.
 /// An unavailable manager that can be bootstrapped still gets its Install
-/// action planned here; provisioning the manager itself is the Prerequisites
+/// action planned here; provisioning the manager itself is the Bootstrap
 /// phase's job (`ManagerAction::Provision`), planned separately.
 ///
 /// `cfgd_installed` carries the set of packages cfgd itself installed, as
@@ -320,7 +320,7 @@ pub fn plan_packages_observed(
             // safely prune — leave its packages untouched.
             continue;
         } else if manager.can_bootstrap() {
-            // Unavailable but bootstrappable: the Prerequisites phase plans
+            // Unavailable but bootstrappable: the Bootstrap phase plans
             // provisioning this manager separately (`ManagerAction::Provision`).
             // Install all desired packages so they land once it lands.
             actions.push(PackageAction::Install {

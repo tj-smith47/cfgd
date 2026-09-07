@@ -632,9 +632,9 @@ Plan
   Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Prerequisites, Packages, Files, Post-Scripts
+  Phases   Bootstrap, Packages, Files, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh apt index
     - refresh brew index

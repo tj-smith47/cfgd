@@ -236,10 +236,10 @@ $ cfgd apply --yes
 Apply
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  envdemo
-  Phases   Prerequisites
+  Phases   Bootstrap
   Actions  6 planned
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:env
     ✓ write /home/you/.cfgd.env                       — 1 var
     ✓ inject source line into /home/you/.bashrc
