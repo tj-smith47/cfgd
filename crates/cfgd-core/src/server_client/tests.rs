@@ -32,16 +32,18 @@ fn checkin_request_without_compliance_summary() {
         arch: "x86_64".into(),
         config_hash: "abc123".into(),
         compliance_summary: None,
-        package_versions: BTreeMap::new(),
-        backup_schedule_owners: BTreeMap::new(),
+        package_versions: None,
+        backup_schedule_owners: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(!json.contains("complianceSummary"));
 }
 
-/// The device's two reported maps travel as camelCase keys, and an empty one
-/// is omitted so a device with nothing to say sends the body every gateway
-/// that predates the fields already parses.
+/// The device's two reported maps travel as camelCase keys, and a map this
+/// device did not OBSERVE is omitted entirely, so a device with nothing to say
+/// sends the body every gateway that predates the fields already parses. An
+/// observed map is sent whole, empty included: that is the only way the gateway
+/// can tell "I hold none of these" from "I could not look".
 #[test]
 fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
     let mut server = mockito::Server::new();
@@ -66,35 +68,54 @@ fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let facts = CheckinFacts {
-        package_versions: BTreeMap::from([(
+        package_versions: Some(BTreeMap::from([(
             crate::state::package_resource_id("brew", "git"),
             "2.45.1".to_string(),
-        )]),
-        backup_schedule_owners: BTreeMap::from([(
+        )])),
+        backup_schedule_owners: Some(BTreeMap::from([(
             "dotfiles".to_string(),
             crate::config::ScheduleOwner::Local.label().to_string(),
-        )]),
+        )])),
     };
     client
         .checkin("hash123", None, facts, &printer)
         .expect("the gateway answered");
     mock.assert();
 
-    // The empty case is the older device's body: neither key is written at all.
-    let empty = serde_json::to_string(&CheckinRequest {
+    // The unobserved case is the older device's body: neither key is written.
+    let unobserved = serde_json::to_string(&CheckinRequest {
         device_id: "dev-1".into(),
         hostname: "ws-1".into(),
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "abc123".into(),
         compliance_summary: None,
-        package_versions: BTreeMap::new(),
-        backup_schedule_owners: BTreeMap::new(),
+        package_versions: None,
+        backup_schedule_owners: None,
     })
     .expect("serialize");
     assert!(
-        !empty.contains("packageVersions") && !empty.contains("backupScheduleOwners"),
-        "an empty map must be omitted, not sent as {{}}: {empty}"
+        !unobserved.contains("packageVersions") && !unobserved.contains("backupScheduleOwners"),
+        "an unobserved map must be omitted, not sent as {{}}: {unobserved}"
+    );
+
+    // An OBSERVED but empty map is sent, because it is what retires the last
+    // key the machine reported.
+    let observed_none = serde_json::to_string(&CheckinRequest {
+        device_id: "dev-1".into(),
+        hostname: "ws-1".into(),
+        os: "linux".into(),
+        arch: "x86_64".into(),
+        config_hash: "abc123".into(),
+        compliance_summary: None,
+        package_versions: Some(BTreeMap::new()),
+        backup_schedule_owners: Some(BTreeMap::new()),
+    })
+    .expect("serialize");
+    assert!(
+        observed_none.contains("\"packageVersions\":{}")
+            && observed_none.contains("\"backupScheduleOwners\":{}"),
+        "an observed empty map is sent whole: {observed_none}"
     );
 }
 

@@ -32,20 +32,25 @@ pub fn declared_schedule_owners(specs: &[BackupSpec]) -> BTreeMap<String, String
 }
 
 /// Persist the cadences a check-in answered with, so the daemon's timers and
-/// `cfgd backup list` read one answer.
+/// `cfgd backup list` read one answer. `true` when that changed the set.
 ///
 /// Best-effort by the same rule the check-in itself is: an unwritable state
 /// store costs the machine the cluster's cadence, never its own reconcile. The
-/// ONE wording of that failure, over both verbs that check in.
+/// ONE wording of that failure, over both verbs that check in — and a store
+/// that refused the write changed nothing, so nothing downstream re-reads it.
 pub fn record_cluster_schedules(
     store: &crate::state::StateStore,
     projections: &ScheduleProjections,
-) {
-    if let Err(e) = store.record_cluster_backup_schedules(projections) {
-        tracing::warn!(
-            error = %e,
-            "could not record the cluster-owned backup schedules the check-in answered with"
-        );
+) -> bool {
+    match store.record_cluster_backup_schedules(projections) {
+        Ok(changed) => changed,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not record the cluster-owned backup schedules the check-in answered with"
+            );
+            false
+        }
     }
 }
 

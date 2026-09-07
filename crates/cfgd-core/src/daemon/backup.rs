@@ -318,8 +318,10 @@ impl DegradedReason {
 /// second SIGHUP.
 pub(crate) struct BackupTimers {
     tasks: Vec<BackupTask>,
-    /// Set together with `degraded` — a retry exists exactly when the set is
-    /// degraded, and never otherwise.
+    /// Set with `degraded` by every failure arm, and on its own by
+    /// [`Self::schedule_retry`] when an answered check-in moved the cadences a
+    /// re-resolve would read: a retry means "read the set again", which a
+    /// degraded set always needs and a healthy one sometimes does.
     retry_at: Option<Instant>,
     degraded: Option<DegradedReason>,
 }
@@ -440,6 +442,19 @@ impl BackupTimers {
 
     pub(super) fn retry_due(&self, now: Instant) -> bool {
         self.retry_at.is_some_and(|at| at <= now)
+    }
+
+    /// Ask for a re-resolve at `now`, without calling the running set degraded.
+    ///
+    /// A check-in that answered a different set of cluster cadences has moved
+    /// what the timers should be firing on, and the set was armed before that
+    /// answer arrived — a healthy daemon otherwise resolves it exactly once per
+    /// process, so an operator editing a `BackupPolicy` would watch
+    /// `cfgd backup list` show the new cadence while the timers kept the old
+    /// one until a restart. The set is not degraded: nothing is missing from
+    /// it, it is simply due to be re-read.
+    pub(super) fn schedule_retry(&mut self, now: Instant) {
+        self.retry_at = Some(now);
     }
 
     /// Schedule another re-resolve. Used when the resolution could not even be

@@ -162,6 +162,9 @@ pub(super) async fn run_daemon_loop(
 
     loop {
         let backup_deadline = tokio::time::Instant::from_std(next_backup_deadline(&backup_timers));
+        // Taken fresh each turn, and outside the select so the branch below
+        // borrows nothing the other branches lock.
+        let backup_reresolve = { ctx.state.lock().await.backup_reresolve() };
 
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {
@@ -195,6 +198,17 @@ pub(super) async fn run_daemon_loop(
             }
 
             _ = tokio::time::sleep_until(backup_deadline) => {
+                if let Err(e) = handle_backup_tick(&ctx, &mut backup_timers).await {
+                    tracing::error!(error = %e, tick = "backup", "{TICK_FAILED_MSG}");
+                }
+            }
+
+            _ = backup_reresolve.notified() => {
+                // A check-in answered cadences this set was not resolved from.
+                // Arming the retry rather than re-resolving here keeps ONE
+                // resolution path: the backup tick already re-reads the store
+                // through `resolve_backup_tasks` and reports what it found.
+                backup_timers.schedule_retry(Instant::now());
                 if let Err(e) = handle_backup_tick(&ctx, &mut backup_timers).await {
                     tracing::error!(error = %e, tick = "backup", "{TICK_FAILED_MSG}");
                 }

@@ -2160,6 +2160,13 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
 #[test]
 fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     let (config_dir, state_dir) = backup_list_profile_setup();
+    // A third unit the cluster owns and DECLARES a cadence for, so the answer
+    // that restates that cadence has something to restate.
+    std::fs::write(
+        config_dir.path().join("profiles").join("withbackups.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: /var/lib/app/notes.txt\n      retention: 3\n    - name: weekly\n      source: /var/lib/app/notes.txt\n      schedule: \"0 3 * * *\"\n      scheduleOwner: Local\n      retention: 3\n    - name: mirrors\n      source: /var/lib/app/notes.txt\n      schedule: \"0 2 * * *\"\n      retention: 3\n",
+    )
+    .unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     // Both units are projected, so the pinned one is ignored on merit rather
@@ -2176,6 +2183,7 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
                 &[
                     ("docs".to_string(), projection("0 4 * * *", Some(30))),
                     ("weekly".to_string(), projection("*/5 * * * *", Some(1))),
+                    ("mirrors".to_string(), projection("0 2 * * *", Some(3))),
                 ]
                 .into_iter()
                 .collect(),
@@ -2205,6 +2213,11 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
         weekly.contains("0 3 * * *") && weekly.contains("local") && !weekly.contains("*/5"),
         "a locally pinned unit keeps its declared cadence: {weekly}"
     );
+    let mirrors = row("mirrors");
+    assert!(
+        mirrors.contains("0 2 * * *") && mirrors.contains("cluster"),
+        "a cluster answer that restates the declared cadence still runs it: {mirrors}"
+    );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     cmd_backup_list(&cli, &printer, None, false).unwrap();
@@ -2229,5 +2242,18 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     assert!(
         weekly.get("effectiveSchedule").is_none(),
         "a pinned unit carries no effective override: {weekly}"
+    );
+    // The presence of either effective slot is the claim "the cluster changed
+    // this", so an answer restating what the profile already declared leaves
+    // both out.
+    let mirrors = unit("mirrors");
+    assert_eq!(mirrors["schedule"], "0 2 * * *");
+    assert!(
+        mirrors.get("effectiveSchedule").is_none(),
+        "an answer restating the declared cadence overrode nothing: {mirrors}"
+    );
+    assert!(
+        mirrors.get("effectiveRetention").is_none(),
+        "an answer restating the declared retention overrode nothing: {mirrors}"
     );
 }

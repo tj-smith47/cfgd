@@ -222,8 +222,10 @@ fn checkin_request_deserialization() {
     assert_eq!(req.config_hash, "abc123");
 }
 
-/// A device that predates the two reported maps still checks in: both default
-/// to empty, which the gateway reads as "not observed" and never as "none".
+/// A device that predates the two reported maps still checks in: both read as
+/// ABSENT, which is "not observed" and never "none" — the gateway writes
+/// neither, so nothing the cluster holds is retired by a device that cannot
+/// speak to it.
 #[test]
 fn checkin_request_parses_without_the_status_maps() {
     let json = r#"{
@@ -234,8 +236,36 @@ fn checkin_request_parses_without_the_status_maps() {
         "configHash": "abc123"
     }"#;
     let req: CheckinRequest = serde_json::from_str(json).expect("an older device's body parses");
-    assert!(req.package_versions.is_empty());
-    assert!(req.backup_schedule_owners.is_empty());
+    assert!(
+        req.package_versions.is_none(),
+        "a map the body never carried was not observed"
+    );
+    assert!(req.backup_schedule_owners.is_none());
+}
+
+/// An OBSERVED empty map is a different body from an absent one: it is what a
+/// machine holding none of the packages it declares sends, and what lets the
+/// gateway retire the last key it reported.
+#[test]
+fn checkin_request_parses_an_observed_empty_map() {
+    let json = r#"{
+        "deviceId": "dev-1",
+        "hostname": "workstation-1",
+        "os": "linux",
+        "arch": "x86_64",
+        "configHash": "abc123",
+        "packageVersions": {},
+        "backupScheduleOwners": {}
+    }"#;
+    let req: CheckinRequest = serde_json::from_str(json).expect("the device's body parses");
+    assert_eq!(
+        req.package_versions,
+        Some(std::collections::BTreeMap::new())
+    );
+    assert_eq!(
+        req.backup_schedule_owners,
+        Some(std::collections::BTreeMap::new())
+    );
 }
 
 /// Both maps arrive under their camelCase keys, in the grammars their two
@@ -253,15 +283,54 @@ fn checkin_request_parses_the_status_maps() {
     }"#;
     let req: CheckinRequest = serde_json::from_str(json).expect("the device's body parses");
     assert_eq!(
-        req.package_versions.get("brew/git").map(String::as_str),
+        req.package_versions
+            .as_ref()
+            .and_then(|m| m.get("brew/git"))
+            .map(String::as_str),
         Some("2.45.1")
     );
     assert_eq!(
         req.backup_schedule_owners
-            .get("dotfiles")
+            .as_ref()
+            .and_then(|m| m.get("dotfiles"))
             .map(String::as_str),
         Some("local")
     );
+}
+
+/// The daemon composes the body and the gateway parses it, in two crates that
+/// cannot see each other's spelling: a renamed field or a changed key would
+/// compile on both sides and only fail on a real machine's check-in.
+#[test]
+fn the_daemons_checkin_body_is_what_the_gateway_parses() {
+    let payload = cfgd_core::daemon::CheckinPayload {
+        device_id: "dev-1".to_string(),
+        hostname: "workstation-1".to_string(),
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+        config_hash: "abc123".to_string(),
+        package_versions: Some(
+            [("brew/git".to_string(), "2.45.1".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        backup_schedule_owners: Some(
+            [("dotfiles".to_string(), "cluster".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+    };
+    let wire = serde_json::to_string(&payload).expect("the daemon serializes its body");
+    let req: CheckinRequest =
+        serde_json::from_str(&wire).expect("the gateway parses the body the daemon sends");
+
+    assert_eq!(req.device_id, "dev-1");
+    assert_eq!(req.hostname, "workstation-1");
+    assert_eq!(req.os, "linux");
+    assert_eq!(req.arch, "x86_64");
+    assert_eq!(req.config_hash, "abc123");
+    assert_eq!(req.package_versions, payload.package_versions);
+    assert_eq!(req.backup_schedule_owners, payload.backup_schedule_owners);
 }
 
 // --- CheckinResponse serialization ---
@@ -310,6 +379,48 @@ fn checkin_response_with_config_includes_field() {
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains("desiredConfig"));
     assert!(json.contains("\"configChanged\":true"));
+}
+
+/// The other half of the same contract: every field the gateway answers with
+/// reaches the daemon's own reader, the pushed configuration and the projected
+/// cadences included.
+#[test]
+fn the_gateways_checkin_answer_is_what_the_daemon_parses() {
+    let answer = CheckinResponse {
+        status: "ok".to_string(),
+        config_changed: true,
+        desired_config: Some(serde_json::json!({ "packages": ["vim"] })),
+        backup_schedules: [(
+            "dotfiles".to_string(),
+            cfgd_core::backup::BackupScheduleProjection {
+                schedule: "0 3 * * *".to_string(),
+                retention: Some(3),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let wire = serde_json::to_string(&answer).expect("the gateway serializes its answer");
+    let parsed: cfgd_core::daemon::CheckinServerResponse =
+        serde_json::from_str(&wire).expect("the daemon parses the answer the gateway sends");
+
+    assert_eq!(parsed.status, "ok");
+    assert!(parsed.config_changed);
+    assert_eq!(parsed.desired_config, answer.desired_config);
+    assert_eq!(
+        parsed
+            .backup_schedules
+            .get("dotfiles")
+            .map(|p| p.schedule.as_str()),
+        Some("0 3 * * *")
+    );
+    assert_eq!(
+        parsed
+            .backup_schedules
+            .get("dotfiles")
+            .and_then(|p| p.retention),
+        Some(3)
+    );
 }
 
 // --- EnrollRequest deserialization ---

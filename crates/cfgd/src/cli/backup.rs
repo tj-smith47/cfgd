@@ -366,10 +366,13 @@ pub fn cmd_backup_list(
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
                 schedule_owner: spec.schedule_owner.label().to_string(),
-                effective_schedule: effective
-                    .from_cluster
-                    .then(|| effective.schedule.map(str::to_string))
-                    .flatten(),
+                // Both effective slots answer one question — did the cluster
+                // CHANGE this — so both appear only when the value in force
+                // differs from the one the profile declared.
+                effective_schedule: (effective.from_cluster
+                    && effective.schedule != spec.schedule.as_deref())
+                .then(|| effective.schedule.map(str::to_string))
+                .flatten(),
                 retention: spec.retention,
                 effective_retention: (effective.from_cluster
                     && effective.retention != spec.retention)

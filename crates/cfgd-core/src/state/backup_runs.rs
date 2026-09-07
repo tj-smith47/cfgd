@@ -90,17 +90,24 @@ impl StateStore {
         Ok(())
     }
 
-    /// Replace the cluster-owned cadences with what a check-in just answered.
+    /// Replace the cluster-owned cadences with what a check-in just answered,
+    /// answering whether that changed the set.
     ///
     /// A REPLACE rather than a merge: the gateway sends the whole set every
     /// time, so a unit a policy stopped scheduling has to lose its projection
     /// here or it would run on a cadence nothing in the cluster still asks for.
+    ///
+    /// The comparison is taken inside the same transaction as the replace, so
+    /// the `true` a caller acts on describes the write it just made. The daemon
+    /// re-arms its backup timers on that answer, and re-arming on every check-in
+    /// instead would re-resolve the whole profile once per tick.
     pub fn record_cluster_backup_schedules(
         &self,
         projections: &crate::backup::ScheduleProjections,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let checked_in_at = crate::utc_now_iso8601();
         self.in_transaction(|| {
+            let changed = self.cluster_backup_schedules()? != *projections;
             self.conn
                 .execute("DELETE FROM cluster_backup_schedules", [])?;
             for (name, projection) in projections {
@@ -110,7 +117,7 @@ impl StateStore {
                     params![name, projection.schedule, projection.retention, checked_in_at],
                 )?;
             }
-            Ok(())
+            Ok(changed)
         })
     }
 

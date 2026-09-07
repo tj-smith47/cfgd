@@ -88,18 +88,25 @@ itself naming the machine. A policy never claims a schedule it cannot show the m
 ## How the cadence reaches the machine
 
 The gateway answers every check-in with the schedules the cluster owns for that machine, read
-live from the `status.units` rows the controller wrote. Only a row whose `owner` is `cluster`
-is sent: a unit the machine pinned is never projected back at it. Two policies scheduling one
-unit for one machine is a conflict the gateway cannot settle on merit, so it settles it stably,
-the older `creationTimestamp` winning and the collision logged at `warn`, and the machine sees
-one cadence rather than alternating between two.
+live from the `status.units` rows the controller wrote. The owner word is read
+case-insensitively, and only a row whose owner reads `cluster` is sent: a unit the machine pinned
+is never projected back at it, and a word no layer spells is an answer the policy could not be
+read for, so it projects nothing. Two policies scheduling one unit for one machine is a conflict
+the gateway cannot settle on merit, so it settles it stably, the older `creationTimestamp`
+winning and the collision logged at `warn`, and the machine sees one cadence rather than
+alternating between two.
+
+A check-in that never reached the gateway, or whose answer could not be read, records nothing:
+the machine keeps the cadences it was last given, because one unreachable gateway must not
+retire what the cluster still owns.
 
 The machine holds the answer alongside its profile and never inside it: the projection decides
 when a cluster-owned unit is next due, and `cfgd backup list` shows it in the Schedule and
-Retention cells with `cluster` in the Schedule Owner column. `-o json` carries the declared and
-the effective values both, so a reader can see what the cluster overrode. Nothing rewrites
-`spec.backups[]`, so a machine that stops matching a policy falls back to its own declaration on
-the next check-in.
+Retention cells with `cluster` in the Schedule Owner column. `-o json` carries the declared value
+always and the effective one only when the cluster CHANGED it, so the presence of
+`effectiveSchedule` or `effectiveRetention` states an override rather than restating a cadence the
+profile already declared. Nothing rewrites `spec.backups[]`, so a machine that stops matching a
+policy falls back to its own declaration on the next check-in.
 
 ## Example
 

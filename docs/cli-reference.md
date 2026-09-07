@@ -2138,9 +2138,12 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout:
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, scheduleOwner, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
+`{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
 where `scheduleOwner` is `cluster` or `local` (the lowercase word the `Schedule Owner` column
-shows) and is present on every unit.
+shows) and is present on every unit. `effectiveSchedule` and `effectiveRetention` carry the value
+a cluster [`BackupPolicy`](backup-policy.md) put in force, and each appears only when it DIFFERS
+from the declared one: the key's presence is the claim that the cluster changed this, so an answer
+restating what the profile already declared adds neither.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
 where `name` is the snapshot's path relative to the backup's `destination`. A restore's safety
 copy is a sidecar beside the source, so it appears in neither list and is never the unit's
@@ -2319,8 +2322,12 @@ The payload also carries what only this machine can answer: `packageVersions`, t
 version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
 managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
-in the cluster. A manager that cannot be queried leaves its packages out rather than reporting a
-version cfgd did not read.
+in the cluster, applied whole: a key this machine stopped reporting is retired there, and a
+machine holding none of what it declares sends the empty map that clears it. A manager that cannot
+be queried leaves its packages out rather than reporting a version cfgd did not read.
+
+The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
+authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
 
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit

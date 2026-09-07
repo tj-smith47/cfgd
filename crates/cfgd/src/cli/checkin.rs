@@ -122,20 +122,22 @@ pub fn cmd_checkin(
     // never the check-in.
     let checkin_facts = cfgd_core::server_client::CheckinFacts {
         package_versions: match ctx.package_context() {
-            Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
+            Ok(pkg_cx) => Some(cfgd_core::compliance::declared_package_versions(
                 &resolved.merged,
                 &resolved_modules,
                 &registry,
                 &pkg_cx,
-            ),
+            )),
+            // Nothing was observed, so nothing is claimed: the cluster keeps the
+            // versions the last check-in that could look reported.
             Err(e) => {
                 tracing::warn!(error = %e, "checkin: package versions unavailable");
-                Default::default()
+                None
             }
         },
-        backup_schedule_owners: cfgd_core::backup::declared_schedule_owners(
+        backup_schedule_owners: Some(cfgd_core::backup::declared_schedule_owners(
             &resolved.merged.backups,
-        ),
+        )),
     };
 
     let resp = {
@@ -188,7 +190,9 @@ pub fn cmd_checkin(
     // the profile on disk: it is the cluster's answer, replaced by the next
     // check-in.
     match ctx.state() {
-        Ok(state) => cfgd_core::backup::record_cluster_schedules(state, &resp.backup_schedules),
+        Ok(state) => {
+            cfgd_core::backup::record_cluster_schedules(state, &resp.backup_schedules);
+        }
         Err(e) => {
             tracing::warn!(error = %e, "checkin: state store unavailable — the cluster-owned backup schedules were not recorded");
         }
@@ -279,7 +283,7 @@ fn build_checkin_client(
 ) -> ServerClient {
     if api_key.is_none()
         && let Some(cred) = stored_cred
-        && cred.server_url.trim_end_matches('/') == server_url.trim_end_matches('/')
+        && cfgd_core::server_client::credential_matches(server_url, cred)
     {
         return ServerClient::from_credential(cred);
     }

@@ -732,12 +732,19 @@ async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_
     );
 }
 
-/// `backupScheduleOwners` is reported by the device on check-in, so no
-/// reconcile here can measure it. Blanking the field would tell the
-/// BackupPolicy controller that a machine which pinned a unit locally is free
-/// to be scheduled from the cluster, until the device checked in again.
+/// `backupScheduleOwners` and `packageVersions` are reported by the device on
+/// check-in, so no reconcile here can measure either. Blanking
+/// `backupScheduleOwners` would tell the BackupPolicy controller that a machine
+/// which pinned a unit locally is free to be scheduled from the cluster, until
+/// the device checked in again.
+///
+/// The status write names neither: they are the gateway's fields, applied
+/// server-side under its own manager, and a merge patch that names them would
+/// move their ownership to this manager and turn the gateway's next
+/// (unforced) apply into a conflict. A merge patch changes only what it names,
+/// so leaving both out is what preserves them.
 #[tokio::test]
-async fn reconcile_machine_config_preserves_device_reported_backup_schedule_owners() {
+async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway() {
     let mut mc = machine_config("mc-pinned", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
@@ -750,7 +757,9 @@ async fn reconcile_machine_config_preserves_device_reported_backup_schedule_owne
         .collect(),
         observed_generation: Some(1),
         conditions: vec![],
-        package_versions: Default::default(),
+        package_versions: [("brew/git".to_string(), "2.45.1".to_string())]
+            .into_iter()
+            .collect(),
     });
 
     // Drift keeps the reconcile off the already-observed short circuit, which
@@ -777,9 +786,17 @@ async fn reconcile_machine_config_preserves_device_reported_backup_schedule_owne
         .expect("the reconcile succeeds");
 
     let report = harness.finish().await;
-    assert_eq!(
-        report.captured[0].body_json()["status"]["backupScheduleOwners"],
-        serde_json::json!({ "dotfiles": "local" }),
-        "a reconcile that cannot observe the owners must carry them forward"
+    let status = report.captured[0].body_json()["status"].clone();
+    assert!(
+        status.get("backupScheduleOwners").is_none(),
+        "the owners are the gateway's field, and a merge patch naming them would claim it: {status}"
+    );
+    assert!(
+        status.get("packageVersions").is_none(),
+        "the reported versions are the gateway's field on the same terms: {status}"
+    );
+    assert!(
+        status["lastReconciled"].as_str().is_some(),
+        "the reconcile still writes the fields it does own: {status}"
     );
 }

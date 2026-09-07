@@ -77,7 +77,7 @@ spec:
 | `files` | list | File specs with `path`, optional `content`, `source`, and `mode` (default `0644`) |
 | `systemSettings` | map | System configurator settings |
 
-> `status.packageVersions` (reported installed versions, keyed `<manager>/<package>`) is written by the device gateway from what the machine reports, not set in `spec`.
+> `status.packageVersions` (reported installed versions, keyed `<manager>/<package>`) is written by the device gateway from what the machine reports, not set in `spec`. A `packages[].version` requirement is met only when every reported copy of that package satisfies it.
 
 ### ConfigPolicy
 
@@ -111,7 +111,7 @@ spec:
 | Field | Type | Description |
 |---|---|---|
 | `requiredModules` | list of ModuleRef | Modules that all matching MachineConfigs must reference (each with `name` and optional `required` flag) |
-| `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint) |
+| `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint). The constraint is judged against every copy the machine reports for that package, so a package two managers hold at different versions is compliant only when both satisfy it |
 | `settings` | map | Required system settings |
 | `targetSelector` | LabelSelector | Label selector (`matchLabels` / `matchExpressions`) — policy applies to MachineConfigs with matching labels |
 
@@ -431,7 +431,9 @@ A check-in carries the device identity (id, hostname, OS, arch) and the hash of 
 desired system configuration. `cfgd checkin` adds a compliance summary when
 [`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
 settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
-the identity and hash only.
+the identity and hash, and reports the same two device-only facts below; it authenticates with
+the credential `cfgd enroll` stored, and a machine holding none for that gateway logs the skip
+rather than posting anonymously.
 
 It also carries the two facts only the device can answer: `packageVersions`, the versions it
 holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
@@ -442,6 +444,11 @@ a hostname no MachineConfig names is logged and the check-in still returns `200`
 device's own reconcile does not depend on the cluster accepting a status. A standalone gateway
 holds no client and writes nothing. A map the device did not report is omitted rather than sent
 empty, so a fact the cluster already holds is never blanked by a device that could not observe it.
+
+A map the device DID report arrives whole, empty included, and the gateway applies it whole
+(server-side apply, never forced): a key the machine stopped reporting is retired, and a device
+that now holds none of what it declares clears the map. The two maps are the gateway's alone, so
+an apply that carries them cannot disturb the status fields the controllers own.
 
 The response answers with `backupSchedules`, the cadences a cluster
 [`BackupPolicy`](backup-policy.md) owns for that machine.

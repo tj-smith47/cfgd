@@ -113,14 +113,15 @@ pub struct CheckinRequest {
     #[serde(default)]
     pub compliance_summary: Option<serde_json::Value>,
     /// Installed versions of the packages the device DECLARES, keyed
-    /// `<manager>/<package>`. Defaulted, so a device that predates the field
-    /// still checks in.
+    /// `<manager>/<package>`. Absent when the device did not observe them,
+    /// which is what a device that predates the field sends; an observed map
+    /// arrives whole, empty included.
     #[serde(default)]
-    pub package_versions: std::collections::BTreeMap<String, String>,
+    pub package_versions: Option<std::collections::BTreeMap<String, String>>,
     /// Which layer owns each declared backup unit's schedule on the device,
-    /// as `ScheduleOwner::label` spells it. Defaulted for the same reason.
+    /// as `ScheduleOwner::label` spells it. Absent on the same terms.
     #[serde(default)]
-    pub backup_schedule_owners: std::collections::BTreeMap<String, String>,
+    pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]

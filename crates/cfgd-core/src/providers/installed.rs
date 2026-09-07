@@ -23,15 +23,30 @@ use crate::errors::Result;
 pub struct InstalledPackages {
     identities: HashSet<String>,
     listed: Vec<PackageInfo>,
+    /// Identity to the position in `listed` that first claimed it, so a
+    /// declared-name lookup is a hash probe rather than a scan that folds every
+    /// listed name on the way past. A machine declaring hundreds of packages
+    /// against a listing of thousands asks this question once per declared
+    /// package on every check-in, and the daemon asks it on every tick.
+    by_identity: HashMap<String, usize>,
 }
 
 impl InstalledPackages {
     pub(super) fn from_listing(manager: &dyn PackageManager, listed: Vec<PackageInfo>) -> Self {
-        let identities = listed
-            .iter()
-            .map(|pkg| manager.listed_identity(&pkg.name))
-            .collect();
-        Self { identities, listed }
+        let mut identities = HashSet::with_capacity(listed.len());
+        let mut by_identity = HashMap::with_capacity(listed.len());
+        for (position, pkg) in listed.iter().enumerate() {
+            let identity = manager.listed_identity(&pkg.name);
+            // First claim wins, matching the scan this index replaced: two rows
+            // folding to one identity are one package listed twice.
+            by_identity.entry(identity.clone()).or_insert(position);
+            identities.insert(identity);
+        }
+        Self {
+            identities,
+            listed,
+            by_identity,
+        }
     }
 
     /// Whether the manager reports `identity` installed. `identity` is a name
@@ -64,9 +79,9 @@ impl InstalledPackages {
     /// unreadable version ([`crate::providers::UNKNOWN_PACKAGE_VERSION`]).
     pub fn entry_for(&self, manager: &dyn PackageManager, package: &str) -> Option<&PackageInfo> {
         let identity = manager.package_identity(package);
-        self.listed
-            .iter()
-            .find(|p| manager.listed_identity(&p.name) == identity)
+        self.by_identity
+            .get(&identity)
+            .and_then(|position| self.listed.get(*position))
     }
 }
 
@@ -206,6 +221,11 @@ mod tests {
     fn listing(names: &[&str]) -> InstalledPackages {
         InstalledPackages {
             identities: names.iter().map(|n| (*n).to_string()).collect(),
+            by_identity: names
+                .iter()
+                .enumerate()
+                .map(|(position, n)| ((*n).to_string(), position))
+                .collect(),
             listed: names
                 .iter()
                 .map(|n| PackageInfo {

@@ -100,6 +100,23 @@ fn fresh_tick_cache() -> &'static super::tick_cache::TickCache {
     Box::leak(Box::new(super::tick_cache::TickCache::new()))
 }
 
+/// A device credential naming `server_url`, as enrolment stores one.
+///
+/// The daemon's check-in is an authenticated request — the gateway's own auth
+/// middleware refuses an anonymous one, and enforces that the bearer names the
+/// same device the body does — so a test driving one hands it the credential
+/// the machine enrolled with.
+fn test_credential(server_url: &str) -> crate::server_client::DeviceCredential {
+    crate::server_client::DeviceCredential {
+        server_url: server_url.to_string(),
+        device_id: "dev-1".to_string(),
+        api_key: "test-api-key".to_string(),
+        username: "user1".to_string(),
+        team: None,
+        enrolled_at: crate::utc_now_iso8601(),
+    }
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -301,15 +318,6 @@ fn systemd_unit_path() {
 }
 
 #[test]
-fn generate_device_id_is_stable() {
-    let id1 = generate_device_id().unwrap();
-    let id2 = generate_device_id().unwrap();
-    assert_eq!(id1, id2);
-    // SHA256 hex string is 64 characters
-    assert_eq!(id1.len(), 64);
-}
-
-#[test]
 fn compute_config_hash_is_deterministic() {
     use crate::config::{
         CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
@@ -425,7 +433,8 @@ fn checkin_payload_round_trips() {
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "deadbeef".into(),
-        backup_schedule_owners: Default::default(),
+        package_versions: None,
+        backup_schedule_owners: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -434,17 +443,17 @@ fn checkin_payload_round_trips() {
     assert_eq!(parsed["os"], "linux");
     assert_eq!(parsed["arch"], "x86_64");
     assert_eq!(parsed["configHash"], "deadbeef");
-    // Exactly 5 fields: a machine reporting no backup owners sends the body a
-    // gateway that predates the map already parses.
+    // Exactly 5 fields: a check-in that observed neither map sends the body a
+    // gateway that predates them already parses.
     assert_eq!(parsed.as_object().unwrap().len(), 5);
 }
 
 #[test]
 fn checkin_response_deserializes() {
-    let json = r#"{"status":"ok","configChanged":true,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
-    assert_eq!(resp._status, "ok");
+    assert_eq!(resp.status, "ok");
 }
 
 #[test]
@@ -3558,17 +3567,20 @@ fn find_server_url_returns_none_for_empty_origins() {
 
 // --- CheckinServerResponse deserialization edge cases ---
 
+/// The key is `desiredConfig`, the spelling the gateway's own `CheckinResponse`
+/// serializes: a body read under any other name leaves a pushed configuration
+/// on the floor.
 #[test]
 fn checkin_response_with_config_payload() {
-    let json = r#"{"status":"ok","configChanged":true,"config":{"packages":["git"]}}"#;
+    let json = r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git"]}}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
-    assert!(resp._config.is_some());
+    assert!(resp.desired_config.is_some());
 }
 
 #[test]
 fn checkin_response_no_change() {
-    let json = r#"{"status":"ok","configChanged":false,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(!resp.config_changed);
 }
@@ -4908,7 +4920,8 @@ fn checkin_payload_serializes_all_fields() {
         os: "linux".into(),
         arch: "aarch64".into(),
         config_hash: "abcd1234".into(),
-        backup_schedule_owners: Default::default(),
+        package_versions: None,
+        backup_schedule_owners: None,
     };
 
     let json = serde_json::to_string(&payload).unwrap();
@@ -5061,19 +5074,6 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
     assert!(!withheld.contains("packages.cargo.bat"));
     // security-policy awaits the operator, so it is withheld
     assert!(withheld.contains("system.security-policy"));
-}
-
-// --- generate_device_id: always hex ---
-
-#[test]
-fn generate_device_id_hex_format() {
-    let id = generate_device_id().unwrap();
-    // Should be lowercase hex only
-    assert!(
-        id.chars().all(|c| c.is_ascii_hexdigit()),
-        "device ID should be hex: {}",
-        id
-    );
 }
 
 // --- declared_decision_paths: multiple files ---
@@ -6144,7 +6144,13 @@ fn server_checkin_mock_config_changed() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved).config_changed;
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(changed, "server should report config changed");
     mock.assert();
 }
@@ -6179,7 +6185,13 @@ fn server_checkin_mock_no_change() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved).config_changed;
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "server should report no change");
     mock.assert();
 }
@@ -6213,7 +6225,13 @@ fn server_checkin_mock_server_error() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved).config_changed;
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "server error should return false");
     mock.assert();
 }
@@ -6248,7 +6266,13 @@ fn server_checkin_mock_malformed_json() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved).config_changed;
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "malformed JSON should return false");
     mock.assert();
 }
@@ -6285,7 +6309,13 @@ fn server_checkin_mock_trailing_slash_url() {
 
     // URL with trailing slash should be trimmed
     let url_with_slash = format!("{}/", server.url());
-    let changed = server_checkin(&url_with_slash, &resolved).config_changed;
+    let changed = server_checkin(
+        &url_with_slash,
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed);
     mock.assert();
 }
@@ -6328,7 +6358,13 @@ fn server_checkin_mock_verifies_request_body() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved).config_changed;
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed);
     // Verify the mock received the request with correct Content-Type
     mock.assert();
@@ -6380,23 +6416,30 @@ fn try_server_checkin_no_server_origin_returns_false() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved).config_changed;
+    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
     assert!(!changed, "no server origin means no checkin");
 }
 
 // --- try_server_checkin: with mock server ---
 
+/// The origin resolves to a gateway this machine holds a credential for, so the
+/// check-in is made and authenticated from that credential.
 #[test]
 fn try_server_checkin_with_server_origin_calls_checkin() {
     use crate::config::*;
 
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
+        .match_header("Authorization", "Bearer test-api-key")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#)
         .create();
+    crate::server_client::save_credential(&test_credential(&server.url()))
+        .expect("store the device credential");
 
     let config = CfgdConfig {
         api_version: crate::API_VERSION.into(),
@@ -6439,7 +6482,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved).config_changed;
+    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
     assert!(changed, "server origin should trigger checkin");
     mock.assert();
 }
@@ -6939,9 +6982,9 @@ fn daemon_status_response_full_deserialization() {
 fn checkin_response_without_config_field() {
     let json = r#"{"status":"ok","configChanged":false}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
-    // _config is Option<Value>, so missing field deserializes as None
+    // desired_config is Option<Value>, so a missing field reads as None
     assert!(!resp.config_changed);
-    assert!(resp._config.is_none());
+    assert!(resp.desired_config.is_none());
 }
 
 // --- hash_resources: unicode content ---
@@ -16513,7 +16556,13 @@ spec: {}
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
         // No profile YAML on disk → resolve_profile fails → function warns.
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     #[test]
@@ -16529,7 +16578,13 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     #[test]
@@ -16555,7 +16610,13 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     // current_thread so the test_home thread-local installed below survives
@@ -16611,7 +16672,13 @@ spec: {}
 
         let expected_home = tmp.path().to_path_buf();
         let seen_home = crate::spawn_blocking_with_test_home(move || {
-            super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
+            super::super::run_startup_checkin_blocking(
+                &config_path,
+                None,
+                &cfg,
+                None,
+                &tokio::sync::Notify::new(),
+            );
             crate::test_home_override()
         })
         .await
@@ -20086,6 +20153,132 @@ mod backup_timers {
                 .expect("read back")
                 .is_empty(),
             "a check-in that projects nothing clears what the last one projected"
+        );
+    }
+
+    /// The timer set is resolved once per process on a healthy daemon, and the
+    /// startup check-in lands after that — so a projection recorded later must
+    /// re-arm it, or the machine keeps firing on the cadence the cluster
+    /// replaced until someone restarts the daemon.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_projection_recorded_after_the_timers_were_armed_re_resolves_them() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: \"6h\"\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        // The set as startup armed it: no projection had been answered yet.
+        let mut set = timers(vec![task("db", &source, "6h", Instant::now())]);
+
+        let changed = crate::daemon::checkin::record_cluster_schedules_in(
+            Some(tmp.path()),
+            &projection("db", "0 3 * * *", Some(3)),
+        );
+        assert!(changed, "a projection nothing had recorded is a change");
+        set.schedule_retry(Instant::now());
+        assert!(
+            !set.is_degraded(),
+            "a set due to be re-read is not a set missing anything"
+        );
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        assert_eq!(
+            set.tasks()[0].spec.schedule.as_deref(),
+            Some("0 3 * * *"),
+            "the re-resolved set arms on the cadence the check-in answered"
+        );
+        assert_eq!(set.tasks()[0].spec.retention, 3);
+    }
+
+    /// Re-arming on every check-in would re-resolve the whole profile once per
+    /// tick, so the answer that re-arms is specifically a CHANGED one.
+    #[test]
+    fn a_check_in_answering_the_projection_already_recorded_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let answer = projection("db", "0 3 * * *", Some(3));
+        assert!(crate::daemon::checkin::record_cluster_schedules_in(
+            Some(dir.path()),
+            &answer
+        ));
+        assert!(
+            !crate::daemon::checkin::record_cluster_schedules_in(Some(dir.path()), &answer),
+            "the same answer twice is one change, not two"
+        );
+    }
+
+    /// A gateway that could not be reached ANSWERED nothing, and nothing is
+    /// what a lost round-trip may retire: the recorded set is the cluster's
+    /// last word until the cluster speaks again.
+    #[test]
+    fn a_check_in_that_never_got_an_answer_keeps_the_recorded_projection() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("gateway is restarting")
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "a check-in that got no answer projects nothing"
+        );
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "an unreachable gateway must not delete the cadences the cluster owns"
         );
     }
 

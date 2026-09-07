@@ -1315,14 +1315,40 @@ fn reconcile_tick(
         return outcome;
     }
 
-    // Server check-in after reconciliation
-    let checkin = try_server_checkin(cfg, resolved);
+    // Server check-in after reconciliation. The tick is the machine's reporter:
+    // it has resolved the profile, the modules and the registry, so it can
+    // answer both of the questions only the device can — and it reports them as
+    // OBSERVED maps, which is what lets the gateway retire a package this
+    // machine uninstalled or a backup unit it stopped declaring.
+    let checkin = try_server_checkin(
+        cfg,
+        resolved,
+        crate::server_client::CheckinFacts {
+            package_versions: Some(crate::compliance::declared_package_versions(
+                &resolved.merged,
+                resolved_modules_ref.as_slice(),
+                registry,
+                &pkg_cx,
+            )),
+            backup_schedule_owners: Some(crate::backup::declared_schedule_owners(
+                &resolved.merged.backups,
+            )),
+        },
+    );
     if checkin.config_changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
         );
     }
-    super::checkin::record_cluster_schedules_in(Some(&state_dir), &checkin.backup_schedules);
+    // Only an ANSWER is recorded, and only a changed answer re-arms the timers:
+    // the timer set was resolved before this tick ran, so a cadence the cluster
+    // just moved would otherwise wait for a restart.
+    if let Some(ref projections) = checkin.backup_schedules
+        && super::checkin::record_cluster_schedules_in(Some(&state_dir), projections)
+    {
+        rt.block_on(async { state.lock().await.backup_reresolve() })
+            .notify_one();
+    }
 
     // Consume any pending server-pushed config (saved by CLI checkin or enrollment)
     match crate::state::load_pending_server_config() {

@@ -21,17 +21,21 @@ pub struct ServerClient {
 /// The device is the only thing that can answer either question, and the
 /// check-in is its only channel to the cluster: `MachineConfig.status`
 /// carries both maps, and a `ConfigPolicy` version pin and a `BackupPolicy`
-/// schedule projection are decided from them. Both default to empty, which is
-/// what a caller with nothing to report sends and what the controller reads as
-/// "not observed" — never as "none".
+/// schedule projection are decided from them.
+///
+/// Each map is an `Option` because "I looked and found none" and "I could not
+/// look" are different facts and the gateway acts on them differently: an
+/// observed map is applied whole, so a key the machine stopped reporting is
+/// retired, while an unobserved one is left alone with whatever the cluster
+/// already holds. `None` is also what an older device's body deserializes as.
 #[derive(Debug, Default, Clone)]
 pub struct CheckinFacts {
     /// Installed versions of the packages this machine DECLARES, keyed
     /// `<manager>/<package>` by [`crate::state::package_resource_id`].
-    pub package_versions: BTreeMap<String, String>,
+    pub package_versions: Option<BTreeMap<String, String>>,
     /// Which layer owns each declared backup unit's schedule, as
     /// [`crate::config::ScheduleOwner::label`] spells it.
-    pub backup_schedule_owners: BTreeMap<String, String>,
+    pub backup_schedule_owners: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,12 +48,14 @@ struct CheckinRequest {
     config_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     compliance_summary: Option<ComplianceSummary>,
-    /// Omitted when empty, so a device with nothing to report sends the body
-    /// an older device sends and a gateway that predates the field parses it.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    package_versions: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    backup_schedule_owners: BTreeMap<String, String>,
+    /// Omitted when the device did not observe it, which is the body an older
+    /// device sends and a gateway that predates the field parses. An observed
+    /// map is sent whole, empty included: that is what lets the gateway retire
+    /// a key this machine no longer reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package_versions: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_schedule_owners: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -614,6 +620,15 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
     crate::set_file_permissions(&path, 0o600)?;
 
     Ok(path)
+}
+
+/// Whether a stored credential authenticates a check-in to `server_url`.
+///
+/// The ONE comparison behind that question, so `cfgd checkin` and the daemon's
+/// periodic check-in cannot disagree about which gateway a credential is for.
+/// A trailing slash is not part of a gateway's identity.
+pub fn credential_matches(server_url: &str, cred: &DeviceCredential) -> bool {
+    cred.server_url.trim_end_matches('/') == server_url.trim_end_matches('/')
 }
 
 /// Load a previously stored device credential.

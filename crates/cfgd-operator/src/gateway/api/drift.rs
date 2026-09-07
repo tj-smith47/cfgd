@@ -184,6 +184,11 @@ pub(super) async fn find_machine_config_for_device(
 /// A live read, deliberately: the gateway answers a device's request about the
 /// machine it is right now, and it holds no reflector of its own — a cache
 /// would have to be built and kept warm for one lookup per API call.
+///
+/// An object carrying no namespace resolves to `None` rather than to the empty
+/// one: every caller addresses the result namespaced, and an empty namespace
+/// composes a malformed request path instead of the skip "no MachineConfig
+/// names this hostname" already means.
 pub(super) async fn find_machine_config_ref(
     client: &kube::Client,
     hostname: &str,
@@ -198,7 +203,7 @@ pub(super) async fn find_machine_config_ref(
             .items
             .iter()
             .find(|mc| mc.spec.hostname == hostname)
-            .map(|mc| (mc.namespace().unwrap_or_default(), mc.name_any())),
+            .and_then(|mc| mc.namespace().map(|ns| (ns, mc.name_any()))),
         Err(e) => {
             tracing::warn!(error = %e, "failed to list MachineConfigs for device lookup");
             None

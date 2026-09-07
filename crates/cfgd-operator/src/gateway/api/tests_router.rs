@@ -716,6 +716,56 @@ fn checkin_body(device_id: &str, hostname: &str) -> serde_json::Value {
     })
 }
 
+/// A check-in body carrying the two maps this device observed.
+fn checkin_body_reporting(
+    device_id: &str,
+    hostname: &str,
+    package_versions: serde_json::Value,
+    backup_schedule_owners: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "deviceId": device_id,
+        "hostname": hostname,
+        "os": "linux",
+        "arch": "x86_64",
+        "configHash": "abc",
+        "packageVersions": package_versions,
+        "backupScheduleOwners": backup_schedule_owners,
+    })
+}
+
+/// The three calls a check-in makes against a cluster that holds a
+/// MachineConfig for `host-1`, with no policy to project.
+fn checkin_kube_calls() -> Vec<ExpectedCall> {
+    vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::patch_status(
+            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
+        ),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]
+}
+
+/// The status body the check-in applied.
+fn applied_status(
+    report: &crate::controllers::test_kube_harness::HarnessReport,
+) -> serde_json::Value {
+    let patch = report
+        .find(
+            http::Method::PATCH,
+            "/machineconfigs/workstation-1-mc/status",
+        )
+        .expect("the check-in patches the MachineConfig the hostname resolved to");
+    assert!(
+        !patch.query.contains("force"),
+        "the apply is never forced: a conflict is something to report, not overwrite ({})",
+        patch.query
+    );
+    patch.body_json()
+}
+
 #[tokio::test]
 #[serial]
 async fn checkin_patches_the_devices_machine_config_status() {
@@ -746,18 +796,181 @@ async fn checkin_patches_the_devices_machine_config_status() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let report = harness.finish().await;
-    let patch = report
-        .find(
-            http::Method::PATCH,
-            "/machineconfigs/workstation-1-mc/status",
-        )
-        .expect("the check-in patches the MachineConfig the hostname resolved to");
-    let body = patch.body_json();
+    let body = applied_status(&report);
     assert_eq!(body["status"]["packageVersions"]["brew/git"], "2.45.1");
     assert_eq!(
         body["status"]["backupScheduleOwners"]["notes"],
         serde_json::json!("local")
     );
+    // An apply body is a whole object: the API server reads the type and the
+    // name from it, and a fragment would be rejected.
+    assert_eq!(body["apiVersion"], "cfgd.io/v1alpha1");
+    assert_eq!(body["kind"], "MachineConfig");
+    assert_eq!(body["metadata"]["name"], "workstation-1-mc");
+}
+
+/// The device dropped a `spec.backups[]` unit, so its next check-in reports the
+/// units it still declares. The apply carries the WHOLE map, which is what
+/// retires the row: a merge patch would leave the retired unit standing forever
+/// and the BackupPolicy controller would keep emitting a row for a unit the
+/// machine no longer has.
+#[tokio::test]
+#[serial]
+async fn a_device_that_stops_reporting_a_unit_clears_its_row() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body_reporting(
+                "dev-1",
+                "host-1",
+                serde_json::json!({ "brew/git": "2.45.1" }),
+                serde_json::json!({ "dotfiles": "cluster" }),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let owners = applied_status(&report)["status"]["backupScheduleOwners"].clone();
+    assert_eq!(
+        owners,
+        serde_json::json!({ "dotfiles": "cluster" }),
+        "the apply states the whole map, so the unit that stopped being reported is gone"
+    );
+}
+
+/// "I looked and hold none" is a report, not silence: the map is applied empty
+/// so the last key the machine reported is retired too.
+#[tokio::test]
+#[serial]
+async fn a_device_that_reports_no_units_clears_the_map() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body_reporting(
+                "dev-1",
+                "host-1",
+                serde_json::json!({}),
+                serde_json::json!({}),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let body = applied_status(&report);
+    assert_eq!(body["status"]["packageVersions"], serde_json::json!({}));
+    assert_eq!(
+        body["status"]["backupScheduleOwners"],
+        serde_json::json!({})
+    );
+}
+
+/// A device that observed NEITHER map — an older agent — writes no status at
+/// all. An apply prunes what it omits, so a body that claims nothing must not
+/// be sent at all, or every check-in from an older agent would blank the two
+/// facts only a device can report.
+#[tokio::test]
+#[serial]
+async fn a_device_that_reports_neither_map_writes_no_status() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "configHash": "abc",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    assert!(
+        report
+            .find(
+                http::Method::PATCH,
+                "/machineconfigs/workstation-1-mc/status"
+            )
+            .is_none(),
+        "a check-in that observed nothing writes nothing"
+    );
+}
+
+/// A MachineConfig carrying no namespace is addressable by nothing: the
+/// check-in skips both the status write and the policy list rather than
+/// composing a request path with an empty namespace in it.
+#[tokio::test]
+#[serial]
+async fn a_machine_config_with_no_namespace_is_never_addressed() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let namespace_less = serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "MachineConfigList",
+        "metadata": { "resourceVersion": "1" },
+        "items": [{
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": "MachineConfig",
+            "metadata": { "name": "workstation-1-mc" },
+            "spec": { "hostname": "host-1", "profile": "base" },
+        }],
+    });
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs").returning_json(&namespace_less),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the device's check-in never depends on the cluster naming its machine"
+    );
+    harness.finish().await;
 }
 
 /// The cluster refusing the status costs the fleet its view of the device, and
@@ -826,6 +1039,26 @@ async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin
                 "schedule": "0 5 * * *",
                 "message": "the machine pins this unit's schedule",
             }),
+            // The owner word is the enum's own PascalCase serialization, which
+            // is what a status written by the controller actually carries; the
+            // parser is case-insensitive, so this row projects like the
+            // lowercase one above.
+            serde_json::json!({
+                "name": "photos",
+                "hostname": "host-1",
+                "owner": "Cluster",
+                "schedule": "0 4 * * 0",
+                "retention": 2,
+            }),
+            // A word no layer spells is an answer the policy could not be read
+            // for, never a cadence to push at the machine.
+            serde_json::json!({
+                "name": "archives",
+                "hostname": "host-1",
+                "owner": "tenant",
+                "schedule": "0 6 * * *",
+                "retention": 9,
+            }),
         ],
     );
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -853,9 +1086,15 @@ async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin
         serde_json::from_slice(&body_bytes(response).await).expect("json body");
     assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "daily");
     assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 7);
+    assert_eq!(body["backupSchedules"]["photos"]["schedule"], "0 4 * * 0");
     assert!(
         body["backupSchedules"].get("notes").is_none(),
         "a unit the machine pinned is never projected back at it: {}",
+        body["backupSchedules"]
+    );
+    assert!(
+        body["backupSchedules"].get("archives").is_none(),
+        "an owner word no layer spells projects nothing: {}",
         body["backupSchedules"]
     );
     harness.finish().await;

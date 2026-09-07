@@ -109,7 +109,7 @@ pub(super) async fn checkin(
             match find_machine_config_ref(client, &req.hostname).await {
                 Some((namespace, name)) => {
                     report_device_status(client, &namespace, &name, &req).await;
-                    cluster_backup_schedules(client, &namespace, &req.hostname).await
+                    policy_owned_schedules(client, &namespace, &req.hostname).await
                 }
                 // No MachineConfig names this hostname: there is nothing to
                 // write a status onto and no namespace to look for policies in.
@@ -130,17 +130,26 @@ pub(super) async fn checkin(
     ))
 }
 
-/// Merge the device-reported halves of `MachineConfig.status` onto the object
+/// Apply the device-reported halves of `MachineConfig.status` onto the object
 /// the hostname resolved to.
 ///
 /// A failure is a `warn` and nothing more: the check-in's outcome is the
 /// device's, and it does not depend on the cluster accepting a status.
 ///
-/// An EMPTY map is never sent. `packageVersions` and `backupScheduleOwners` are
-/// device-reported fields the controller preserves precisely because it cannot
-/// observe them, so writing `{}` for a device that reported nothing — an older
-/// agent, or one whose managers could not be queried — would blank a fact the
-/// cluster still holds. Silence is "not observed", never "none".
+/// Server-side apply under the gateway's own field manager, so the two maps are
+/// OWNED here: a key the device stopped reporting — a package it uninstalled, a
+/// backup unit it no longer declares — is pruned by the same write that carries
+/// the rest, and the fields the controller computes are left alone because this
+/// manager never claimed them. The apply is not forced: a conflict means
+/// something else took these fields, which is a fact to report rather than
+/// overwrite.
+///
+/// A map the device did not OBSERVE is absent from the request, and absent from
+/// the body: `packageVersions` and `backupScheduleOwners` are facts the
+/// controller cannot see for itself, so an older agent, or one whose managers
+/// could not be queried, must not blank what the cluster still holds. Because an
+/// apply prunes what it omits, a check-in that observed neither map writes
+/// nothing at all, and one that observed only some writes only those.
 async fn report_device_status(
     client: &kube::Client,
     namespace: &str,
@@ -152,16 +161,13 @@ async fn report_device_status(
     use kube::api::{Api, Patch, PatchParams};
 
     let mut status = serde_json::Map::new();
-    if !req.package_versions.is_empty() {
-        status.insert(
-            "packageVersions".to_string(),
-            serde_json::json!(req.package_versions),
-        );
+    if let Some(ref versions) = req.package_versions {
+        status.insert("packageVersions".to_string(), serde_json::json!(versions));
     }
-    if !req.backup_schedule_owners.is_empty() {
+    if let Some(ref owners) = req.backup_schedule_owners {
         status.insert(
             "backupScheduleOwners".to_string(),
-            serde_json::json!(req.backup_schedule_owners),
+            serde_json::json!(owners),
         );
     }
     if status.is_empty() {
@@ -169,12 +175,19 @@ async fn report_device_status(
     }
 
     let machines: Api<MachineConfig> = Api::namespaced(client.clone(), namespace);
-    let patch = serde_json::json!({ "status": serde_json::Value::Object(status) });
+    // An apply body is a whole object, not a fragment: the API server reads the
+    // type and the name from it.
+    let patch = serde_json::json!({
+        "apiVersion": <MachineConfig as kube::Resource>::api_version(&()),
+        "kind": <MachineConfig as kube::Resource>::kind(&()),
+        "metadata": { "name": name },
+        "status": serde_json::Value::Object(status),
+    });
     if let Err(e) = machines
         .patch_status(
             name,
             &PatchParams::apply(FIELD_MANAGER_GATEWAY),
-            &Patch::Merge(patch),
+            &Patch::Apply(patch),
         )
         .await
     {
@@ -204,7 +217,7 @@ async fn report_device_status(
 /// the older `creationTimestamp` wins and the collision is logged. A stable
 /// answer is what keeps a machine from alternating between two cadences on
 /// successive check-ins.
-async fn cluster_backup_schedules(
+async fn policy_owned_schedules(
     client: &kube::Client,
     namespace: &str,
     hostname: &str,

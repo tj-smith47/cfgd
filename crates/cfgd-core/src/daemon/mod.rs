@@ -510,6 +510,15 @@ pub(super) struct DaemonState {
     // interval reported from a copy describes a timer that is no longer running.
     reconcile_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
     sync_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Raised by a check-in whose answer changed the cluster-owned backup
+    /// cadences, so the loop re-resolves its timer set.
+    ///
+    /// A notification rather than a flag: the backup branch parks on the
+    /// soonest fire, which is hours away on a nightly unit, and a set the
+    /// operator just rescheduled must not wait out the deadline it is being
+    /// replaced. It lives here because the check-in runs inside a blocking
+    /// reconcile tick, which holds this state and nothing else the loop owns.
+    backup_reresolve: Arc<tokio::sync::Notify>,
 }
 
 impl DaemonState {
@@ -537,7 +546,14 @@ impl DaemonState {
             store_path: None,
             reconcile_secs: None,
             sync_secs: None,
+            backup_reresolve: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// The handle both ends of the re-resolve signal take: the loop awaits it,
+    /// a check-in that moved the cadences raises it.
+    pub(super) fn backup_reresolve(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.backup_reresolve)
     }
 
     fn with_store_path(mut self, path: PathBuf) -> Self {
@@ -725,6 +741,12 @@ mod reconcile;
 mod runner;
 mod service;
 mod sync;
+
+/// The two halves of the daemon's own check-in wire contract, for the pin that
+/// reads them with the gateway's types: the daemon posts a body cfgd-operator
+/// must parse, and neither crate can see the other's spelling on its own.
+#[cfg(any(test, feature = "test-helpers"))]
+pub use checkin::{CheckinPayload, CheckinServerResponse};
 pub(crate) mod tick_cache;
 
 #[cfg(test)]
@@ -1185,12 +1207,14 @@ pub(super) async fn run_daemon_with(
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
         let startup_state_dir = resolved_state_dir.clone();
+        let startup_reresolve = { state.lock().await.backup_reresolve() };
         crate::spawn_blocking_with_test_home(move || {
             run_startup_checkin_blocking(
                 &startup_config_path,
                 startup_profile_override.as_deref(),
                 &startup_cfg,
                 startup_state_dir.as_deref(),
+                &startup_reresolve,
             );
         })
         .await
@@ -1540,11 +1564,20 @@ pub(super) fn profile_context<'a>(
 }
 
 /// scheduling onto a tokio runtime.
+/// The startup check-in, which reports NEITHER device-observed map.
+///
+/// It has resolved a profile and nothing else: no provider registry, so no
+/// installed versions, and reporting one map while leaving the other unobserved
+/// would have the gateway apply a status naming only half of what this machine
+/// reports. The first reconcile tick, which resolves both, is the reporter; what
+/// startup is here for is the config hash and the cadences the answer carries
+/// back, in time for the timer set to be armed from them.
 pub(super) fn run_startup_checkin_blocking(
     config_path: &Path,
     profile_override: Option<&str>,
     cfg: &CfgdConfig,
     state_dir: Option<&Path>,
+    backup_reresolve: &tokio::sync::Notify,
 ) {
     let profiles_dir = profiles_dir_for(config_path);
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
@@ -1556,11 +1589,19 @@ pub(super) fn run_startup_checkin_blocking(
     };
     match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(resolved) => {
-            let checkin = try_server_checkin(cfg, &resolved);
+            let checkin = try_server_checkin(
+                cfg,
+                &resolved,
+                crate::server_client::CheckinFacts::default(),
+            );
             if checkin.config_changed {
                 tracing::info!("daemon: server reports config changed at startup");
             }
-            checkin::record_cluster_schedules_in(state_dir, &checkin.backup_schedules);
+            if let Some(ref projections) = checkin.backup_schedules
+                && checkin::record_cluster_schedules_in(state_dir, projections)
+            {
+                backup_reresolve.notify_one();
+            }
             // Consume any pending server config at startup so the first
             // reconcile tick picks up the changes.
             match crate::state::load_pending_server_config() {

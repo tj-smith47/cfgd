@@ -213,7 +213,18 @@ pub(super) async fn reconcile_machine_config(
     }
 
     desired.last_reconciled = Some(now.clone());
-    let status = serde_json::json!({ "status": desired });
+    let mut reported = serde_json::json!(desired);
+    // The two device-reported maps are carried in `desired` so the
+    // already-current comparison above sees the whole status, and dropped from
+    // the body: they are the gateway's fields, applied server-side under its own
+    // manager, and echoing them here would move their ownership to this manager
+    // and turn the gateway's next apply into a conflict. A merge patch that
+    // names neither leaves both standing.
+    if let Some(body) = reported.as_object_mut() {
+        body.remove("packageVersions");
+        body.remove("backupScheduleOwners");
+    }
+    let status = serde_json::json!({ "status": reported });
 
     if let Err(e) = machines_api
         .patch_status(
