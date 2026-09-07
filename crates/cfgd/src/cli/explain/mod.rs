@@ -12,6 +12,15 @@ use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 // composite resource with no Rust spec type, so its schema is hand-authored
 // here rather than derived.
 
+/// The display name of the cluster-side `Module` CRD, which shares the kind
+/// string `Module` with the local module and so cannot be shown under it.
+const MODULE_CRD_NAME: &str = "Module (CRD)";
+
+/// The `cfgd explain` token that selects [`MODULE_CRD_NAME`]. The display name
+/// carries a space and parentheses no shell hands through as one word, so the
+/// CRD needs a selector its own display name cannot supply.
+const MODULE_CRD_SELECTOR: &str = "module-crd";
+
 /// A top-level resource type, as `explain` presents it.
 ///
 /// Owned (built from the registry the first time `explain` asks), so its
@@ -20,6 +29,15 @@ use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 pub struct ResourceSchema {
     /// Display name (the `kind`, except the CRD `Module` shown as `Module (CRD)`).
     pub name: String,
+    /// The token `cfgd explain` accepts for this kind, as [`find_schema`]
+    /// resolves it.
+    ///
+    /// Every command a hint spells has to re-parse, and the display name does
+    /// not: the CRD `Module` is shown as `Module (CRD)`, whose lowercase form
+    /// carries a space and parentheses no shell hands through as one word. The
+    /// CLI selector for it is `module-crd`; every other kind is selected by its
+    /// own lowercased name.
+    selector: String,
     /// apiVersion value.
     pub api_version: String,
     /// kind value.
@@ -46,20 +64,9 @@ impl ResourceSchema {
         self.fields.clone()
     }
 
-    /// The token `cfgd explain` accepts for this kind, as [`find_schema`]
-    /// resolves it.
-    ///
-    /// Every command a hint spells has to re-parse, and the display name does
-    /// not: the CRD `Module` is shown as `Module (CRD)`, whose lowercase form
-    /// carries a space and parentheses no shell hands through as one word.
-    /// The CLI selector for it is `module-crd`; every other kind is selected
-    /// by its own lowercased name.
-    pub fn selector_token(&self) -> String {
-        if self.name == "Module (CRD)" {
-            "module-crd".to_string()
-        } else {
-            self.name.to_lowercase()
-        }
+    /// The token `cfgd explain` accepts for this kind (see [`Self::selector`]).
+    pub fn selector_token(&self) -> &str {
+        &self.selector
     }
 
     /// A drilldown field's own docs pointer: the field's `spec.<path>`
@@ -228,6 +235,7 @@ fn teamconfig_schema() -> ResourceSchema {
 
     ResourceSchema {
         name: "TeamConfig".to_string(),
+        selector: "teamconfig".to_string(),
         api_version: cfgd_core::API_VERSION.to_string(),
         kind: "TeamConfig".to_string(),
         location: "Crossplane Composite Resource (XR)".to_string(),
@@ -267,7 +275,7 @@ fn teamconfig_schema() -> ResourceSchema {
 /// Build the full ordered set of `explain`-known schemas: every
 /// [`KIND_REGISTRY`] entry plus the hand-authored TeamConfig. The CRD `Module`
 /// (which shares the kind string `"Module"` with the local one) is disambiguated
-/// with the display name `"Module (CRD)"`.
+/// with the display name [`MODULE_CRD_NAME`].
 ///
 /// Reflected at most once per process. Every entry's `field_tree()` re-runs
 /// `schemars::schema_for!` over the kind's Rust type and then walks the whole
@@ -292,13 +300,14 @@ fn build_all_schemas() -> Vec<ResourceSchema> {
     let mut schemas: Vec<ResourceSchema> = KIND_REGISTRY
         .iter()
         .map(|e| {
-            let name = if e.crd && e.kind == "Module" {
-                "Module (CRD)".to_string()
+            let (name, selector) = if e.crd && e.kind == "Module" {
+                (MODULE_CRD_NAME.to_string(), MODULE_CRD_SELECTOR.to_string())
             } else {
-                e.kind.to_string()
+                (e.kind.to_string(), e.kind.to_lowercase())
             };
             ResourceSchema {
                 name,
+                selector,
                 api_version: e.api_version.to_string(),
                 kind: e.kind.to_string(),
                 location: e.location.to_string(),
@@ -322,12 +331,12 @@ pub fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
     // The CRD Module is selectable only via the explicit `module-crd` token, so
     // it must be matched before the generic name/kind pass (which would
     // otherwise return whichever Module is iterated first for a bare query).
-    if lower == "module-crd" || lower == "module (crd)" {
-        return all_schemas().iter().find(|s| s.name == "Module (CRD)");
+    if lower == MODULE_CRD_SELECTOR || lower == "module (crd)" {
+        return all_schemas().iter().find(|s| s.name == MODULE_CRD_NAME);
     }
     all_schemas().iter().find(|s| {
         // Never let a bare Module query match the CRD variant.
-        if s.name == "Module (CRD)" {
+        if s.name == MODULE_CRD_NAME {
             return false;
         }
         s.name.to_lowercase() == lower
@@ -768,7 +777,7 @@ pub fn build_explain_index_doc() -> Doc {
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
     let fields = sorted_by_name(schema.fields.iter());
-    let hint = expandable_hint(&schema.selector_token(), &fields, recursive);
+    let hint = expandable_hint(schema.selector_token(), &fields, recursive);
     let doc = Doc::new()
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
