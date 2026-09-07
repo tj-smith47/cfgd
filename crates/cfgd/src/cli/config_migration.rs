@@ -193,6 +193,7 @@ fn persist_xdg_pin(home: &Path) -> std::io::Result<Option<PathBuf>> {
 /// Mirrors the login/all-scope targeting in `reconciler::env_engine`; a direct
 /// export is written rather than routing through `~/.cfgd.env` (which the env
 /// engine regenerates wholesale from `spec.env`, and would clobber here).
+// basename-ok: writes an rc file, classifies no recorded row
 fn xdg_rc_target(home: &Path, shell_name: Option<&str>) -> XdgRcTarget {
     match shell_name {
         Some(s) if s.contains("zsh") => XdgRcTarget::PosixExport(home.join(".zshenv")),

@@ -109,14 +109,22 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
 
 /// The resource types a full CLI live check evaluates end to end, and so the
 /// ONLY types its complement-resolve may clear. Everything else in
-/// `drift_events` — the daemon's `secret`, `script`, `env-session` and
-/// `manager` rows, any class a future writer mints — is a finding nothing in
+/// `drift_events` — the daemon's `secret`, `script`,
+/// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows,
+/// any class a future writer mints — is a finding nothing in
 /// this check re-examined, and stands for its own writer to settle. Also the
 /// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
 /// tuple pushed into a checked/findings vector is a wire key, never a
 /// rendered label.
 pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
-    "file", "module", "package", "system", "env", "env-rc", "env-var", "alias",
+    "file",
+    "module",
+    "package",
+    "system",
+    cfgd_core::reconciler::ENV_RESOURCE_TYPE,
+    cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE,
+    "env-var",
+    "alias",
 ];
 
 /// Whether a recorded row is one THIS full check could not have re-found, so

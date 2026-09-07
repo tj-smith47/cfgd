@@ -132,7 +132,7 @@ cfgd apply --only packages.brew         # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
 cfgd apply --skip module:nvim           # one module, every phase
 cfgd apply --skip cfgd:managers         # every package-manager bootstrap
-cfgd apply --skip bootstrap.shell      # write the env file, touch no rc file
+cfgd apply --skip bootstrap.shell       # write the env file, touch no rc file
 cfgd apply --skip bootstrap.session     # skip the live-session broadcast
 cfgd apply --skip bootstrap.brew        # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl         # skip specific items
@@ -227,7 +227,7 @@ cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # nvim + deps, isolated from the profile
 cfgd plan --module nvim --with-profile  # full profile PLUS nvim
 cfgd plan --phase bootstrap.managers    # one owner group within a phase
-cfgd plan --skip bootstrap.shell       # write the env file, touch no rc file
+cfgd plan --skip bootstrap.shell        # write the env file, touch no rc file
 cfgd plan --skip bootstrap.session      # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
@@ -809,11 +809,11 @@ render only.
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).
 `state` is the verdict the human Status row shows, always present, one of
-`Synced`, `Installed`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted`
+`Synced`, `Applied`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted`
 needs a live scan: both words come from one derivation, so a `state` of
 `Drifted` always has the findings under `drift` to back it, and a `state` of
 `Unknown` always has the rows under `systemErrors` that say which check could
-not run. `Installed` is the module's recorded fact with no check behind it:
+not run. `Applied` is the module's recorded fact with no check behind it:
 neither `lastScanAt` nor a `scopedScans` entry for this module stands.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including

@@ -515,7 +515,7 @@ pub fn env_verify_results(
                     .map(|content| content.contains(&line))
                     .unwrap_or(false);
                 results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
+                    resource_type: super::ENV_RC_RESOURCE_TYPE.to_string(),
                     resource_id: to_posix_string(&rc_path),
                     matches: has_line,
                     expected: "source line present".to_string(),

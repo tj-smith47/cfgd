@@ -8,6 +8,7 @@ use cfgd_core::output::{Doc, ICON_ARROW, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
+// basename-ok: sourceability, not the verb
 /// Basename of the bash/zsh managed env file the reconciler writes.
 const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.

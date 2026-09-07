@@ -271,7 +271,7 @@ The full resolution logic for each package entry:
    Available options:
      [ ] apt — neovim 0.6.1 (below minimum)
      [ ] snap — nvim 0.10.2
-     [ ] brew — neovim 0.10.2 (not installed, can bootstrap)
+     [ ] brew — neovim 0.10.2 (not installed, can provision via brew)
    Select managers to use, or skip:
    ```
    You can select one or more, or skip the package (it will be recorded as skipped in the plan).
@@ -581,8 +581,9 @@ The heading's annotation dates the recorded drift verdicts: how long ago the
 machine was last checked, or `(drift never checked)` when no scan has ever
 run. A row only reads `Synced` where a check actually covered that owner — a
 machine-wide scan, or a scoped (`--module`) one that stamped that module. An
-owner nothing has checked reads `Applied` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
-paints rather than from any declaration, so a health line and the rows under
+owner nothing has checked reads `Applied` instead, the record's own fact. The
+counts are taken from the rows the `Managed Resources` table below paints
+rather than from any declaration, so a health line and the rows under
 it cannot disagree; a kind an owner holds none of is dropped rather than
 rendered as `0`, and an owner holding nothing reads its bare verdict. The
 verdict leads and the counts are its parenthetical: a `Failed` or `Drifted`
@@ -598,12 +599,13 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of six states:
+A module reads as one of seven states:
 
 | State | Meaning | Where it can appear |
 |---|---|---|
 | `Synced` | converged, with every check behind it answered | any status surface where a check covers the module |
-| `Installed` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Applied` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Installed` | the module is on this machine, presence rather than convergence | `cfgd module list` and `cfgd module show` |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
 | `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |

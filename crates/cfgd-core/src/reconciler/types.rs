@@ -237,6 +237,16 @@ pub(super) const MANAGER_RESOURCE_TYPE: &str = "manager";
 /// the `cfgd:` owner the plan and apply trees head them with.
 pub const ENV_RESOURCE_TYPE: &str = "env";
 
+/// The `resource_type` of the source line cfgd plants in a shell rc file the
+/// USER owns, and of the live-session publish — the two env surfaces
+/// [`ENV_RESOURCE_TYPE`] does not name. Spelled here for the same reason its
+/// sibling is: both crates match on them (the apply that resolves an rc row,
+/// the scan's own resolvable-type list, and `cfgd status`'s Type cell and
+/// Component Health counts), so a rename cannot leave one side matching a
+/// type nothing writes.
+pub const ENV_RC_RESOURCE_TYPE: &str = "env-rc";
+pub const ENV_SESSION_RESOURCE_TYPE: &str = "env-session";
+
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
 }
@@ -1480,15 +1490,17 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
         Action::Env(ea) => {
             use crate::reconciler::EnvAction;
             match ea {
-                EnvAction::WriteEnvFile { path, .. } => ("env".to_string(), to_posix_string(path)),
+                EnvAction::WriteEnvFile { path, .. } => {
+                    (ENV_RESOURCE_TYPE.to_string(), to_posix_string(path))
+                }
                 EnvAction::InjectSourceLine { rc_path, .. } => {
-                    ("env-rc".to_string(), to_posix_string(rc_path))
+                    (ENV_RC_RESOURCE_TYPE.to_string(), to_posix_string(rc_path))
                 }
                 // The ONE spelling of the live-session surface, shared with
                 // the tracking row the apply upserts: three spellings of one
                 // fact left the tick recording a row no verb could settle.
                 EnvAction::RefreshLiveSession { .. } => (
-                    "env-session".to_string(),
+                    ENV_SESSION_RESOURCE_TYPE.to_string(),
                     crate::state::ENV_SESSION_RESOURCE_ID.to_string(),
                 ),
             }

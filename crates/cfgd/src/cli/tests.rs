@@ -32487,13 +32487,14 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 /// A Component Health row reads `Synced` only where a check actually covers
 /// its owner. Three renders off one fixture:
 ///
-/// - nothing stamped: every row states the record's own fact (`Installed`)
+/// - nothing stamped: every row states the record's own fact (`Applied`)
 ///   under a heading that says drift was never checked. `Synced` beside
 ///   `(drift never checked)` is the contradiction this pin refuses: the word
 ///   would claim an answer no check produced, and both halves render from the
 ///   same document.
-/// - the machine-wide stamp: a full walk covered every owner, so every row
-///   earns `Synced`.
+/// - the machine-wide stamp: a full walk covered every owner the scan
+///   REACHES, so those rows earn `Synced`; `cfgd:session` is not one of them
+///   — nothing re-reads a live session — so it keeps stating `Applied`.
 /// - only `module:nvim` scoped: a scoped scan checks one module's own files,
 ///   packages and env ITEMS — never the env FILES or the profile's packages —
 ///   so nvim earns the verdict and `cfgd:env` does not, and the heading is

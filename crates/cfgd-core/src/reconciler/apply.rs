@@ -2227,7 +2227,8 @@ impl<'a> super::Reconciler<'a> {
                 if rid != crate::state::ENV_SESSION_RESOURCE_ID
                     && super::recorded_env_method(&rid) == super::ENV_VERB_INJECT
                 {
-                    self.state.resolve_drift(apply_id, "env-rc", &rid)?;
+                    self.state
+                        .resolve_drift(apply_id, super::ENV_RC_RESOURCE_TYPE, &rid)?;
                 }
                 self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
             }

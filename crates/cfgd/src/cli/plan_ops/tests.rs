@@ -993,6 +993,94 @@ fn filter_plan_skip_bootstrap_session_removes_only_the_broadcast_and_strands_not
 }
 
 #[test]
+fn filter_plan_skip_bootstrap_shell_removes_only_the_injects_and_keeps_the_writes() {
+    // `bootstrap.shell` reaches the cfgd:shell owner group the same way
+    // `bootstrap.session` reaches cfgd:session — by group token, not by a
+    // literal match on an `Action::Env` path. The two env halves sit in one
+    // phase here so the pin can say which one the selector took: the rc-line
+    // inject is cfgd:shell's, the env-file write stays cfgd:env's.
+    let bootstrap_env = || {
+        vec![
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                declared: None,
+                batched: vec![],
+                depends_on: vec![],
+            }),
+            env_write(),
+            env_inject(),
+        ]
+    };
+
+    let mut plan = make_plan(vec![
+        (PhaseName::Bootstrap, bootstrap_env()),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, _buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["bootstrap.shell".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let skipped: Vec<&Action> = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .unwrap()
+        .actions()
+        .collect();
+    assert!(
+        skipped
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. }))),
+        "the env file write is cfgd:env's, not cfgd:shell's, and must survive: {skipped:?}"
+    );
+    assert!(
+        !skipped
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::InjectSourceLine { .. }))),
+        "every rc-line inject must be gone: {skipped:?}"
+    );
+
+    let mut plan = make_plan(vec![
+        (PhaseName::Bootstrap, bootstrap_env()),
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+    ]);
+    let (printer, _buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &[],
+        &["bootstrap.shell".to_string()],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let kept: Vec<&Action> = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .map(|p| p.actions().collect())
+        .unwrap_or_default();
+    assert!(
+        kept.iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::InjectSourceLine { .. }))),
+        "`--only bootstrap.shell` keeps the injects: {kept:?}"
+    );
+    assert!(
+        !kept
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. }))),
+        "`--only bootstrap.shell` keeps nothing of cfgd:env's: {kept:?}"
+    );
+}
+
+#[test]
 fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
     // The group-selector grammar reaches the WHOLE cfgd:managers owner group —
     // every registered manager's node — not one manager at a time, and each

@@ -286,7 +286,7 @@ impl ModuleStatus {
     /// `Drifted` is derived, never stored: it is read off the very rows that
     /// fill the Drift section below — a live scan's findings, or the RECORDED
     /// rows the fallback renders — so the verdict word and the section can
-    /// never disagree, and this surface cannot call a module `Installed`
+    /// never disagree, and this surface cannot call a module `Applied`
     /// while the fleet's Component Health calls the same rows `Drifted`.
     /// `Unknown` comes from the same section's erroring checks, for the same
     /// reason: the Drift section prints them, so the headline above it cannot
@@ -1041,7 +1041,7 @@ pub fn build_fleet_status_doc(
 /// unchecked or stale: the one command that looks, at the foot of the report.
 pub(super) const SCAN_HINT: &str = "`cfgd diff` checks the live machine for drift";
 
-use cfgd_core::reconciler::ENV_RESOURCE_TYPE;
+use cfgd_core::reconciler::{ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE};
 
 /// Stand-in for a resource column with nothing left to say — the same `-` the
 /// Config Sources table renders for a version nobody has fetched.
@@ -1354,21 +1354,13 @@ fn is_session_env_row(r: &cfgd_core::state::ManagedResource) -> bool {
 /// apply settles that action with — the dashboard resolving it from the same
 /// probe rather than reporting a surface it cannot reach as ordinary state.
 fn session_env_resource() -> String {
-    let noun = cfgd_core::output::drift_kind_label(SESSION_DRIFT_TYPE);
+    let noun = cfgd_core::output::drift_kind_label(ENV_SESSION_RESOURCE_TYPE);
     if cfgd_core::session_manager_available() {
         noun.to_string()
     } else {
         format!("{noun} — {}", cfgd_core::NO_SESSION_MANAGER)
     }
 }
-
-/// The stored drift `resource_type` of the live-session env surface, and of
-/// an rc source line — the spellings `action_drift_rows` mints for those two
-/// acts. Named here because this table classifies a recorded `env` row into
-/// them: the row's own type is `env` for all three surfaces, and the verb it
-/// was written under is what tells them apart.
-const SESSION_DRIFT_TYPE: &str = "env-session";
-const RC_LINE_DRIFT_TYPE: &str = "env-rc";
 
 /// The drift `resource_type` a recorded `env` row's own surface is reported
 /// under, so both the Type cell and the Component Health count noun read
@@ -1377,8 +1369,8 @@ const RC_LINE_DRIFT_TYPE: &str = "env-rc";
 /// that could drift from what `verify` calls the same resource.
 fn recorded_env_drift_type(r: &cfgd_core::state::ManagedResource) -> &'static str {
     match recorded_env_group(r) {
-        cfgd_core::reconciler::SESSION_GROUP => SESSION_DRIFT_TYPE,
-        cfgd_core::reconciler::SHELL_GROUP => RC_LINE_DRIFT_TYPE,
+        cfgd_core::reconciler::SESSION_GROUP => ENV_SESSION_RESOURCE_TYPE,
+        cfgd_core::reconciler::SHELL_GROUP => ENV_RC_RESOURCE_TYPE,
         _ => ENV_RESOURCE_TYPE,
     }
 }
@@ -1842,17 +1834,19 @@ fn finding_owner(
         // `action_drift_rows` mints and the apply heals. Reading it off an
         // `env` row's id instead matched a shape no producer wrote, and the
         // env-file redundancy drop below would have swallowed it anyway.
-        SESSION_DRIFT_TYPE => (
+        ENV_SESSION_RESOURCE_TYPE => (
             Some(Owner::cfgd(SESSION_GROUP)),
-            Some(cfgd_core::output::drift_kind_label(SESSION_DRIFT_TYPE)),
+            Some(cfgd_core::output::drift_kind_label(
+                ENV_SESSION_RESOURCE_TYPE,
+            )),
             FindingSlot::Child(None),
         ),
         // The rc source line is cfgd's edit to a file the user owns, so it is
         // the shell group's; the file cfgd generates whole and the items
         // inside it are the env group's.
-        RC_LINE_DRIFT_TYPE => (
+        ENV_RC_RESOURCE_TYPE => (
             Some(Owner::cfgd(SHELL_GROUP)),
-            Some(cfgd_core::output::drift_kind_label(RC_LINE_DRIFT_TYPE)),
+            Some(cfgd_core::output::drift_kind_label(ENV_RC_RESOURCE_TYPE)),
             FindingSlot::Child(None),
         ),
         shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias") => {
@@ -2162,8 +2156,8 @@ fn display_type(kind: &str) -> &str {
         "file" | "files" => "file",
         "package" | "packages" => "package",
         "script" | "Running script" => "script",
-        RC_LINE_DRIFT_TYPE => "rc",
-        SESSION_DRIFT_TYPE => "session",
+        ENV_RC_RESOURCE_TYPE => "rc",
+        ENV_SESSION_RESOURCE_TYPE => "session",
         other => other,
     }
 }
@@ -3761,16 +3755,25 @@ mod tests {
     /// generator that mints the targets.
     ///
     /// A recorded env id drops the verb, so the only way back to it is the
-    /// target's basename — and every basename this file could test against is
-    /// a second copy of a table `env_targets` already owns. A host adding a
-    /// dialect (or renaming one) then moves the tree's group while this
-    /// surface keeps classifying by a name nothing writes, which is how a
-    /// table and a tree came to disagree about `~/.bashrc`.
+    /// target's basename — and every basename a CLI source could test against
+    /// is a second copy of a table `env_targets` already owns. A host adding a
+    /// dialect (or renaming one) then moves the tree's group while a surface
+    /// keeps classifying by a name nothing writes, which is how a table and a
+    /// tree came to disagree about `~/.bashrc`.
+    ///
+    /// The walk is the whole `cli/` production slice, not this file alone: the
+    /// rule is about the recorded id's verb, and any command holding one can
+    /// break it. A site that names a generated basename for a reason that is
+    /// not the verb — a plan caveat asking whether a file is SOURCEABLE, a
+    /// migration WRITING an rc file — carries `// basename-ok: <why>`, which
+    /// hatches the literals under it up to the next blank line.
     #[test]
     fn no_status_site_classifies_an_env_target_by_its_basename() {
         // Every basename `MergedEnvItems::managed_env_files` and
         // `managed_env_source_lines` can put on a host, plus the directories
-        // that give one its dialect.
+        // that give one its dialect. Matched per PATH SEGMENT, a dotfile's own
+        // leading dot optional, so neither `spec.profile` nor a bare `profile`
+        // reads as `~/.profile`.
         const BASENAME_TELLS: &[&str] = &[
             ".cfgd.env",
             "cfgd.conf",
@@ -3783,21 +3786,74 @@ mod tests {
             "conf.d",
             "environment.d",
         ];
-        let literals = production_string_literals();
-        assert!(
-            literals.len() >= 20,
-            "the walk no longer reads this file's production literals: {}",
-            literals.len()
-        );
-        for literal in &literals {
-            for tell in BASENAME_TELLS {
-                assert!(
-                    !literal.contains(tell),
-                    "`{literal}` names an env target by its basename — ask \
-                     `cfgd_core::reconciler::recorded_env_method` instead"
-                );
+        fn names_a_target(literal: &str, tell: &str) -> bool {
+            literal
+                .split('/')
+                .any(|seg| seg == tell || seg.strip_prefix('.') == Some(tell))
+        }
+
+        let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+        let mut stack = vec![cli_root.clone()];
+        let mut files = 0usize;
+        let mut literals = 0usize;
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != "tests") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs")
+                    || path.file_name().is_some_and(|n| n == "tests.rs")
+                {
+                    continue;
+                }
+                let Ok(body) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                files += 1;
+                let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
+                let rel = cfgd_core::to_posix_string(&rel);
+                let mut hatched = false;
+                for (n, line) in cfgd_core::test_helpers::production_slice(&body)
+                    .lines()
+                    .enumerate()
+                {
+                    if line.trim().is_empty() {
+                        hatched = false;
+                    }
+                    if line.contains("basename-ok:") {
+                        hatched = true;
+                    }
+                    if hatched || line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    for literal in string_literals(line) {
+                        literals += 1;
+                        for tell in BASENAME_TELLS {
+                            assert!(
+                                !names_a_target(&literal, tell),
+                                "{rel}:{}: `{literal}` names an env target by its \
+                                 basename — ask \
+                                 `cfgd_core::reconciler::recorded_env_method` \
+                                 instead, or say why with `// basename-ok: <why>`",
+                                n + 1
+                            );
+                        }
+                    }
+                }
             }
         }
+        assert!(
+            files >= 30 && literals >= 2000,
+            "the walk no longer reads the cli crate's production sources: \
+             {files} files, {literals} literals"
+        );
         // And the one answerer really is reached, so the walk above cannot
         // pass by this file having stopped classifying env rows at all.
         let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
@@ -3805,18 +3861,6 @@ mod tests {
             production.matches("recorded_env_method(").count() >= 2,
             "the Owner column and the erroring-check key both ask the one answerer"
         );
-    }
-
-    /// The double-quoted literals of every non-comment production line.
-    ///
-    /// Per line, so a `"` inside a doc comment cannot pair with one three
-    /// lines down and hide a real literal between them.
-    fn production_string_literals() -> Vec<String> {
-        cfgd_core::test_helpers::production_slice(include_str!("status.rs"))
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .flat_map(string_literals)
-            .collect()
     }
 
     /// Coverage is per owner, and the owners a `--scan` never reaches are
@@ -5805,8 +5849,8 @@ mod tests {
         // WORDS are literals in the same body; neither belongs to a module,
         // so both are dropped here rather than by spelling.
         let cfgd_owned = [
-            display_type(RC_LINE_DRIFT_TYPE),
-            display_type(SESSION_DRIFT_TYPE),
+            display_type(ENV_RC_RESOURCE_TYPE),
+            display_type(ENV_SESSION_RESOURCE_TYPE),
         ];
         let mut words: Vec<String> = string_literals(&body[..end])
             .into_iter()
@@ -7057,11 +7101,13 @@ mod tests {
     ///
     /// The whole render is not the assertion: `Last Applied` is a different
     /// row answering a different question, and a bare `contains` on the
-    /// vocabulary's words matches it.
+    /// vocabulary's words matches it. The CELL is compared, never a suffix of
+    /// it, because `NotApplied` ends with `Applied` and would otherwise
+    /// satisfy a claim about the converged word.
     fn status_row_reads(output: &str, word: &str) -> bool {
-        output
-            .lines()
-            .any(|line| line.trim_start().starts_with("Status") && line.trim_end().ends_with(word))
+        output.lines().any(|line| {
+            line.trim_start().starts_with("Status") && line.split_whitespace().last() == Some(word)
+        })
     }
 
     fn declared(name: &str, platforms: &[&str]) -> cfgd_core::config::ModulePackageEntry {
