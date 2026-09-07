@@ -399,6 +399,25 @@ impl ScheduleOwner {
     }
 }
 
+/// One backup unit's cluster-owned cadence, as the device gateway answers a
+/// check-in with it.
+///
+/// Carried on the wire only: it is what a cluster `BackupPolicy` decided for a
+/// unit the machine left open (`scheduleOwner: Cluster`), and it never reaches
+/// the profile on disk. A unit the machine pinned `Local` is never projected,
+/// so a value arriving for one is ignored rather than merged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupScheduleProjection {
+    /// Cron expression or interval the unit runs on, in the grammar
+    /// `validate_backup_schedule_grammar` accepts.
+    pub schedule: String,
+    /// How many snapshots the unit keeps. Absent, the machine's own
+    /// `retention` stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<u32>,
+}
+
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///

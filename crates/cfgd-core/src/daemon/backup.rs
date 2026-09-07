@@ -70,7 +70,18 @@ impl BackupTask {
         profile_name: &str,
         now: Instant,
         last_finished: Option<&str>,
+        projections: &crate::backup::ScheduleProjections,
     ) -> Option<Self> {
+        // The cluster's cadence replaces the declared one on the CLONE, so
+        // every reader of the held spec (the fire, the retention prune) sees
+        // the one schedule the unit actually runs on. The profile on disk is
+        // untouched; the projection is runtime state the next check-in
+        // replaces.
+        let effective = crate::backup::effective_schedule(spec, projections);
+        let mut spec = spec.clone();
+        spec.schedule = effective.schedule.map(str::to_string);
+        spec.retention = effective.retention;
+        let spec = &spec;
         let schedule_str = spec.schedule.clone()?;
         let Some(schedule) = BackupSchedule::parse(&schedule_str) else {
             tracing::warn!(
@@ -200,6 +211,7 @@ pub(super) fn build_backup_tasks(
     profile_name: &str,
     now: Instant,
     last_finished: &dyn Fn(&str) -> Option<String>,
+    projections: &crate::backup::ScheduleProjections,
 ) -> Vec<BackupTask> {
     specs
         .iter()
@@ -209,6 +221,7 @@ pub(super) fn build_backup_tasks(
                 profile_name,
                 now,
                 last_finished(&spec.name).as_deref(),
+                projections,
             )
         })
         .collect()
@@ -560,9 +573,16 @@ pub(super) fn resolve_backup_tasks(
             .and_then(|s| s.latest_backup_run(name).ok().flatten())
             .map(|record| record.finished_at)
     };
+    // What the last check-in said the cluster owns. An unreadable store costs
+    // the machine the cluster's cadence, not its own: every unit falls back to
+    // the schedule its profile declares.
+    let projections = store
+        .as_ref()
+        .and_then(|s| s.cluster_backup_schedules().ok())
+        .unwrap_or_default();
 
     Ok(ResolvedBackupTasks {
-        tasks: build_backup_tasks(&specs, profile_name, now, &last_finished),
+        tasks: build_backup_tasks(&specs, profile_name, now, &last_finished, &projections),
         degraded,
     })
 }

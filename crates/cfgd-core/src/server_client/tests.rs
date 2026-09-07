@@ -32,9 +32,117 @@ fn checkin_request_without_compliance_summary() {
         arch: "x86_64".into(),
         config_hash: "abc123".into(),
         compliance_summary: None,
+        package_versions: BTreeMap::new(),
+        backup_schedule_owners: BTreeMap::new(),
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(!json.contains("complianceSummary"));
+}
+
+/// The device's two reported maps travel as camelCase keys, and an empty one
+/// is omitted so a device with nothing to say sends the body every gateway
+/// that predates the fields already parses.
+#[test]
+fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("POST", "/api/v1/checkin")
+        .match_body(mockito::Matcher::JsonString(
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": crate::hostname_string(),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "configHash": "hash123",
+                "packageVersions": { "brew/git": "2.45.1" },
+                "backupScheduleOwners": { "dotfiles": "local" },
+            })
+            .to_string(),
+        ))
+        .with_status(200)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let facts = CheckinFacts {
+        package_versions: BTreeMap::from([(
+            crate::state::package_resource_id("brew", "git"),
+            "2.45.1".to_string(),
+        )]),
+        backup_schedule_owners: BTreeMap::from([(
+            "dotfiles".to_string(),
+            crate::config::ScheduleOwner::Local.label().to_string(),
+        )]),
+    };
+    client
+        .checkin("hash123", None, facts, &printer)
+        .expect("the gateway answered");
+    mock.assert();
+
+    // The empty case is the older device's body: neither key is written at all.
+    let empty = serde_json::to_string(&CheckinRequest {
+        device_id: "dev-1".into(),
+        hostname: "ws-1".into(),
+        os: "linux".into(),
+        arch: "x86_64".into(),
+        config_hash: "abc123".into(),
+        compliance_summary: None,
+        package_versions: BTreeMap::new(),
+        backup_schedule_owners: BTreeMap::new(),
+    })
+    .expect("serialize");
+    assert!(
+        !empty.contains("packageVersions") && !empty.contains("backupScheduleOwners"),
+        "an empty map must be omitted, not sent as {{}}: {empty}"
+    );
+}
+
+/// A gateway that answers without `backupSchedules` leaves every unit on the
+/// cadence its own profile declares.
+#[test]
+fn checkin_response_without_backup_schedules_projects_nothing() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/checkin")
+        .with_status(200)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let resp = client
+        .checkin("hash", None, Default::default(), &printer)
+        .expect("the gateway answered");
+    assert!(
+        resp.backup_schedules.is_empty(),
+        "an absent projection must read as none, not fail to parse"
+    );
+}
+
+/// A projection the gateway sent reaches the caller with both operands.
+#[test]
+fn checkin_response_carries_the_cluster_owned_projection() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/checkin")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"ok","configChanged":false,"backupSchedules":{"dotfiles":{"schedule":"0 3 * * *","retention":7}}}"#,
+        )
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let resp = client
+        .checkin("hash", None, Default::default(), &printer)
+        .expect("the gateway answered");
+    let projected = resp
+        .backup_schedules
+        .get("dotfiles")
+        .expect("the unit the gateway scheduled");
+    assert_eq!(projected.schedule, "0 3 * * *");
+    assert_eq!(projected.retention, Some(7));
 }
 
 #[test]
@@ -125,7 +233,7 @@ fn checkin_sends_correct_payload_and_parses_response() {
 
     let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash123", None, &printer);
+    let result = client.checkin("hash123", None, Default::default(), &printer);
 
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -150,7 +258,7 @@ fn checkin_with_compliance_summary() {
         warning: 1,
         violation: 0,
     };
-    let result = client.checkin("hash", Some(summary), &printer);
+    let result = client.checkin("hash", Some(summary), Default::default(), &printer);
     assert!(result.is_ok());
     assert!(result.unwrap().config_changed);
     mock.assert();
@@ -330,7 +438,7 @@ fn checkin_server_error_returns_error() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -347,7 +455,7 @@ fn checkin_client_error_does_not_retry() {
 
     let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -437,7 +545,7 @@ fn checkin_invalid_json_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -563,7 +671,7 @@ fn request_challenge_connection_refused() {
 fn checkin_connection_refused() {
     let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -627,7 +735,9 @@ fn checkin_with_desired_config_in_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer).unwrap();
+    let result = client
+        .checkin("hash", None, Default::default(), &printer)
+        .unwrap();
     assert!(result.config_changed);
     assert!(result.desired_config.is_some());
     mock.assert();
@@ -706,7 +816,7 @@ fn checkin_no_api_key_omits_auth_header() {
 
     let client = ServerClient::new(&server.url(), None, "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_ok());
     mock.assert();
 }
@@ -870,7 +980,9 @@ mod bridge {
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
         let (printer, cap) = Printer::for_test_doc();
-        let resp = client.checkin("hash123", None, &printer).unwrap();
+        let resp = client
+            .checkin("hash123", None, Default::default(), &printer)
+            .unwrap();
 
         let summary = CheckinSummary {
             server_status: resp.status.clone(),

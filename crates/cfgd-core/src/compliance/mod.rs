@@ -705,6 +705,67 @@ pub fn collect_system_diffs(
         .collect()
 }
 
+/// What every available manager reports installed for the packages this
+/// machine DECLARES, keyed by [`crate::state::package_resource_id`]
+/// (`<manager>/<package>`).
+///
+/// The device half of `MachineConfig.status.packageVersions`, which a
+/// `ConfigPolicy` reads to judge a version pin. The declared set alone, never a
+/// full listing: a machine's whole `brew list` is thousands of rows nothing in
+/// the cluster asked about, and etcd holds the answer. A manager that cannot be
+/// queried, or that states no version for a package
+/// ([`crate::providers::UNKNOWN_PACKAGE_VERSION`]), contributes no entry rather
+/// than a placeholder a policy would compare against.
+pub fn declared_package_versions(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    registry: &ProviderRegistry,
+    cx: &PackageContext<'_>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut by_manager: HashMap<String, Vec<String>> = HashMap::new();
+    for ep in crate::effective::effective_desired_packages(
+        profile,
+        modules,
+        Some(&registry.manager_map()),
+    ) {
+        by_manager.entry(ep.manager).or_default().push(ep.name);
+    }
+
+    let mut reported = BTreeMap::new();
+    for pm in registry.available_package_managers() {
+        let Some(declared) = by_manager.get(pm.name()) else {
+            continue;
+        };
+        let installed = match cx.installed_for(pm) {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::debug!(
+                    manager = pm.name(),
+                    error = %e,
+                    "package versions for check-in: manager could not be queried"
+                );
+                continue;
+            }
+        };
+        for package in declared {
+            let Some(entry) = installed.entry_for(pm, package) else {
+                continue;
+            };
+            let version = entry.version.trim();
+            if version.is_empty() || version == crate::providers::UNKNOWN_PACKAGE_VERSION {
+                continue;
+            }
+            reported.insert(
+                crate::state::package_resource_id(pm.name(), package),
+                version.to_string(),
+            );
+        }
+    }
+    reported
+}
+
 /// Every drift the collected answers carry, each paired with the configurator
 /// that reported it, in the order they were collected.
 ///

@@ -163,31 +163,45 @@ fn k8s_value(raw: &str) -> String {
     value
 }
 
-/// Find the MachineConfig CRD name that corresponds to a device hostname.
+/// Find the MachineConfig CRD name that corresponds to a device hostname,
+/// falling back to the synthetic `<hostname>-mc` when none is found.
+///
+/// For a caller that only needs a REFERENCE to put in an object it is creating.
+/// A caller that must address the real object takes
+/// [`find_machine_config_ref`] instead: a synthetic name points at nothing.
 pub(super) async fn find_machine_config_for_device(
     client: &kube::Client,
     hostname: &str,
 ) -> String {
+    find_machine_config_ref(client, hostname)
+        .await
+        .map_or_else(|| format!("{}-mc", hostname), |(_, name)| name)
+}
+
+/// The `(namespace, name)` of the MachineConfig whose `spec.hostname` is
+/// `hostname`, or `None` when the cluster holds none and when the list fails.
+///
+/// A live read, deliberately: the gateway answers a device's request about the
+/// machine it is right now, and it holds no reflector of its own — a cache
+/// would have to be built and kept warm for one lookup per API call.
+pub(super) async fn find_machine_config_ref(
+    client: &kube::Client,
+    hostname: &str,
+) -> Option<(String, String)> {
     use crate::crds::MachineConfig;
     use kube::ResourceExt;
     use kube::api::{Api, ListParams};
 
-    // A live read, deliberately: the gateway answers a device's request about
-    // the machine it is right now, and it holds no reflector of its own — a
-    // cache would have to be built and kept warm for one lookup per API call.
     let machines: Api<MachineConfig> = Api::all(client.clone());
     match machines.list(&ListParams::default()).await {
-        Ok(list) => {
-            for mc in &list.items {
-                if mc.spec.hostname == hostname {
-                    return mc.name_any();
-                }
-            }
-            format!("{}-mc", hostname)
-        }
+        Ok(list) => list
+            .items
+            .iter()
+            .find(|mc| mc.spec.hostname == hostname)
+            .map(|mc| (mc.namespace().unwrap_or_default(), mc.name_any())),
         Err(e) => {
             tracing::warn!(error = %e, "failed to list MachineConfigs for device lookup");
-            format!("{}-mc", hostname)
+            None
         }
     }
 }

@@ -635,6 +635,21 @@ const MIGRATIONS: &[&str] = &[
         scope TEXT PRIMARY KEY,
         timestamp TEXT NOT NULL
     );",
+    // Migration 26: the cluster-owned backup cadences the device gateway
+    // answered the last check-in with. Runtime state, not configuration: the
+    // profile on disk is the machine's own declaration and is never rewritten
+    // by a projection. It lives here rather than in the daemon's memory
+    // because two processes need one answer — the daemon arms its timers from
+    // it, and `cfgd backup list` renders the cadence those timers will
+    // actually use. A check-in REPLACES the whole set, so a unit a policy
+    // stopped scheduling falls back to the profile's own cadence rather than
+    // running on a projection nothing renews.
+    "CREATE TABLE IF NOT EXISTS cluster_backup_schedules (
+        name       TEXT PRIMARY KEY,
+        schedule   TEXT NOT NULL,
+        retention  INTEGER,
+        checked_in_at TEXT NOT NULL
+    );",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

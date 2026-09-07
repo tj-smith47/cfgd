@@ -13,6 +13,7 @@ use serial_test::serial;
 use tower::ServiceExt;
 
 use super::*;
+use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
 use crate::gateway::test_state::test_state;
 
 const TEST_ADMIN_KEY: &str = "test-admin-secret";
@@ -634,4 +635,286 @@ async fn set_device_config_under_policy_succeeds_through_router() {
     unsafe {
         std::env::remove_var("CFGD_API_KEY");
     }
+}
+
+// -----------------------------------------------------------------------
+// The check-in's Kubernetes half: the status it writes and the cluster
+// schedules it answers with
+// -----------------------------------------------------------------------
+
+/// An `ObjectList` body carrying one MachineConfig for `hostname`, as the
+/// gateway's cluster-wide lookup reads it.
+fn machine_config_list(namespace: &str, name: &str, hostname: &str) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "MachineConfigList",
+        "metadata": { "resourceVersion": "1" },
+        "items": [{
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": "MachineConfig",
+            "metadata": { "name": name, "namespace": namespace },
+            "spec": { "hostname": hostname, "profile": "base" },
+        }],
+    })
+}
+
+/// An `ObjectList` body carrying the given BackupPolicy objects.
+fn backup_policy_list(items: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "BackupPolicyList",
+        "metadata": { "resourceVersion": "1" },
+        "items": items,
+    })
+}
+
+/// One BackupPolicy whose status already carries the rows the controller wrote.
+fn backup_policy(
+    namespace: &str,
+    name: &str,
+    created: &str,
+    units: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "BackupPolicy",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "creationTimestamp": created,
+        },
+        "spec": { "selector": {}, "units": [] },
+        "status": { "units": units, "machinesMatched": 1 },
+    })
+}
+
+/// A device with a credential, and the bearer token that authenticates it.
+async fn enrolled_device(state: &SharedState, device_id: &str, hostname: &str) -> String {
+    state
+        .db
+        .register_device(device_id, hostname, "linux", "x86_64", "abc", None)
+        .await
+        .expect("register device");
+    let token = format!("bearer-{device_id}");
+    state
+        .db
+        .create_device_credential(device_id, &hash_token(&token), "user1", None)
+        .await
+        .expect("insert credential");
+    token
+}
+
+fn checkin_body(device_id: &str, hostname: &str) -> serde_json::Value {
+    serde_json::json!({
+        "deviceId": device_id,
+        "hostname": hostname,
+        "os": "linux",
+        "arch": "x86_64",
+        "configHash": "abc",
+        "packageVersions": { "brew/git": "2.45.1" },
+        "backupScheduleOwners": { "dotfiles": "cluster", "notes": "local" },
+    })
+}
+
+#[tokio::test]
+#[serial]
+async fn checkin_patches_the_devices_machine_config_status() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::patch_status(
+            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
+        )
+        .with_query_contains("fieldManager=cfgd-operator%2Fgateway"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let patch = report
+        .find(
+            http::Method::PATCH,
+            "/machineconfigs/workstation-1-mc/status",
+        )
+        .expect("the check-in patches the MachineConfig the hostname resolved to");
+    let body = patch.body_json();
+    assert_eq!(body["status"]["packageVersions"]["brew/git"], "2.45.1");
+    assert_eq!(
+        body["status"]["backupScheduleOwners"]["notes"],
+        serde_json::json!("local")
+    );
+}
+
+/// The cluster refusing the status costs the fleet its view of the device, and
+/// the device nothing: its own reconcile does not depend on the write landing.
+#[tokio::test]
+#[serial]
+async fn checkin_succeeds_when_the_status_patch_is_refused() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::patch_status(
+            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
+        )
+        .returning_server_error(403, "machineconfigs.cfgd.io is forbidden"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a refused status write never fails the check-in"
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let policy = backup_policy(
+        "fleet",
+        "nightly",
+        "2026-01-01T00:00:00Z",
+        vec![
+            serde_json::json!({
+                "name": "dotfiles",
+                "hostname": "host-1",
+                "owner": "cluster",
+                "schedule": "daily",
+                "retention": 7,
+            }),
+            // Carrying a schedule on purpose: the gateway reads the OWNER to
+            // decide, never the shape of the row the controller happened to
+            // write, so a row that would otherwise project is the only fixture
+            // that pins the reading.
+            serde_json::json!({
+                "name": "notes",
+                "hostname": "host-1",
+                "owner": "local",
+                "schedule": "0 5 * * *",
+                "message": "the machine pins this unit's schedule",
+            }),
+        ],
+    );
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::patch_status(
+            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
+        ),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![policy])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "daily");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 7);
+    assert!(
+        body["backupSchedules"].get("notes").is_none(),
+        "a unit the machine pinned is never projected back at it: {}",
+        body["backupSchedules"]
+    );
+    harness.finish().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let unit = |schedule: &str, retention: u32| {
+        serde_json::json!({
+            "name": "dotfiles",
+            "hostname": "host-1",
+            "owner": "cluster",
+            "schedule": schedule,
+            "retention": retention,
+        })
+    };
+    // Listed newest first, so a gateway answering in list order would send the
+    // younger policy's cadence.
+    let policies = vec![
+        backup_policy(
+            "fleet",
+            "hourly",
+            "2026-06-01T00:00:00Z",
+            vec![unit("hourly", 3)],
+        ),
+        backup_policy(
+            "fleet",
+            "nightly",
+            "2026-01-01T00:00:00Z",
+            vec![unit("daily", 7)],
+        ),
+    ];
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        ExpectedCall::patch_status(
+            "/apis/cfgd.io/v1alpha1/namespaces/fleet/machineconfigs/workstation-1-mc/status",
+        ),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(policies)),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "daily");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 7);
+    harness.finish().await;
 }

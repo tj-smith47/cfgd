@@ -280,12 +280,7 @@ pub fn package_version_floor(
             ),
         };
     }
-    let identity = mgr.package_identity(package);
-    let Some(entry) = installed
-        .listed()
-        .iter()
-        .find(|p| mgr.listed_identity(&p.name) == identity)
-    else {
+    let Some(entry) = installed.entry_for(mgr, package) else {
         // Not in the listing: the presence pass owns this package's verdict,
         // and a floor cannot be judged against a copy that is not there.
         return VersionFloor::Met;

@@ -1316,12 +1316,13 @@ fn reconcile_tick(
     }
 
     // Server check-in after reconciliation
-    let changed = try_server_checkin(cfg, resolved);
-    if changed {
+    let checkin = try_server_checkin(cfg, resolved);
+    if checkin.config_changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
         );
     }
+    super::checkin::record_cluster_schedules_in(Some(&state_dir), &checkin.backup_schedules);
 
     // Consume any pending server-pushed config (saved by CLI checkin or enrollment)
     match crate::state::load_pending_server_config() {

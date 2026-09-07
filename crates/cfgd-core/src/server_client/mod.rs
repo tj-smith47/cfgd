@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,25 @@ pub struct ServerClient {
     device_id: String,
 }
 
+/// What the machine reports about itself on a check-in, beyond the config hash
+/// and the compliance summary.
+///
+/// The device is the only thing that can answer either question, and the
+/// check-in is its only channel to the cluster: `MachineConfig.status`
+/// carries both maps, and a `ConfigPolicy` version pin and a `BackupPolicy`
+/// schedule projection are decided from them. Both default to empty, which is
+/// what a caller with nothing to report sends and what the controller reads as
+/// "not observed" — never as "none".
+#[derive(Debug, Default, Clone)]
+pub struct CheckinFacts {
+    /// Installed versions of the packages this machine DECLARES, keyed
+    /// `<manager>/<package>` by [`crate::state::package_resource_id`].
+    pub package_versions: BTreeMap<String, String>,
+    /// Which layer owns each declared backup unit's schedule, as
+    /// [`crate::config::ScheduleOwner::label`] spells it.
+    pub backup_schedule_owners: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckinRequest {
@@ -24,6 +44,12 @@ struct CheckinRequest {
     config_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     compliance_summary: Option<ComplianceSummary>,
+    /// Omitted when empty, so a device with nothing to report sends the body
+    /// an older device sends and a gateway that predates the field parses it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    package_versions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    backup_schedule_owners: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +59,11 @@ pub struct CheckinResponse {
     pub config_changed: bool,
     #[serde(default)]
     pub desired_config: Option<serde_json::Value>,
+    /// The cadences a cluster `BackupPolicy` owns for this machine, keyed by
+    /// unit name. Absent from an older gateway's answer, which leaves every
+    /// unit on the cadence its own profile declares.
+    #[serde(default)]
+    pub backup_schedules: crate::backup::ScheduleProjections,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +313,7 @@ impl ServerClient {
         &self,
         config_hash: &str,
         compliance_summary: Option<ComplianceSummary>,
+        facts: CheckinFacts,
         printer: &Printer,
     ) -> Result<CheckinResponse> {
         let hostname = crate::hostname_string();
@@ -293,6 +325,8 @@ impl ServerClient {
             arch: std::env::consts::ARCH.to_string(),
             config_hash: config_hash.to_string(),
             compliance_summary,
+            package_versions: facts.package_versions,
+            backup_schedule_owners: facts.backup_schedule_owners,
         };
 
         let body_json = serde_json::to_string(&body).map_err(|e| {

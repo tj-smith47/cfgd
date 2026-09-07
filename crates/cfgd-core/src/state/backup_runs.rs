@@ -89,4 +89,52 @@ impl StateStore {
             .execute("DELETE FROM backup_runs WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    /// Replace the cluster-owned cadences with what a check-in just answered.
+    ///
+    /// A REPLACE rather than a merge: the gateway sends the whole set every
+    /// time, so a unit a policy stopped scheduling has to lose its projection
+    /// here or it would run on a cadence nothing in the cluster still asks for.
+    pub fn record_cluster_backup_schedules(
+        &self,
+        projections: &crate::backup::ScheduleProjections,
+    ) -> Result<()> {
+        let checked_in_at = crate::utc_now_iso8601();
+        self.in_transaction(|| {
+            self.conn
+                .execute("DELETE FROM cluster_backup_schedules", [])?;
+            for (name, projection) in projections {
+                self.conn.execute(
+                    "INSERT INTO cluster_backup_schedules (name, schedule, retention, checked_in_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![name, projection.schedule, projection.retention, checked_in_at],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The cluster-owned cadences the last check-in answered with. Empty when
+    /// no check-in has run, or when the cluster owns none of this machine's
+    /// units — both of which leave every unit on its declared cadence.
+    pub fn cluster_backup_schedules(&self) -> Result<crate::backup::ScheduleProjections> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, schedule, retention FROM cluster_backup_schedules")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::backup::BackupScheduleProjection {
+                    schedule: row.get::<_, String>(1)?,
+                    retention: row.get::<_, Option<u32>>(2)?,
+                },
+            ))
+        })?;
+        let mut out = crate::backup::ScheduleProjections::new();
+        for row in rows {
+            let (name, projection) = row.map_err(|e| StateError::Database(e.to_string()))?;
+            out.insert(name, projection);
+        }
+        Ok(out)
+    }
 }

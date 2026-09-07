@@ -6,9 +6,91 @@
 //! monotonic timer from it, and `cfgd backup list` renders the wall-clock time
 //! an operator reads. One seeding rule, two clocks.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
+
+use crate::config::{BackupSpec, ScheduleOwner};
+
+pub use cfgd_schema::BackupScheduleProjection;
+
+/// The cluster-owned cadences a check-in answered with, keyed by unit name.
+pub type ScheduleProjections = BTreeMap<String, BackupScheduleProjection>;
+
+/// Which layer owns each declared unit's schedule, as the device reports it to
+/// the gateway: unit name to [`ScheduleOwner::label`].
+///
+/// The UP half of the schedule channel. The word is the lowercase display
+/// spelling, and the controller parses it back through `ScheduleOwner`'s own
+/// case-insensitive parser, so the two ends cannot drift on casing.
+pub fn declared_schedule_owners(specs: &[BackupSpec]) -> BTreeMap<String, String> {
+    specs
+        .iter()
+        .map(|spec| (spec.name.clone(), spec.schedule_owner.label().to_string()))
+        .collect()
+}
+
+/// Persist the cadences a check-in answered with, so the daemon's timers and
+/// `cfgd backup list` read one answer.
+///
+/// Best-effort by the same rule the check-in itself is: an unwritable state
+/// store costs the machine the cluster's cadence, never its own reconcile. The
+/// ONE wording of that failure, over both verbs that check in.
+pub fn record_cluster_schedules(
+    store: &crate::state::StateStore,
+    projections: &ScheduleProjections,
+) {
+    if let Err(e) = store.record_cluster_backup_schedules(projections) {
+        tracing::warn!(
+            error = %e,
+            "could not record the cluster-owned backup schedules the check-in answered with"
+        );
+    }
+}
+
+/// The cadence a unit actually runs on, once a cluster projection is folded
+/// over what the profile declared.
+pub struct EffectiveSchedule<'a> {
+    /// The schedule in force, `None` for a unit no layer scheduled (it runs on
+    /// every apply).
+    pub schedule: Option<&'a str>,
+    /// The retention in force. A projection stating none leaves the profile's
+    /// own number standing.
+    pub retention: u32,
+    /// Whether a cluster `BackupPolicy` is what put the values above in force.
+    pub from_cluster: bool,
+}
+
+/// Fold a check-in's projections over one unit's declared cadence.
+///
+/// The ONE reading of a projection, so the daemon's timer and `cfgd backup
+/// list` cannot arm and report two different cadences. A unit pinned
+/// `scheduleOwner: Local` ignores any projection that arrives for it: the pin
+/// is the machine's refusal, and honouring it here is what makes the pin mean
+/// anything. A projection never reaches the profile on disk — it is runtime
+/// state the next check-in replaces.
+pub fn effective_schedule<'a>(
+    spec: &'a BackupSpec,
+    projections: &'a ScheduleProjections,
+) -> EffectiveSchedule<'a> {
+    let projected = match spec.schedule_owner {
+        ScheduleOwner::Cluster => projections.get(&spec.name),
+        ScheduleOwner::Local => None,
+    };
+    match projected {
+        Some(p) => EffectiveSchedule {
+            schedule: Some(p.schedule.as_str()),
+            retention: p.retention.unwrap_or(spec.retention),
+            from_cluster: true,
+        },
+        None => EffectiveSchedule {
+            schedule: spec.schedule.as_deref(),
+            retention: spec.retention,
+            from_cluster: false,
+        },
+    }
+}
 
 /// Floor for an interval schedule. `parse_duration_str` accepts `0`, which
 /// would turn the daemon loop's timer branch into a spin.

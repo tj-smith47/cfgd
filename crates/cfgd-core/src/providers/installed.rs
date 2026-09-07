@@ -52,6 +52,22 @@ impl InstalledPackages {
     pub fn listed(&self) -> &[PackageInfo] {
         &self.listed
     }
+
+    /// The listing entry for a DECLARED package name, folded into `manager`'s
+    /// identity space on both sides.
+    ///
+    /// The ONE lookup from a declared name to the copy the manager reports:
+    /// `go` remaps names and `choco`/`scoop`/`winget` are case-insensitive, so
+    /// a caller comparing the raw strings finds nothing on exactly the managers
+    /// where the answer matters. `None` means the manager did not list the
+    /// package at all, which is a different fact from listing it with an
+    /// unreadable version ([`crate::providers::UNKNOWN_PACKAGE_VERSION`]).
+    pub fn entry_for(&self, manager: &dyn PackageManager, package: &str) -> Option<&PackageInfo> {
+        let identity = manager.package_identity(package);
+        self.listed
+            .iter()
+            .find(|p| manager.listed_identity(&p.name) == identity)
+    }
 }
 
 /// Per-manager enumeration entries, keyed by REGISTERED manager name.

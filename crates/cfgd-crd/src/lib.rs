@@ -132,7 +132,11 @@ pub struct MachineConfigStatus {
     pub observed_generation: Option<i64>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
-    /// Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).
+    /// Installed versions of the packages the machine declares, keyed
+    /// `<manager>/<package>` (e.g. {"brew/kubectl": "1.28.3"}). The manager
+    /// qualifies the name because two managers may hold the same package at
+    /// different versions. Device-reported: written by the device gateway on
+    /// every check-in, and a reconcile that cannot observe it preserves it.
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
     /// Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by

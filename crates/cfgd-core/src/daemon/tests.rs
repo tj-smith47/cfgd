@@ -415,6 +415,8 @@ fn find_server_url_returns_url_for_server_origin() {
     );
 }
 
+/// The daemon posts to the same endpoint `cfgd checkin` does, so its body is
+/// spelled the way the gateway's own `CheckinRequest` reads it: camelCase.
 #[test]
 fn checkin_payload_round_trips() {
     let payload = CheckinPayload {
@@ -423,21 +425,23 @@ fn checkin_payload_round_trips() {
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "deadbeef".into(),
+        backup_schedule_owners: Default::default(),
     };
     let json = serde_json::to_string(&payload).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed["device_id"], "abc123");
+    assert_eq!(parsed["deviceId"], "abc123");
     assert_eq!(parsed["hostname"], "test-host");
     assert_eq!(parsed["os"], "linux");
     assert_eq!(parsed["arch"], "x86_64");
-    assert_eq!(parsed["config_hash"], "deadbeef");
-    // Exactly 5 fields
+    assert_eq!(parsed["configHash"], "deadbeef");
+    // Exactly 5 fields: a machine reporting no backup owners sends the body a
+    // gateway that predates the map already parses.
     assert_eq!(parsed.as_object().unwrap().len(), 5);
 }
 
 #[test]
 fn checkin_response_deserializes() {
-    let json = r#"{"status":"ok","config_changed":true,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":true,"config":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert_eq!(resp._status, "ok");
@@ -3556,7 +3560,7 @@ fn find_server_url_returns_none_for_empty_origins() {
 
 #[test]
 fn checkin_response_with_config_payload() {
-    let json = r#"{"status":"ok","config_changed":true,"config":{"packages":["git"]}}"#;
+    let json = r#"{"status":"ok","configChanged":true,"config":{"packages":["git"]}}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert!(resp._config.is_some());
@@ -3564,7 +3568,7 @@ fn checkin_response_with_config_payload() {
 
 #[test]
 fn checkin_response_no_change() {
-    let json = r#"{"status":"ok","config_changed":false,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":false,"config":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(!resp.config_changed);
 }
@@ -4904,14 +4908,15 @@ fn checkin_payload_serializes_all_fields() {
         os: "linux".into(),
         arch: "aarch64".into(),
         config_hash: "abcd1234".into(),
+        backup_schedule_owners: Default::default(),
     };
 
     let json = serde_json::to_string(&payload).unwrap();
-    assert!(json.contains("\"device_id\""));
+    assert!(json.contains("\"deviceId\""));
     assert!(json.contains("\"hostname\""));
     assert!(json.contains("\"os\""));
     assert!(json.contains("\"arch\""));
-    assert!(json.contains("\"config_hash\""));
+    assert!(json.contains("\"configHash\""));
     assert!(json.contains("aarch64"));
 }
 
@@ -6122,7 +6127,7 @@ fn server_checkin_mock_config_changed() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6139,7 +6144,7 @@ fn server_checkin_mock_config_changed() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(&server.url(), &resolved).config_changed;
     assert!(changed, "server should report config changed");
     mock.assert();
 }
@@ -6157,7 +6162,7 @@ fn server_checkin_mock_no_change() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6174,7 +6179,7 @@ fn server_checkin_mock_no_change() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(&server.url(), &resolved).config_changed;
     assert!(!changed, "server should report no change");
     mock.assert();
 }
@@ -6208,7 +6213,7 @@ fn server_checkin_mock_server_error() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(&server.url(), &resolved).config_changed;
     assert!(!changed, "server error should return false");
     mock.assert();
 }
@@ -6243,7 +6248,7 @@ fn server_checkin_mock_malformed_json() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(&server.url(), &resolved).config_changed;
     assert!(!changed, "malformed JSON should return false");
     mock.assert();
 }
@@ -6261,7 +6266,7 @@ fn server_checkin_mock_trailing_slash_url() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6280,7 +6285,7 @@ fn server_checkin_mock_trailing_slash_url() {
 
     // URL with trailing slash should be trimmed
     let url_with_slash = format!("{}/", server.url());
-    let changed = server_checkin(&url_with_slash, &resolved);
+    let changed = server_checkin(&url_with_slash, &resolved).config_changed;
     assert!(!changed);
     mock.assert();
 }
@@ -6300,7 +6305,7 @@ fn server_checkin_mock_verifies_request_body() {
         .match_header("Content-Type", "application/json")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6323,7 +6328,7 @@ fn server_checkin_mock_verifies_request_body() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(&server.url(), &resolved).config_changed;
     assert!(!changed);
     // Verify the mock received the request with correct Content-Type
     mock.assert();
@@ -6375,7 +6380,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved);
+    let changed = try_server_checkin(&config, &resolved).config_changed;
     assert!(!changed, "no server origin means no checkin");
 }
 
@@ -6390,7 +6395,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
         .create();
 
     let config = CfgdConfig {
@@ -6434,7 +6439,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved);
+    let changed = try_server_checkin(&config, &resolved).config_changed;
     assert!(changed, "server origin should trigger checkin");
     mock.assert();
 }
@@ -6932,7 +6937,7 @@ fn daemon_status_response_full_deserialization() {
 
 #[test]
 fn checkin_response_without_config_field() {
-    let json = r#"{"status":"ok","config_changed":false}"#;
+    let json = r#"{"status":"ok","configChanged":false}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     // _config is Option<Value>, so missing field deserializes as None
     assert!(!resp.config_changed);
@@ -16508,7 +16513,7 @@ spec: {}
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
         // No profile YAML on disk → resolve_profile fails → function warns.
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
     }
 
     #[test]
@@ -16524,7 +16529,7 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
     }
 
     #[test]
@@ -16550,7 +16555,7 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
     }
 
     // current_thread so the test_home thread-local installed below survives
@@ -16606,7 +16611,7 @@ spec: {}
 
         let expected_home = tmp.path().to_path_buf();
         let seen_home = crate::spawn_blocking_with_test_home(move || {
-            super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+            super::super::run_startup_checkin_blocking(&config_path, None, &cfg, None);
             crate::test_home_override()
         })
         .await
@@ -19817,6 +19822,7 @@ mod tests_run_daemon_wrapper {
 mod backup_timers {
     use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
+    use crate::backup::ScheduleProjections;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
         reload_backup_tasks, resolve_backup_tasks,
@@ -19840,6 +19846,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("schedule should install a timer")
     }
@@ -19968,6 +19975,120 @@ mod backup_timers {
         );
     }
 
+    // ----- the cluster-owned projection -----
+
+    fn projection(unit: &str, schedule: &str, retention: Option<u32>) -> ScheduleProjections {
+        ScheduleProjections::from([(
+            unit.to_string(),
+            crate::backup::BackupScheduleProjection {
+                schedule: schedule.to_string(),
+                retention,
+            },
+        )])
+    }
+
+    /// A unit left open to the cluster (`scheduleOwner: Cluster`, the default)
+    /// arms on the cadence and retention the check-in projected, not on the
+    /// one its own profile declares.
+    #[test]
+    fn a_cluster_owned_unit_is_seeded_from_the_check_in_projection() {
+        let declared = spec("db", Path::new("/tmp/a"), Some("1h"));
+        let task = BackupTask::new(
+            &declared,
+            "workstation",
+            Instant::now(),
+            None,
+            &projection("db", "0 3 * * *", Some(3)),
+        )
+        .expect("the projected schedule installs a timer");
+        assert_eq!(
+            task.spec.schedule.as_deref(),
+            Some("0 3 * * *"),
+            "the cluster's cadence is the one the timer arms on"
+        );
+        assert_eq!(
+            task.spec.retention, 3,
+            "the cluster's retention is what the fire prunes to"
+        );
+        assert_eq!(
+            declared.schedule.as_deref(),
+            Some("1h"),
+            "the declared spec is never rewritten by a projection"
+        );
+    }
+
+    /// A unit the machine pinned `scheduleOwner: Local` ignores a projection
+    /// that arrives for it: the pin is the machine's refusal.
+    #[test]
+    fn a_locally_pinned_unit_ignores_the_projection() {
+        let mut declared = spec("db", Path::new("/tmp/a"), Some("1h"));
+        declared.schedule_owner = config::ScheduleOwner::Local;
+        let task = BackupTask::new(
+            &declared,
+            "workstation",
+            Instant::now(),
+            None,
+            &projection("db", "0 3 * * *", Some(3)),
+        )
+        .expect("the declared schedule installs a timer");
+        assert_eq!(task.spec.schedule.as_deref(), Some("1h"));
+        assert_eq!(task.spec.retention, declared.retention);
+    }
+
+    /// A projection is runtime state: recording one and rebuilding the timers
+    /// from it never touches the profile YAML on disk.
+    #[test]
+    fn the_projection_never_reaches_the_profile_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        std::fs::create_dir_all(profile_path.parent().expect("parent")).expect("profiles dir");
+        let body = concat!(
+            "apiVersion: cfgd.io/v1alpha1\n",
+            "kind: Profile\n",
+            "metadata:\n  name: default\n",
+            "spec:\n  backups:\n    - name: db\n      source: /tmp/a\n      schedule: \"1h\"\n",
+        );
+        std::fs::write(&profile_path, body).expect("write profile");
+
+        let store = crate::state::StateStore::open_in_dir(dir.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let projections = store
+            .cluster_backup_schedules()
+            .expect("the recorded projection reads back");
+        let tasks = build_backup_tasks(
+            &[spec("db", Path::new("/tmp/a"), Some("1h"))],
+            "workstation",
+            Instant::now(),
+            &no_history,
+            &projections,
+        );
+        assert_eq!(tasks[0].spec.schedule.as_deref(), Some("0 3 * * *"));
+        assert_eq!(
+            std::fs::read_to_string(&profile_path).expect("re-read profile"),
+            body,
+            "the profile on disk is byte-identical after a projection is applied"
+        );
+    }
+
+    /// A check-in REPLACES the whole set, so a unit a policy stopped
+    /// scheduling falls back to the cadence its own profile declares rather
+    /// than running on a projection nothing renews.
+    #[test]
+    fn a_check_in_replaces_every_projection_it_did_not_renew() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::state::StateStore::open_in_dir(dir.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+        crate::backup::record_cluster_schedules(&store, &ScheduleProjections::new());
+        assert!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .is_empty(),
+            "a check-in that projects nothing clears what the last one projected"
+        );
+    }
+
     // ----- task-set construction -----
 
     #[test]
@@ -19977,7 +20098,8 @@ mod backup_timers {
             spec("scheduled", Path::new("/tmp/a"), Some("1h")),
             spec("apply-time", Path::new("/tmp/b"), None),
         ];
-        let tasks = build_backup_tasks(&specs, "workstation", now, &no_history);
+        let tasks =
+            build_backup_tasks(&specs, "workstation", now, &no_history, &Default::default());
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].spec.name, "scheduled");
         assert_eq!(tasks[0].profile_name, "workstation");
@@ -19986,7 +20108,16 @@ mod backup_timers {
     #[test]
     fn an_unparseable_schedule_installs_no_timer() {
         let specs = vec![spec("broken", Path::new("/tmp/a"), Some("every tuesday"))];
-        assert!(build_backup_tasks(&specs, "workstation", Instant::now(), &no_history).is_empty());
+        assert!(
+            build_backup_tasks(
+                &specs,
+                "workstation",
+                Instant::now(),
+                &no_history,
+                &Default::default()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -20220,7 +20351,8 @@ mod backup_timers {
 
         let past = Instant::now() - StdDuration::from_secs(5);
         let mut set = timers(vec![
-            BackupTask::new(&s, "workstation", past, None).expect("schedule installs a timer"),
+            BackupTask::new(&s, "workstation", past, None, &Default::default())
+                .expect("schedule installs a timer"),
         ]);
         runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
 
@@ -20318,6 +20450,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(1800)),
+            &Default::default(),
         )
         .expect("timer installs");
         // Half the period has already elapsed, so only half is left — NOT a
@@ -20334,6 +20467,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(7200)),
+            &Default::default(),
         )
         .expect("timer installs");
         assert!(
@@ -20350,6 +20484,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("timer installs");
         assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
@@ -20364,6 +20499,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&future),
+            &Default::default(),
         )
         .expect("timer installs");
         // A stepped-back clock or a state dir carried over from another machine
@@ -20379,6 +20515,7 @@ mod backup_timers {
             "workstation",
             now,
             Some("not-a-timestamp"),
+            &Default::default(),
         )
         .expect("timer installs");
         assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
@@ -20392,6 +20529,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(86_400 * 7)),
+            &Default::default(),
         )
         .expect("timer installs");
         let unseeded = BackupTask::new(
@@ -20399,6 +20537,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("timer installs");
         // Cron occurrences are absolute wall-clock times: the next 3am is the

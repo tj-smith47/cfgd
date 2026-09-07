@@ -51,7 +51,7 @@ status:
       observedGeneration: int
 
   packageVersions:
-    package-name: version-string
+    manager/package-name: version-string
 ```
 
 ---
@@ -157,7 +157,7 @@ Written by the operator when a reconciliation pass changes it. Do not set manual
 | `lastReconciled` | string (ISO 8601) | Timestamp of the last status **change**, not of the last reconcile. |
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
 | `conditions` | list | Standard Kubernetes condition list. A device's drifted **system settings** are reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
-| `packageVersions` | map | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
+| `packageVersions` | map | Reported installed versions, keyed `<manager>/<package>` (e.g. `{"brew/kubectl": "1.28.3"}`): the manager qualifies the name because two managers may hold one package at different versions. Versions are loose semver: `1.28`, `1.28.3`. Written by the device gateway on every check-in, from the packages the machine declares; a reconcile that cannot observe the map carries it forward rather than blanking it. A `minVersion` check reads the lowest version any manager reports for the package, since a pin is a floor. |
 
 The operator patches `status` only when the pass observed something different,
 so a machine that has not moved is not written to on every requeue. That makes

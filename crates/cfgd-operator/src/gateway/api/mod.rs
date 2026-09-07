@@ -112,6 +112,15 @@ pub struct CheckinRequest {
     pub config_hash: String,
     #[serde(default)]
     pub compliance_summary: Option<serde_json::Value>,
+    /// Installed versions of the packages the device DECLARES, keyed
+    /// `<manager>/<package>`. Defaulted, so a device that predates the field
+    /// still checks in.
+    #[serde(default)]
+    pub package_versions: std::collections::BTreeMap<String, String>,
+    /// Which layer owns each declared backup unit's schedule on the device,
+    /// as `ScheduleOwner::label` spells it. Defaulted for the same reason.
+    #[serde(default)]
+    pub backup_schedule_owners: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +130,12 @@ pub struct CheckinResponse {
     pub config_changed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desired_config: Option<serde_json::Value>,
+    /// The cadences a cluster `BackupPolicy` owns for this device's machine,
+    /// keyed by unit name. Omitted when empty, which is what a standalone
+    /// gateway and a machine no policy schedules both answer with.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub backup_schedules:
+        std::collections::BTreeMap<String, cfgd_core::backup::BackupScheduleProjection>,
 }
 
 #[derive(Debug, Deserialize)]

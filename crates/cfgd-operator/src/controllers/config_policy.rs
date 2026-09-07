@@ -235,6 +235,43 @@ pub(super) async fn reconcile_config_policy(
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
+/// The version the device reported for `package`, whichever manager holds it.
+///
+/// A policy names a package the way a person does — `kubectl` — while the
+/// device reports it under the `<manager>/<package>` id
+/// `cfgd_core::state::package_resource_id` composes, because two managers may
+/// hold the same name at different versions. The ONE fold between the two
+/// spellings, so a version pin cannot silently fail to find the version the
+/// machine reported. An exact key still wins, which is what a row written
+/// before the manager qualified the key reads as.
+///
+/// Several managers holding one package answer with the LOWEST version: a pin
+/// is a floor, and satisfying it on one manager while another sits below would
+/// call the machine compliant on a copy it also has.
+fn reported_package_version<'a>(status: &'a MachineConfigStatus, package: &str) -> Option<&'a str> {
+    if let Some(exact) = status.package_versions.get(package) {
+        return Some(exact.as_str());
+    }
+    status
+        .package_versions
+        .iter()
+        .filter(|(id, _)| {
+            cfgd_core::state::split_package_resource_id(id).is_some_and(|(_, name)| name == package)
+        })
+        .map(|(_, version)| version.as_str())
+        .min_by(|a, b| {
+            match (
+                cfgd_core::parse_loose_version(a),
+                cfgd_core::parse_loose_version(b),
+            ) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                // A version neither side can parse orders by its own text, which is
+                // stable and never claims an ordering the parser refused.
+                _ => a.cmp(b),
+            }
+        })
+}
+
 pub(super) fn validate_policy_compliance(
     spec: &MachineConfigSpec,
     status: Option<&MachineConfigStatus>,
@@ -252,8 +289,7 @@ pub(super) fn validate_policy_compliance(
             return false;
         }
         if let Some(req_str) = &pkg.version {
-            let installed_versions = status.map(|s| &s.package_versions);
-            match installed_versions.and_then(|pv| pv.get(&pkg.name)) {
+            match status.and_then(|s| reported_package_version(s, &pkg.name)) {
                 Some(reported) => {
                     if !version_satisfies(reported, req_str) {
                         return false;

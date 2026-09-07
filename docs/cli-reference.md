@@ -2315,6 +2315,18 @@ in sync.
 | `--api-key <key>` | Device API key (issued at enrollment) |
 | `--device-id <id>` | Device identifier to report as (default: derived from the enrollment credential) |
 
+The payload also carries what only this machine can answer: `packageVersions`, the installed
+version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
+managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
+unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
+in the cluster. A manager that cannot be queried leaves its packages out rather than reporting a
+version cfgd did not read.
+
+The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
+this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit
+pinned `scheduleOwner: Local` ignores them, and nothing rewrites the profile on disk.
+[`cfgd backup list`](#cfgd-backup) shows the value in force.
+
 ### `cfgd enroll`
 
 Enroll with a device gateway using token or key-based verification.

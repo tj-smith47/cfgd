@@ -85,6 +85,22 @@ layer spells is read the safe way round: the unit is reported with `owner: local
 naming the value, and the policy raises a `Warning` event `UnreadableScheduleOwner` against
 itself naming the machine. A policy never claims a schedule it cannot show the machine took.
 
+## How the cadence reaches the machine
+
+The gateway answers every check-in with the schedules the cluster owns for that machine, read
+live from the `status.units` rows the controller wrote. Only a row whose `owner` is `cluster`
+is sent: a unit the machine pinned is never projected back at it. Two policies scheduling one
+unit for one machine is a conflict the gateway cannot settle on merit, so it settles it stably,
+the older `creationTimestamp` winning and the collision logged at `warn`, and the machine sees
+one cadence rather than alternating between two.
+
+The machine holds the answer alongside its profile and never inside it: the projection decides
+when a cluster-owned unit is next due, and `cfgd backup list` shows it in the Schedule and
+Retention cells with `cluster` in the Schedule Owner column. `-o json` carries the declared and
+the effective values both, so a reader can see what the cluster overrode. Nothing rewrites
+`spec.backups[]`, so a machine that stops matching a policy falls back to its own declaration on
+the next check-in.
+
 ## Example
 
 ```yaml

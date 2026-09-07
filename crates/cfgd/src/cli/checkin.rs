@@ -113,6 +113,31 @@ pub fn cmd_checkin(
         None
     };
 
+    // What the machine reports about itself beyond the hash: the versions it
+    // holds for the packages it DECLARES, and which layer owns each backup
+    // unit's schedule. Both are questions only the device can answer and the
+    // check-in is its only channel to the cluster, where a `ConfigPolicy`
+    // version pin and a `BackupPolicy` schedule projection are decided from
+    // them. A manager that cannot be queried costs its own packages an entry,
+    // never the check-in.
+    let checkin_facts = cfgd_core::server_client::CheckinFacts {
+        package_versions: match ctx.package_context() {
+            Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
+                &resolved.merged,
+                &resolved_modules,
+                &registry,
+                &pkg_cx,
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "checkin: package versions unavailable");
+                Default::default()
+            }
+        },
+        backup_schedule_owners: cfgd_core::backup::declared_schedule_owners(
+            &resolved.merged.backups,
+        ),
+    };
+
     let resp = {
         // `client.checkin` narrates through the bare `&Printer` it's handed
         // (`status_simple("Checking in with device gateway")`) rather than a
@@ -129,7 +154,7 @@ pub fn cmd_checkin(
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
         let result = client
-            .checkin(&config_hash, compliance_summary, printer)
+            .checkin(&config_hash, compliance_summary, checkin_facts, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
@@ -157,6 +182,17 @@ pub fn cmd_checkin(
         }
         result?
     };
+
+    // The cadences the cluster owns for this machine, recorded where the
+    // daemon's timers and `cfgd backup list` both read them. Never written to
+    // the profile on disk: it is the cluster's answer, replaced by the next
+    // check-in.
+    match ctx.state() {
+        Ok(state) => cfgd_core::backup::record_cluster_schedules(state, &resp.backup_schedules),
+        Err(e) => {
+            tracing::warn!(error = %e, "checkin: state store unavailable — the cluster-owned backup schedules were not recorded");
+        }
+    }
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
@@ -374,7 +410,7 @@ spec: {}
 
         let client = build_checkin_client(&server.url(), None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -399,7 +435,7 @@ spec: {}
             Some(&cred),
         );
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -420,7 +456,7 @@ spec: {}
         let client =
             build_checkin_client(&server.url(), None, Some("explicit-device"), Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         // The mock succeeds without requiring Bearer stored-key, confirming the
         // anonymous (non-stored-cred) path was taken.
@@ -444,7 +480,7 @@ spec: {}
 
         let client = build_checkin_client(&server_url, None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(
             result.is_ok(),

@@ -174,13 +174,17 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             (e.name.clone(), None),
             (cfgd_core::fold_home_in_text(&e.source), None),
             (
-                e.schedule
+                e.effective_schedule
                     .clone()
+                    .or_else(|| e.schedule.clone())
                     .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 None,
             ),
             (e.schedule_owner.clone(), None),
-            (e.retention.to_string(), None),
+            (
+                e.effective_retention.unwrap_or(e.retention).to_string(),
+                None,
+            ),
             (
                 e.snapshots
                     .map_or_else(|| cfgd_core::ABSENT.to_string(), |n| n.to_string()),
@@ -336,10 +340,17 @@ pub fn cmd_backup_list(
             .ok()
             .map(|state_dir| (config_dir(cli), state_dir))
     });
+    // What the last check-in said the cluster owns. An unreadable store already
+    // cost this listing its history; it costs the effective cadence too, and
+    // every unit falls back to the schedule its own profile declares.
+    let projections = state
+        .and_then(|state| state.cluster_backup_schedules().ok())
+        .unwrap_or_default();
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
             let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            let effective = cfgd_core::backup::effective_schedule(spec, &projections);
             let snapshots =
                 unit_dirs
                     .as_ref()
@@ -355,14 +366,21 @@ pub fn cmd_backup_list(
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
                 schedule_owner: spec.schedule_owner.label().to_string(),
+                effective_schedule: effective
+                    .from_cluster
+                    .then(|| effective.schedule.map(str::to_string))
+                    .flatten(),
                 retention: spec.retention,
+                effective_retention: (effective.from_cluster
+                    && effective.retention != spec.retention)
+                    .then_some(effective.retention),
                 last_run_status: last.as_ref().map(|r| r.status.as_str().to_string()),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),
                 last_run_clean: last.as_ref().map(BackupRunRecord::is_clean),
                 // Seeded from the same `finished_at` the daemon anchors an
                 // interval schedule on, so the listed time is the one the
                 // timer will actually use rather than a second opinion.
-                next_run_at: spec.schedule.as_deref().and_then(|schedule| {
+                next_run_at: effective.schedule.and_then(|schedule| {
                     cfgd_core::backup::next_run_at(
                         schedule,
                         last.as_ref().map(|r| r.finished_at.as_str()),

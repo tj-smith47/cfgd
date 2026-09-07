@@ -35145,6 +35145,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         source: under_home("notes"),
         schedule: None,
         schedule_owner: "cluster".into(),
+        effective_schedule: None,
+        effective_retention: None,
         retention: 3,
         last_run_status: None,
         last_run_at: None,

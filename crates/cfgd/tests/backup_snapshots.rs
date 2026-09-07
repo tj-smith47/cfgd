@@ -492,6 +492,8 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
             source: "/home/t/docs".to_string(),
             schedule: None,
             schedule_owner: "cluster".to_string(),
+            effective_schedule: None,
+            effective_retention: None,
             retention: 3,
             last_run_status: None,
             last_run_at: None,
@@ -504,6 +506,8 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
             source: "/home/t/keys".to_string(),
             schedule: Some("0 3 * * *".to_string()),
             schedule_owner: "local".to_string(),
+            effective_schedule: None,
+            effective_retention: None,
             retention: 3,
             last_run_status: None,
             last_run_at: None,
@@ -548,6 +552,8 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         source: "/home/t/docs".to_string(),
         schedule: None,
         schedule_owner: "cluster".to_string(),
+        effective_schedule: None,
+        effective_retention: None,
         retention: 3,
         last_run_status: Some("success".to_string()),
         last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
@@ -2144,5 +2150,84 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
             "declined": true,
         }),
         "a decline exits 0, so it must not claim `clean: false` — the key is absent entirely"
+    );
+}
+
+/// What a check-in answered with reaches the listing: a unit the machine left
+/// open runs on the cluster's cadence, and the Owner column says whose it is,
+/// while a unit the machine pinned keeps its own. `-o json` carries both the
+/// declared and the effective values, so a reader can see what was overridden.
+#[test]
+fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
+    let (config_dir, state_dir) = backup_list_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    // Both units are projected, so the pinned one is ignored on merit rather
+    // than for want of a projection to ignore.
+    let projection =
+        |schedule: &str, retention: Option<u32>| cfgd_core::backup::BackupScheduleProjection {
+            schedule: schedule.to_string(),
+            retention,
+        };
+    {
+        let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+        store
+            .record_cluster_backup_schedules(
+                &[
+                    ("docs".to_string(), projection("0 4 * * *", Some(30))),
+                    ("weekly".to_string(), projection("*/5 * * * *", Some(1))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap();
+    }
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+
+    let row = |name: &str| {
+        human
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no {name} row in: {human}"))
+            .to_string()
+    };
+    let docs = row("docs");
+    assert!(
+        docs.contains("0 4 * * *") && docs.contains("cluster") && docs.contains(" 30 "),
+        "a cluster-owned unit runs on the projected cadence: {docs}"
+    );
+    let weekly = row("weekly");
+    assert!(
+        weekly.contains("0 3 * * *") && weekly.contains("local") && !weekly.contains("*/5"),
+        "a locally pinned unit keeps its declared cadence: {weekly}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("backup list doc carries a payload");
+    let unit = |name: &str| {
+        payload
+            .as_array()
+            .expect("the payload is the entry array")
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} entry in: {payload}"))
+            .clone()
+    };
+    let docs = unit("docs");
+    assert_eq!(docs["effectiveSchedule"], "0 4 * * *");
+    assert_eq!(docs["effectiveRetention"], 30);
+    assert_eq!(docs["retention"], 3, "the declared value stays readable");
+    assert!(docs["schedule"].is_null(), "docs declares no schedule");
+    let weekly = unit("weekly");
+    assert_eq!(weekly["schedule"], "0 3 * * *");
+    assert!(
+        weekly.get("effectiveSchedule").is_none(),
+        "a pinned unit carries no effective override: {weekly}"
     );
 }

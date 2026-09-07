@@ -32,6 +32,14 @@ use crate::crds::{
 
 pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
+/// Field manager for the `MachineConfig.status` fields the DEVICE reports and
+/// the gateway writes on its behalf (`packageVersions`,
+/// `backupScheduleOwners`).
+///
+/// Distinct from [`FIELD_MANAGER_STATUS`]: the controller computes the rest of
+/// that status and preserves these two, so a shared manager would let one
+/// side's apply take ownership of the other's fields.
+pub(crate) const FIELD_MANAGER_GATEWAY: &str = "cfgd-operator/gateway";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
 pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";

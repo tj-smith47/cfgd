@@ -35,7 +35,10 @@ pub use restore::{
 pub use rollback::{
     RollbackCopy, RollbackOutcome, report_rollback, rollback_backup, rollback_copy,
 };
-pub use schedule::next_run_at;
+pub use schedule::{
+    BackupScheduleProjection, EffectiveSchedule, ScheduleProjections, declared_schedule_owners,
+    effective_schedule, next_run_at, record_cluster_schedules,
+};
 
 /// One `spec.backups[]` entry bound to the runtime context it needs.
 ///

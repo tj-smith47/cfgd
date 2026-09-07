@@ -77,7 +77,7 @@ spec:
 | `files` | list | File specs with `path`, optional `content`, `source`, and `mode` (default `0644`) |
 | `systemSettings` | map | System configurator settings |
 
-> `status.packageVersions` (reported installed versions, keyed by package name) is written by the operator, not set in `spec`.
+> `status.packageVersions` (reported installed versions, keyed `<manager>/<package>`) is written by the device gateway from what the machine reports, not set in `spec`.
 
 ### ConfigPolicy
 
@@ -432,6 +432,19 @@ desired system configuration. `cfgd checkin` adds a compliance summary when
 [`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
 settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
 the identity and hash only.
+
+It also carries the two facts only the device can answer: `packageVersions`, the versions it
+holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
+which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes both
+onto the `MachineConfig.status` whose `spec.hostname` matches the device, under the field manager
+`cfgd-operator/gateway`. The write is best-effort: a refused patch, an unreachable API server or
+a hostname no MachineConfig names is logged and the check-in still returns `200`, because the
+device's own reconcile does not depend on the cluster accepting a status. A standalone gateway
+holds no client and writes nothing. A map the device did not report is omitted rather than sent
+empty, so a fact the cluster already holds is never blanked by a device that could not observe it.
+
+The response answers with `backupSchedules`, the cadences a cluster
+[`BackupPolicy`](backup-policy.md) owns for that machine.
 
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>

@@ -1184,11 +1184,13 @@ pub(super) async fn run_daemon_with(
         let startup_cfg = setup.cfg.clone();
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
+        let startup_state_dir = resolved_state_dir.clone();
         crate::spawn_blocking_with_test_home(move || {
             run_startup_checkin_blocking(
                 &startup_config_path,
                 startup_profile_override.as_deref(),
                 &startup_cfg,
+                startup_state_dir.as_deref(),
             );
         })
         .await
@@ -1542,6 +1544,7 @@ pub(super) fn run_startup_checkin_blocking(
     config_path: &Path,
     profile_override: Option<&str>,
     cfg: &CfgdConfig,
+    state_dir: Option<&Path>,
 ) {
     let profiles_dir = profiles_dir_for(config_path);
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
@@ -1553,10 +1556,11 @@ pub(super) fn run_startup_checkin_blocking(
     };
     match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(resolved) => {
-            let changed = try_server_checkin(cfg, &resolved);
-            if changed {
+            let checkin = try_server_checkin(cfg, &resolved);
+            if checkin.config_changed {
                 tracing::info!("daemon: server reports config changed at startup");
             }
+            checkin::record_cluster_schedules_in(state_dir, &checkin.backup_schedules);
             // Consume any pending server config at startup so the first
             // reconcile tick picks up the changes.
             match crate::state::load_pending_server_config() {

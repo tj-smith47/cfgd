@@ -222,7 +222,66 @@ fn checkin_request_deserialization() {
     assert_eq!(req.config_hash, "abc123");
 }
 
+/// A device that predates the two reported maps still checks in: both default
+/// to empty, which the gateway reads as "not observed" and never as "none".
+#[test]
+fn checkin_request_parses_without_the_status_maps() {
+    let json = r#"{
+        "deviceId": "dev-1",
+        "hostname": "workstation-1",
+        "os": "linux",
+        "arch": "x86_64",
+        "configHash": "abc123"
+    }"#;
+    let req: CheckinRequest = serde_json::from_str(json).expect("an older device's body parses");
+    assert!(req.package_versions.is_empty());
+    assert!(req.backup_schedule_owners.is_empty());
+}
+
+/// Both maps arrive under their camelCase keys, in the grammars their two
+/// producers compose: `<manager>/<package>` and `ScheduleOwner::label`.
+#[test]
+fn checkin_request_parses_the_status_maps() {
+    let json = r#"{
+        "deviceId": "dev-1",
+        "hostname": "workstation-1",
+        "os": "linux",
+        "arch": "x86_64",
+        "configHash": "abc123",
+        "packageVersions": {"brew/git": "2.45.1"},
+        "backupScheduleOwners": {"dotfiles": "local"}
+    }"#;
+    let req: CheckinRequest = serde_json::from_str(json).expect("the device's body parses");
+    assert_eq!(
+        req.package_versions.get("brew/git").map(String::as_str),
+        Some("2.45.1")
+    );
+    assert_eq!(
+        req.backup_schedule_owners
+            .get("dotfiles")
+            .map(String::as_str),
+        Some("local")
+    );
+}
+
 // --- CheckinResponse serialization ---
+
+/// A gateway with no cluster schedule to project omits the key entirely, so an
+/// older agent's parser sees the body it has always seen.
+#[test]
+fn checkin_response_omits_an_empty_backup_schedule_projection() {
+    let json = serde_json::to_string(&CheckinResponse {
+        status: "ok".to_string(),
+        config_changed: false,
+        desired_config: None,
+        backup_schedules: Default::default(),
+    })
+    .expect("serialize");
+    assert!(
+        !json.contains("backupSchedules"),
+        "an empty projection must be omitted, not sent as {{}}: {json}"
+    );
+}
 
 #[test]
 fn checkin_response_no_config_omits_field() {
@@ -230,6 +289,7 @@ fn checkin_response_no_config_omits_field() {
         status: "ok".to_string(),
         config_changed: false,
         desired_config: None,
+        backup_schedules: Default::default(),
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(
@@ -245,6 +305,7 @@ fn checkin_response_with_config_includes_field() {
         status: "ok".to_string(),
         config_changed: true,
         desired_config: Some(serde_json::json!({"packages": ["vim"]})),
+        backup_schedules: Default::default(),
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains("desiredConfig"));
@@ -1235,6 +1296,8 @@ async fn checkin_rejects_empty_device_id() {
         arch: "x86_64".to_string(),
         config_hash: "abc123".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state), Extension(auth), Json(req)).await;
     let Err(err) = result else {
@@ -1254,6 +1317,8 @@ async fn checkin_registers_new_device() {
         arch: "x86_64".to_string(),
         config_hash: "hash123".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
     assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
@@ -1296,6 +1361,8 @@ async fn checkin_updates_existing_device() {
         arch: "x86_64".to_string(),
         config_hash: "hash-new".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
     assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
@@ -1338,6 +1405,8 @@ async fn checkin_detects_config_change() {
         arch: "x86_64".to_string(),
         config_hash: "hash-different".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state), Extension(auth), Json(req)).await;
     assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
@@ -1375,6 +1444,8 @@ async fn checkin_no_config_change_when_same_hash() {
         arch: "x86_64".to_string(),
         config_hash: "same-hash".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state), Extension(auth), Json(req)).await;
     assert!(result.is_ok(), "checkin should succeed: {:?}", result.err());
@@ -1409,6 +1480,8 @@ async fn checkin_device_auth_can_only_checkin_as_self() {
         arch: "x86_64".to_string(),
         config_hash: "hash".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state), Extension(auth), Json(req)).await;
     let Err(err) = result else {
@@ -1433,6 +1506,8 @@ async fn checkin_with_compliance_summary() {
         arch: "x86_64".to_string(),
         config_hash: "hash-comp".to_string(),
         compliance_summary: Some(compliance.clone()),
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state.clone()), Extension(auth), Json(req)).await;
     assert!(
@@ -1467,6 +1542,8 @@ async fn checkin_broadcasts_event() {
         arch: "x86_64".to_string(),
         config_hash: "hash-bc".to_string(),
         compliance_summary: None,
+        package_versions: Default::default(),
+        backup_schedule_owners: Default::default(),
     };
     let result = checkin(State(state), Extension(auth), Json(req)).await;
     assert!(
