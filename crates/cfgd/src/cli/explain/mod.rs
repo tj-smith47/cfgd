@@ -46,6 +46,22 @@ impl ResourceSchema {
         self.fields.clone()
     }
 
+    /// The token `cfgd explain` accepts for this kind, as [`find_schema`]
+    /// resolves it.
+    ///
+    /// Every command a hint spells has to re-parse, and the display name does
+    /// not: the CRD `Module` is shown as `Module (CRD)`, whose lowercase form
+    /// carries a space and parentheses no shell hands through as one word.
+    /// The CLI selector for it is `module-crd`; every other kind is selected
+    /// by its own lowercased name.
+    pub fn selector_token(&self) -> String {
+        if self.name == "Module (CRD)" {
+            "module-crd".to_string()
+        } else {
+            self.name.to_lowercase()
+        }
+    }
+
     /// A drilldown field's own docs pointer: the field's `spec.<path>`
     /// heading in this kind's own doc page when the committed page carries
     /// one, or the kind's own pointer otherwise — the same fallback the kind
@@ -752,7 +768,7 @@ pub fn build_explain_index_doc() -> Doc {
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
     let fields = sorted_by_name(schema.fields.iter());
-    let hint = expandable_hint(&schema.name.to_lowercase(), &fields, recursive);
+    let hint = expandable_hint(&schema.selector_token(), &fields, recursive);
     let doc = Doc::new()
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
@@ -798,11 +814,7 @@ pub fn build_explain_drilldown_doc(
     fields: &[FieldNode],
     recursive: bool,
 ) -> Doc {
-    let path_str = format!(
-        "{}.spec.{}",
-        schema.name.to_lowercase(),
-        field_path.join(".")
-    );
+    let path_str = format!("{}.spec.{}", schema.selector_token(), field_path.join("."));
     // `find_field_node` looks up the field the FULL path names, independent
     // of `resolve_field_path`'s children-returning contract, so the queried
     // object's own name/type/description renders even when it has several

@@ -110,6 +110,53 @@ fn explain_resolve_field_path_leaf() {
     assert_eq!(children[0].name, "taps");
 }
 
+/// Every `cfgd explain` command a rendered hint spells re-parses.
+///
+/// The kind a hint names is the SELECTOR the CLI accepts, never the display
+/// name: the CRD `Module` displays as `Module (CRD)`, and the lowercase of
+/// that is `module (crd)` — a space and two parentheses no shell hands to
+/// `cfgd` as one word. Both hint sites compose from
+/// [`ResourceSchema::selector_token`], so a kind whose display name is not
+/// its selector cannot print a command the reader has to fix by hand.
+#[test]
+fn every_explain_hint_names_a_selector_that_reparses() {
+    let render = |resource: &str| {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_explain(&printer, Some(resource), false).unwrap();
+        printer.flush();
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+    let mut hints_seen = 0usize;
+    for schema in all_schemas() {
+        let token = schema.selector_token();
+        assert_eq!(
+            find_schema(&token).map(|s| s.name.as_str()),
+            Some(schema.name.as_str()),
+            "`cfgd explain {token}` does not resolve back to {}",
+            schema.name
+        );
+        for resource in [token.clone(), format!("{token}.spec")] {
+            for rest in render(&resource).split("cfgd explain ").skip(1) {
+                let named = rest
+                    .split([' ', '`', '\n'])
+                    .next()
+                    .unwrap_or_default()
+                    .split('.')
+                    .next()
+                    .unwrap_or_default();
+                hints_seen += 1;
+                assert_eq!(
+                    find_schema(named).map(|s| s.name.as_str()),
+                    Some(schema.name.as_str()),
+                    "`cfgd explain {resource}` prints a hint naming `{named}`, which does not select {}",
+                    schema.name
+                );
+            }
+        }
+    }
+    assert!(hints_seen > 0, "no explain hint named a kind at all");
+}
+
 #[test]
 fn explain_resolve_field_path_unknown() {
     let module = find_schema("Module").unwrap();
