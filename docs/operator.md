@@ -457,7 +457,12 @@ writer of its one field and yielding to an ownership entry an older release left
 strand the device's status. The status fields the controllers own are never disturbed, because
 neither gateway manager names them. Both maps are declared `x-kubernetes-map-type: atomic` in the
 CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole map,
-including keys an earlier operator version or a manual `kubectl patch` wrote.
+including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
+map and each package's `aliases` map are declared atomic for the same reason, since
+`cfgd module push --apply` sends the module file on disk whole, and every policy selector
+(`BackupPolicy.spec.selector`, `ConfigPolicy.spec.targetSelector`,
+`ClusterConfigPolicy.spec.namespaceSelector`) is atomic to match upstream `metav1.LabelSelector`,
+so two managers cannot merge label keys into a selector neither of them wrote.
 
 The response answers with `backupSchedules`, the cadences a cluster
 [`BackupPolicy`](backup-policy.md) owns for that machine. The key is absent when the gateway

@@ -198,13 +198,46 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
-    // The two maps a device reports whole at check-in. Granular (the default) would
-    // track ownership per key, so a key another writer left behind — the released
-    // whole-status merge patch on the upgrade path, a kubectl patch — would survive
-    // the gateway's forced apply and never be retired.
-    for map in ["packageVersions", "backupScheduleOwners"] {
-        if let Some(node) = crd.pointer_mut(&format!("{spec_base}/status/properties/{map}")) {
+    // Maps ONE writer reports whole. Granular (the default) would track ownership
+    // per key, so a key another writer left behind would survive the whole-map
+    // write and never be retired.
+    let atomic_maps = [
+        // The two maps a device reports whole at every check-in, against the
+        // ownership entries the released whole-status merge patch and a manual
+        // kubectl patch leave behind.
+        format!("{spec_base}/status/properties/packageVersions"),
+        format!("{spec_base}/status/properties/backupScheduleOwners"),
+        // The module file on disk is the whole declaration, and
+        // `cfgd module push --apply` sends it whole, so a key an earlier edit
+        // left behind must not outlive the push.
+        format!("{spec_base}/spec/properties/system"),
+        format!("{spec_base}/spec/properties/packages/items/properties/aliases"),
+    ];
+    for path in &atomic_maps {
+        if let Some(node) = crd.pointer_mut(path) {
             node["x-kubernetes-map-type"] = serde_json::json!("atomic");
+        }
+    }
+
+    // A label selector is one leaf, matching upstream metav1.LabelSelector
+    // (+structType=atomic): two managers applying the same policy must never
+    // merge label keys into a selector neither of them wrote.
+    for selector in ["selector", "targetSelector", "namespaceSelector"] {
+        if let Some(node) = crd.pointer_mut(&format!("{spec_base}/spec/properties/{selector}")) {
+            node["x-kubernetes-map-type"] = serde_json::json!("atomic");
+        }
+    }
+
+    // User-authored settings, composed by whoever applies the object: per-key
+    // ownership is what someone editing one setting of a shared object expects,
+    // and saying so is what keeps the next map from defaulting into it silently.
+    let granular_maps = [
+        format!("{spec_base}/spec/properties/systemSettings"),
+        format!("{spec_base}/spec/properties/settings"),
+    ];
+    for path in &granular_maps {
+        if let Some(node) = crd.pointer_mut(path) {
+            node["x-kubernetes-map-type"] = serde_json::json!("granular");
         }
     }
 
@@ -1204,45 +1237,137 @@ mod tests {
         );
     }
 
-    /// A status map's merge semantics are a decision, never a default: granular
-    /// (the default) lets a key another manager wrote outlive the writer that
-    /// reports the map whole. Every map under `status` declares its map type.
+    /// A rendered map: keys a schema cannot enumerate, either typed
+    /// (`additionalProperties`) or free-form (`x-kubernetes-preserve-unknown-fields`).
+    /// The node must be an object, which is also what the API server demands
+    /// before it accepts a merge-type declaration at all.
+    fn is_rendered_map(node: &Value) -> bool {
+        node.get("type") == Some(&json!("object"))
+            && (node.get("additionalProperties").is_some()
+                || node.get("x-kubernetes-preserve-unknown-fields") == Some(&json!(true)))
+    }
+
+    /// A map's merge semantics are a decision, never a default: granular (the
+    /// default) lets a key another manager wrote outlive the writer that reports
+    /// the map whole, which is how a retired package version survived a
+    /// check-in. Every rendered map declares its type, or sits inside a node
+    /// already declared atomic, which is one leaf carrying everything under it.
     #[test]
-    fn every_rendered_status_map_declares_its_merge_type() {
+    fn every_rendered_map_declares_its_merge_type() {
+        let nodes = every_rendered_schema_node();
+        let atomic: Vec<String> = nodes
+            .iter()
+            .filter(|(_, node)| node.get("x-kubernetes-map-type") == Some(&json!("atomic")))
+            .map(|(path, _)| format!("{path}/"))
+            .collect();
         let mut checked = 0;
-        for (path, node) in every_rendered_schema_node() {
-            if !path.contains("/status/") || node.get("additionalProperties").is_none() {
+        for (path, node) in &nodes {
+            if !is_rendered_map(node) {
                 continue;
             }
             checked += 1;
+            let declared = node.get("x-kubernetes-map-type").is_some()
+                || atomic.iter().any(|prefix| path.starts_with(prefix));
             assert!(
-                node.get("x-kubernetes-map-type").is_some(),
-                "{path} is a status map with no x-kubernetes-map-type; declare atomic or granular"
+                declared,
+                "{path} is a rendered map with no x-kubernetes-map-type; declare atomic or granular"
             );
         }
         assert!(
-            checked >= 2,
-            "the walk found {checked} status maps; MachineConfig alone has two"
+            checked >= 10,
+            "the walk found {checked} rendered maps; the six CRDs carry ten"
         );
+    }
+
+    /// The three label selectors render atomic, as upstream `metav1.LabelSelector`
+    /// does: a selector two managers merged label keys into matches what neither
+    /// of them wrote.
+    #[test]
+    fn every_policy_label_selector_renders_atomic() {
+        for (crd_name, selector) in [
+            ("backuppolicies.cfgd.io", "selector"),
+            ("configpolicies.cfgd.io", "targetSelector"),
+            ("clusterconfigpolicies.cfgd.io", "namespaceSelector"),
+        ] {
+            let node = rendered_node(
+                crd_name,
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{selector}"
+                ),
+            );
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "{crd_name} spec.{selector} must be atomic: {node:?}"
+            );
+        }
+    }
+
+    /// The two Module maps `cfgd module push --apply` writes whole: atomic, so a
+    /// key an earlier edit left behind does not outlive the push.
+    #[test]
+    fn the_module_maps_a_push_writes_whole_render_atomic() {
+        for pointer in [
+            "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/system",
+            "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/packages/items/properties/aliases",
+        ] {
+            let node = rendered_node("modules.cfgd.io", pointer);
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "modules {pointer} must be atomic: {node:?}"
+            );
+        }
+    }
+
+    /// The user-authored settings maps render granular BY DECLARATION: per-key
+    /// ownership is what someone editing one setting of a shared object expects,
+    /// and the word is written down so the next reader does not read silence.
+    #[test]
+    fn the_user_authored_settings_maps_render_granular() {
+        for (crd_name, map) in [
+            ("machineconfigs.cfgd.io", "systemSettings"),
+            ("configpolicies.cfgd.io", "settings"),
+            ("clusterconfigpolicies.cfgd.io", "settings"),
+        ] {
+            let node = rendered_node(
+                crd_name,
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{map}"
+                ),
+            );
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("granular")),
+                "{crd_name} spec.{map} must be granular: {node:?}"
+            );
+        }
+    }
+
+    /// One node of one rendered CRD, read back out of the YAML that ships.
+    fn rendered_node(crd_name: &str, pointer: &str) -> Value {
+        let docs = super::render_each().expect("render CRDs");
+        let doc = docs
+            .iter()
+            .find(|d| d.name == crd_name)
+            .unwrap_or_else(|| panic!("{crd_name} is rendered"));
+        let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+        crd.pointer(pointer)
+            .unwrap_or_else(|| panic!("{crd_name} renders {pointer}"))
+            .clone()
     }
 
     /// The value behind that declaration for the two maps a device reports
     /// whole: atomic, so the gateway's forced apply is a whole-map takeover.
     #[test]
     fn the_device_reported_machine_config_status_maps_render_atomic() {
-        let docs = super::render_each().expect("render CRDs");
-        let machine_config = docs
-            .iter()
-            .find(|d| d.name == "machineconfigs.cfgd.io")
-            .expect("the MachineConfig CRD is rendered");
-        let crd: Value = serde_yaml::from_str(&machine_config.yaml).expect("parse rendered CRD");
         for map in ["packageVersions", "backupScheduleOwners"] {
-            let pointer = format!(
-                "/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/{map}"
+            let node = rendered_node(
+                "machineconfigs.cfgd.io",
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/{map}"
+                ),
             );
-            let node = crd
-                .pointer(&pointer)
-                .unwrap_or_else(|| panic!("{map} is rendered on the MachineConfig status"));
             assert_eq!(
                 node.get("x-kubernetes-map-type"),
                 Some(&json!("atomic")),

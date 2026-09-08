@@ -111,6 +111,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
               packages:
                 default: []
                 description: Packages every MachineConfig in a selected namespace must declare.
@@ -186,6 +187,7 @@ spec:
                   System settings every MachineConfig in a selected namespace must
                   declare, keyed the same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
             type: object
           status:
             nullable: true

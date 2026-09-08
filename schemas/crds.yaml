@@ -141,6 +141,7 @@ spec:
                   `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
                   no system settings are reconciled.
                 type: object
+                x-kubernetes-map-type: granular
             required:
             - hostname
             - profile
@@ -337,6 +338,7 @@ spec:
                   System settings every selected MachineConfig must declare, keyed the
                   same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
               targetSelector:
                 default:
                   matchExpressions: []
@@ -391,6 +393,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true
@@ -729,6 +732,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
               packages:
                 default: []
                 description: Packages every MachineConfig in a selected namespace must declare.
@@ -804,6 +808,7 @@ spec:
                   System settings every MachineConfig in a selected namespace must
                   declare, keyed the same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
             type: object
           status:
             nullable: true
@@ -1701,6 +1706,7 @@ spec:
                         Per-manager package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"})
                         for a package spelled differently by each manager.
                       type: object
+                      x-kubernetes-map-type: atomic
                     deny:
                       description: |-
                         Package managers never used for this package, even where one is
@@ -1799,6 +1805,7 @@ spec:
                   configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
                   into the profile's system map, module values winning at leaf level.
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true
@@ -1989,6 +1996,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
               units:
                 description: |-
                   Schedule overrides, each naming a backup unit the matched machine's own

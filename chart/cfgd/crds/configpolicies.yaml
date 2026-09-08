@@ -113,6 +113,7 @@ spec:
                   System settings every selected MachineConfig must declare, keyed the
                   same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
               targetSelector:
                 default:
                   matchExpressions: []
@@ -167,6 +168,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true

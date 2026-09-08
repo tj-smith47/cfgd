@@ -829,6 +829,7 @@ spec:
                         Per-manager package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"})
                         for a package spelled differently by each manager.
                       type: object
+                      x-kubernetes-map-type: atomic
                     deny:
                       description: |-
                         Package managers never used for this package, even where one is
@@ -927,6 +928,7 @@ spec:
                   configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
                   into the profile's system map, module values winning at leaf level.
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true

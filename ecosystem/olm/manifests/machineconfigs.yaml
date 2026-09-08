@@ -141,6 +141,7 @@ spec:
                   `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
                   no system settings are reconciled.
                 type: object
+                x-kubernetes-map-type: granular
             required:
             - hostname
             - profile

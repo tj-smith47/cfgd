@@ -93,6 +93,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
               units:
                 description: |-
                   Schedule overrides, each naming a backup unit the matched machine's own

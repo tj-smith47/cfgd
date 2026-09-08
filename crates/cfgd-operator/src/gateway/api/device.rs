@@ -145,11 +145,12 @@ pub(super) async fn checkin(
 /// that silently stops moving, which a reader has no other way to notice.
 ///
 /// Each map goes out under its OWN field manager, and a map the device did not
-/// observe produces no write at all. Server-side apply removes the fields a
-/// manager stops naming, which is exactly how a key the device stopped
-/// reporting is retired inside a map it did report; one manager owning both
-/// maps would apply that same rule one level up and delete the whole map the
-/// device could not observe this time. `packageVersions` and
+/// observe produces no write at all. Each map is one leaf in the schema
+/// (`x-kubernetes-map-type: atomic`), so the forced apply writes the applied
+/// value alone and a key the device stopped reporting is gone because the whole
+/// map was replaced. One manager owning both maps would drop the fields it
+/// stopped naming one level up and delete the whole map the device could not
+/// observe this time. `packageVersions` and
 /// `backupScheduleOwners` are facts the controller cannot see for itself, so an
 /// older agent, or one whose managers could not be queried, must not blank what
 /// the cluster still holds.
