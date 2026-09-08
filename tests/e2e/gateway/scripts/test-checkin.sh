@@ -232,12 +232,18 @@ EOF
     if [ "$GW31_APPLY_RC" -ne 0 ]; then
         fail_test "GW-31" "Failed to create MachineConfig CRD"
     else
-        # A merge patch under a kubectl manager leaves the Update-type ownership
-        # a release that wrote the whole status carried; the check-in below is
-        # the first server-side apply to reach the same field.
+        # Two seeds, because the ownership a release leaves behind is what the
+        # check-in has to take over: a per-key Update claim under a kubectl
+        # manager, and the whole-node claim the released merge-patch path wrote
+        # under cfgd-operator/status. The check-in below is the first
+        # server-side apply to reach the same field.
         kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
             --subresource=status --type=merge \
             -p '{"status":{"packageVersions":{"seeded/stale":"0.0.1"}}}' 2>/dev/null
+        kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            --subresource=status --type=merge \
+            --field-manager="cfgd-operator/status" \
+            -p '{"status":{"packageVersions":{"seeded/status":"0.0.2"}}}' 2>/dev/null
 
         GW31_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw31-checkin.txt -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
@@ -275,9 +281,16 @@ EOF
 
             # The gateway logs a refused status write at error level and lets the
             # check-in succeed, so a silent 409 shows up here and nowhere else.
-            GW31_CONFLICT_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>/dev/null \
+            # The read is asserted on its own: an empty log and a log that could
+            # not be read look alike, and only one of them is a passing test.
+            GW31_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>&1)
+            GW31_LOG_RC=$?
+            GW31_LOG_READ=empty
+            [ -n "$GW31_LOG" ] && GW31_LOG_READ=read
+            GW31_CONFLICT_LOG=$(printf '%s\n' "$GW31_LOG" \
                 | grep -F "device-reported MachineConfig status was not written" \
                 | grep -F "${GW31_MC_NAME}" || true)
+            echo "  Gateway log read: rc=${GW31_LOG_RC} ${GW31_LOG_READ}"
             echo "  Conflict log lines: ${GW31_CONFLICT_LOG:-none}"
 
             GW31_PASS=true
@@ -285,6 +298,8 @@ EOF
             assert_equals "$GW31_APPLY_OP" "Apply" || GW31_PASS=false
             assert_contains "$GW31_APPLY_FIELDS" "f:packageVersions" || GW31_PASS=false
             assert_equals "$GW31_UPDATE_OWNERS" "" || GW31_PASS=false
+            assert_equals "$GW31_LOG_RC" "0" || GW31_PASS=false
+            assert_equals "$GW31_LOG_READ" "read" || GW31_PASS=false
             assert_equals "$GW31_CONFLICT_LOG" "" || GW31_PASS=false
 
             if [ "$GW31_PASS" = true ]; then

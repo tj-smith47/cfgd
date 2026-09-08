@@ -95,10 +95,14 @@ echo "  status.units rows: $BP01_ROWS (hostnames: ${BP01_HOSTS:-none})"
 echo "  machinesMatched:   ${BP01_MATCHED:-not set}"
 echo "  unitsSummary:      ${BP01_SUMMARY:-not set}"
 
-if [ "$BP01_ROWS" -eq 2 ] && assert_equals "$BP01_MATCHED" "2"; then
+# WHICH two hostnames is the point of the third MachineConfig: a selector that
+# admitted nuc-03 and dropped nuc-01 still reports two rows. status.units is
+# sorted by (hostname, name), so the order is stable.
+if [ "$BP01_ROWS" -eq 2 ] && assert_equals "$BP01_MATCHED" "2" &&
+    assert_equals "$BP01_HOSTS" "nuc-01 nuc-02"; then
     pass_test "OP-BP-01"
 else
-    fail_test "OP-BP-01" "Expected 2 unit rows and machinesMatched=2, got rows=${BP01_ROWS}, matched=${BP01_MATCHED:-unset}"
+    fail_test "OP-BP-01" "Expected nuc-01 and nuc-02 with machinesMatched=2, got rows=${BP01_ROWS} (${BP01_HOSTS:-none}), matched=${BP01_MATCHED:-unset}"
 fi
 
 # =================================================================
@@ -173,10 +177,16 @@ EOF
 )
 echo "  Empty schedule result: $(echo "$BP04_RESULT" | tail -1)"
 
-if assert_rejected "$BP04_RESULT" "BackupPolicy unit with an empty schedule"; then
+# assert_rejected matches any error text, so a terminating namespace or a
+# connectivity failure reads as a refusal; the webhook has to name itself.
+BP04_PASS=true
+assert_rejected "$BP04_RESULT" "BackupPolicy unit with an empty schedule" || BP04_PASS=false
+assert_contains "$BP04_RESULT" "validate-backuppolicy.cfgd.io" || BP04_PASS=false
+
+if [ "$BP04_PASS" = true ]; then
     pass_test "OP-BP-04"
 else
-    fail_test "OP-BP-04" "A unit with no schedule was admitted"
+    fail_test "OP-BP-04" "A unit with no schedule was admitted, or the refusal did not come from the webhook"
 fi
 
 # =================================================================
@@ -216,9 +226,14 @@ EOF
 )
 echo "  Absent units result: $(echo "$BP05_ABSENT" | tail -1)"
 
+# Each arm is refused by a different layer, and only the wording says which:
+# the webhook for a list that is present and empty, the schema's own `required`
+# for a spec that names no units at all.
 BP05_PASS=true
 assert_rejected "$BP05_EMPTY" "BackupPolicy with an empty units list" || BP05_PASS=false
+assert_contains "$BP05_EMPTY" "must declare at least one unit" || BP05_PASS=false
 assert_rejected "$BP05_ABSENT" "BackupPolicy with no units field" || BP05_PASS=false
+assert_contains "$BP05_ABSENT" "spec.units: Required value" || BP05_PASS=false
 
 if [ "$BP05_PASS" = true ]; then
     pass_test "OP-BP-05"
