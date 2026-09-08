@@ -134,6 +134,17 @@ pub struct OrphanScan {
 }
 
 impl OrphanScan {
+    /// How many actions this run sets out to perform: one per orphaned row,
+    /// plus one per unit nothing could be asked about.
+    ///
+    /// The header states this number and [`CollectOutcome::tally`] settles the
+    /// same one, so both readers take it from here: an unreadable unit is
+    /// priced as a failure at the end, and a run that planned only the rows it
+    /// could see would close on more outcomes than it opened with.
+    pub fn action_count(&self) -> usize {
+        self.orphans.len() + self.unreadable.len()
+    }
+
     /// Render one failed row per unit whose history could not be read.
     ///
     /// The caller places this AFTER the run's header, which is why the read
@@ -150,7 +161,7 @@ impl OrphanScan {
                         OwnerLabel::new("backup", &unit.unit).plain()
                     ),
                 )
-                .detail(unit.error.clone());
+                .detail(&unit.error);
         }
     }
 }

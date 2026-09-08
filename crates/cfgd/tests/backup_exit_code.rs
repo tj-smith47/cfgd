@@ -1,14 +1,15 @@
 #![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
 
-//! Exit-code and stdout-shape regression tests for `cfgd backup run`.
+//! Exit-code and stdout-shape regression tests for `cfgd backup run` and
+//! `cfgd backup gc`.
 //!
-//! `cmd_backup_run` ends in `std::process::exit` when a unit failed, was dirty,
-//! or was refused, so these drive the real binary — an in-process call would
-//! take the test harness down with it. Running the real binary is also the only
-//! way to see stdout exactly as a scripted consumer does: the in-process `Doc`
-//! capture keeps a single `Option<Value>`, so a second emitted document
-//! overwrites the first instead of appending, which is precisely the failure
-//! shape under test here.
+//! Both verbs end in `std::process::exit` when a unit failed, was dirty, was
+//! refused, or could not be asked about at all, so these drive the real binary
+//! — an in-process call would take the test harness down with it. Running the
+//! real binary is also the only way to see stdout exactly as a scripted
+//! consumer does: the in-process `Doc` capture keeps a single `Option<Value>`,
+//! so a second emitted document overwrites the first instead of appending,
+//! which is precisely the failure shape under test here.
 
 mod common;
 
@@ -94,5 +95,42 @@ fn backup_run_exits_zero_when_every_unit_runs_clean() {
             .iter()
             .all(|e| e["status"] == "success"),
         "got: {parsed}"
+    );
+}
+
+#[test]
+fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
+    // A unit nothing could be asked about is a failure of the run, and the
+    // failure has to reach a scripted caller: the real binary is the only way
+    // to see the code, `cmd_backup_gc` ending in `std::process::exit`.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    cfgd_core::state::StateStore::open_in_dir(state_dir.path())
+        .expect("state store")
+        .drop_backup_runs_table()
+        .expect("take the history away");
+
+    let out = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "backup", "gc"])
+        .arg("--config")
+        .arg(config_dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .output()
+        .expect("run cfgd backup gc");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a history cfgd could not read is a failure the caller must see"
+    );
+
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 stdout");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout must be ONE json document, got {e}: {stdout:?}"));
+    assert_eq!(
+        parsed["unreadable"],
+        serde_json::json!(["docs", "weekly"]),
+        "the payload names every unit that could not be asked: {parsed}"
     );
 }

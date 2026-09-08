@@ -1055,7 +1055,7 @@ pub fn run_backup_gc(
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
     let scan = cfgd_core::backup::orphaned_snapshots(state, &units);
-    let orphans = scan.orphans.len();
+    let actions = scan.action_count();
 
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
     let unit_source = named.map(|spec| spec.source.posix().to_string());
@@ -1071,13 +1071,13 @@ pub fn run_backup_gc(
         subject: named.map(|spec| spec.name.as_str()),
         unit_source: unit_source.as_deref(),
     };
-    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, orphans).header(printer);
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, actions).header(printer);
     scan.report_unreadable(printer);
 
     // The up-to-date verdict is a claim about every declared unit, so a unit
     // nothing could be asked about withholds it: that run settles through the
     // rollup, which prices the unreadable unit as the failure it is.
-    if orphans == 0 && scan.unreadable.is_empty() {
+    if actions == 0 {
         let (role, verdict) = cfgd_core::reconciler::nothing_to_do_verdict(0);
         printer.emit(
             Doc::new()

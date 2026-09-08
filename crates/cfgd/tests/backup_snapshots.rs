@@ -1465,8 +1465,14 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
         "the run's heading must open its own report:\n{human}"
     );
     assert!(
-        human.contains("backup:docs: history unavailable"),
-        "a unit whose history could not be read must still say so:\n{human}"
+        human.lines().any(|l| l
+            .trim_start()
+            .starts_with("✗ backup:docs: history unavailable")),
+        "a unit whose history could not be read must still say so, as a failure:\n{human}"
+    );
+    assert!(
+        human.contains("Actions  2 planned"),
+        "the header must plan every unit the rollup prices:\n{human}"
     );
     assert!(
         human.contains("2 actions failed"),
@@ -1927,6 +1933,10 @@ fn backup_list_counts_what_a_stranded_destination_left_orphaned() {
         entries[0]["snapshots"].as_i64(),
         Some(2),
         "an orphaned row is no longer one of the unit's snapshots: {payload}"
+    );
+    assert_eq!(
+        entries[0]["lastRunStatus"], "success",
+        "the last run is the newest row, not the oldest: {payload}"
     );
 }
 
