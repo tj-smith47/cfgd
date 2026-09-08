@@ -30,7 +30,8 @@ pub mod schedule;
 mod tests;
 
 pub use gc::{
-    CollectOutcome, CollectedSnapshot, OrphanedSnapshot, collect_orphans, orphaned_snapshots,
+    CollectOutcome, CollectedSnapshot, OrphanScan, OrphanedSnapshot, UnreadableUnit,
+    collect_orphans, orphaned_snapshots,
 };
 pub use restore::{
     RESTORE_ACTION_COUNT, RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots,
@@ -1130,14 +1131,18 @@ pub(super) fn remove_existing(path: &Path) -> std::io::Result<()> {
 /// place so the next run retries it.
 ///
 /// Nothing is deleted from disk unless [`is_snapshot_within`] confirms the
-/// recorded path is inside *this unit's* destination. A row that fails that
-/// gate is re-classified [`BackupRunStatus::Orphaned`] without a single
-/// filesystem call — never deleted here, and never re-marked on a later run —
-/// so the payload a `destination:` change stranded stays collectable by
-/// [`collect_orphans`]. Dropping the row instead threw away the only proof the
-/// recorded path was ever cfgd's, which is why nothing could reclaim it
-/// afterwards. An orphaned row is neither an artifact nor a failure in the
-/// kept counts, so it occupies no retention slot.
+/// recorded path is inside *this unit's* destination. Every row is re-judged
+/// against the destination in force on THIS run, and the verdict is written
+/// both ways without a single filesystem call: a row that fails the gate is
+/// re-classified [`BackupRunStatus::Orphaned`] rather than deleted, so the
+/// payload a `destination:` change stranded stays collectable by
+/// [`collect_orphans`], and a row that passes it again — a destination moved
+/// back to a path it once held — is set to [`BackupRunStatus::Success`], so
+/// its snapshot is restorable and prunable rather than waiting to be
+/// collected. Dropping the row instead threw away the only proof the recorded
+/// path was ever cfgd's, which is why nothing could reclaim it afterwards. An
+/// orphaned row is neither an artifact nor a failure in the kept counts, so it
+/// occupies no retention slot.
 fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) -> usize {
     let spec = unit.spec;
     let owner = OwnerLabel::new("backup", &spec.name).plain();
@@ -1169,32 +1174,48 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     let mut kept_artifacts = 0;
     let mut kept_failures = 0;
     let mut newly_orphaned = 0usize;
+    let set_status = |run: &BackupRunRecord, status: BackupRunStatus| {
+        if let Err(e) = store.set_backup_run_status(run.id, status) {
+            warn(format!(
+                "{owner}: could not re-classify run {} as {}: {}",
+                run.id,
+                status.as_str(),
+                collapse_to_subject_line(&e)
+            ));
+            return false;
+        }
+        true
+    };
+
     // `backup_runs` is newest-first, so the first `keep` of each class survive.
     for run in &runs {
-        // A row an earlier prune already re-classified is left exactly as it
-        // is: re-marking it would rewrite the same value, and it is `cfgd
-        // backup gc`'s to clear.
-        if run.status == BackupRunStatus::Orphaned {
-            continue;
-        }
-        // Containment first, ahead of the retention accounting: a foreign row
-        // must neither reach a delete nor occupy a slot that a real snapshot
-        // needs, or stale rows would crowd out the runs the user asked to keep.
-        if let Some(path) = &run.destination_path
-            && !is_snapshot_within(Path::new(path), &destination)
-        {
-            match store.mark_backup_run_orphaned(run.id) {
-                Ok(()) => newly_orphaned += 1,
-                Err(e) => warn(format!(
-                    "{owner}: could not mark run {} orphaned: {}",
-                    run.id,
-                    collapse_to_subject_line(&e)
-                )),
+        // Containment against the destination IN FORCE, ahead of the retention
+        // accounting and ahead of what the row's stored status says: a foreign
+        // row must neither reach a delete nor occupy a slot that a real
+        // snapshot needs, and a destination moved back to a path it once held
+        // must give its rows their snapshots back rather than leave them
+        // stranded for `cfgd backup gc` to delete.
+        let outside = run
+            .destination_path
+            .as_ref()
+            .is_some_and(|path| !is_snapshot_within(Path::new(path), &destination));
+        let was_orphaned = run.status == BackupRunStatus::Orphaned;
+        if outside {
+            // An already-orphaned row is left exactly as it is: re-marking
+            // would rewrite the same value, and it is gc's to clear.
+            if !was_orphaned && set_status(run, BackupRunStatus::Orphaned) {
+                newly_orphaned += 1;
             }
             continue;
         }
+        // Inside the destination again. Only a run that WROTE a snapshot ever
+        // carries a `destination_path`, so the status it is restored to is the
+        // one it held before the prune re-classified it.
+        if was_orphaned && !set_status(run, BackupRunStatus::Success) {
+            continue;
+        }
 
-        let counter = if run.has_artifact() {
+        let counter = if was_orphaned || run.has_artifact() {
             &mut kept_artifacts
         } else {
             &mut kept_failures
@@ -1235,7 +1256,7 @@ fn orphan_hint(count: usize, name: &str, destination: &Path) -> String {
         "run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
          destination change",
         crate::plural_noun(count, "snapshot"),
-        crate::fold_home_in_text(&destination.posix().to_string()),
+        destination.posix(),
     )
 }
 

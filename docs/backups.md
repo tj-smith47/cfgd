@@ -315,7 +315,7 @@ How many snapshots to keep. Default 10, minimum 1.
 |---|---|
 | What pruning walks | the recorded runs, not a filename glob; deletes both the artifact on disk and its record |
 | Counted per outcome | the newest `retention` runs that produced a snapshot are kept, and independently the newest `retention` that did not; a run of failures never deletes a good snapshot |
-| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is re-classified `Orphaned` and kept: the path itself is left untouched, the record consumes no retention slot, and it is no longer offered as a restorable snapshot. [`cfgd backup gc`](#garbage-collection) is what removes both |
+| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is re-classified `Orphaned` and kept: the path itself is left untouched, the record consumes no retention slot, and it is no longer offered as a restorable snapshot. [`cfgd backup gc`](#garbage-collection) is what removes both. Every run re-judges every record, so a `destination:` pointed back at a path it held before takes those records back |
 
 ### `schedule`
 
@@ -607,7 +607,11 @@ to collect, and a rollup. For each orphaned record it removes the recorded path,
 **What counts as an orphan:** a `backup_runs` record whose `destination_path` is not inside the
 unit's `destination` as currently declared. That is the same containment gate retention prunes by
 ([`is_snapshot_within`](#retention)), so the two can never disagree about which snapshots are the
-unit's own.
+unit's own. Every run re-judges every record against the destination in force at that moment, and
+writes the verdict both ways: point `destination` back at a path it held before and the next run of
+that unit marks those records `Success` again, which puts their snapshots back in
+`cfgd backup list <name> --snapshots`, back under retention, and out of reach of
+`cfgd backup gc`.
 
 **What is never touched:** anything the state store did not record. Nothing here lists a directory,
 so a file you put in an old destination by hand is not cfgd's to find and not cfgd's to delete, and

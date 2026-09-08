@@ -165,8 +165,9 @@ impl Harness {
                 "workstation",
                 &state_dir,
             )];
-            let orphans = orphaned_snapshots(&self.store, &units, &self.printer);
-            collect_orphans(&self.store, &orphans, &self.printer)
+            let scan = orphaned_snapshots(&self.store, &units);
+            scan.report_unreadable(&self.printer);
+            collect_orphans(&self.store, &scan.orphans, &self.printer)
         })
     }
 
@@ -1092,6 +1093,143 @@ fn an_orphaned_row_takes_no_retention_slot() {
         stranded.exists(),
         "the orphaned snapshot was pruned from disk"
     );
+}
+
+#[test]
+fn a_destination_restored_to_its_old_path_un_orphans_the_rows_it_stranded() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    // Two slots, so the run under the restored destination cannot evict the
+    // row this test is about for being one snapshot too many.
+    s.retention = 2;
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-0".to_string();
+    let first = h.run(&s);
+    let restored = PathBuf::from(first.destination_path.clone().expect("artifact"));
+
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-1".to_string();
+    let away = h.run(&s);
+    assert_eq!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .find(|r| r.id == first.id)
+            .expect("row")
+            .status,
+        BackupRunStatus::Orphaned,
+        "the move did not strand the first run"
+    );
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-2".to_string();
+    h.run(&s);
+
+    let rows = h.store.backup_runs("db").expect("history");
+    let back = rows.iter().find(|r| r.id == first.id).expect("row");
+    assert_eq!(
+        back.status,
+        BackupRunStatus::Success,
+        "a snapshot inside the destination in force is still marked orphaned"
+    );
+    assert!(
+        h.snapshots_of(&s)
+            .iter()
+            .any(|snap| snap.run_id == first.id),
+        "an un-orphaned snapshot is still withheld from restore"
+    );
+
+    let outcome = h.collect(&s);
+    assert!(
+        restored.exists(),
+        "gc deleted a snapshot inside the destination in force"
+    );
+    // The run under `dest-b` is the one now outside, and the only one gc has
+    // any business collecting.
+    assert_eq!(
+        outcome
+            .collected
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![away.destination_path.as_deref().expect("artifact")],
+        "{outcome:?}"
+    );
+}
+
+/// Replace the old destination DIRECTORY with a file, so every recorded path
+/// under it is unreachable. Unix-only: the error kind a path that runs through
+/// a file yields is `NotADirectory` there and `NotFound` on Windows, which the
+/// remover reads as a payload that was already gone.
+#[cfg(unix)]
+fn strand_behind_a_file(h: &Harness, dir: &str) {
+    let path = h.root.join(dir);
+    std::fs::remove_dir_all(&path).expect("clear the old destination");
+    std::fs::write(&path, b"an operator's file").expect("file in its place");
+}
+
+#[test]
+#[cfg(unix)]
+fn gc_that_cannot_remove_a_payload_keeps_its_row() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    let (first, _) = orphan_by_moving_the_destination(&h, &mut s);
+    strand_behind_a_file(&h, "dest-a");
+
+    let outcome = h.collect(&s);
+
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert!(
+        outcome.failed[0].error.is_some(),
+        "a failed removal carries no reason: {outcome:?}"
+    );
+    assert_eq!(outcome.tally().status, crate::state::ApplyStatus::Failed);
+    assert!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == first.id),
+        "a row was dropped while its payload was still there to collect"
+    );
+    assert!(
+        h.root.join("dest-a").is_file(),
+        "gc removed what it could not remove"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.retention = 1;
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-0".to_string();
+    h.run(&s);
+    s.destination = Some(h.root.join("dest-c"));
+    s.name_pattern = "snapshot-1".to_string();
+    let second = h.run(&s);
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-2".to_string();
+    h.run(&s);
+
+    strand_behind_a_file(&h, "dest-a");
+    let collectable = PathBuf::from(second.destination_path.clone().expect("artifact"));
+
+    let outcome = h.collect(&s);
+
+    assert_eq!(outcome.collected.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.tally().status, crate::state::ApplyStatus::Partial);
+    assert!(!collectable.exists(), "the removable payload survived");
 }
 
 // ---------------------------------------------------------------------------

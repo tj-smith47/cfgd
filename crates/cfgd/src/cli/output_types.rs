@@ -1011,6 +1011,17 @@ pub struct BackupRunOutput {
     pub clean: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// How many recorded snapshots this run found outside the destination now
+    /// in force, and so re-classified for `cfgd backup gc` to collect. Absent
+    /// on a run that stranded nothing, which is every run until a
+    /// `destination:` moves.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub orphaned: usize,
+}
+
+/// Whether a count is zero, for the `-o json` slots a zero says nothing in.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
@@ -1021,6 +1032,7 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
             destination_path: record.destination_path.clone(),
             clean: record.is_clean(),
             error: record.error.clone(),
+            orphaned: 0,
         }
     }
 }
@@ -1035,13 +1047,17 @@ impl BackupRunOutput {
     /// is the caller's because a record-less report has no name of its own.
     pub fn from_report(name: &str, report: &cfgd_core::backup::BackupRunReport) -> Self {
         match (&report.record, &report.skipped) {
-            (Some(record), _) => Self::from(record),
+            (Some(record), _) => Self {
+                orphaned: report.orphaned,
+                ..Self::from(record)
+            },
             (None, Some(holder)) => Self {
                 name: name.to_string(),
                 status: "skipped".to_string(),
                 destination_path: None,
                 clean: false,
                 error: Some(format!("already running ({holder})")),
+                orphaned: 0,
             },
             (None, None) => Self {
                 name: name.to_string(),
@@ -1051,6 +1067,7 @@ impl BackupRunOutput {
                 destination_path: None,
                 clean: false,
                 error: report.error.clone(),
+                orphaned: 0,
             },
         }
     }
@@ -1439,12 +1456,14 @@ mod tests {
                 destination_path: Some("/backups/photos/20260801T000000Z".to_string()),
                 clean: false,
                 error: Some("postBackup hook failed".to_string()),
+                orphaned: 2,
             }],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["backups"][0]["name"], json!("photos"));
         assert_eq!(json["backups"][0]["clean"], json!(false));
         assert_eq!(json["backups"][0]["error"], json!("postBackup hook failed"));
+        assert_eq!(json["backups"][0]["orphaned"], json!(2));
     }
 
     #[test]

@@ -363,16 +363,20 @@ pub fn cmd_backup_list(
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
-            let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
-            // Off the recorded rows, like the snapshot count beside it: gc
-            // never lists a directory, so what is orphaned is exactly what the
-            // store says is orphaned.
-            let orphaned = state.and_then(|state| {
-                state.backup_runs(&spec.name).ok().map(|runs| {
-                    runs.iter()
-                        .filter(|run| run.status == cfgd_core::state::BackupRunStatus::Orphaned)
-                        .count()
-                })
+            // One read of this unit's history answers both columns it feeds:
+            // `backup_runs` is newest-first, so its first row IS the latest
+            // run, and a second query for it would be a second round trip over
+            // the rows already in hand.
+            let runs = state.and_then(|state| state.backup_runs(&spec.name).ok());
+            let last = runs.as_ref().and_then(|runs| runs.first().cloned());
+            // Off the recorded rows, and gated on exactly what the snapshot
+            // count beside it is gated on, so the two are present or absent
+            // together: gc never lists a directory, so what is orphaned is
+            // exactly what the store says is orphaned.
+            let orphaned = unit_dirs.as_ref().zip(runs.as_ref()).map(|(_, runs)| {
+                runs.iter()
+                    .filter(|run| run.status == cfgd_core::state::BackupRunStatus::Orphaned)
+                    .count()
             });
             let effective = cfgd_core::backup::effective_schedule(spec, &projections);
             let snapshots =
@@ -1047,7 +1051,8 @@ pub fn run_backup_gc(
         .iter()
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
-    let orphans = cfgd_core::backup::orphaned_snapshots(state, &units, printer);
+    let scan = cfgd_core::backup::orphaned_snapshots(state, &units);
+    let orphans = &scan.orphans;
 
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
     let unit_source = named.map(|spec| spec.source.posix().to_string());
@@ -1064,6 +1069,7 @@ pub fn run_backup_gc(
         unit_source: unit_source.as_deref(),
     };
     cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, orphans.len()).header(printer);
+    scan.report_unreadable(printer);
 
     if orphans.is_empty() {
         let (role, verdict) = cfgd_core::reconciler::nothing_to_do_verdict(0);
@@ -1078,7 +1084,7 @@ pub fn run_backup_gc(
     }
 
     let started = std::time::Instant::now();
-    let outcome = cfgd_core::backup::collect_orphans(state, &orphans, printer);
+    let outcome = cfgd_core::backup::collect_orphans(state, orphans, printer);
     cfgd_core::reconciler::render_run_rollup(
         &outcome.tally(),
         cfgd_core::reconciler::RunTitle::Collect,

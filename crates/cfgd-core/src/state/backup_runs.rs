@@ -82,17 +82,21 @@ impl StateStore {
         }
     }
 
-    /// Re-classify a run as [`BackupRunStatus::Orphaned`]: its recorded
-    /// snapshot is no longer inside the unit's destination.
+    /// Re-classify a run, in either direction.
     ///
     /// The retention prune's answer to a row it must not delete and must not
-    /// drop. Dropping it threw away the only proof the recorded path was ever
-    /// cfgd's, which is why nothing could collect the payload afterwards; the
-    /// row survives so `cfgd backup gc` has something to act on.
-    pub fn mark_backup_run_orphaned(&self, id: i64) -> Result<()> {
+    /// drop: a snapshot outside the unit's destination becomes
+    /// [`BackupRunStatus::Orphaned`], because dropping the row would throw away
+    /// the only proof the recorded path was ever cfgd's and nothing could
+    /// collect the payload afterwards. The prune re-judges every row against
+    /// the destination in force, so the reverse write matters just as much: a
+    /// destination restored to a path it once held sets its rows back to
+    /// [`BackupRunStatus::Success`], and the snapshots are restorable and
+    /// prunable again rather than stranded for `cfgd backup gc` to delete.
+    pub fn set_backup_run_status(&self, id: i64, status: BackupRunStatus) -> Result<()> {
         self.conn.execute(
             "UPDATE backup_runs SET status = ?1 WHERE id = ?2",
-            params![BackupRunStatus::Orphaned.as_str(), id],
+            params![status.as_str(), id],
         )?;
         Ok(())
     }

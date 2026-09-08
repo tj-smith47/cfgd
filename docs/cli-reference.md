@@ -2147,9 +2147,13 @@ other units it was asked to run still run. See
 [One run at a time](backups.md#run-semantics).
 
 Structured output (`-o json`) payload for `backup run`: an array of
-`{ name, status, clean, destinationPath?, error? }`, where `status` is `success`, `failed`, or
-`skipped` (the unit was already running). A refused unit does not add a second document to stdout:
-the payload is always one JSON value and the nonzero exit code carries the failure. For
+`{ name, status, clean, destinationPath?, error?, orphaned? }`, where `status` is `success`,
+`failed`, or `skipped` (the unit was already running). `orphaned` counts the recorded snapshots
+this run found outside the destination now in force and re-classified for
+[`cfgd backup gc`](backups.md#garbage-collection) to collect; it is absent on a run that stranded
+nothing, which is every run until a `destination` moves. A refused unit does not add a second
+document to stdout: the payload is always one JSON value and the nonzero exit code carries the
+failure. For
 `backup list`: an array of
 `{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, orphaned?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
 where `scheduleOwner` is `cluster` or `local` (the lowercase word the `Schedule Owner` column

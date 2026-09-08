@@ -96,35 +96,70 @@ impl CollectOutcome {
     }
 }
 
-/// Every orphaned row of every unit, in unit order and newest row first.
+/// A unit whose `backup_runs` history could not be read, and why.
+///
+/// Carried out of [`orphaned_snapshots`] rather than printed there: the read
+/// answers how many actions the run has, so it runs before the header, and a
+/// row rendered from inside it would land above the heading it belongs under.
+#[derive(Debug, Clone)]
+pub struct UnreadableUnit {
+    /// The `spec.backups[]` unit whose history could not be read.
+    pub unit: String,
+    /// The store's own reason, collapsed to one physical row.
+    pub error: String,
+}
+
+/// What one read of every unit's history found: the rows to collect, and the
+/// units that could not be asked.
+#[derive(Debug, Default)]
+pub struct OrphanScan {
+    /// Every orphaned row of every readable unit, in unit order and newest row
+    /// first.
+    pub orphans: Vec<OrphanedSnapshot>,
+    /// The units whose history the read could not open.
+    pub unreadable: Vec<UnreadableUnit>,
+}
+
+impl OrphanScan {
+    /// Render one `Role::Warn` row per unit whose history could not be read.
+    ///
+    /// The caller places this AFTER the run's header, which is why the read
+    /// itself prints nothing.
+    pub fn report_unreadable(&self, printer: &Printer) {
+        for unit in &self.unreadable {
+            printer
+                .status(
+                    Role::Warn,
+                    format!(
+                        "{}: history unavailable",
+                        OwnerLabel::new("backup", &unit.unit).plain()
+                    ),
+                )
+                .detail(unit.error.clone());
+        }
+    }
+}
+
+/// Every orphaned row of every unit, and every unit that could not be asked.
 ///
 /// A unit whose history cannot be read contributes nothing rather than failing
 /// the whole run: the other units' payloads are still collectable, and the
 /// unreadable one's rows stay exactly where they are.
-pub fn orphaned_snapshots(
-    store: &StateStore,
-    units: &[BackupUnit<'_>],
-    printer: &Printer,
-) -> Vec<OrphanedSnapshot> {
-    let mut out = Vec::new();
+pub fn orphaned_snapshots(store: &StateStore, units: &[BackupUnit<'_>]) -> OrphanScan {
+    let mut scan = OrphanScan::default();
     for unit in units {
         let name = &unit.spec().name;
         let runs = match store.backup_runs(name) {
             Ok(runs) => runs,
             Err(e) => {
-                printer
-                    .status(
-                        Role::Warn,
-                        format!(
-                            "{}: history unavailable",
-                            OwnerLabel::new("backup", name).plain()
-                        ),
-                    )
-                    .detail(collapse_to_subject_line(&e));
+                scan.unreadable.push(UnreadableUnit {
+                    unit: name.clone(),
+                    error: collapse_to_subject_line(&e),
+                });
                 continue;
             }
         };
-        out.extend(
+        scan.orphans.extend(
             runs.into_iter()
                 .filter(|run| run.status == BackupRunStatus::Orphaned)
                 .filter_map(|run| {
@@ -137,7 +172,7 @@ pub fn orphaned_snapshots(
                 }),
         );
     }
-    out
+    scan
 }
 
 /// Remove each orphaned snapshot's recorded payload, then its row, rendering

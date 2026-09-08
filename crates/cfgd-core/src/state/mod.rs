@@ -871,14 +871,17 @@ impl StateStore {
         Ok(store)
     }
 
-    /// Remove the `backup_runs` table so the next write to it fails.
+    /// Remove the `backup_runs` table so the next read or write of it fails.
     ///
     /// The seam for a caller's state-store-failure arm, which in production is
-    /// reached only by a refused write (a full disk, a locked or corrupt DB)
+    /// reached only by a refused query (a full disk, a locked or corrupt DB)
     /// and is otherwise untestable: the connection is private to this module,
-    /// so a consumer's test cannot break the schema by hand.
-    #[cfg(test)]
-    pub(crate) fn drop_backup_runs_table(&self) -> Result<()> {
+    /// so a consumer's test cannot break the schema by hand. The migrations are
+    /// gated on the schema version, so a reopen does not put the table back —
+    /// which is what lets a `cfgd`-crate test reach the degraded path of a
+    /// command that opens the store itself.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn drop_backup_runs_table(&self) -> Result<()> {
         self.conn.execute("DROP TABLE backup_runs", [])?;
         Ok(())
     }

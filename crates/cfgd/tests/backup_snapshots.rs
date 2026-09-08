@@ -27,6 +27,9 @@
 //!     the recorded path being a tempdir.
 //!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
 //!     has moved no destination.
+//!   - `backup/run_orphan_hint.txt`        — the `cfgd backup run` that moves a
+//!     `destination:`, whose group carries the snapshot row it wrote and then
+//!     the hint naming what the move stranded.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -550,6 +553,87 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
             "{name}'s owner must sit under the Schedule Owner column: {row}"
         );
     }
+}
+
+/// One `BackupListEntry` with everything but the two counts under test held
+/// constant, so a column claim reads as a claim about those counts alone.
+fn list_entry(name: &str, orphaned: Option<usize>) -> BackupListEntry {
+    BackupListEntry {
+        name: name.to_string(),
+        source: format!("/home/t/{name}"),
+        schedule: None,
+        schedule_owner: "local".to_string(),
+        effective_schedule: None,
+        effective_retention: None,
+        retention: 3,
+        last_run_status: Some("success".to_string()),
+        last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
+        last_run_clean: Some(true),
+        next_run_at: None,
+        snapshots: Some(1),
+        orphaned,
+    }
+}
+
+fn rendered_list(entries: &[BackupListEntry]) -> String {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_list_doc(entries, "2026-01-01T02:00:00Z"));
+    drop(printer);
+    cfgd_core::output::strip_ansi(&cap.human())
+}
+
+fn list_header(human: &str) -> String {
+    human
+        .lines()
+        .find(|l| l.trim_start().starts_with("Name"))
+        .unwrap_or_else(|| panic!("no header in:\n{human}"))
+        .to_string()
+}
+
+#[test]
+fn backup_list_counts_what_a_destination_change_stranded_after_the_snapshots_it_holds() {
+    // The column earns its place from the unit that HAS an orphan; the unit
+    // beside it reads `-`, because a zero is nothing to collect rather than a
+    // count worth a cell.
+    let human = rendered_list(&[list_entry("docs", Some(2)), list_entry("keys", Some(0))]);
+    let header = list_header(&human);
+
+    let snapshots = header
+        .find("Snapshots")
+        .unwrap_or_else(|| panic!("no Snapshots column in: {header}"));
+    let orphaned = header
+        .find("Orphaned")
+        .unwrap_or_else(|| panic!("no Orphaned column in: {header}"));
+    let status = header
+        .find("Status")
+        .unwrap_or_else(|| panic!("no Status column in: {header}"));
+    assert!(
+        snapshots < orphaned && orphaned < status,
+        "Orphaned belongs between the count it extends and the verdict: {header}"
+    );
+
+    for (name, cell) in [("docs", "2"), ("keys", cfgd_core::ABSENT)] {
+        let row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{human}"));
+        let under = row
+            .get(orphaned..)
+            .unwrap_or_else(|| panic!("{name}'s row ends before the column: {row}"));
+        assert!(
+            under.starts_with(cell),
+            "{name} must read {cell} under Orphaned: {row}"
+        );
+    }
+}
+
+#[test]
+fn backup_list_drops_the_orphaned_column_on_a_machine_that_has_none() {
+    let human = rendered_list(&[list_entry("docs", Some(0)), list_entry("keys", Some(0))]);
+    assert!(
+        !list_header(&human).contains("Orphaned"),
+        "a column every row reads `-` in is dropped, not padded:\n{human}"
+    );
 }
 
 #[test]
@@ -1205,8 +1289,13 @@ fn write_gc_profile(config_dir: &Path, source: &Path, destination: &Path) {
 
 /// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
 /// and snapshot again — the prune that discovers the stranded payload and marks
-/// its row `orphaned`. Returns the path the first run wrote.
-fn strand_a_snapshot(config_dir: &Path, state_dir: &Path, source: &Path) -> std::path::PathBuf {
+/// its row `orphaned`. Returns the path the first run wrote and what the second
+/// run printed, which is where the closing `cfgd backup gc` hint lands.
+fn strand_a_snapshot(
+    config_dir: &Path,
+    state_dir: &Path,
+    source: &Path,
+) -> (std::path::PathBuf, String) {
     let old = state_dir.join("old-backups");
     write_gc_profile(config_dir, source, &old);
     let cli = cli_for(config_dir, state_dir);
@@ -1221,10 +1310,10 @@ fn strand_a_snapshot(config_dir: &Path, state_dir: &Path, source: &Path) -> std:
         .expect("the first run wrote a snapshot");
 
     write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
-    let (printer, _cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
     drop(printer);
-    stranded
+    (stranded, cfgd_core::output::strip_ansi(&cap.human()))
 }
 
 #[test]
@@ -1235,7 +1324,7 @@ fn backup_gc_renders_one_group_per_unit_with_an_orphan() {
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     std::fs::write(&source, "hello backup").unwrap();
 
-    let stranded = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
     assert!(stranded.exists(), "the moved destination lost its payload");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -1316,6 +1405,100 @@ fn backup_gc_with_nothing_to_collect_says_so() {
         "backup/gc_nothing.txt",
         &normalized
     );
+}
+
+#[test]
+fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    // The run that MOVED the destination is the one that discovers the rows the
+    // move stranded, so its own snapshot row and the hint about them share a
+    // group — and the hint has to come second, or it names work the reader has
+    // not been told about yet.
+    let (_, moved_run) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &moved_run,
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/run_orphan_hint.txt",
+        &normalized
+    );
+}
+
+#[test]
+fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    // The read that says how many rows there are to collect runs before the
+    // header can state a count, so its degraded row is the one that can end up
+    // above the heading it belongs under.
+    cfgd_core::state::StateStore::open_in_dir(state_dir.path())
+        .expect("state store")
+        .drop_backup_runs_table()
+        .expect("take the history away");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    let mut lines = human.lines().filter(|l| !l.trim().is_empty());
+    assert_eq!(
+        lines.next(),
+        Some("Collect"),
+        "the run's heading must open its own report:\n{human}"
+    );
+    assert!(
+        human.contains("backup:docs: history unavailable"),
+        "a unit whose history could not be read must still say so:\n{human}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    // Put a file where the old destination directory was, so every path
+    // recorded under it is unreachable and its removal genuinely fails. Unix
+    // only: a path running through a file reads as `NotFound` on Windows,
+    // which is a payload already gone rather than one that would not go.
+    let old = state_dir.path().join("old-backups");
+    std::fs::remove_dir_all(&old).unwrap();
+    std::fs::write(&old, "an operator's file").unwrap();
+    assert!(!stranded.exists());
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, _cap) = Printer::for_test_doc();
+    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    // `cmd_backup_gc` turns exactly this into an exit, and it exits the
+    // process, so the code it would use is asserted against the constant the
+    // docs name rather than by running the binary.
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert_eq!(cfgd_core::exit::ExitCode::Error.as_i32(), 1);
+    assert!(old.is_file(), "gc removed what it could not remove");
 }
 
 // ─────────────────────────────────────────────────────
