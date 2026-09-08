@@ -1508,9 +1508,17 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         "expected BootstrapFailed when no package manager is available"
     );
     let err_str = result.unwrap_err().to_string();
+    for offered in ["apt", "dnf", "zypper"] {
+        assert!(
+            err_str.contains(offered),
+            "the sentence names every mediator this manager offers, {offered} included: {err_str}"
+        );
+    }
+    // snap declares no FreeBSD port, so `pkg` was never tried and naming it
+    // would send the reader after a failure that never happened.
     assert!(
-        err_str.contains("apt") || err_str.contains("dnf") || err_str.contains("zypper"),
-        "error should mention managers, got: {err_str}"
+        !err_str.contains("pkg"),
+        "the sentence names no arm this manager declines: {err_str}"
     );
 }
 
@@ -1864,12 +1872,6 @@ const TEST_MEDIATED: MediatedArms =
 #[cfg(unix)]
 const TEST_SYSTEM_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"], &[]);
 
-/// npm's real arms, for the tests that assert on the manager the binding-plan
-/// path was built for.
-#[cfg(unix)]
-const TEST_NPM_MEDIATED: MediatedArms =
-    brew_then_system_arms("node", &["nodejs", "npm"], &["www/npm"]);
-
 /// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
 /// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test
 /// never routes a real `sudo apt-get install` at the host.
@@ -1993,7 +1995,7 @@ fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_enti
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("nvm"),
         "npm",
-        &TEST_NPM_MEDIATED,
+        &TEST_MEDIATED,
         "nvm",
     )
     .expect("declining is not an error");
@@ -2127,7 +2129,7 @@ fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("zypper"),
         "npm",
-        &TEST_NPM_MEDIATED,
+        &TEST_MEDIATED,
         "nvm",
     )
     .expect_err("a method this cascade cannot run must not be deferred to the nvm arm");

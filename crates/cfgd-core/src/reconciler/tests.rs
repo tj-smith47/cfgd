@@ -22711,6 +22711,9 @@ struct DispatchLogManager {
     touches_state: bool,
     /// Panic inside `install`, so a test can drive the lane-panic path.
     panics: bool,
+    /// Fail this manager's `refresh_index`, so a test can drive the
+    /// warn-and-continue arm a flaky or mismatched repository takes.
+    refresh_fails: bool,
     /// Lines pushed into the lane around this manager's rendezvous, so a test
     /// can force two lanes to interleave their child output.
     lane_lines: Option<(String, String)>,
@@ -22735,6 +22738,7 @@ impl DispatchLogManager {
             stays_unavailable: false,
             touches_state: false,
             panics: false,
+            refresh_fails: false,
             lane_lines: None,
             seen_provision_via: None,
         }
@@ -22757,6 +22761,11 @@ impl DispatchLogManager {
 
     fn panicking(mut self) -> Self {
         self.panics = true;
+        self
+    }
+
+    fn refusing_index_refresh(mut self) -> Self {
+        self.refresh_fails = true;
         self
     }
 
@@ -22992,6 +23001,13 @@ impl PackageManager for DispatchLogManager {
     }
 
     fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        if self.refresh_fails {
+            return Err(crate::errors::PackageError::ListFailed {
+                manager: self.name.clone(),
+                message: "repository catalogue is for the wrong OS version".to_string(),
+            }
+            .into());
+        }
         // npm's refresh resolves its global prefix from `cx.state`, and an
         // index refresh now runs on a lane like every other action. Nothing
         // is recorded in the log, so every ordering fixture is unaffected.
@@ -25552,6 +25568,71 @@ fn an_index_refresh_in_a_lane_reads_the_real_state_store() {
         state.resolved_prefix("npm").unwrap(),
         Some(("/opt/npm".to_string(), false)),
         "the refresh's write landed in the run's own state store"
+    );
+}
+
+/// A refresh that fails is best-effort: a mirror that is down, or a repository
+/// whose catalogue is built for a different OS version, must not turn a run
+/// into a failure the installs below it would have survived. The row settles
+/// unchanged with the cause beneath it, and the phase keeps going.
+#[test]
+fn a_failed_index_refresh_warns_and_lets_the_phase_continue() {
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("pkg", &log, true).refusing_index_refresh(),
+        DispatchLogManager::new("go", &log, false),
+    ]);
+    let state = test_state();
+    let plan = bootstrap_phase(vec![
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "pkg".to_string(),
+        }),
+        provision_node("go", "pkg", &[]),
+    ]);
+
+    let (result, rendered) =
+        apply_manager_plan_at(&registry, &state, &plan, crate::output::Verbosity::Normal);
+
+    assert_eq!(
+        result.status,
+        ApplyStatus::Success,
+        "a best-effort refresh never fails the run: {rendered}"
+    );
+    let notes: Vec<_> = result
+        .caveats
+        .iter()
+        .flat_map(|(_, notes)| notes)
+        .filter(|n| n.message.contains("index refresh failed"))
+        .collect();
+    let note = notes.first().unwrap_or_else(|| {
+        panic!(
+            "the reader is told the index is stale: {:?}",
+            result.caveats
+        )
+    });
+    assert_eq!(
+        note.role,
+        crate::output::Role::Warn,
+        "a degraded refresh is a warning, not a report of work done: {note:?}"
+    );
+    assert!(
+        note.message.contains("wrong OS version"),
+        "the cause travels with the warning: {}",
+        note.message
+    );
+    let refresh = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("refresh"))
+        .unwrap_or_else(|| panic!("the refresh reached a row: {:?}", result.action_results));
+    assert!(
+        refresh.success && !refresh.changed,
+        "a failed refresh settles unchanged rather than failed: {refresh:?}"
+    );
+    assert!(
+        dispatch_log(&log).iter().any(|e| e.contains("go")),
+        "the provision below the refresh still ran: {:?}",
+        dispatch_log(&log)
     );
 }
 

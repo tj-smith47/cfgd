@@ -5153,11 +5153,6 @@ fn every_mediated_manager_names_its_pkg_origin() {
         let Some(pkgs) = m.mediated_packages("pkg") else {
             continue;
         };
-        assert!(
-            !pkgs.is_empty(),
-            "{} offers a pkg arm with nothing to install",
-            m.name()
-        );
         for pkg in &pkgs {
             let (category, name) = pkg
                 .split_once('/')
@@ -5178,28 +5173,50 @@ fn every_mediated_manager_names_its_pkg_origin() {
     }
 }
 
+/// Every mediator the pipx and npm cascades outrank `pkg` with, silenced so a
+/// bare FreeBSD host can be simulated on any developer box: an emptied `PATH`,
+/// no tool seams, and a `CFGD_BREW_BIN` naming a file that does not exist,
+/// which `brew_available` answers on alone.
+///
+/// The guards are returned rather than dropped, so a caller holds the window
+/// open for as long as it reads a cascade.
+#[cfg(unix)]
+fn silence_every_mediator_but_pkg() -> (
+    impl Drop,
+    cfgd_core::test_helpers::EnvVarGuard,
+    cfgd_core::test_helpers::EnvVarGuard,
+    Vec<cfgd_core::test_helpers::EnvVarGuard>,
+) {
+    let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-on-this-host",
+    );
+    let seams = ["CFGD_APT_GET_BIN", "CFGD_DNF_BIN", "CFGD_PKG_BIN"]
+        .into_iter()
+        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .collect();
+    (path_excl, path, brew, seams)
+}
+
 /// A bare FreeBSD host has `pkg` and nothing else the pipx cascade knows, so
 /// the plan names it rather than falling to the `pip` arm that host has no
 /// python for.
 ///
-/// brew outranks every system arm and is probed on the HOST rather than read
-/// off the run, so a developer box carrying brew answers `brew` whatever this
-/// run delivers; the assertion tracks the environment instead of asserting a
-/// host it cannot control. Both directions still refuse `pip`, which is what
-/// a FreeBSD host used to be told.
+/// Every mediator that outranks `pkg` is silenced, so only the run's own
+/// delivery answers and the method is asserted on any host.
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn a_freebsd_host_plans_pipx_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
     let pipx = super::pipx::PipxManager;
     let plan = pipx
         .bootstrap_plan_given(&|m| m == "pkg")
         .expect("pkg delivers pipx");
-    let expected = if super::shared::brew_available() {
-        "brew"
-    } else {
-        "pkg"
-    };
     assert_eq!(
-        plan.method, expected,
+        plan.method, "pkg",
         "a run delivering pkg alone provisions pipx through it"
     );
     assert_eq!(
@@ -5207,6 +5224,53 @@ fn a_freebsd_host_plans_pipx_via_pkg() {
         Some(["devel/py-pipx".to_string()].as_slice()),
         "the pkg arm installs the port origin"
     );
+}
+
+/// The same for npm, whose `pkg` arm is otherwise asserted by its origin
+/// alone: a run delivering `pkg` reaches npm's port rather than the `nvm`
+/// installer, which needs a network and a shell FreeBSD's base system lacks.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_freebsd_host_plans_npm_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
+    let npm = super::npm::NpmManager;
+    let plan = npm
+        .bootstrap_plan_given(&|m| m == "pkg")
+        .expect("pkg delivers npm");
+    assert_eq!(
+        plan.method, "pkg",
+        "a run delivering pkg alone provisions npm through it"
+    );
+    assert_eq!(
+        npm.mediated_packages("pkg").as_deref(),
+        Some(["www/npm".to_string()].as_slice()),
+        "the pkg arm installs the port origin"
+    );
+}
+
+/// The wiring half of [`npm_nvm_fallback_requires_bash`]: with no mediator on
+/// the host and none delivered by the run, the cascade declines all the way to
+/// npm's own arm and the plan carries what that arm needs.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_host_with_no_mediator_at_all_plans_npm_through_its_own_nvm_arm() {
+    let _guards = silence_every_mediator_but_pkg();
+    let plan = super::npm::NpmManager
+        .bootstrap_plan_given(&|_| false)
+        .expect("npm always has an arm of its own");
+    assert_eq!(
+        plan.method, "nvm",
+        "a host no mediator reaches falls to npm's own installer"
+    );
+    for tool in ["curl", "bash"] {
+        assert!(
+            plan.requires.iter().any(|t| t == tool),
+            "the arm the cascade planned carries what the installer needs, {tool} included: {:?}",
+            plan.requires
+        );
+    }
 }
 
 /// The nvm installer is fetched with curl and RUN by bash. FreeBSD's base

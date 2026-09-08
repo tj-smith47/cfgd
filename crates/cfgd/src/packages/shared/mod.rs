@@ -747,10 +747,14 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
-/// Honors `CFGD_BREW_BIN` for tests.
+///
+/// A set `CFGD_BREW_BIN` answers alone, missing file included, matching
+/// [`cfgd_core::command_available_with_seam`]: a seam that fell through to the
+/// host when the file it names is absent is a seam that cannot say this host
+/// has no brew, which is exactly what a cascade test needs to say.
 pub(super) fn brew_available() -> bool {
-    if std::env::var(BREW_BIN_ENV).is_ok_and(|v| std::path::Path::new(&v).is_file()) {
-        return true;
+    if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
+        return std::path::Path::new(&seam).is_file();
     }
     if command_available("brew") {
         return true;
@@ -834,6 +838,25 @@ impl MediatedArms {
             self.system
         };
         (!pkgs.is_empty()).then_some(pkgs)
+    }
+
+    /// The system arms this manager actually offers, as prose an error names
+    /// (`apt, dnf, or pkg`). Read off [`Self::system_arms`] through
+    /// [`Self::system_packages_for`], so a failure sentence cannot claim a
+    /// mediator the cascade never tried.
+    pub(super) fn offered_arm_names(&self) -> String {
+        let offered: Vec<&str> = self
+            .system_arms
+            .iter()
+            .filter(|(method, _)| self.system_packages_for(method).is_some())
+            .map(|(method, _)| *method)
+            .collect();
+        match offered.split_last() {
+            None => String::new(),
+            Some((last, [])) => (*last).to_string(),
+            Some((last, [first])) => format!("{first} or {last}"),
+            Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+        }
     }
 
     /// The packages `via` installs for this manager, or `None` when `via` is
@@ -1342,6 +1365,10 @@ fn run_system_install(
 ///
 /// There is no fallback arm past this one: a caller reaching here has nothing
 /// else to try, so a planned method these arms cannot run fails naming itself.
+///
+/// The sentence names the mediators THIS manager offers, read off its own arms:
+/// a manager with no FreeBSD port never tried `pkg`, and telling its reader it
+/// did sends them looking for a failure that never happened.
 pub(super) fn bootstrap_via_system_manager(
     cx: &PackageContext<'_>,
     arms: &MediatedArms,
@@ -1353,8 +1380,9 @@ pub(super) fn bootstrap_via_system_manager(
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
         message: format!(
-            "failed to install {} via apt, dnf, zypper, or pkg",
-            manager_name
+            "failed to install {} via {}",
+            manager_name,
+            arms.offered_arm_names()
         ),
     }
     .into())

@@ -23,9 +23,6 @@ pub struct NpmManager;
 /// planned `nvm` is a method nothing can run.
 const NPM_FALLBACK_METHOD: &str = "nvm";
 
-/// What a mediator installs to deliver npm. Read by `bootstrap` and by
-/// `mediated_packages`, so a batched provision asks apt for exactly the names
-/// the solo bootstrap does.
 /// npm's own fallback arm: the nvm installer, and the tools it needs.
 ///
 /// The installer's pipeline is fetched with curl and RUN by bash. FreeBSD's
@@ -35,6 +32,9 @@ pub(super) fn nvm_bootstrap_plan() -> BootstrapPlan {
     BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl", "bash"])
 }
 
+/// What a mediator installs to deliver npm. Read by `bootstrap` and by
+/// `mediated_packages`, so a batched provision asks apt for exactly the names
+/// the solo bootstrap does.
 const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"], &["www/npm"]);
 
 /// Where a global npm operation should point, resolved once per operation so
