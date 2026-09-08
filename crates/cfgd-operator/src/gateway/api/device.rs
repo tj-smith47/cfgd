@@ -214,8 +214,8 @@ struct DeviceReportedStatus<'a> {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MachineConfigStatusApply<'a> {
-    api_version: String,
-    kind: String,
+    api_version: std::borrow::Cow<'a, str>,
+    kind: std::borrow::Cow<'a, str>,
     metadata: ApplyMetadata<'a>,
     status: DeviceReportedStatus<'a>,
 }
@@ -238,9 +238,12 @@ async fn apply_status_map(
     use kube::api::{Api, Patch, PatchParams};
 
     let machines: Api<MachineConfig> = Api::namespaced(client.clone(), namespace);
+    // `api_version` / `kind` borrow from this, so it outlives the body rather
+    // than being a temporary in the initializer.
+    let dynamic_type = ();
     let body = MachineConfigStatusApply {
-        api_version: <MachineConfig as kube::Resource>::api_version(&()).into_owned(),
-        kind: <MachineConfig as kube::Resource>::kind(&()).into_owned(),
+        api_version: <MachineConfig as kube::Resource>::api_version(&dynamic_type),
+        kind: <MachineConfig as kube::Resource>::kind(&dynamic_type),
         metadata: ApplyMetadata { name },
         status,
     };

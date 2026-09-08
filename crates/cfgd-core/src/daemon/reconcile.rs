@@ -1324,12 +1324,12 @@ fn reconcile_tick(
         cfg,
         resolved,
         crate::server_client::CheckinFacts {
-            package_versions: Some(crate::compliance::declared_package_versions(
+            package_versions: crate::compliance::declared_package_versions(
                 &resolved.merged,
                 resolved_modules_ref.as_slice(),
                 registry,
                 &pkg_cx,
-            )),
+            ),
             backup_schedule_owners: Some(crate::backup::declared_schedule_owners(
                 &resolved.merged.backups,
             )),

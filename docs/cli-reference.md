@@ -2324,9 +2324,10 @@ managers available here, never a full listing), and `backupScheduleOwners`, each
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
 in the cluster, each applied whole under its own field manager: a key this machine stopped
 reporting is retired there, and a machine holding none of what it declares sends the empty map
-that clears it. A manager that cannot be queried leaves its packages out rather than reporting a
-version cfgd did not read, and a map left out produces no write at all, so the versions the
-cluster holds survive a machine that could not look.
+that clears it. A machine that could not list one of the managers holding its declared
+packages withholds the whole map rather than sending a partial one the cluster would read as a
+retirement, and a map left out produces no write at all, so the versions the cluster holds
+survive it.
 
 The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
 authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.

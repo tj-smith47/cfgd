@@ -809,6 +809,16 @@ fn applied_under(
         })
 }
 
+/// The `status` object of an apply body, for a claim about which fields it
+/// NAMES. A serde index answers `null` both for an absent key and for one
+/// present with a null value, and the two are different applies: the second
+/// claims the field for this manager and clears it.
+fn status_object(body: &serde_json::Value) -> &serde_json::Map<String, serde_json::Value> {
+    body["status"]
+        .as_object()
+        .unwrap_or_else(|| panic!("an apply body carries a status object: {body}"))
+}
+
 #[tokio::test]
 #[serial]
 async fn checkin_patches_the_devices_machine_config_status() {
@@ -882,14 +892,19 @@ async fn each_reported_map_is_applied_under_its_own_field_manager() {
         2,
         "one apply per observed map, never one carrying both"
     );
+    // ABSENT, not present-and-null: a body naming the other map with a null
+    // still names it, and a server-side apply reads a named field as one this
+    // manager now owns and means to clear.
     let packages = applied_under(&report, "cfgd-operator/gateway/packages");
     assert!(
-        packages["status"]["backupScheduleOwners"].is_null(),
+        status_object(&packages)
+            .get("backupScheduleOwners")
+            .is_none(),
         "the packages manager never names the map it does not own: {packages}"
     );
     let backups = applied_under(&report, "cfgd-operator/gateway/backups");
     assert!(
-        backups["status"]["packageVersions"].is_null(),
+        status_object(&backups).get("packageVersions").is_none(),
         "the backups manager never names the map it does not own: {backups}"
     );
 }
@@ -939,7 +954,9 @@ async fn a_device_reporting_one_map_leaves_the_others_field_manager_silent() {
     );
     assert_eq!(applies[0].0, "cfgd-operator/gateway/backups");
     assert!(
-        applies[0].1["status"]["packageVersions"].is_null(),
+        status_object(&applies[0].1)
+            .get("packageVersions")
+            .is_none(),
         "the body names nothing the packages manager owns: {}",
         applies[0].1
     );

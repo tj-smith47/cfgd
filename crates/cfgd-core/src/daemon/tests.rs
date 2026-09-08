@@ -20536,6 +20536,340 @@ mod backup_timers {
         );
     }
 
+    // ----- the check-in -> record -> re-arm hop, on both paths -----
+
+    /// A config whose only origin is `url`'s device gateway, over a profile
+    /// declaring `profile_spec`.
+    fn write_gateway_config(
+        tmp: &tempfile::TempDir,
+        url: &str,
+        profile_spec: &str,
+    ) -> std::path::PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  \
+                 profile: default\n  origin:\n    - type: Server\n      url: {url}\n      \
+                 branch: main\n"
+            ),
+        )
+        .expect("write the config");
+        std::fs::create_dir_all(tmp.path().join("profiles")).expect("create the profiles dir");
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                 {profile_spec}"
+            ),
+        )
+        .expect("write the profile");
+        config_path
+    }
+
+    /// One default reconcile tick, driven the way the daemon's own loop drives
+    /// it.
+    async fn run_default_tick(ctx: &DaemonLoopContext) {
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(ctx, &mut tasks)
+            .await
+            .expect("the tick ran");
+    }
+
+    /// Whether a re-resolve permit is standing on `notify`.
+    ///
+    /// A `Notify` with no waiter stores one permit, and `notify_one` runs
+    /// inside the check-in path, which has returned by the time either caller
+    /// asks — so the permit is a settled fact, and the zero budget below reads
+    /// it rather than racing it. The positive direction still passes the
+    /// suite's own hang ceiling.
+    async fn reresolve_permit_stands(notify: &tokio::sync::Notify, budget: StdDuration) -> bool {
+        tokio::time::timeout(budget, notify.notified())
+            .await
+            .is_ok()
+    }
+
+    /// [`reresolve_permit_stands`] for the startup path, which is blocking and
+    /// so has no runtime of its own to read the permit under.
+    fn reresolve_permit_stands_blocking(notify: &tokio::sync::Notify, budget: StdDuration) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a runtime to read the permit under")
+            .block_on(reresolve_permit_stands(notify, budget))
+    }
+
+    /// The cadence a gateway answers with is recorded under the TICK's own
+    /// state dir, and the answer re-arms the timers the tick is already running
+    /// under: the set was resolved before this tick ran, so a cadence the
+    /// cluster just moved would otherwise wait for a restart.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_records_the_answered_cadence_and_rearms_the_timers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":"ok","configChanged":false,"backupSchedules":{"db":{"schedule":"0 3 * * *","retention":3}}}"#,
+            )
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "the tick records the cadence under the state dir it ran with"
+        );
+        let notify = state.lock().await.backup_reresolve();
+        assert!(
+            reresolve_permit_stands(&notify, DAEMON_LOG_WAIT_CEILING).await,
+            "a changed answer re-arms the backup timers"
+        );
+    }
+
+    /// A gateway that could not read the cluster answers with no projection,
+    /// and no projection is nothing to record: the cadence already recorded
+    /// stands and nothing is re-armed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_answered_without_a_projection_keeps_the_recorded_cadence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that said nothing must not retire what the cluster owns"
+        );
+        let notify = state.lock().await.backup_reresolve();
+        assert!(
+            !reresolve_permit_stands(&notify, StdDuration::ZERO).await,
+            "nothing was recorded, so nothing is re-armed"
+        );
+    }
+
+    /// The startup check-in takes the same hop: it runs before the timer set is
+    /// resolved for the first time, and the cadences it brings back are what
+    /// that set is armed from.
+    #[test]
+    fn a_startup_check_in_records_the_answered_cadence_and_rearms_the_timers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":"ok","configChanged":false,"backupSchedules":{"db":{"schedule":"0 3 * * *","retention":3}}}"#,
+            )
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        let cfg = config::load_config(&config_path).expect("load the config");
+        let notify = tokio::sync::Notify::new();
+        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        mock.assert();
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "the startup check-in records the cadence under the state dir it was given"
+        );
+        assert!(
+            reresolve_permit_stands_blocking(&notify, DAEMON_LOG_WAIT_CEILING),
+            "a changed answer re-arms the backup timers"
+        );
+    }
+
+    /// And the same refusal on the startup path: an answer carrying no
+    /// projection leaves the recorded set where it is.
+    #[test]
+    fn a_startup_check_in_answered_without_a_projection_keeps_the_recorded_cadence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        let cfg = config::load_config(&config_path).expect("load the config");
+        let notify = tokio::sync::Notify::new();
+        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        mock.assert();
+
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that said nothing must not retire what the cluster owns"
+        );
+        assert!(
+            !reresolve_permit_stands_blocking(&notify, StdDuration::ZERO),
+            "nothing was recorded, so nothing is re-armed"
+        );
+    }
+
+    /// A daemon whose one available manager holds a package the profile
+    /// declares and cannot be listed.
+    struct UnlistableManagerHooks;
+
+    impl crate::daemon::DaemonHooks for UnlistableManagerHooks {
+        fn build_registry(&self, _: &config::CfgdConfig) -> crate::providers::ProviderRegistry {
+            let mut registry = crate::providers::ProviderRegistry::new();
+            registry.add_package_manager(Box::new(
+                crate::providers::StubPackageManager::new("pipx")
+                    .with_installed_error("pipx list: database is locked"),
+            ));
+            registry
+        }
+
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &config::ResolvedProfile,
+        ) -> crate::errors::Result<Vec<crate::providers::FileAction>> {
+            Ok(vec![])
+        }
+
+        fn plan_packages(
+            &self,
+            _: &config::MergedProfile,
+            _: &[&dyn crate::providers::PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &crate::providers::PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
+            Ok(vec![])
+        }
+
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut crate::providers::ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+
+        fn expand_tilde(&self, path: &Path) -> std::path::PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// The daemon's periodic check-in withholds the whole version map when a
+    /// manager holding declared packages could not be listed: the key is absent
+    /// from the body, so the gateway's packages field manager writes nothing
+    /// and the versions the cluster holds survive. The map the tick DID observe
+    /// still travels.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_whose_manager_cannot_be_listed_sends_no_package_versions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let posted: Arc<std::sync::Mutex<Option<serde_json::Value>>> = Arc::default();
+        let captured = Arc::clone(&posted);
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_request(move |req| {
+                if let Ok(raw) = req.body()
+                    && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw)
+                {
+                    *captured.lock().expect("the capture slot") = Some(parsed);
+                }
+                true
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(
+            &tmp,
+            &server.url(),
+            "spec:\n  packages:\n    pipx:\n      - ripgrep\n",
+        );
+        ctx.hooks = Arc::new(UnlistableManagerHooks);
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        let body = posted
+            .lock()
+            .expect("the capture slot")
+            .clone()
+            .expect("the tick posted a check-in");
+        assert!(
+            body.get("packageVersions").is_none(),
+            "a manager holding declared packages that could not be listed withholds the whole map: {body}"
+        );
+        assert!(
+            body.get("backupScheduleOwners").is_some(),
+            "the map the tick did observe is still reported: {body}"
+        );
+    }
+
     // ----- task-set construction -----
 
     #[test]

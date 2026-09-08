@@ -118,20 +118,21 @@ pub fn cmd_checkin(
     // unit's schedule. Both are questions only the device can answer and the
     // check-in is its only channel to the cluster, where a `ConfigPolicy`
     // version pin and a `BackupPolicy` schedule projection are decided from
-    // them. A manager that cannot be queried costs its own packages an entry,
-    // never the check-in.
+    // them.
+    //
+    // Nothing observed means nothing claimed, whether the whole context failed
+    // to build or one manager holding declared packages could not be listed:
+    // the map is left out of the body entirely, the gateway's own manager for
+    // it writes nothing, and the cluster keeps the versions the last check-in
+    // that could look reported.
     let checkin_facts = cfgd_core::server_client::CheckinFacts {
         package_versions: match ctx.package_context() {
-            Ok(pkg_cx) => Some(cfgd_core::compliance::declared_package_versions(
+            Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
                 &resolved.merged,
                 &resolved_modules,
                 &registry,
                 &pkg_cx,
-            )),
-            // Nothing was observed, so nothing is claimed: the map is left out
-            // of the body entirely, and the gateway's own manager for it writes
-            // nothing, so the cluster keeps the versions the last check-in that
-            // could look reported.
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "checkin: package versions unavailable");
                 None

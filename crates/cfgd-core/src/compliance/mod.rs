@@ -707,21 +707,30 @@ pub fn collect_system_diffs(
 
 /// What every available manager reports installed for the packages this
 /// machine DECLARES, keyed by [`crate::state::package_resource_id`]
-/// (`<manager>/<package>`).
+/// (`<manager>/<package>`), or `None` when the map was not observed whole.
 ///
 /// The device half of `MachineConfig.status.packageVersions`, which a
 /// `ConfigPolicy` reads to judge a version pin. The declared set alone, never a
 /// full listing: a machine's whole `brew list` is thousands of rows nothing in
-/// the cluster asked about, and etcd holds the answer. A manager that cannot be
-/// queried, or that states no version for a package
-/// ([`crate::providers::UNKNOWN_PACKAGE_VERSION`]), contributes no entry rather
-/// than a placeholder a policy would compare against.
+/// the cluster asked about, and etcd holds the answer. A manager that states no
+/// version for a package ([`crate::providers::UNKNOWN_PACKAGE_VERSION`])
+/// contributes no entry rather than a placeholder a policy would compare
+/// against.
+///
+/// A manager holding at least one declared package that could not be queried
+/// withholds the WHOLE map. The gateway applies what it is sent as an
+/// observation of everything this machine declares, retiring every key the
+/// body leaves out, so a map missing one locked package database would flip
+/// that manager's every version pin to non-compliant. `None` is sent as no
+/// `packageVersions` key at all, which leaves the versions the cluster already
+/// holds where they are. A manager holding no declared package is never
+/// consulted and so can never withhold the map.
 pub fn declared_package_versions(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     registry: &ProviderRegistry,
     cx: &PackageContext<'_>,
-) -> std::collections::BTreeMap<String, String> {
+) -> Option<std::collections::BTreeMap<String, String>> {
     use std::collections::{BTreeMap, HashMap};
 
     let mut by_manager: HashMap<String, Vec<String>> = HashMap::new();
@@ -744,9 +753,9 @@ pub fn declared_package_versions(
                 tracing::debug!(
                     manager = pm.name(),
                     error = %e,
-                    "package versions for check-in: manager could not be queried"
+                    "package versions for check-in: manager could not be queried, withholding the whole map"
                 );
-                continue;
+                return None;
             }
         };
         for package in declared {
@@ -763,7 +772,7 @@ pub fn declared_package_versions(
             );
         }
     }
-    reported
+    Some(reported)
 }
 
 /// Every drift the collected answers carry, each paired with the configurator
