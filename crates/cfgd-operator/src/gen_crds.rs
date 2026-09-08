@@ -198,6 +198,16 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
+    // The two maps a device reports whole at check-in. Granular (the default) would
+    // track ownership per key, so a key another writer left behind — the released
+    // whole-status merge patch on the upgrade path, a kubectl patch — would survive
+    // the gateway's forced apply and never be retired.
+    for map in ["packageVersions", "backupScheduleOwners"] {
+        if let Some(node) = crd.pointer_mut(&format!("{spec_base}/status/properties/{map}")) {
+            node["x-kubernetes-map-type"] = serde_json::json!("atomic");
+        }
+    }
+
     // files list: merge by map key — "path" for MachineConfig, "target" for Module
     if let Some(files) = crd.pointer_mut(&format!("{spec_base}/spec/properties/files")) {
         files["x-kubernetes-list-type"] = serde_json::json!("map");
@@ -1192,6 +1202,53 @@ mod tests {
             typeless > 0,
             "no typeless node was walked, so the pin proves nothing"
         );
+    }
+
+    /// A status map's merge semantics are a decision, never a default: granular
+    /// (the default) lets a key another manager wrote outlive the writer that
+    /// reports the map whole. Every map under `status` declares its map type.
+    #[test]
+    fn every_rendered_status_map_declares_its_merge_type() {
+        let mut checked = 0;
+        for (path, node) in every_rendered_schema_node() {
+            if !path.contains("/status/") || node.get("additionalProperties").is_none() {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                node.get("x-kubernetes-map-type").is_some(),
+                "{path} is a status map with no x-kubernetes-map-type; declare atomic or granular"
+            );
+        }
+        assert!(
+            checked >= 2,
+            "the walk found {checked} status maps; MachineConfig alone has two"
+        );
+    }
+
+    /// The value behind that declaration for the two maps a device reports
+    /// whole: atomic, so the gateway's forced apply is a whole-map takeover.
+    #[test]
+    fn the_device_reported_machine_config_status_maps_render_atomic() {
+        let docs = super::render_each().expect("render CRDs");
+        let machine_config = docs
+            .iter()
+            .find(|d| d.name == "machineconfigs.cfgd.io")
+            .expect("the MachineConfig CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&machine_config.yaml).expect("parse rendered CRD");
+        for map in ["packageVersions", "backupScheduleOwners"] {
+            let pointer = format!(
+                "/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/{map}"
+            );
+            let node = crd
+                .pointer(&pointer)
+                .unwrap_or_else(|| panic!("{map} is rendered on the MachineConfig status"));
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "status.{map} must be atomic: {node:?}"
+            );
+        }
     }
 
     /// The untagged `ScriptEntry` accepts a bare command string as readily as

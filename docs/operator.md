@@ -455,7 +455,9 @@ removes the fields its own manager stops naming: a single manager holding both m
 the map this check-in could not observe. Each apply is forced, since its manager is the sole
 writer of its one field and yielding to an ownership entry an older release left behind would
 strand the device's status. The status fields the controllers own are never disturbed, because
-neither gateway manager names them.
+neither gateway manager names them. Both maps are declared `x-kubernetes-map-type: atomic` in the
+CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole map,
+including keys an earlier operator version or a manual `kubectl patch` wrote.
 
 The response answers with `backupSchedules`, the cadences a cluster
 [`BackupPolicy`](backup-policy.md) owns for that machine. The key is absent when the gateway

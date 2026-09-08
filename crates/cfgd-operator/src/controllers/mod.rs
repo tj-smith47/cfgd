@@ -44,6 +44,11 @@ pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
 /// manager owning both maps would retire one whenever the device reported only
 /// the other. One field per manager makes an unreported map unreportable
 /// rather than blanked.
+///
+/// Both maps are `x-kubernetes-map-type: atomic` in the CRD schema, which is
+/// what makes the forced apply a whole-map takeover: a granular map tracks
+/// ownership per key, so a key an earlier release or a manual patch wrote would
+/// survive the apply instead of being retired.
 pub(crate) const FIELD_MANAGER_GATEWAY_PACKAGES: &str = "cfgd-operator/gateway/packages";
 /// Field manager for `MachineConfig.status.backupScheduleOwners`, the owner
 /// words the DEVICE reports; the backups half of the split

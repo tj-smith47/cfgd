@@ -161,6 +161,7 @@ spec:
                   `packageVersions`: no controller computes it, and a reconcile that
                   cannot observe it preserves it.
                 type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 default: []
                 items:
@@ -210,6 +211,7 @@ spec:
                   requirement. Device-reported: written by the device gateway on every
                   check-in, and a reconcile that cannot observe it preserves it.
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
         required:
         - spec
