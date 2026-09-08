@@ -237,13 +237,39 @@ EOF
         # manager, and the whole-node claim the released merge-patch path wrote
         # under cfgd-operator/status. The check-in below is the first
         # server-side apply to reach the same field.
-        kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+        GW31_PASS=true
+        GW31_SEED1_ERR=$(kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
             --subresource=status --type=merge \
-            -p '{"status":{"packageVersions":{"seeded/stale":"0.0.1"}}}' 2>/dev/null
-        kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            -p '{"status":{"packageVersions":{"seeded/stale":"0.0.1"}}}' 2>&1 >/dev/null)
+        GW31_SEED1_RC=$?
+        GW31_SEED2_ERR=$(kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
             --subresource=status --type=merge \
             --field-manager="cfgd-operator/status" \
-            -p '{"status":{"packageVersions":{"seeded/status":"0.0.2"}}}' 2>/dev/null
+            -p '{"status":{"packageVersions":{"seeded/status":"0.0.2"}}}' 2>&1 >/dev/null)
+        GW31_SEED2_RC=$?
+        echo "  Seed rc: ${GW31_SEED1_RC} ${GW31_SEED2_RC} ${GW31_SEED1_ERR}${GW31_SEED2_ERR}"
+
+        # The premise the takeover is measured against, read back before the
+        # check-in: both seeded keys present, and the released manager holding
+        # the map under an Update claim. Asserted here, the check-in below is
+        # red before and green after inside one run.
+        kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            -o json --show-managed-fields=true > $GW_SCRATCH/gw31-seeded.json 2>/dev/null
+        GW31_SEEDED_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "{}")
+        GW31_SEEDED_OWNERS=$(jq -r \
+            '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
+            $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw31-seeded.json
+        GW31_SEEDED_OWNED=empty
+        [ -n "$GW31_SEEDED_OWNERS" ] && GW31_SEEDED_OWNED=owned
+        echo "  Seeded status.packageVersions: $GW31_SEEDED_MAP"
+        echo "  Seeded Update managers naming f:packageVersions: ${GW31_SEEDED_OWNERS:-none}"
+
+        assert_equals "$GW31_SEED1_RC" "0" || GW31_PASS=false
+        assert_equals "$GW31_SEED2_RC" "0" || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_MAP" '{"seeded/stale":"0.0.1","seeded/status":"0.0.2"}' || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_OWNED" "owned" || GW31_PASS=false
+        assert_contains "$GW31_SEEDED_OWNERS" "cfgd-operator/status" || GW31_PASS=false
 
         GW31_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw31-checkin.txt -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
@@ -293,7 +319,6 @@ EOF
             echo "  Gateway log read: rc=${GW31_LOG_RC} ${GW31_LOG_READ}"
             echo "  Conflict log lines: ${GW31_CONFLICT_LOG:-none}"
 
-            GW31_PASS=true
             assert_equals "$GW31_MAP" '{"e2e/pkg":"1.2.3"}' || GW31_PASS=false
             assert_equals "$GW31_APPLY_OP" "Apply" || GW31_PASS=false
             assert_contains "$GW31_APPLY_FIELDS" "f:packageVersions" || GW31_PASS=false
