@@ -5173,20 +5173,31 @@ fn every_mediated_manager_names_its_pkg_origin() {
     }
 }
 
+/// The window [`silence_every_mediator_but_pkg`] holds open, and the ORDER its
+/// guards release in.
+///
+/// A struct's fields drop in DECLARATION order, the reverse of how locals drop,
+/// so the exclusive `PATH` guard is declared LAST here and released last: every
+/// `EnvVarGuard` above it restores its variable while the lock is still held,
+/// which is the whole window the lock exists to close. Reordering these fields
+/// would put the `PATH` restore outside the lock, where a parallel reader in the
+/// same binary can observe the emptied value.
+struct SilencedMediators {
+    _seams: Vec<cfgd_core::test_helpers::EnvVarGuard>,
+    _brew: cfgd_core::test_helpers::EnvVarGuard,
+    _path: cfgd_core::test_helpers::EnvVarGuard,
+    _path_excl: cfgd_core::test_helpers::ExclusiveEnvGuard,
+}
+
 /// Every mediator the pipx and npm cascades outrank `pkg` with, silenced so a
 /// bare FreeBSD host can be simulated on any developer box: an emptied `PATH`,
 /// no tool seams, and a `CFGD_BREW_BIN` naming a file that does not exist,
 /// which `brew_available` answers on alone.
 ///
 /// The guards are returned rather than dropped, so a caller holds the window
-/// open for as long as it reads a cascade.
-#[cfg(unix)]
-fn silence_every_mediator_but_pkg() -> (
-    impl Drop,
-    cfgd_core::test_helpers::EnvVarGuard,
-    cfgd_core::test_helpers::EnvVarGuard,
-    Vec<cfgd_core::test_helpers::EnvVarGuard>,
-) {
+/// open for as long as it reads a cascade; [`SilencedMediators`] owns the order
+/// they release in.
+fn silence_every_mediator_but_pkg() -> SilencedMediators {
     let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let brew = cfgd_core::test_helpers::EnvVarGuard::set(
@@ -5197,7 +5208,12 @@ fn silence_every_mediator_but_pkg() -> (
         .into_iter()
         .map(cfgd_core::test_helpers::EnvVarGuard::unset)
         .collect();
-    (path_excl, path, brew, seams)
+    SilencedMediators {
+        _seams: seams,
+        _brew: brew,
+        _path: path,
+        _path_excl: path_excl,
+    }
 }
 
 /// A bare FreeBSD host has `pkg` and nothing else the pipx cascade knows, so
@@ -5206,7 +5222,6 @@ fn silence_every_mediator_but_pkg() -> (
 ///
 /// Every mediator that outranks `pkg` is silenced, so only the run's own
 /// delivery answers and the method is asserted on any host.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_freebsd_host_plans_pipx_via_pkg() {
@@ -5229,7 +5244,6 @@ fn a_freebsd_host_plans_pipx_via_pkg() {
 /// The same for npm, whose `pkg` arm is otherwise asserted by its origin
 /// alone: a run delivering `pkg` reaches npm's port rather than the `nvm`
 /// installer, which needs a network and a shell FreeBSD's base system lacks.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_freebsd_host_plans_npm_via_pkg() {
@@ -5252,7 +5266,6 @@ fn a_freebsd_host_plans_npm_via_pkg() {
 /// The wiring half of [`npm_nvm_fallback_requires_bash`]: with no mediator on
 /// the host and none delivered by the run, the cascade declines all the way to
 /// npm's own arm and the plan carries what that arm needs.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_host_with_no_mediator_at_all_plans_npm_through_its_own_nvm_arm() {

@@ -844,7 +844,10 @@ impl MediatedArms {
     /// (`apt, dnf, or pkg`). Read off [`Self::system_arms`] through
     /// [`Self::system_packages_for`], so a failure sentence cannot claim a
     /// mediator the cascade never tried.
-    pub(super) fn offered_arm_names(&self) -> String {
+    ///
+    /// `None` for a manager that offers no system arm at all, so no caller can
+    /// compose a sentence that trails off after `via `.
+    pub(super) fn offered_arm_names(&self) -> Option<String> {
         let offered: Vec<&str> = self
             .system_arms
             .iter()
@@ -852,10 +855,10 @@ impl MediatedArms {
             .map(|(method, _)| *method)
             .collect();
         match offered.split_last() {
-            None => String::new(),
-            Some((last, [])) => (*last).to_string(),
-            Some((last, [first])) => format!("{first} or {last}"),
-            Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+            None => None,
+            Some((last, [])) => Some((*last).to_string()),
+            Some((last, [first])) => Some(format!("{first} or {last}")),
+            Some((last, rest)) => Some(format!("{}, or {last}", rest.join(", "))),
         }
     }
 
@@ -1377,13 +1380,16 @@ pub(super) fn bootstrap_via_system_manager(
     if bootstrap_system_arms(cx, manager_name, manager_name, arms, None)? {
         return Ok(());
     }
+    let message = match arms.offered_arm_names() {
+        Some(names) => format!("failed to install {manager_name} via {names}"),
+        // Unreachable: every manager whose bootstrap reaches here declares a
+        // non-empty system list. Worded rather than unwrapped so an arms table
+        // that one day declares none says something true.
+        None => format!("failed to install {manager_name}: no mediator this host can run"),
+    };
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
-        message: format!(
-            "failed to install {} via {}",
-            manager_name,
-            arms.offered_arm_names()
-        ),
+        message,
     }
     .into())
 }

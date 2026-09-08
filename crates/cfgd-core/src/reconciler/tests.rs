@@ -25601,6 +25601,10 @@ fn a_failed_index_refresh_warns_and_lets_the_phase_continue() {
     let notes: Vec<_> = result
         .caveats
         .iter()
+        // The note belongs to the group whose index went stale, not to whichever
+        // group happens to be first: a caveat filed under the wrong owner points
+        // the reader at the wrong thing to fix.
+        .filter(|(owner, _)| owner.token() == "cfgd:managers")
         .flat_map(|(_, notes)| notes)
         .filter(|n| n.message.contains("index refresh failed"))
         .collect();
@@ -25610,6 +25614,11 @@ fn a_failed_index_refresh_warns_and_lets_the_phase_continue() {
             result.caveats
         )
     });
+    let tag = note.tag.as_deref().unwrap_or_default();
+    assert!(
+        tag.contains("pkg"),
+        "the note is attributed to the row whose manager could not refresh: {note:?}"
+    );
     assert_eq!(
         note.role,
         crate::output::Role::Warn,

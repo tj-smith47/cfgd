@@ -1522,6 +1522,57 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
     );
 }
 
+/// A set `CFGD_BREW_BIN` is the whole answer, missing file included: a seam
+/// that fell back to the host when its file is absent could never say this host
+/// has no brew, and three cascade pins depend on being able to say exactly that.
+///
+/// The fall-through half asserts only that an unset seam hands the question to
+/// the host and answers it the same way twice — what the host answers is the
+/// host's business, and asserting a value here would pin the box rather than
+/// the seam.
+#[test]
+#[serial_test::serial]
+fn a_set_brew_seam_answers_alone() {
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-on-this-host",
+    );
+    assert!(
+        !brew_available(),
+        "a seam naming no file says this host has no brew"
+    );
+    drop(_seam);
+
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    assert_eq!(
+        brew_available(),
+        brew_available(),
+        "with no seam the question falls through to the host, stably"
+    );
+}
+
+/// The other direction of the same sentence: a manager that DOES declare a
+/// FreeBSD port has `pkg` named among its arms, so the omission above is read
+/// off the manager rather than written into the wording.
+#[test]
+fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
+    let ported = system_manager_arms(None, &["golang"], &["lang/go"]);
+    let names = ported
+        .offered_arm_names()
+        .expect("a manager declaring system packages offers arms");
+    for offered in ["apt", "dnf", "zypper", "pkg"] {
+        assert!(
+            names.contains(offered),
+            "the sentence names every mediator this manager offers, {offered} included: {names}"
+        );
+    }
+    assert_eq!(
+        system_manager_arms(None, &[], &[]).offered_arm_names(),
+        None,
+        "a manager offering no arm at all composes no sentence to trail off"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
