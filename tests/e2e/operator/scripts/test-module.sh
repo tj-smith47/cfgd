@@ -20,7 +20,7 @@ metadata:
 spec:
   packages:
     - name: netcat
-      platforms:
+      aliases:
         apt: netcat-openbsd
         brew: netcat
     - name: curl
