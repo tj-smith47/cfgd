@@ -68,7 +68,7 @@ mod ssh_host_key_policy_tests {
 }
 
 /// Kind of an origin: `Git` (a plain git remote) or `Server` (the device
-/// gateway's enrollment/checkin API).
+/// gateway's enrollment/check-in API).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum OriginType {
     Git,

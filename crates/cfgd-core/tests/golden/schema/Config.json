@@ -548,7 +548,7 @@
       "type": "object"
     },
     "OriginType": {
-      "description": "Kind of an origin: `Git` (a plain git remote) or `Server` (the device gateway's enrollment/checkin API).",
+      "description": "Kind of an origin: `Git` (a plain git remote) or `Server` (the device gateway's enrollment/check-in API).",
       "enum": [
         "Git",
         "Server"
