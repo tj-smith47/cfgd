@@ -1192,22 +1192,34 @@ mod tests {
         }
     }
 
-    /// Every rendered schema node, over every rendered document.
-    fn every_rendered_schema_node() -> Vec<(String, Value)> {
+    /// Every rendered CRD, parsed once and paired with its name, so a test
+    /// reading several nodes renders and parses the set a single time.
+    fn rendered_crd_docs() -> Vec<(String, Value)> {
         let docs = super::render_each().expect("render CRDs");
         assert_eq!(
             docs.len(),
             registered_crd_kinds(),
             "every CRD must be walked"
         );
+        docs.iter()
+            .map(|doc| {
+                (
+                    doc.name.clone(),
+                    serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD"),
+                )
+            })
+            .collect()
+    }
+
+    /// Every rendered schema node, over every rendered document.
+    fn every_rendered_schema_node() -> Vec<(String, Value)> {
         let mut all = Vec::new();
-        for doc in &docs {
-            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+        for (name, crd) in rendered_crd_docs() {
             let Some(root) = crd.pointer("/spec/versions/0/schema/openAPIV3Schema") else {
-                panic!("{} carries no schema", doc.name);
+                panic!("{name} carries no schema");
             };
             let mut nodes = Vec::new();
-            schema_nodes(root, doc.name.clone(), &mut nodes);
+            schema_nodes(root, name.clone(), &mut nodes);
             all.extend(nodes.into_iter().map(|(p, v)| (p, v.clone())));
         }
         all
@@ -1240,7 +1252,12 @@ mod tests {
     /// A rendered map: keys a schema cannot enumerate, either typed
     /// (`additionalProperties`) or free-form (`x-kubernetes-preserve-unknown-fields`).
     /// The node must be an object, which is also what the API server demands
-    /// before it accepts a merge-type declaration at all.
+    /// before it accepts a merge-type declaration at all. A typeless free-form
+    /// node such as `modules.spec.files[].patch.ensure` is outside the
+    /// population for that reason and loses nothing by it: server-side apply
+    /// DEDUCES the merge type of an untyped `x-kubernetes-preserve-unknown-fields`
+    /// node from the value it holds, maps granular and lists atomic, so such a
+    /// map keeps the granular semantics it would have declared.
     fn is_rendered_map(node: &Value) -> bool {
         node.get("type") == Some(&json!("object"))
             && (node.get("additionalProperties").is_some()
@@ -1284,12 +1301,14 @@ mod tests {
     /// of them wrote.
     #[test]
     fn every_policy_label_selector_renders_atomic() {
+        let docs = rendered_crd_docs();
         for (crd_name, selector) in [
             ("backuppolicies.cfgd.io", "selector"),
             ("configpolicies.cfgd.io", "targetSelector"),
             ("clusterconfigpolicies.cfgd.io", "namespaceSelector"),
         ] {
             let node = rendered_node(
+                &docs,
                 crd_name,
                 &format!(
                     "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{selector}"
@@ -1307,11 +1326,12 @@ mod tests {
     /// key an earlier edit left behind does not outlive the push.
     #[test]
     fn the_module_maps_a_push_writes_whole_render_atomic() {
+        let docs = rendered_crd_docs();
         for pointer in [
             "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/system",
             "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/packages/items/properties/aliases",
         ] {
-            let node = rendered_node("modules.cfgd.io", pointer);
+            let node = rendered_node(&docs, "modules.cfgd.io", pointer);
             assert_eq!(
                 node.get("x-kubernetes-map-type"),
                 Some(&json!("atomic")),
@@ -1325,12 +1345,14 @@ mod tests {
     /// and the word is written down so the next reader does not read silence.
     #[test]
     fn the_user_authored_settings_maps_render_granular() {
+        let docs = rendered_crd_docs();
         for (crd_name, map) in [
             ("machineconfigs.cfgd.io", "systemSettings"),
             ("configpolicies.cfgd.io", "settings"),
             ("clusterconfigpolicies.cfgd.io", "settings"),
         ] {
             let node = rendered_node(
+                &docs,
                 crd_name,
                 &format!(
                     "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{map}"
@@ -1344,14 +1366,12 @@ mod tests {
         }
     }
 
-    /// One node of one rendered CRD, read back out of the YAML that ships.
-    fn rendered_node(crd_name: &str, pointer: &str) -> Value {
-        let docs = super::render_each().expect("render CRDs");
-        let doc = docs
+    /// One node of one rendered CRD, read out of the set the caller rendered.
+    fn rendered_node(docs: &[(String, Value)], crd_name: &str, pointer: &str) -> Value {
+        let (_, crd) = docs
             .iter()
-            .find(|d| d.name == crd_name)
+            .find(|(name, _)| name == crd_name)
             .unwrap_or_else(|| panic!("{crd_name} is rendered"));
-        let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
         crd.pointer(pointer)
             .unwrap_or_else(|| panic!("{crd_name} renders {pointer}"))
             .clone()
@@ -1361,8 +1381,10 @@ mod tests {
     /// whole: atomic, so the gateway's forced apply is a whole-map takeover.
     #[test]
     fn the_device_reported_machine_config_status_maps_render_atomic() {
+        let docs = rendered_crd_docs();
         for map in ["packageVersions", "backupScheduleOwners"] {
             let node = rendered_node(
+                &docs,
                 "machineconfigs.cfgd.io",
                 &format!(
                     "/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/{map}"
