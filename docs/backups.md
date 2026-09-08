@@ -629,8 +629,11 @@ An orphaned record is not a restorable snapshot. It is absent from `cfgd backup 
 
 `cfgd backup gc` exits `0` when everything it set out to collect was collected (including a run
 with nothing to collect), and `1` when a payload could not be removed, so a script can tell
-"nothing left to collect" from "cfgd could not collect it". `-o json` reports each record under
-`collected`, `skipped` or `failed`:
+"nothing left to collect" from "cfgd could not collect it". A unit whose recorded history cfgd
+could not read at all is the third case and exits `1` too: it renders a `✗` row naming the unit and
+the store's own reason, counts as a failure in the rollup, and is listed under `unreadable` in
+`-o json`. Nothing can say what such a unit still holds, so the run never claims there was nothing
+left to collect. `-o json` reports each record under `collected`, `skipped` or `failed`:
 
 ```json
 {

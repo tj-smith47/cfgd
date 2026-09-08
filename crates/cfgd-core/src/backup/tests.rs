@@ -167,7 +167,7 @@ impl Harness {
             )];
             let scan = orphaned_snapshots(&self.store, &units);
             scan.report_unreadable(&self.printer);
-            collect_orphans(&self.store, &scan.orphans, &self.printer)
+            collect_orphans(&self.store, scan, &self.printer)
         })
     }
 
@@ -1092,6 +1092,40 @@ fn an_orphaned_row_takes_no_retention_slot() {
     assert!(
         stranded.exists(),
         "the orphaned snapshot was pruned from disk"
+    );
+}
+
+#[test]
+fn gc_leaves_a_row_whose_status_and_containment_disagree_standing() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.destination = Some(h.root.join("dest-a"));
+    let run = h.run(&s);
+    let held = PathBuf::from(run.destination_path.clone().expect("artifact"));
+
+    // The state a prune leaves behind when its corrective status write could
+    // not land: the row says orphaned while its payload is inside the
+    // destination in force.
+    h.store
+        .set_backup_run_status(run.id, BackupRunStatus::Orphaned)
+        .expect("mark the row");
+
+    let outcome = h.collect(&s);
+    assert!(
+        held.exists(),
+        "gc deleted a snapshot the destination in force still holds"
+    );
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert!(outcome.skipped.is_empty(), "{outcome:?}");
+    assert!(outcome.failed.is_empty(), "{outcome:?}");
+    assert!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == run.id),
+        "gc dropped the row it should have left for the prune to correct"
     );
 }
 

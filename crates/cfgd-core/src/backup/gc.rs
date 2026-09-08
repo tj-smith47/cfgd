@@ -53,7 +53,7 @@ pub struct CollectedSnapshot {
 
 /// Everything one `cfgd backup gc` did, split by what happened to each row.
 ///
-/// The three lists ARE the `-o json` payload's three keys, so the CLI maps
+/// The four lists ARE the `-o json` payload's four keys, so the CLI maps
 /// rather than re-derives, and [`CollectOutcome::tally`] counts the same
 /// entries the screen was written from.
 #[derive(Debug, Default)]
@@ -65,21 +65,34 @@ pub struct CollectOutcome {
     pub skipped: Vec<CollectedSnapshot>,
     /// Rows whose payload could not be removed. Each keeps its row.
     pub failed: Vec<CollectedSnapshot>,
+    /// Units whose history could not be read at all, carried over from the
+    /// scan so the run's tally, its exit code and its payload state what cfgd
+    /// could not ask about.
+    pub unreadable: Vec<UnreadableUnit>,
 }
 
 impl CollectOutcome {
     /// How many rows the run set out to collect — the number its header
     /// promised and its rollup reconciles against.
     fn planned_total(&self) -> usize {
-        self.collected.len() + self.skipped.len() + self.failed.len()
+        self.collected.len() + self.skipped.len() + self.failed_count()
+    }
+
+    /// Every failure of the run: a payload that would not go, plus every unit
+    /// nothing could be asked about. A history cfgd could not read is not a
+    /// count of zero orphans, so it settles as a failure rather than letting
+    /// the run claim it collected everything there was.
+    fn failed_count(&self) -> usize {
+        self.failed.len() + self.unreadable.len()
     }
 
     /// The rollup's view: a removal is a success, an already-gone payload a
     /// skip (nothing changed), and a removal that failed a failure.
     pub fn tally(&self) -> RunTally {
-        let status = if !self.failed.is_empty() && self.collected.is_empty() {
+        let failed = self.failed_count();
+        let status = if failed > 0 && self.collected.is_empty() {
             ApplyStatus::Failed
-        } else if !self.failed.is_empty() {
+        } else if failed > 0 {
             ApplyStatus::Partial
         } else {
             ApplyStatus::Success
@@ -88,7 +101,7 @@ impl CollectOutcome {
             succeeded: self.collected.len(),
             skipped: self.skipped.len(),
             not_attempted: Vec::new(),
-            failed: self.failed.len(),
+            failed,
             planned_total: self.planned_total(),
             status,
             aborted: None,
@@ -121,15 +134,17 @@ pub struct OrphanScan {
 }
 
 impl OrphanScan {
-    /// Render one `Role::Warn` row per unit whose history could not be read.
+    /// Render one failed row per unit whose history could not be read.
     ///
     /// The caller places this AFTER the run's header, which is why the read
-    /// itself prints nothing.
+    /// itself prints nothing. The role is the one
+    /// [`CollectOutcome::tally`] counts the unit as, because a row's glyph and
+    /// the rollup that prices it must say the same thing about the same unit.
     pub fn report_unreadable(&self, printer: &Printer) {
         for unit in &self.unreadable {
             printer
                 .status(
-                    Role::Warn,
+                    Role::Fail,
                     format!(
                         "{}: history unavailable",
                         OwnerLabel::new("backup", &unit.unit).plain()
@@ -142,13 +157,23 @@ impl OrphanScan {
 
 /// Every orphaned row of every unit, and every unit that could not be asked.
 ///
-/// A unit whose history cannot be read contributes nothing rather than failing
-/// the whole run: the other units' payloads are still collectable, and the
-/// unreadable one's rows stay exactly where they are.
+/// A unit whose history cannot be read contributes nothing to the rows rather
+/// than failing the read: the other units' payloads are still collectable, and
+/// the unreadable one's rows stay exactly where they are. The run still
+/// reports it, because a history nobody could read is not a unit with nothing
+/// to collect.
+///
+/// A row must fail BOTH questions to be collected: its stored status says
+/// orphaned AND its recorded path is outside the destination in force. The
+/// containment question is asked here rather than trusted from the status
+/// alone, so a status write the prune could not land — a locked or full
+/// database — can never cost a snapshot the destination still holds. Such a
+/// row is left standing for the next prune to correct.
 pub fn orphaned_snapshots(store: &StateStore, units: &[BackupUnit<'_>]) -> OrphanScan {
     let mut scan = OrphanScan::default();
     for unit in units {
         let name = &unit.spec().name;
+        let destination = unit.destination_dir();
         let runs = match store.backup_runs(name) {
             Ok(runs) => runs,
             Err(e) => {
@@ -163,10 +188,14 @@ pub fn orphaned_snapshots(store: &StateStore, units: &[BackupUnit<'_>]) -> Orpha
             runs.into_iter()
                 .filter(|run| run.status == BackupRunStatus::Orphaned)
                 .filter_map(|run| {
+                    let path = run.destination_path?;
+                    if super::is_snapshot_within(Path::new(&path), &destination) {
+                        return None;
+                    }
                     Some(OrphanedSnapshot {
                         unit: name.clone(),
                         run_id: run.id,
-                        path: run.destination_path?,
+                        path,
                         size_bytes: run.size_bytes.unwrap_or(0),
                     })
                 }),
@@ -181,12 +210,19 @@ pub fn orphaned_snapshots(store: &StateStore, units: &[BackupUnit<'_>]) -> Orpha
 /// The order is payload first, row second: a row deleted ahead of its payload
 /// is a payload nothing can ever find again, which is the failure this whole
 /// feature exists to undo. A removal that fails therefore keeps its row.
-pub fn collect_orphans(
-    store: &StateStore,
-    orphans: &[OrphanedSnapshot],
-    printer: &Printer,
-) -> CollectOutcome {
-    let mut outcome = CollectOutcome::default();
+///
+/// Takes the whole scan so the units it could not ask about travel into the
+/// outcome with the rows it could: one value then answers the rollup, the exit
+/// code and the `-o json` payload.
+pub fn collect_orphans(store: &StateStore, scan: OrphanScan, printer: &Printer) -> CollectOutcome {
+    let OrphanScan {
+        orphans,
+        unreadable,
+    } = scan;
+    let mut outcome = CollectOutcome {
+        unreadable,
+        ..CollectOutcome::default()
+    };
     let mut cursor = 0;
     while cursor < orphans.len() {
         let unit = &orphans[cursor].unit;

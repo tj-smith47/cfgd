@@ -2136,7 +2136,9 @@ Only a path the state store recorded is ever removed (nothing enumerates a desti
 so a file you left in an old destination by hand is untouched, and a `namePattern` change orphans
 nothing (retention counts records, not filenames). It exits `0` when everything it set out to
 collect was collected, including a run with nothing to collect, and `1` when a payload could not be
-removed; that record keeps its row so the next run retries it. A record whose payload was already
+removed; that record keeps its row so the next run retries it. A unit whose recorded history could
+not be read exits `1` as well, naming the unit in its own failed row and under `unreadable` in
+`-o json`, because nothing can say what that unit still holds. A record whose payload was already
 gone is a skip: the row is dropped and nothing on the machine changed. An orphaned record is not a
 restorable snapshot: `backup list --snapshots`, `backup restore` and `backup rollback` all pass
 over it. See [Garbage collection](backups.md#garbage-collection).
@@ -2177,9 +2179,11 @@ and on a decline
 reason. For `backup rollback` with no name: an array of `{ name, copy, created, sizeBytes }`,
 one per unit that has a copy beside its source, where `created` is the copy's modification time
 (a sidecar carries no record of its own).
-For `backup gc`: a single `{ collected, skipped, failed }`, each an array of
-`{ name, path, sizeBytes, error? }`, where `name` is the unit, `path` the record's own
-`destinationPath`, and `error` is present only on a `failed` entry. `snapshots` and `orphaned` are
+For `backup gc`: a single `{ collected, skipped, failed, unreadable? }`, the first three each an
+array of `{ name, path, sizeBytes, error? }`, where `name` is the unit, `path` the record's own
+`destinationPath`, and `error` is present only on a `failed` entry. `unreadable` is an array of the
+unit names whose recorded history could not be read; it is absent when every declared unit
+answered. `snapshots` and `orphaned` are
 counts the state store answered: absent means it could not be read, which is not a count of zero,
 and the `Orphaned` column is dropped from the human table when no unit has any.
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the

@@ -1009,13 +1009,16 @@ pub fn run_backup_run(
 ///
 /// The exit code is the run's, on the same terms as `backup run`: a payload
 /// that could not be removed keeps its record and exits nonzero, so a script
-/// can tell "nothing left to collect" from "cfgd could not collect it".
+/// can tell "nothing left to collect" from "cfgd could not collect it". A unit
+/// whose history could not be read is the same answer for the same reason, and
+/// it reaches the exit through the run's own tally rather than a second
+/// condition beside it.
 pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     // The payload Doc is already on stdout by the time the exit code is
     // decided, so exiting here rather than returning an error keeps a failed
     // collection from being rendered as a SECOND top-level document — the same
     // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
-    if !run_backup_gc(cli, printer, name)?.failed.is_empty() {
+    if run_backup_gc(cli, printer, name)?.tally().failed > 0 {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -1052,7 +1055,7 @@ pub fn run_backup_gc(
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
     let scan = cfgd_core::backup::orphaned_snapshots(state, &units);
-    let orphans = &scan.orphans;
+    let orphans = scan.orphans.len();
 
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
     let unit_source = named.map(|spec| spec.source.posix().to_string());
@@ -1068,10 +1071,13 @@ pub fn run_backup_gc(
         subject: named.map(|spec| spec.name.as_str()),
         unit_source: unit_source.as_deref(),
     };
-    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, orphans.len()).header(printer);
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, orphans).header(printer);
     scan.report_unreadable(printer);
 
-    if orphans.is_empty() {
+    // The up-to-date verdict is a claim about every declared unit, so a unit
+    // nothing could be asked about withholds it: that run settles through the
+    // rollup, which prices the unreadable unit as the failure it is.
+    if orphans == 0 && scan.unreadable.is_empty() {
         let (role, verdict) = cfgd_core::reconciler::nothing_to_do_verdict(0);
         printer.emit(
             Doc::new()
@@ -1084,7 +1090,7 @@ pub fn run_backup_gc(
     }
 
     let started = std::time::Instant::now();
-    let outcome = cfgd_core::backup::collect_orphans(state, orphans, printer);
+    let outcome = cfgd_core::backup::collect_orphans(state, scan, printer);
     cfgd_core::reconciler::render_run_rollup(
         &outcome.tally(),
         cfgd_core::reconciler::RunTitle::Collect,

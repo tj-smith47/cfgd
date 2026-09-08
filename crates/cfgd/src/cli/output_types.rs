@@ -982,6 +982,11 @@ pub struct BackupGcOutput {
     pub skipped: Vec<BackupGcEntry>,
     /// Snapshots that could not be removed. Each keeps its record.
     pub failed: Vec<BackupGcEntry>,
+    /// Units whose recorded history could not be read at all, so nothing can
+    /// say what they still hold. Absent when every declared unit answered,
+    /// which is a different fact from a run that found nothing to collect.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
 }
 
 impl From<&cfgd_core::backup::CollectOutcome> for BackupGcOutput {
@@ -993,6 +998,11 @@ impl From<&cfgd_core::backup::CollectOutcome> for BackupGcOutput {
             collected: map(&outcome.collected),
             skipped: map(&outcome.skipped),
             failed: map(&outcome.failed),
+            unreadable: outcome
+                .unreadable
+                .iter()
+                .map(|unit| unit.unit.clone())
+                .collect(),
         }
     }
 }

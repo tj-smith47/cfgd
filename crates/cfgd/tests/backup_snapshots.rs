@@ -1452,7 +1452,9 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_gc(&cli, &printer, None).unwrap();
+    // `cmd_backup_gc` would exit the process on this run, so the body is driven
+    // directly and the code it would use asserted against the constant.
+    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
     drop(printer);
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
@@ -1465,6 +1467,26 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
     assert!(
         human.contains("backup:docs: history unavailable"),
         "a unit whose history could not be read must still say so:\n{human}"
+    );
+    assert!(
+        human.contains("2 actions failed"),
+        "each unit nothing could be asked about is a failure of the run:\n{human}"
+    );
+    assert!(
+        !human.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "no verdict claims a state no read earned:\n{human}"
+    );
+    assert_eq!(outcome.tally().failed, 2, "{outcome:?}");
+    assert_eq!(cfgd_core::exit::ExitCode::Error.as_i32(), 1);
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("backup gc doc carries a payload");
+    assert_eq!(
+        payload["unreadable"],
+        serde_json::json!(["docs", "weekly"]),
+        "the payload must name what could not be asked: {payload}"
     );
 }
 
@@ -1868,6 +1890,43 @@ fn backup_list_counts_the_snapshots_a_unit_actually_holds() {
         counts,
         vec![("docs".to_string(), 1), ("weekly".to_string(), 0)],
         "each row counts its own unit's snapshots: {payload}"
+    );
+}
+
+#[test]
+fn backup_list_counts_what_a_stranded_destination_left_orphaned() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    // A third run, so the orphan count and its complement differ: with one
+    // orphaned row and two successful ones, a filter reading the wrong side of
+    // the status answers 2 where the column must say 1.
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("payload");
+    let entries = payload.as_array().expect("array payload");
+    assert_eq!(entries.len(), 1, "{payload}");
+    assert_eq!(entries[0]["name"], "docs");
+    assert_eq!(
+        entries[0]["orphaned"].as_i64(),
+        Some(1),
+        "the column counts the rows a destination change stranded: {payload}"
+    );
+    assert_eq!(
+        entries[0]["snapshots"].as_i64(),
+        Some(2),
+        "an orphaned row is no longer one of the unit's snapshots: {payload}"
     );
 }
 
