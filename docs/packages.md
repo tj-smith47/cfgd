@@ -140,6 +140,24 @@ For the same reason a manager is only planned through a mediator this host can
 actually run: on a machine with none of them, cfgd says the manager cannot be
 provisioned and why, instead of naming one and failing on it.
 
+These are the mediators each provisioned manager reaches for, and what each one
+installs:
+
+| Manager | brew | apt / dnf / zypper | FreeBSD `pkg` | Own arm |
+|---|---|---|---|---|
+| `pipx` | `pipx` | `pipx` | `devel/py-pipx` | `pip` |
+| `npm` | `node` | `nodejs`, `npm` | `www/npm` | `nvm` (needs `curl` and `bash`) |
+| `go` | `go` | `golang` | `lang/go` | — |
+| `flatpak` | — | `flatpak` | — | — |
+| `snap` | — | `snapd` | — | — |
+
+The FreeBSD column names PORT ORIGINS rather than package names. FreeBSD's
+Python and Node packages carry the flavour in their name (`py311-pipx`,
+`npm-node22`), so a bare `pipx` resolves to nothing and a flavoured name goes
+stale the moment the default flavour moves; an origin is version-free and
+`pkg install devel/py-pipx` always picks the current default. A blank cell is a
+manager with no port on that platform, and cfgd plans no arm it cannot run.
+
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
 environment of every package-manager command cfgd runs afterwards, so a

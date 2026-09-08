@@ -23,7 +23,7 @@ pub struct PipxManager;
 const PIPX_FALLBACK_METHOD: &str = "pip";
 
 /// What a mediator installs to deliver pipx — same role as npm's table.
-const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"]);
+const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"], &["devel/py-pipx"]);
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
@@ -109,7 +109,7 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        match detect_brew_system_method(PIPX_FALLBACK_METHOD, delivered) {
+        match detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, delivered) {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
             // The tool the pip arm would run: whichever is present, else the
@@ -133,9 +133,9 @@ impl PackageManager for PipxManager {
         // between the two calls is enough. A context carrying no planned method
         // belongs to a caller outside a plan (`cfgd doctor`, a direct caller),
         // which has no decision to read and resolves the cascade as before.
-        let method = cx
-            .planned_method()
-            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD, &|_| false));
+        let method = cx.planned_method().unwrap_or_else(|| {
+            detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, &|_| false)
+        });
         match method {
             "pip" => pipx_pip_scripts_dir()
                 .into_iter()
@@ -150,13 +150,7 @@ impl PackageManager for PipxManager {
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `pip` —
         // pipx's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(
-            cx,
-            "pipx",
-            PIPX_MEDIATED.brew.unwrap_or("pipx"),
-            PIPX_MEDIATED.system,
-            PIPX_FALLBACK_METHOD,
-        )? {
+        if bootstrap_via_brew_then_system(cx, "pipx", &PIPX_MEDIATED, PIPX_FALLBACK_METHOD)? {
             return Ok(());
         }
 
@@ -533,10 +527,14 @@ mod tests {
         let plan = PipxManager
             .bootstrap_plan()
             .expect("pipx plans on every host via the pip fallback");
-        // A host with no brew and no system arm (FreeBSD CI) lands on the pip
-        // fallback. The system probes are the production arms' probe binaries
-        // (`apt-get`, not `apt` — BREW_SYSTEM_ARMS).
-        if !brew_available() && !command_available("apt-get") && !command_available("dnf") {
+        // A host with no brew and no system arm lands on the pip fallback. The
+        // system probes are the production arms' probe binaries (`apt-get`, not
+        // `apt` — BREW_SYSTEM_ARMS), FreeBSD's `pkg` among them.
+        if !brew_available()
+            && !command_available("apt-get")
+            && !command_available("dnf")
+            && !command_available("pkg")
+        {
             assert_eq!(plan.method, "pip");
         }
         // Only `bootstrap`'s pip fallback installs into the user's own tree
@@ -560,7 +558,7 @@ mod tests {
                 plan.creates_path_dirs
             );
         } else {
-            assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
+            assert!(["brew", "apt", "dnf", "pkg"].contains(&plan.method.as_str()));
             assert!(plan.requires.is_empty());
             assert!(plan.creates_path_dirs.is_empty());
         }

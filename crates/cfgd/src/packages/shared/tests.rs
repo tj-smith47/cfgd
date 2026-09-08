@@ -1461,7 +1461,7 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
@@ -1500,7 +1500,7 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(
@@ -1528,8 +1528,7 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1565,8 +1564,7 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1626,7 +1624,7 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(
@@ -1672,8 +1670,7 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1857,6 +1854,22 @@ fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
     );
 }
 
+/// A stand-in manager's mediated arms for the cascade helpers: a brew formula,
+/// the Linux package names, and a FreeBSD port origin.
+#[cfg(unix)]
+const TEST_MEDIATED: MediatedArms =
+    brew_then_system_arms("ripgrep", &["ripgrep"], &["textproc/ripgrep"]);
+
+/// A manager with no brew arm and no FreeBSD port — snap's real shape.
+#[cfg(unix)]
+const TEST_SYSTEM_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"], &[]);
+
+/// npm's real arms, for the tests that assert on the manager the binding-plan
+/// path was built for.
+#[cfg(unix)]
+const TEST_NPM_MEDIATED: MediatedArms =
+    brew_then_system_arms("node", &["nodejs", "npm"], &["www/npm"]);
+
 /// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
 /// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test
 /// never routes a real `sudo apt-get install` at the host.
@@ -1876,8 +1889,7 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect("the planned apt arm exits 0");
@@ -1916,8 +1928,7 @@ fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substi
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect_err("a planned method that cannot run fails the provision");
@@ -1951,8 +1962,7 @@ fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect_err("a failed planned method ends the provision");
@@ -1983,8 +1993,7 @@ fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_enti
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("nvm"),
         "npm",
-        "node",
-        &["nodejs", "npm"],
+        &TEST_NPM_MEDIATED,
         "nvm",
     )
     .expect("declining is not an error");
@@ -2020,8 +2029,7 @@ fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect("the apt fallback exits 0");
@@ -2119,8 +2127,7 @@ fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("zypper"),
         "npm",
-        "node",
-        &["nodejs", "npm"],
+        &TEST_NPM_MEDIATED,
         "nvm",
     )
     .expect_err("a method this cascade cannot run must not be deferred to the nvm arm");
@@ -2372,4 +2379,67 @@ fn upgrade_each_spawns_the_built_command_once_per_held_package() {
     let argv = _shim.argv_log();
     assert!(argv.contains("ripgrep"), "argv must name ripgrep: {argv}");
     assert!(argv.contains("fd"), "argv must name fd: {argv}");
+}
+
+/// The `pkg` arm installs the PORT ORIGIN, not the Linux package name: a
+/// FreeBSD host resolving `ripgrep` and one resolving `textproc/ripgrep` are
+/// not asking the ports tree the same question.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_pkg_installs_the_port_origin() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("pkg"),
+        "test-mgr",
+        &TEST_MEDIATED,
+        "test-mgr-own-arm",
+    )
+    .expect("the planned pkg arm exits 0");
+
+    assert!(installed, "the planned method installed the manager");
+    assert!(
+        pkg.argv_log().contains("install -y textproc/ripgrep"),
+        "the pkg arm installs the port origin: {}",
+        pkg.argv_log()
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "the plan said pkg; brew must not run even though it is available: {}",
+        brew.argv_log()
+    );
+}
+
+/// An empty `pkg` list is how a manager declines the FreeBSD arm. Declining is
+/// not "install the Linux names through pkg": those names resolve to different
+/// ports or to nothing at all.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_manager_with_no_freebsd_port_never_reaches_the_pkg_arm() {
+    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let err = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("pkg"),
+        &TEST_SYSTEM_MEDIATED,
+        "snap",
+    )
+    .expect_err("a manager with no port must not be installed through pkg");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pkg") && msg.contains("snap"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        pkg.invocation_count(),
+        0,
+        "pkg never ran: {}",
+        pkg.argv_log()
+    );
 }

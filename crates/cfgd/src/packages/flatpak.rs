@@ -18,7 +18,7 @@ use super::shared::{
 pub struct FlatpakManager;
 
 /// What a mediator installs to deliver flatpak. Linux-only, so no brew arm.
-const FLATPAK_MEDIATED: MediatedArms = system_manager_arms(None, &["flatpak"]);
+const FLATPAK_MEDIATED: MediatedArms = system_manager_arms(None, &["flatpak"], &[]);
 
 pub(super) fn find_flatpak() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("flatpak", &[])
@@ -56,7 +56,7 @@ impl PackageManager for FlatpakManager {
         {
             // `None` rather than a hopeful name when no system manager can run
             // it: the method a plan carries is binding at execution.
-            detect_system_method(delivered).map(BootstrapPlan::new)
+            detect_system_method(&FLATPAK_MEDIATED, delivered).map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -66,7 +66,7 @@ impl PackageManager for FlatpakManager {
     }
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
-        bootstrap_via_system_manager(cx, FLATPAK_MEDIATED.system[0], "flatpak")
+        bootstrap_via_system_manager(cx, &FLATPAK_MEDIATED, "flatpak")
     }
 
     fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
