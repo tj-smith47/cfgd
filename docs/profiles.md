@@ -217,8 +217,7 @@ Homebrew, and `brew`'s binaries are reachable from the next shell without you ed
 The test is who made the directory, not who installed the manager: a manager that was already on
 the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
 `$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
-prints a re-source reminder, under the `cfgd:env` group of the closing **Caveats** section, after
-any apply that touched either.
+prints a re-source reminder as the closing hint of any apply that touched either.
 
 ### Example: make `EDITOR` reach everywhere
 
@@ -234,27 +233,25 @@ spec:
 ```console
 $ cfgd apply --yes
 Apply
-  Config   /home/you/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  envdemo
   Phases   Bootstrap
   Actions  6 planned
 
 Phase: Bootstrap
   cfgd:env
-    ✓ write /home/you/.cfgd.env                       — 1 var
-    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
+    ✓ write ~/.cfgd.env                       — 1 var (<0.1s)
+    ✓ write ~/.config/environment.d/cfgd.conf — 1 var (<0.1s)
   cfgd:shell
-    ✓ inject source line into /home/you/.bashrc
-    ✓ inject source line into /home/you/.zshenv
-    ✓ inject source line into /home/you/.profile
+    ✓ inject source line into ~/.bashrc       (<0.1s)
+    ✓ inject source line into ~/.zshenv       (<0.1s)
+    ✓ inject source line into ~/.profile      (<0.1s)
   cfgd:session
-    ✓ publish 1 var to the live session
+    ✓ publish 1 var to the live session       (<0.1s)
 
-✓ Apply complete — 6 actions succeeded (0.3s wall)
+✓ Apply complete — 6 actions succeeded (0.1s wall)
 
-Caveats
-  cfgd:env
-    → Run `source ~/.cfgd.env`, or open a new shell
+→ Run `source ~/.cfgd.env`, or open a new shell
 
 # Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
