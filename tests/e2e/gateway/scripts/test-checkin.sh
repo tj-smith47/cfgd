@@ -233,10 +233,12 @@ EOF
         fail_test "GW-31" "Failed to create MachineConfig CRD"
     else
         # Two seeds, because the ownership a release leaves behind is what the
-        # check-in has to take over: a per-key Update claim under a kubectl
-        # manager, and the whole-node claim the released merge-patch path wrote
-        # under cfgd-operator/status. The check-in below is the first
-        # server-side apply to reach the same field.
+        # check-in has to take over: a kubectl merge patch, then one under the
+        # released manager cfgd-operator/status. The map is atomic, so the
+        # second Update takes the whole leaf and the first's claim with it: one
+        # Update owner stands behind two seeded keys, and both are what the
+        # check-in below, the first server-side apply to reach the field, must
+        # retire.
         GW31_PASS=true
         GW31_SEED1_ERR=$(kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
             --subresource=status --type=merge \
@@ -269,7 +271,7 @@ EOF
         assert_equals "$GW31_SEED2_RC" "0" || GW31_PASS=false
         assert_equals "$GW31_SEEDED_MAP" '{"seeded/stale":"0.0.1","seeded/status":"0.0.2"}' || GW31_PASS=false
         assert_equals "$GW31_SEEDED_OWNED" "owned" || GW31_PASS=false
-        assert_contains "$GW31_SEEDED_OWNERS" "cfgd-operator/status" || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_OWNERS" "cfgd-operator/status" || GW31_PASS=false
 
         GW31_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw31-checkin.txt -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
