@@ -480,6 +480,10 @@ fn every_destructive_backup_verb_mirrors_the_global_yes() {
         ("Run", false),
         ("List", false),
         ("Restore", true),
+        // `gc` deletes only paths the state store itself recorded, outside the
+        // unit's destination — never a file the user authored — so it prompts
+        // for nothing and has no `--yes` to mirror.
+        ("Gc", false),
         ("Rollback", true),
     ];
     let source = std::fs::read_to_string(
@@ -34160,7 +34164,7 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
                 .iter()
                 .filter(|c| c.contains("cli/backup.rs"))
                 .count()
-                == 3
+                == 4
             && checked.iter().any(|c| c.contains("daemon/backup.rs"))
             && checked.iter().any(|c| c.contains("cli/diff.rs"))
             && checked.iter().any(|c| c.contains("cli/init/cmd_init.rs")),
@@ -35153,6 +35157,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         last_run_clean: None,
         next_run_at: None,
         snapshots: None,
+        orphaned: None,
     }];
     let module_show = super::module::ModuleShowOutput {
         name: "nvim".into(),

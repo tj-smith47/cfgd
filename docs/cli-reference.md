@@ -2082,7 +2082,7 @@ where unrecorded items could exist: with no config file, or a config with no
 
 ### `cfgd backup`
 
-Run, inspect, restore, or roll back the declarative backups a profile declares in
+Run, inspect, restore, roll back, or garbage-collect the declarative backups a profile declares in
 `spec.backups[]`.
 
 ```sh
@@ -2096,11 +2096,13 @@ cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
 cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
 cfgd backup rollback                                  # what has a pre-restore copy beside it
 cfgd backup rollback notes-db --yes                   # put that copy back over the source
+cfgd backup gc                                        # remove the snapshots a destination change orphaned
+cfgd backup gc notes-db                               # only that unit's orphans
 cfgd --output json backup list
 ```
 
-An unknown name given to `cfgd backup run`, `backup list`, `backup restore`, or
-`backup rollback` is exit code `6`
+An unknown name given to `cfgd backup run`, `backup list`, `backup restore`, `backup rollback`, or
+`backup gc` is exit code `6`
 (see [Exit Codes](#exit-codes)) and lists every valid name; an unknown `--at` snapshot is exit `6`
 too and lists every available snapshot. A run that recorded a failure (a bad copy, or
 `postBackup` erroring after a good one) also exits nonzero.
@@ -2128,6 +2130,17 @@ with no copy beside its source is exit `6`, pointed at `cfgd backup list <name>`
 rather than at the restore that would create one. See
 [Rolling back a restore](backups.md#rolling-back-a-restore).
 
+`backup gc [name]` removes the snapshots a `destination:` change stranded: for each `backup_runs`
+record naming a path outside the unit's current destination, the recorded path, then the record.
+Only a path the state store recorded is ever removed (nothing enumerates a destination directory),
+so a file you left in an old destination by hand is untouched, and a `namePattern` change orphans
+nothing (retention counts records, not filenames). It exits `0` when everything it set out to
+collect was collected, including a run with nothing to collect, and `1` when a payload could not be
+removed; that record keeps its row so the next run retries it. A record whose payload was already
+gone is a skip: the row is dropped and nothing on the machine changed. An orphaned record is not a
+restorable snapshot: `backup list --snapshots`, `backup restore` and `backup rollback` all pass
+over it. See [Garbage collection](backups.md#garbage-collection).
+
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
 rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
 other units it was asked to run still run. See
@@ -2138,7 +2151,7 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout:
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
+`{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, orphaned?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
 where `scheduleOwner` is `cluster` or `local` (the lowercase word the `Schedule Owner` column
 shows) and is present on every unit. `effectiveSchedule` and `effectiveRetention` carry the value
 a cluster [`BackupPolicy`](backup-policy.md) put in force, and each appears only when it DIFFERS
@@ -2160,6 +2173,11 @@ and on a decline
 reason. For `backup rollback` with no name: an array of `{ name, copy, created, sizeBytes }`,
 one per unit that has a copy beside its source, where `created` is the copy's modification time
 (a sidecar carries no record of its own).
+For `backup gc`: a single `{ collected, skipped, failed }`, each an array of
+`{ name, path, sizeBytes, error? }`, where `name` is the unit, `path` the record's own
+`destinationPath`, and `error` is present only on a `failed` entry. `snapshots` and `orphaned` are
+counts the state store answered: absent means it could not be read, which is not a count of zero,
+and the `Orphaned` column is dropped from the human table when no unit has any.
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
 same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
 unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).

@@ -143,6 +143,8 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
 
     // `Snapshots` sits beside `Retention` because the two are one fact read
     // twice: how many this unit holds, and how many it is allowed to keep.
+    // `Orphaned` follows `Snapshots` for the same reason — both count what the
+    // unit holds — and drops out entirely on a machine with none.
     let mut t = Table::new([
         "Name",
         "Source",
@@ -150,6 +152,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
         "Schedule Owner",
         "Retention",
         "Snapshots",
+        "Orphaned",
         "Status",
         "Last Run",
         "Next Run",
@@ -190,6 +193,16 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
                     .map_or_else(|| cfgd_core::ABSENT.to_string(), |n| n.to_string()),
                 None,
             ),
+            // A zero reads `-` so the whole column drops on the machines that
+            // have never moved a destination: the count earns a column only
+            // where there is something to collect.
+            (
+                match e.orphaned {
+                    Some(n) if n > 0 => n.to_string(),
+                    _ => cfgd_core::ABSENT.to_string(),
+                },
+                None,
+            ),
             (status, role),
             (
                 cfgd_core::humanize_age_cell(e.last_run_at.as_deref(), now),
@@ -201,9 +214,10 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             ),
         ]);
     }
-    // `Schedule` on a catalog of unscheduled units, `Status` and `Next Run`
-    // before the first run: a column of `-` pushes `Snapshots` and `Last Run`,
-    // the two cells a reader compares across listings, off to the right.
+    // `Schedule` on a catalog of unscheduled units, `Orphaned` on a machine
+    // that never moved a destination, `Status` and `Next Run` before the first
+    // run: a column of `-` pushes `Snapshots` and `Last Run`, the two cells a
+    // reader compares across listings, off to the right.
     doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
@@ -350,6 +364,16 @@ pub fn cmd_backup_list(
         .iter()
         .map(|spec| {
             let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            // Off the recorded rows, like the snapshot count beside it: gc
+            // never lists a directory, so what is orphaned is exactly what the
+            // store says is orphaned.
+            let orphaned = state.and_then(|state| {
+                state.backup_runs(&spec.name).ok().map(|runs| {
+                    runs.iter()
+                        .filter(|run| run.status == cfgd_core::state::BackupRunStatus::Orphaned)
+                        .count()
+                })
+            });
             let effective = cfgd_core::backup::effective_schedule(spec, &projections);
             let snapshots =
                 unit_dirs
@@ -390,6 +414,7 @@ pub fn cmd_backup_list(
                     )
                 }),
                 snapshots,
+                orphaned,
             }
         })
         .collect();
@@ -974,6 +999,95 @@ pub fn run_backup_run(
         .collect();
     printer.emit(Doc::new().with_data(&outputs));
     Ok(BackupRunOutcome { reports })
+}
+
+/// `cfgd backup gc` — collect the snapshots a `destination:` change orphaned.
+///
+/// The exit code is the run's, on the same terms as `backup run`: a payload
+/// that could not be removed keeps its record and exits nonzero, so a script
+/// can tell "nothing left to collect" from "cfgd could not collect it".
+pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+    // The payload Doc is already on stdout by the time the exit code is
+    // decided, so exiting here rather than returning an error keeps a failed
+    // collection from being rendered as a SECOND top-level document — the same
+    // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
+    if !run_backup_gc(cli, printer, name)?.failed.is_empty() {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+    Ok(())
+}
+
+/// Core of `backup gc`: the same run skeleton every backup verb reports
+/// through — a `Collect` header, one `backup:<name>` group per unit that has an
+/// orphan, and the rollup.
+///
+/// The orphaned rows are read ONCE, before the header, because the header
+/// states how many actions the run set out to do and the rollup reconciles
+/// against that same number.
+pub fn run_backup_gc(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+) -> anyhow::Result<cfgd_core::backup::CollectOutcome> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    // Enforce, like `backup run`: gc deletes files, so it is a mutating
+    // surface and a source constraint violation must abort it rather than be
+    // recorded and stepped over.
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+
+    let targets: Vec<&config::BackupSpec> = match name {
+        Some(n) => vec![find_backup_spec(&backups, n)?],
+        None => backups.iter().collect(),
+    };
+
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let units: Vec<BackupUnit<'_>> = targets
+        .iter()
+        .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
+        .collect();
+    let orphans = cfgd_core::backup::orphaned_snapshots(state, &units, printer);
+
+    let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    let unit_source = named.map(|spec| spec.source.posix().to_string());
+    let profile_inherits = local_resolved.inherits_chain();
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Collect,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
+        trigger: None,
+        subject: named.map(|spec| spec.name.as_str()),
+        unit_source: unit_source.as_deref(),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, orphans.len()).header(printer);
+
+    if orphans.is_empty() {
+        let (role, verdict) = cfgd_core::reconciler::nothing_to_do_verdict(0);
+        printer.emit(
+            Doc::new()
+                .status(role, verdict)
+                .with_data(BackupGcOutput::from(
+                    &cfgd_core::backup::CollectOutcome::default(),
+                )),
+        );
+        return Ok(cfgd_core::backup::CollectOutcome::default());
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = cfgd_core::backup::collect_orphans(state, &orphans, printer);
+    cfgd_core::reconciler::render_run_rollup(
+        &outcome.tally(),
+        cfgd_core::reconciler::RunTitle::Collect,
+        printer,
+        Some(started.elapsed()),
+    );
+
+    printer.emit(Doc::new().with_data(BackupGcOutput::from(&outcome)));
+    Ok(outcome)
 }
 
 #[cfg(test)]

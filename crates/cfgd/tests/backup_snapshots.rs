@@ -20,6 +20,13 @@
 //!     does not depend on the host's temp root.
 //!   - `backup/rollback_list_empty.txt`   — the same listing on a machine where
 //!     nothing has been displaced.
+//!   - `backup/gc.{txt}`                  — `cfgd backup gc` after a
+//!     `destination:` change stranded a snapshot: one `backup:docs` group, the
+//!     `remove` row and its `destination changed` detail, and the rollup. Its
+//!     `-o json` shape is asserted beside it rather than pinned as a golden,
+//!     the recorded path being a tempdir.
+//!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
+//!     has moved no destination.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -40,8 +47,8 @@ use std::path::Path;
 
 use cfgd::cli::apply::run_apply;
 use cfgd::cli::backup::{
-    RestoreArgs, build_backup_list_doc, build_backup_rollback_list_doc, cmd_backup_list,
-    cmd_backup_rollback, cmd_backup_run, run_backup_restore, run_backup_rollback,
+    RestoreArgs, build_backup_list_doc, build_backup_rollback_list_doc, cmd_backup_gc,
+    cmd_backup_list, cmd_backup_rollback, cmd_backup_run, run_backup_restore, run_backup_rollback,
 };
 use cfgd::cli::output_types::{BackupListEntry, BackupRollbackEntry};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
@@ -500,6 +507,7 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
             last_run_clean: None,
             next_run_at: None,
             snapshots: None,
+            orphaned: None,
         },
         BackupListEntry {
             name: "keys".to_string(),
@@ -514,6 +522,7 @@ fn backup_list_names_the_schedule_owner_of_every_unit() {
             last_run_clean: None,
             next_run_at: None,
             snapshots: None,
+            orphaned: None,
         },
     ];
     let (printer, cap) = Printer::for_test_doc();
@@ -560,6 +569,7 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         last_run_clean: Some(true),
         next_run_at: None,
         snapshots: Some(2),
+        orphaned: None,
     }];
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
@@ -1170,6 +1180,141 @@ fn apply_dry_run_human_shows_pending_backups() {
     assert!(
         !human.contains("weekly"),
         "dry-run preview must not list the scheduled backup: {human}"
+    );
+}
+
+/// Write a one-unit `withbackups` profile whose `docs` backup snapshots
+/// `source` into `destination`, plus the `cfgd.yaml` selecting it. Rewriting it
+/// with a second `destination` is how a test moves a unit the way an operator
+/// editing their config does.
+fn write_gc_profile(config_dir: &Path, source: &Path, destination: &Path) {
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      destination: {}\n      retention: 3\n",
+        cfgd_core::to_posix_string(source),
+        cfgd_core::to_posix_string(destination),
+    );
+    let profiles_dir = config_dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+    std::fs::write(
+        config_dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n",
+    )
+    .unwrap();
+}
+
+/// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
+/// and snapshot again — the prune that discovers the stranded payload and marks
+/// its row `orphaned`. Returns the path the first run wrote.
+fn strand_a_snapshot(config_dir: &Path, state_dir: &Path, source: &Path) -> std::path::PathBuf {
+    let old = state_dir.join("old-backups");
+    write_gc_profile(config_dir, source, &old);
+    let cli = cli_for(config_dir, state_dir);
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let stranded = std::fs::read_dir(&old)
+        .expect("the first destination must exist after a run")
+        .map(|e| e.expect("entry").path())
+        .next()
+        .expect("the first run wrote a snapshot");
+
+    write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+    stranded
+}
+
+#[test]
+fn backup_gc_renders_one_group_per_unit_with_an_orphan() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let stranded = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    assert!(stranded.exists(), "the moved destination lost its payload");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    assert!(
+        !stranded.exists(),
+        "gc left the snapshot its row recorded on disk"
+    );
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::output::strip_ansi(&cap.human()),
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/gc.txt", &normalized);
+}
+
+#[test]
+fn backup_gc_json_lists_what_it_collected() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("backup gc doc carries a payload");
+    let collected = payload["collected"].as_array().expect("collected array");
+    assert_eq!(collected.len(), 1, "{payload}");
+    assert_eq!(collected[0]["name"], "docs");
+    assert_eq!(collected[0]["sizeBytes"], 12);
+    assert!(
+        collected[0]["path"]
+            .as_str()
+            .expect("path")
+            .contains("old-backups"),
+        "the collected path must be the one the row recorded: {payload}"
+    );
+    assert_eq!(payload["skipped"], serde_json::json!([]));
+    assert_eq!(payload["failed"], serde_json::json!([]));
+}
+
+#[test]
+fn backup_gc_with_nothing_to_collect_says_so() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::output::strip_ansi(&cap.human()),
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/gc_nothing.txt",
+        &normalized
     );
 }
 

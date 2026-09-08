@@ -227,6 +227,11 @@ pub fn list_snapshots(unit: &BackupUnit<'_>, store: &StateStore) -> Result<Vec<S
 
     let mut snapshots = Vec::new();
     for run in runs {
+        // An orphaned row still names a path, but that path is outside the
+        // destination and belongs to `cfgd backup gc`, never to a restore.
+        if !run.has_artifact() {
+            continue;
+        }
         let Some(raw) = run.destination_path.as_deref() else {
             continue;
         };

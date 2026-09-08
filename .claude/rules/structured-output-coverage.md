@@ -15,6 +15,7 @@ keys while carrying six). The keys live in the builder and its golden.
 |------------------------------|-------------------|----------------------------------------------------|
 | alias_list                   | yes               | alias inventory                                    |
 | apply                        | yes               | apply-result records consumed by CI                |
+| backup_gc                    | yes               | what a destination change orphaned, and what collecting it did |
 | backup_list                  | yes               | backup inventory / snapshot list queried by scripts |
 | backup_restore               | yes               | restore result records                             |
 | backup_rollback              | yes               | rollback result records, and the copies a rollback could put back |

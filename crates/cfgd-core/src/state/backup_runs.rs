@@ -82,6 +82,21 @@ impl StateStore {
         }
     }
 
+    /// Re-classify a run as [`BackupRunStatus::Orphaned`]: its recorded
+    /// snapshot is no longer inside the unit's destination.
+    ///
+    /// The retention prune's answer to a row it must not delete and must not
+    /// drop. Dropping it threw away the only proof the recorded path was ever
+    /// cfgd's, which is why nothing could collect the payload afterwards; the
+    /// row survives so `cfgd backup gc` has something to act on.
+    pub fn mark_backup_run_orphaned(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE backup_runs SET status = ?1 WHERE id = ?2",
+            params![BackupRunStatus::Orphaned.as_str(), id],
+        )?;
+        Ok(())
+    }
+
     /// Drop a run row. Called once its artifact has been removed (or was
     /// already gone) by retention pruning.
     pub fn delete_backup_run(&self, id: i64) -> Result<()> {

@@ -1,6 +1,7 @@
 [
   {
     "name": "docs",
+    "orphaned": 0,
     "retention": 3,
     "scheduleOwner": "cluster",
     "snapshots": 0,
@@ -9,6 +10,7 @@
   {
     "name": "weekly",
     "nextRunAt": "<NEXT_RUN>",
+    "orphaned": 0,
     "retention": 3,
     "schedule": "0 3 * * *",
     "scheduleOwner": "local",

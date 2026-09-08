@@ -1229,7 +1229,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1756,6 +1756,15 @@ pub enum BackupCommand {
         /// Skip the confirmation prompt
         #[arg(from_global)]
         yes: bool,
+    },
+
+    /// Remove the snapshots a destination change orphaned
+    #[command(
+        long_about = "Remove the snapshots a `destination:` change left behind.\n\nWhen a backup's `destination:` moves, the snapshots already written under the old\ndirectory fall outside the unit's retention: nothing prunes them, because pruning\nonly ever deletes what is inside the current destination. The next `cfgd backup\nrun` marks each such recorded run `Orphaned` and `cfgd backup gc` collects it —\nremoving the path the state store recorded, then the record itself.\n\nOnly a path cfgd recorded is ever removed. The old destination is never listed, so\nanything you put there yourself is not cfgd's to find and is left alone. A change\nto `namePattern` orphans nothing: retention counts recorded runs, not names, so\nthe old-named snapshots stay inside the destination and age out normally.\n\nWith no name, every backup declared in the active profile is collected.\n\nExamples:\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup gc"
+    )]
+    Gc {
+        /// Backup name (default: collect every backup declared in the active profile)
+        name: Option<String>,
     },
 
     /// Put a backup's pre-restore copy back over its source
@@ -3105,6 +3114,7 @@ pub fn execute(
             BackupCommand::Rollback { name, yes } => {
                 backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
             }
+            BackupCommand::Gc { name } => backup::cmd_backup_gc(cli, printer, name.as_deref()),
         },
         Command::Explain {
             resource,

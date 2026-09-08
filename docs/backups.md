@@ -176,6 +176,10 @@ longer on disk. A snapshot you could not restore is not listed as one.
 
 `--snapshots` requires a backup name; a bare `cfgd backup list --snapshots` is a usage error.
 
+`cfgd backup gc [name]` removes the snapshots a `destination:` change stranded; see
+[Garbage collection](#garbage-collection). The `Orphaned` column appears in `backup list` only on a
+machine that has some, and `-o json` carries the count as `orphaned` either way.
+
 **Next Run** is computed the same way the daemon seeds its timer, from the unit's `schedule` and
 its last recorded `finished_at` (see [`schedule`](#schedule)), so the listed time is the one the
 timer will actually use. A schedule-less unit shows `-` (`nextRunAt` omitted from the JSON
@@ -311,7 +315,7 @@ How many snapshots to keep. Default 10, minimum 1.
 |---|---|
 | What pruning walks | the recorded runs, not a filename glob; deletes both the artifact on disk and its record |
 | Counted per outcome | the newest `retention` runs that produced a snapshot are kept, and independently the newest `retention` that did not; a run of failures never deletes a good snapshot |
-| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is dropped from history with a warning; the path itself is left untouched, and the record consumes no retention slot |
+| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is re-classified `Orphaned` and kept: the path itself is left untouched, the record consumes no retention slot, and it is no longer offered as a restorable snapshot. [`cfgd backup gc`](#garbage-collection) is what removes both |
 
 ### `schedule`
 
@@ -548,6 +552,95 @@ Timer behaviour:
 - **Shutdown is not held hostage by a hook.** `SIGTERM` / Ctrl-C reaches an in-flight `preBackup`
   or `postBackup` hook, so a `systemctl stop cfgd` during a backup does not wait out the hook's
   own timeout.
+
+## Garbage collection
+
+Changing a unit's [`destination`](#destination) leaves its existing snapshots where they were
+written. The next run of that unit notices: retention walks the recorded runs, finds rows naming a
+path outside the destination now in force, and re-classifies each `Orphaned` rather than deleting
+it. The row is the only proof the payload was ever cfgd's, so it is kept, and the run closes on the
+command that reclaims the bytes.
+
+```console
+$ cfgd backup run notes-db
+Backup: notes-db
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Source   ~/.local/share/notes/notes.db
+  Actions  1 planned
+
+backup:notes-db
+  ✓ snapshot notes.db.20260908T141604Z — 55 B
+  → run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
+
+✓ Backup complete — 1 action succeeded (<0.1s wall)
+
+$ cfgd backup list
+Backups
+Name      Source                         Schedule Owner  Retention  Snapshots  Orphaned  Status   Last Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  cluster         7          1          1         Success  just now
+
+$ cfgd backup gc
+Collect
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  1 planned
+
+backup:notes-db
+  ✓ remove notes.db.20260908T141604Z — 55 B, destination changed
+
+✓ Collect complete — 1 action succeeded (<0.1s wall)
+
+$ cfgd backup gc
+Collect
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+
+✓ Nothing to do — everything is up to date
+```
+
+`cfgd backup gc [name]` collects every declared unit when `name` is omitted, or the named one. It
+is a run like any other: a `Collect` header, one `backup:<name>` group per unit that has something
+to collect, and a rollup. For each orphaned record it removes the recorded path, then the record.
+
+**What counts as an orphan:** a `backup_runs` record whose `destination_path` is not inside the
+unit's `destination` as currently declared. That is the same containment gate retention prunes by
+([`is_snapshot_within`](#retention)), so the two can never disagree about which snapshots are the
+unit's own.
+
+**What is never touched:** anything the state store did not record. Nothing here lists a directory,
+so a file you put in an old destination by hand is not cfgd's to find and not cfgd's to delete, and
+an old destination left holding only strangers' files is left standing. A record whose payload
+is already gone settles as a `∅` skipped row: the record is dropped, but nothing on the machine
+changed. A removal that fails is a `✗` row carrying the I/O error, and its record stays, so the
+next `cfgd backup gc` retries it.
+
+**A `namePattern` change orphans nothing.** Retention counts records, not filenames: a snapshot
+written under the old pattern is still inside the destination, still restorable, and still one of
+the newest `retention` the unit keeps. It ages out through retention like any other.
+
+An orphaned record is not a restorable snapshot. It is absent from `cfgd backup list <name>
+--snapshots`, and `cfgd backup restore` and `cfgd backup rollback` cannot select it.
+
+`cfgd backup gc` exits `0` when everything it set out to collect was collected (including a run
+with nothing to collect), and `1` when a payload could not be removed, so a script can tell
+"nothing left to collect" from "cfgd could not collect it". `-o json` reports each record under
+`collected`, `skipped` or `failed`:
+
+```json
+{
+  "collected": [
+    {
+      "name": "notes-db",
+      "path": "/home/me/backups/notes-old/notes.db.20260908T141604Z",
+      "sizeBytes": 55
+    }
+  ],
+  "failed": [],
+  "skipped": []
+}
+```
 
 ## Restoring
 

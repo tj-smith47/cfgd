@@ -1,0 +1,9 @@
+Collect
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Actions  1 planned
+
+backup:docs
+  ✓ remove notes.txt.<TIMESTAMP> — 12 B, destination changed
+
+✓ Collect complete — 1 action succeeded (XXs wall)

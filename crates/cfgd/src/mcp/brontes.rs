@@ -248,6 +248,13 @@ pub fn config() -> Config {
     // arbitrary hooks. Same hint set as its two siblings, for the same reasons.
     cfg = cfg.annotation("backup rollback", write(true, false, true));
 
+    // `backup gc` deletes the snapshots a `destination:` change stranded, so it
+    // is destructive; a second call finds nothing left to collect and changes
+    // nothing, so it IS idempotent; and unlike its three siblings it runs no
+    // hooks and touches only paths cfgd's own state store recorded, so it
+    // reaches no open world.
+    cfg = cfg.annotation("backup gc", write(true, true, false));
+
     for path in LONG_RUNNING {
         cfg = cfg.task_mode_for(*path, TaskMode::Detached);
     }

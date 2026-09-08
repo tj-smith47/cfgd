@@ -978,11 +978,11 @@ pub struct FileBackupRecord {
 
 /// Outcome of one declarative backup run (`spec.backups[]`).
 ///
-/// Only two outcomes exist because the artifact is what the operator cares
-/// about: either a snapshot was written (`Success`) or none was
-/// (`Failed`). A `postBackup` hook that fails *after* a good copy leaves the
-/// run `Success` with [`BackupRunRecord::error`] populated — see
-/// [`crate::backup::run_backup`] for why.
+/// Two of the three are what the run itself produced: either a snapshot was
+/// written (`Success`) or none was (`Failed`). A `postBackup` hook that fails
+/// *after* a good copy leaves the run `Success` with
+/// [`BackupRunRecord::error`] populated — see [`crate::backup::run_backup`]
+/// for why. `Orphaned` is the one a LATER run assigns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BackupRunStatus {
@@ -990,6 +990,17 @@ pub enum BackupRunStatus {
     Success,
     /// No snapshot was written: a `preBackup` hook failed, or the copy did.
     Failed,
+    /// The snapshot this row records sits outside the unit's current
+    /// destination, so the unit's `destination:` moved after it was written.
+    ///
+    /// Assigned by the retention prune, which used to DROP such a row — and
+    /// with the row went the only proof the path was ever cfgd's, leaving the
+    /// payload uncollectable by anything but the operator's own `rm`. The row
+    /// is the proof, so it is kept and re-classified instead:
+    /// [`crate::backup::collect_orphans`] is what removes the recorded path
+    /// and then the row. It is no longer a restorable snapshot
+    /// ([`BackupRunRecord::has_artifact`]) and occupies no retention slot.
+    Orphaned,
 }
 
 impl BackupRunStatus {
@@ -999,6 +1010,7 @@ impl BackupRunStatus {
         match self {
             BackupRunStatus::Success => "success",
             BackupRunStatus::Failed => "failed",
+            BackupRunStatus::Orphaned => "orphaned",
         }
     }
 
@@ -1007,6 +1019,7 @@ impl BackupRunStatus {
     pub(in crate::state) fn from_str(s: &str) -> Self {
         match s {
             "success" => BackupRunStatus::Success,
+            "orphaned" => BackupRunStatus::Orphaned,
             _ => BackupRunStatus::Failed,
         }
     }
@@ -1029,6 +1042,10 @@ pub fn backup_run_status_display(stored: &str) -> (&str, Role) {
         ("Success", Role::Ok)
     } else if stored == BackupRunStatus::Failed.as_str() {
         ("Failed", Role::Fail)
+    } else if stored == BackupRunStatus::Orphaned.as_str() {
+        // Warn, not Fail: the run itself succeeded, and what needs attention is
+        // a payload sitting where nothing prunes it.
+        ("Orphaned", Role::Warn)
     } else {
         (stored, Role::Pending)
     }
@@ -1085,9 +1102,15 @@ impl BackupRunRecord {
         self.status == BackupRunStatus::Success && self.error.is_none()
     }
 
-    /// Whether this run left a snapshot on disk.
+    /// Whether this run left a snapshot on disk that still belongs to its
+    /// unit — the predicate every restorable-snapshot reader and the retention
+    /// accounting ask.
+    ///
+    /// An [`BackupRunStatus::Orphaned`] row still NAMES a path, and that path
+    /// is what `cfgd backup gc` removes; it is not one of the unit's snapshots
+    /// any more, so it is neither restorable nor allowed to evict one that is.
     pub fn has_artifact(&self) -> bool {
-        self.destination_path.is_some()
+        self.destination_path.is_some() && self.status != BackupRunStatus::Orphaned
     }
 }
 

@@ -66,9 +66,24 @@ pub enum RunTitle {
     Backup,
     Restore,
     Rollback,
+    /// `cfgd backup gc` — the snapshots a `destination:` change orphaned.
+    Collect,
 }
 
 impl RunTitle {
+    /// Every title, for a walk that must judge the whole population. A pin
+    /// listing the variants itself goes stale on the next one silently, which
+    /// is the one failure mode a population walk exists to prevent.
+    pub const ALL: &'static [RunTitle] = &[
+        RunTitle::Plan,
+        RunTitle::Apply,
+        RunTitle::Reconcile,
+        RunTitle::Backup,
+        RunTitle::Restore,
+        RunTitle::Rollback,
+        RunTitle::Collect,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             RunTitle::Plan => "Plan",
@@ -77,6 +92,7 @@ impl RunTitle {
             RunTitle::Backup => "Backup",
             RunTitle::Restore => "Restore",
             RunTitle::Rollback => "Rollback",
+            RunTitle::Collect => "Collect",
         }
     }
 }
@@ -1555,6 +1571,7 @@ fn rerun_command(title: RunTitle) -> &'static str {
         RunTitle::Backup => "cfgd backup run <name>",
         RunTitle::Restore => "cfgd backup restore <name>",
         RunTitle::Rollback => "cfgd backup rollback <name>",
+        RunTitle::Collect => "cfgd backup gc <name>",
     }
 }
 

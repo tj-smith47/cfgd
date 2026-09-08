@@ -273,6 +273,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
         (RunTitle::Apply, "Apply complete"),
         (RunTitle::Reconcile, "Reconcile complete"),
         (RunTitle::Backup, "Backup complete"),
+        (RunTitle::Collect, "Collect complete"),
     ] {
         let tally = RunTally {
             succeeded: 1,
@@ -592,21 +593,14 @@ fn every_rollup_line_reserves_the_glyph_column() {
         ApplyStatus::InProgress,
         ApplyStatus::Aborted,
     ];
-    let titles = [
-        RunTitle::Plan,
-        RunTitle::Apply,
-        RunTitle::Reconcile,
-        RunTitle::Backup,
-        RunTitle::Restore,
-        RunTitle::Rollback,
-    ];
+    let titles = RunTitle::ALL;
     // Two shapes per arm: one that reached what it planned, and one that fell
     // short — the shortfall line is pushed by the renderer, outside
     // `rollup_lines`, and the `nothing_attempted` arm only exists in the second.
     let shapes = [(2usize, 1usize, 3usize), (0, 0, 3)];
     let mut checked = 0usize;
     for status in &statuses {
-        for title in titles {
+        for title in titles.iter().copied() {
             for (succeeded, failed, planned_total) in shapes {
                 let tally = RunTally {
                     succeeded,
@@ -2341,14 +2335,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
 /// to be on screen is about a different subject.
 #[test]
 fn every_unfinished_verdict_closes_on_the_one_next_step() {
-    const TITLES: &[RunTitle] = &[
-        RunTitle::Plan,
-        RunTitle::Apply,
-        RunTitle::Reconcile,
-        RunTitle::Backup,
-        RunTitle::Restore,
-        RunTitle::Rollback,
-    ];
+    const TITLES: &[RunTitle] = RunTitle::ALL;
     let converged = |status: ApplyStatus| RunTally {
         succeeded: 2,
         skipped: 0,
@@ -2389,7 +2376,10 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
                 !next.contains("<name>")
                     || matches!(
                         title,
-                        RunTitle::Backup | RunTitle::Restore | RunTitle::Rollback
+                        RunTitle::Backup
+                            | RunTitle::Restore
+                            | RunTitle::Rollback
+                            | RunTitle::Collect
                     ),
                 "only a run over one declared unit has a unit to name: {next:?}"
             );

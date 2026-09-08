@@ -739,6 +739,12 @@ pub struct BackupListEntry {
     /// source is a sidecar, not a snapshot, and is never counted here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<usize>,
+    /// How many recorded snapshots of this unit sit OUTSIDE its current
+    /// destination — what a `destination:` change stranded and
+    /// `cfgd backup gc` collects. `None` on the same terms as `snapshots`: an
+    /// unknown count is not zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphaned: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -927,6 +933,68 @@ pub struct BackupRollbackDeclinedOutput {
     /// Always `true` — the discriminator between this payload and a rollback
     /// that ran.
     pub declined: bool,
+}
+
+/// One orphaned snapshot `cfgd backup gc` read, in whichever of the payload's
+/// three lists its outcome put it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcEntry {
+    /// The `spec.backups[]` unit that recorded the snapshot.
+    pub name: String,
+    /// The path the state store recorded, absolute and posix-folded — the only
+    /// path gc ever removes.
+    pub path: String,
+    /// Bytes the snapshot occupied when it was written. Kept on a `skipped`
+    /// entry too: it is what the row recorded, not what was measured now.
+    pub size_bytes: u64,
+    /// Why the removal failed. Present only on a `failed` entry, whose record
+    /// is left in place for a later `cfgd backup gc` to retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::CollectedSnapshot> for BackupGcEntry {
+    fn from(entry: &cfgd_core::backup::CollectedSnapshot) -> Self {
+        Self {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            size_bytes: entry.size_bytes,
+            error: entry.error.clone(),
+        }
+    }
+}
+
+/// Outcome of `cfgd backup gc`, split the way the run reported it.
+///
+/// Three constant keys rather than one list with an outcome field: a consumer
+/// deciding whether anything on the machine changed reads `collected`, and a
+/// list it would have to filter first answers that question wrongly by
+/// default. Every key is present even when empty, so a script never has to
+/// tell "nothing was collected" from "this cfgd does not report it".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcOutput {
+    /// Snapshots whose payload this run removed.
+    pub collected: Vec<BackupGcEntry>,
+    /// Snapshots whose payload was already gone: the record is dropped, and
+    /// nothing on the machine changed.
+    pub skipped: Vec<BackupGcEntry>,
+    /// Snapshots that could not be removed. Each keeps its record.
+    pub failed: Vec<BackupGcEntry>,
+}
+
+impl From<&cfgd_core::backup::CollectOutcome> for BackupGcOutput {
+    fn from(outcome: &cfgd_core::backup::CollectOutcome) -> Self {
+        let map = |entries: &[cfgd_core::backup::CollectedSnapshot]| {
+            entries.iter().map(BackupGcEntry::from).collect()
+        };
+        Self {
+            collected: map(&outcome.collected),
+            skipped: map(&outcome.skipped),
+            failed: map(&outcome.failed),
+        }
+    }
 }
 
 /// Outcome of one unit run by `cfgd backup run`.
