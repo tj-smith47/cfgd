@@ -265,16 +265,14 @@ The full resolution logic for each package entry:
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
    - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
    - If all checks pass, the manager is selected.
-4. **If no candidate satisfies:** cfgd collects all available managers and their versions, then presents an interactive prompt:
+4. **If no candidate satisfies:** resolution fails and the run stops, naming the package, its module and the floor nothing met:
    ```
-   Package 'neovim' (minVersion: 0.9) could not be resolved automatically.
-   Available options:
-     [ ] apt — neovim 0.6.1 (below minimum)
-     [ ] snap — nvim 0.10.2
-     [ ] brew — neovim 0.10.2 (not installed, can provision via brew)
-   Select managers to use, or skip:
+   ✗ package 'neovim' in module 'demo' cannot be resolved: no available manager satisfies the requirements (minVersion: 99.0)
    ```
-   You can select one or more, or skip the package (it will be recorded as skipped in the plan).
+   A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
+   ```
+   ⚠ chocolatey: not installed — can provision via system
+   ```
 5. **When `prefer` has multiple entries and no `minVersion`:** the first available manager wins. No version check is needed.
 
 ### Version Comparison
