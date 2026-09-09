@@ -3732,25 +3732,30 @@ const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
     ("crates/cfgd/tests/backup_snapshots.rs", 1),
 ];
 
-/// The calls that run a backup gc collection, whatever surface a pin drives it
-/// through: the engine helper, the library entry point, the command wrapper and
-/// the argv of the real binary.
+/// The calls that run a backup gc collection through a surface that names gc:
+/// the orphan collector, the library entry point, the command wrapper and the
+/// argv of the real binary.
 ///
-/// Inside a file that already pins gc's failed-removal arm, one of these is
-/// what makes a function a candidate pin of that arm, so a future one is judged
-/// on what it DOES rather than on a name a needle has to guess. Each is spelled
-/// so no binding name is guessed either: the engine call is matched by its
-/// argument rather than by the identifier a harness happens to be bound to, and
-/// an iterator's own `collect()` takes no argument. `orphaned_snapshots` is
-/// deliberately absent — it reads rows and removes nothing, so no pin of the
-/// failed-removal arm can be driven through it alone.
+/// Any function driving one of these is a candidate pin of gc's failed-removal
+/// arm, in EVERY file, so a future one is judged on what it DOES rather than on
+/// a name a needle has to guess, and no file has to be named ahead of it. Each
+/// spelling names gc and nothing else, so judging the whole workspace on them
+/// costs no hatch. `orphaned_snapshots` is deliberately absent — it reads rows
+/// and removes nothing, so no pin of the failed-removal arm can be driven
+/// through it alone.
 const GC_COLLECT_ENTRIES: &[&str] = &[
-    ".collect(&",
     "collect_orphans",
     "run_backup_gc",
     "cmd_backup_gc(",
     "\"backup\", \"gc\"",
 ];
+
+/// The engine harness's own collect call, matched by its argument rather than by
+/// the identifier the harness happens to be bound to (an iterator's own
+/// `collect()` takes no argument). The harness is private to `backup/tests.rs`,
+/// so this spelling means a gc collection only inside a file that already pins
+/// the arm and is read there alone.
+const GC_ENGINE_COLLECT: &str = ".collect(&";
 
 /// The shapes that make a backup payload unremovable, read off
 /// [`crate::test_helpers::hold_payload_unremovable`]'s own source, so renaming
@@ -3822,12 +3827,11 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
                 .any(|l| l.contains("unix-only-gc-ok:"));
             let reaches = slice.contains("hold_payload_unremovable");
             let hand_rolled = tells.iter().any(|tell| slice.contains(tell.as_str()));
-            // Inside a file that already holds pins of this arm, anything
-            // driving a collection is a candidate pin of it whatever it is
-            // called, so a future one cannot hide behind a name no needle
-            // spells.
-            let drives_a_collection =
-                floored && GC_COLLECT_ENTRIES.iter().any(|call| slice.contains(call));
+            // Anything driving a collection is a candidate pin of this arm
+            // whatever it is called, so a future one cannot hide behind a name
+            // no needle spells, nor behind a file no floor names yet.
+            let drives_a_collection = GC_COLLECT_ENTRIES.iter().any(|call| slice.contains(call))
+                || (floored && slice.contains(GC_ENGINE_COLLECT));
             if !(reaches || hand_rolled || drives_a_collection) {
                 continue;
             }
