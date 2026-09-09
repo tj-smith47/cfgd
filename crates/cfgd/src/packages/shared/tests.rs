@@ -1526,50 +1526,97 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
 /// that fell back to the host when its file is absent could never say this host
 /// has no brew, and three cascade pins depend on being able to say exactly that.
 ///
-/// The fall-through half asserts only that an unset seam hands the question to
-/// the host and answers it the same way twice — what the host answers is the
-/// host's business, and asserting a value here would pin the box rather than
-/// the seam.
+/// Both halves are asked of a probe `PATH` carrying a `brew`, so the two
+/// answers differ by the seam alone: read off a brew-free host, a seam that
+/// wrongly fell through would answer `false` for the host's own reason and the
+/// pin would pass on a defect.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_set_brew_seam_answers_alone() {
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["brew"]);
+
+    let seam = cfgd_core::test_helpers::EnvVarGuard::set(
         "CFGD_BREW_BIN",
         "/nonexistent/cfgd-no-brew-on-this-host",
     );
     assert!(
         !brew_available(),
-        "a seam naming no file says this host has no brew"
+        "a seam naming no file says this host has no brew, whatever PATH carries"
     );
-    drop(_seam);
+    drop(seam);
 
     let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
-    assert_eq!(
+    assert!(
         brew_available(),
-        brew_available(),
-        "with no seam the question falls through to the host, stably"
+        "with no seam the question falls through to the host, which is carrying a brew"
     );
+}
+
+/// Every system arm seamed to a path holding nothing, so no arm can run and
+/// `bootstrap_via_system_manager` reaches its own failure sentence. The seams
+/// answer authoritatively, so the host's own apt/dnf/zypper/pkg are never
+/// spawned.
+#[cfg(unix)]
+fn refusal_with_no_system_tool(arms: &MediatedArms, manager_name: &str) -> String {
+    let held: Vec<_> = [
+        ("apt-get", "CFGD_APT_GET_BIN"),
+        ("dnf", "CFGD_DNF_BIN"),
+        ("zypper", "CFGD_ZYPPER_BIN"),
+        ("pkg", "CFGD_PKG_BIN"),
+    ]
+    .iter()
+    .map(|(tool, var)| {
+        // The guard takes a `&'static str`, so the name is spelled out and
+        // checked against the composer rather than derived at the call site.
+        assert_eq!(
+            &super::tool_seam_var(tool),
+            var,
+            "the seam this pin sets is the one the arm reads"
+        );
+        cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-system-tool")
+    })
+    .collect();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        arms,
+        manager_name,
+    )
+    .expect_err("no arm could run, so the bootstrap fails");
+    drop(held);
+    err.to_string()
 }
 
 /// The other direction of the same sentence: a manager that DOES declare a
 /// FreeBSD port has `pkg` named among its arms, so the omission above is read
-/// off the manager rather than written into the wording.
+/// off the manager rather than written into the wording. Asserted on the
+/// rendered error rather than on the composer, the sentence a reader gets being
+/// what the pin is for.
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
     let ported = system_manager_arms(None, &["golang"], &["lang/go"]);
-    let names = ported
-        .offered_arm_names()
-        .expect("a manager declaring system packages offers arms");
+    let err = refusal_with_no_system_tool(&ported, "go");
     for offered in ["apt", "dnf", "zypper", "pkg"] {
         assert!(
-            names.contains(offered),
-            "the sentence names every mediator this manager offers, {offered} included: {names}"
+            err.contains(offered),
+            "the sentence names every mediator this manager offers, {offered} included: {err}"
         );
     }
-    assert_eq!(
-        system_manager_arms(None, &[], &[]).offered_arm_names(),
-        None,
-        "a manager offering no arm at all composes no sentence to trail off"
+
+    let armless = refusal_with_no_system_tool(&system_manager_arms(None, &[], &[]), "go");
+    assert!(
+        armless.contains("names no mediator to install it"),
+        "a manager offering no arm at all says its own table is empty, not the host's: {armless}"
+    );
+    assert!(
+        !armless.contains(" via "),
+        "a manager offering no arm composes no sentence to trail off: {armless}"
     );
 }
 

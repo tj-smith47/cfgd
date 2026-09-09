@@ -14,7 +14,7 @@
 mod common;
 
 use assert_cmd::Command;
-use common::backup_profile_setup;
+use common::{backup_profile_setup, strand_a_snapshot};
 
 #[test]
 fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
@@ -133,4 +133,52 @@ fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
         serde_json::json!(["docs", "weekly"]),
         "the payload names every unit that could not be asked: {parsed}"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
+    // A removal that failed is a different failure from a history that could
+    // not be read, and it reaches the caller through the same code. Unix only:
+    // a path running through a file reads as `NotFound` on Windows, which is a
+    // payload already gone rather than one that would not go.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    // Put a file where the old destination directory was, so every path
+    // recorded under it is unreachable and its removal genuinely fails.
+    let old = state_dir.path().join("old-backups");
+    std::fs::remove_dir_all(&old).unwrap();
+    std::fs::write(&old, "an operator's file").unwrap();
+    assert!(!stranded.exists());
+
+    let out = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "backup", "gc"])
+        .arg("--config")
+        .arg(config_dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .output()
+        .expect("run cfgd backup gc");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a payload cfgd recorded and could not remove is a failure the caller must see"
+    );
+
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 stdout");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout must be ONE json document, got {e}: {stdout:?}"));
+    assert_eq!(
+        parsed["collected"],
+        serde_json::json!([]),
+        "nothing was collected: {parsed}"
+    );
+    assert!(old.is_file(), "gc removed what it could not remove");
 }

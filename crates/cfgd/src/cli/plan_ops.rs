@@ -1151,11 +1151,14 @@ fn warn_legacy_module_patterns(printer: &Printer, skip: &[String], only: &[Strin
             continue;
         }
         seen.push(pattern);
-        let replacement = match pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
-            Some(name) => {
-                format!("Use `{flag} module:{name}` (all phases) or `{flag} files.module:{name}`.")
-            }
-            None => format!("Use `{flag} module:<name>` to select one module."),
+        let replacement = if pattern.starts_with(LEGACY_MODULE_PREFIX) {
+            // The routed spelling comes from the one composer, so the pattern
+            // this line tells the reader to use is the pattern a hint restating
+            // their own flags would hand them.
+            let routed = current_pattern_spelling(pattern);
+            format!("Use `{flag} {routed}` (all phases) or `{flag} files.{routed}`.")
+        } else {
+            format!("Use `{flag} module:<name>` to select one module.")
         };
         printer.deprecation(format!(
             "`{flag} {pattern}` is deprecated: module work now applies in the phase whose kind it is. {replacement}"

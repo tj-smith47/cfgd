@@ -1384,8 +1384,10 @@ pub(super) fn bootstrap_via_system_manager(
         Some(names) => format!("failed to install {manager_name} via {names}"),
         // Unreachable: every manager whose bootstrap reaches here declares a
         // non-empty system list. Worded rather than unwrapped so an arms table
-        // that one day declares none says something true.
-        None => format!("failed to install {manager_name}: no mediator this host can run"),
+        // that one day declares none says something true — and what would be
+        // empty is the manager's own table, not the set of mediators the host
+        // carries.
+        None => format!("failed to install {manager_name}: it names no mediator to install it"),
     };
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),

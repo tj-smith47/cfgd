@@ -652,7 +652,7 @@ fn drift_section<T>(
             // the same failed probe, worded the same way so the two surfaces
             // read as one report.
             check_errors.iter().fold(s, |s, err| {
-                s.status_with(Role::Warn, err.key.clone(), |f| {
+                s.status_with(Role::Warn, err.subject(), |f| {
                     f.qualifier("error checking drift").detail(&err.error)
                 })
             })
@@ -995,7 +995,7 @@ pub fn build_fleet_status_doc(
                 // for the same failed probe, worded the same way so the two
                 // surfaces read as one report.
                 output.system_errors.iter().fold(s, |s, err| {
-                    s.status_with(Role::Warn, err.key.clone(), |f| {
+                    s.status_with(Role::Warn, err.subject(), |f| {
                         f.qualifier("error checking drift").detail(&err.error)
                     })
                 })
@@ -2479,7 +2479,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
             // the identical probe, so `--exit-code`'s Error exit is never
             // invisible on the wide report.
             output.system_errors.iter().fold(s, |s, err| {
-                s.status_with(Role::Warn, err.key.clone(), |f| {
+                s.status_with(Role::Warn, err.subject(), |f| {
                     f.qualifier("error checking drift").detail(&err.error)
                 })
             })
@@ -3756,10 +3756,11 @@ mod tests {
     ///
     /// A recorded env id drops the verb, so the only way back to it is the
     /// target's basename — and every basename a CLI source could test against
-    /// is a second copy of a table `env_targets` already owns. A host adding a
-    /// dialect (or renaming one) then moves the tree's group while a surface
-    /// keeps classifying by a name nothing writes, which is how a table and a
-    /// tree came to disagree about `~/.bashrc`.
+    /// is a name `env_targets` already spells, which is why the tells come from
+    /// `cfgd_core::reconciler::env_target_basenames` rather than from a list
+    /// here. A host adding a dialect (or renaming one) then moves the tree's
+    /// group while a surface keeps classifying by a name nothing writes, which
+    /// is how a table and a tree came to disagree about `~/.bashrc`.
     ///
     /// The walk is the whole `cli/` production slice, not this file alone: the
     /// rule is about the recorded id's verb, and any command holding one can
@@ -3769,27 +3770,17 @@ mod tests {
     /// hatches the literals under it up to the next blank line.
     #[test]
     fn no_status_site_classifies_an_env_target_by_its_basename() {
-        // Every basename `MergedEnvItems::managed_env_files` and
-        // `managed_env_source_lines` can put on a host, plus the directories
-        // that give one its dialect. Matched per PATH SEGMENT, a dotfile's own
-        // leading dot optional, so neither `spec.profile` nor a bare `profile`
-        // reads as `~/.profile`.
-        const BASENAME_TELLS: &[&str] = &[
-            ".cfgd.env",
-            "cfgd.conf",
-            "cfgd-env.fish",
-            "cfgd-env.ps1",
-            ".bashrc",
-            ".zshenv",
-            ".zshrc",
-            ".profile",
-            "conf.d",
-            "environment.d",
-        ];
+        // Every name the target builders really spell, derived from
+        // `env_targets` rather than re-typed here. Matched per PATH SEGMENT and
+        // exactly, so neither `spec.profile` nor a bare `profile` reads as
+        // `~/.profile`.
+        let basename_tells = cfgd_core::reconciler::env_target_basenames();
+        assert!(
+            basename_tells.len() >= 10,
+            "the env engine no longer offers its target names: {basename_tells:?}"
+        );
         fn names_a_target(literal: &str, tell: &str) -> bool {
-            literal
-                .split('/')
-                .any(|seg| seg == tell || seg.strip_prefix('.') == Some(tell))
+            literal.split('/').any(|seg| seg == tell)
         }
 
         let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
@@ -3797,9 +3788,9 @@ mod tests {
         let mut files = 0usize;
         let mut literals = 0usize;
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
+            let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every directory: {e}", dir.display())
+            });
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -3813,17 +3804,29 @@ mod tests {
                 {
                     continue;
                 }
-                let Ok(body) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
+                let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every source: {e}", path.display())
+                });
                 files += 1;
                 let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
                 let rel = cfgd_core::to_posix_string(&rel);
-                let mut hatched = false;
-                for (n, line) in cfgd_core::test_helpers::production_slice(&body)
+                let production = cfgd_core::test_helpers::production_slice(&body);
+                // Per file, not merely per crate: `production_slice` drops a
+                // trailing test module and nothing else, so a walk reading
+                // fewer lines than precede this file's first `#[cfg(test)]` is
+                // a walk that went blind partway down it.
+                let before_tests = body
                     .lines()
-                    .enumerate()
-                {
+                    .position(|l| l == "#[cfg(test)]")
+                    .unwrap_or_else(|| body.lines().count());
+                let walked = production.lines().count();
+                assert!(
+                    walked > 0 && walked >= before_tests,
+                    "{rel}: the walk read {walked} lines of the {before_tests} that \
+                     precede this file's test module"
+                );
+                let mut hatched = false;
+                for (n, line) in production.lines().enumerate() {
                     if line.trim().is_empty() {
                         hatched = false;
                     }
@@ -3835,7 +3838,7 @@ mod tests {
                     }
                     for literal in string_literals(line) {
                         literals += 1;
-                        for tell in BASENAME_TELLS {
+                        for tell in &basename_tells {
                             assert!(
                                 !names_a_target(&literal, tell),
                                 "{rel}:{}: `{literal}` names an env target by its \

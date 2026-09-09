@@ -333,7 +333,7 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
         // ones — the same composition `diff` and `status --scan` render, so
         // one failure reads identically on all three surfaces.
         let s = output.system_errors.iter().fold(s, |s, err| {
-            s.status_with(Role::Warn, err.key.clone(), |sf| {
+            s.status_with(Role::Warn, err.subject(), |sf| {
                 sf.qualifier("error checking drift").detail(&err.error)
             })
         });

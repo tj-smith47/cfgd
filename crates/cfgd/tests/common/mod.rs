@@ -1597,3 +1597,56 @@ pub fn assert_nests_under(output: &str, header: &str, needle: &str) {
          (header indent {header_indent}, settle indent {settled_indent}): {output}"
     );
 }
+
+/// Write a one-unit `withbackups` profile whose `docs` backup snapshots
+/// `source` into `destination`, plus the `cfgd.yaml` selecting it. Rewriting it
+/// with a second `destination` is how a test moves a unit the way an operator
+/// editing their config does.
+pub fn write_gc_profile(
+    config_dir: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) {
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      destination: {}\n      retention: 3\n",
+        cfgd_core::to_posix_string(source),
+        cfgd_core::to_posix_string(destination),
+    );
+    let profiles_dir = config_dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+    std::fs::write(
+        config_dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n",
+    )
+    .unwrap();
+}
+
+/// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
+/// and snapshot again — the prune that discovers the stranded payload and marks
+/// its row `orphaned`. Returns the path the first run wrote and what the second
+/// run printed, which is where the closing `cfgd backup gc` hint lands.
+pub fn strand_a_snapshot(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    source: &std::path::Path,
+) -> (PathBuf, String) {
+    let old = state_dir.join("old-backups");
+    write_gc_profile(config_dir, source, &old);
+    let cli = cli_for(config_dir, state_dir);
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let stranded = std::fs::read_dir(&old)
+        .expect("the first destination must exist after a run")
+        .map(|e| e.expect("entry").path())
+        .next()
+        .expect("the first run wrote a snapshot");
+
+    write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+    (stranded, cfgd_core::output::strip_ansi(&cap.human()))
+}

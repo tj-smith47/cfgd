@@ -2413,20 +2413,16 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
     // stdin (`cat`) stands in for the prompt: with stdin closed it returns at
     // EOF; without the fix it would block until the test timed out.
     let tmp = tempfile::tempdir().unwrap();
-    let bin_dir = tmp.path().join("fakebin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake = bin_dir.join("ssh-keygen");
+    let fake = tmp.path().join("ssh-keygen");
     std::fs::write(&fake, b"#!/bin/sh\ncat > /dev/null\nexit 1\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let original_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries: Vec<std::path::PathBuf> = vec![bin_dir.clone()];
-    path_entries.extend(std::env::split_paths(&original_path));
-    let new_path = std::env::join_paths(&path_entries).unwrap();
-    let _path_guard = cfgd_core::test_helpers::EnvVarGuard::set(
-        "PATH",
-        new_path.to_str().expect("PATH must be valid UTF-8"),
+    // The stand-in reads stdin to standing still, so it is reached through the
+    // seam rather than through `PATH`: the signing call runs on a worker
+    // thread, and the `PATH` window is exclusive to the thread that opened it.
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_SSH_KEYGEN_BIN",
+        fake.to_str().expect("shim path must be valid UTF-8"),
     );
 
     // Run the signing call on a worker thread and assert it returns promptly.
@@ -2554,30 +2550,19 @@ fn detect_ssh_key_ssh_agent_path_returns_disk_key_when_agent_has_identities() {
     // NOT contain "no identities", and a disk key exists → the agent-path
     // returns it. Uses a fake `ssh-add` script and a fake HOME with a key.
     let tmp = tempfile::tempdir().unwrap();
-    let bin_dir = tmp.path().join("fakebin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake_ssh_add = bin_dir.join("ssh-add");
-    std::fs::write(
-        &fake_ssh_add,
-        b"#!/bin/sh\necho '256 SHA256:fakekey alice@host (ED25519)'\nexit 0\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&fake_ssh_add, std::fs::Permissions::from_mode(0o755)).unwrap();
-
     let home_dir = tmp.path().join("home");
     let ssh_dir = home_dir.join(".ssh");
     std::fs::create_dir_all(&ssh_dir).unwrap();
     std::fs::write(ssh_dir.join("id_ed25519.pub"), b"ssh-ed25519 AAAA fake-key").unwrap();
     let _home_guard = cfgd_core::with_test_home_guard(&home_dir);
 
-    let original_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries: Vec<std::path::PathBuf> = vec![bin_dir.clone()];
-    path_entries.extend(std::env::split_paths(&original_path));
-    let new_path = std::env::join_paths(&path_entries).unwrap();
-    let _path_guard = cfgd_core::test_helpers::EnvVarGuard::set(
-        "PATH",
-        new_path.to_str().expect("PATH must be valid UTF-8"),
+    // `ssh-add` is spawned by bare name with no seam, so the stand-in goes at
+    // the front of `PATH` through the helper that brackets that window.
+    let (_shim_dir, _shim) = cfgd_core::test_helpers::install_named_path_shim(
+        "ssh-add",
+        0,
+        "256 SHA256:fakekey alice@host (ED25519)",
+        "",
     );
 
     let (printer, cap) = Printer::for_test_doc();

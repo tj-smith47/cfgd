@@ -26867,6 +26867,35 @@ fn a_preview_hint_restates_a_retired_pattern_as_its_current_spelling() {
         "a retired module pattern must be re-stated as the routed one:\n{hint}"
     );
 
+    // The deprecation the run prints and the hint it closes on are two
+    // surfaces naming one replacement, so both take it from the same composer:
+    // a reader told to type `module:nvim` is handed `module:nvim`.
+    let routed = super::plan_ops::current_pattern_spelling("modules.nvim");
+    let mut empty_plan = cfgd_core::reconciler::Plan {
+        phases: vec![],
+        warnings: vec![],
+    };
+    let (printer, buf) = test_printer_capture();
+    super::plan_ops::filter_plan(
+        &mut empty_plan,
+        &skip,
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    printer.flush();
+    let deprecation = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        deprecation.contains(&format!("--skip {routed}")),
+        "the deprecation names the routed replacement:\n{deprecation}"
+    );
+    assert!(
+        hint.contains(&format!("--skip {routed}")),
+        "and the hint names the same one:\n{hint}"
+    );
+
     // Bare `modules` names every module in every phase, which no routed
     // pattern spells, so it survives the fold rather than being rewritten to
     // something that selects a different set.
@@ -35197,6 +35226,27 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
     let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
 
+    // `verify` names a path in all three of its row shapes: the answered
+    // results, the checks that could not run, and the recorded rows it left
+    // standing.
+    let verify_output = super::verify::VerifyOutput {
+        results: vec![cfgd_core::reconciler::VerifyResult {
+            resource_type: "env".into(),
+            resource_id: under_home(".cfgd.env"),
+            matches: false,
+            expected: "hash-desired".into(),
+            actual: "hash-actual".into(),
+            unmanaged: false,
+        }],
+        pass_count: 0,
+        fail_count: 1,
+        system_errors: vec![cfgd_core::reconciler::SystemCheckError {
+            key: under_home(".gitconfig"),
+            error: "permission denied".into(),
+        }],
+        standing: vec![drift_event(12, under_home(".bashrc"))],
+    };
+
     let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
         (
             "cfgd compliance snapshot",
@@ -35277,6 +35327,10 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 "->",
                 now,
             ),
+        ),
+        (
+            "cfgd verify",
+            super::verify::build_verify_doc(&verify_output, None),
         ),
     ];
     for (surface, doc) in docs {

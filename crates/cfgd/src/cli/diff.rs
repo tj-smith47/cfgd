@@ -382,7 +382,7 @@ pub fn cmd_diff(
                     break;
                 }
                 sys_group
-                    .status(Role::Warn, err.key.clone())
+                    .status(Role::Warn, err.subject())
                     .qualifier("error checking drift")
                     .detail(&err.error);
                 errors.next();
@@ -403,7 +403,7 @@ pub fn cmd_diff(
         }
         for err in errors {
             sys_group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
@@ -740,7 +740,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_payload.packages.push(version_package_drift(row));
                 } else if let Some(err) = package_check_errors.iter().find(|e| e.key == id) {
                     group
-                        .status(Role::Warn, err.key.clone())
+                        .status(Role::Warn, err.subject())
                         .qualifier("error checking drift")
                         .detail(&err.error);
                 }
@@ -869,7 +869,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             // probe that could not run is never read as clean; the path folds
             // to `~/` like every display slot, the payload keeps it absolute.
             env_sec
-                .status(Role::Warn, cfgd_core::fold_home_in_text(&err.key))
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
             diff_payload.env_check_error = Some(err.error.clone());
@@ -1142,7 +1142,7 @@ pub(super) fn print_package_drift(
         // and every structured consumer read.
         for err in check_errors {
             group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
