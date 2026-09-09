@@ -36784,3 +36784,184 @@ fn every_mutating_verbs_next_step_renders_at_the_runs_own_depth() {
         offenders.join("\n")
     );
 }
+
+/// A profile declaring one schedule-less backup unit at `declared` retention,
+/// with `seeded` snapshots already on disk and recorded, and — when
+/// `projected` is set — the cadence a check-in last recorded for it.
+///
+/// The unit leaves `scheduleOwner` at its default, so the projection is the
+/// cluster's to make.
+fn backup_projection_env(
+    declared: u32,
+    projected: Option<u32>,
+    seeded: usize,
+) -> (tempfile::TempDir, tempfile::TempDir) {
+    let (config_dir, state_dir) = setup_test_env();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      retention: {declared}\n",
+            source.posix()
+        ),
+    )
+    .unwrap();
+
+    let destination = state_dir.path().join("backups").join("docs");
+    std::fs::create_dir_all(&destination).unwrap();
+    let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+    for i in 1..=seeded {
+        let snapshot = destination.join(format!("notes.txt.2026010{i}T000000Z"));
+        std::fs::write(&snapshot, "an older snapshot").unwrap();
+        store
+            .record_backup_run(&cfgd_core::state::BackupRunDraft {
+                name: "docs".to_string(),
+                source: source.posix().to_string(),
+                destination_path: Some(snapshot.posix().to_string()),
+                size_bytes: Some(17),
+                status: cfgd_core::state::BackupRunStatus::Success,
+                error: None,
+                started_at: format!("2026-01-0{i}T00:00:00Z"),
+                finished_at: format!("2026-01-0{i}T00:00:00Z"),
+            })
+            .unwrap();
+    }
+    if let Some(retention) = projected {
+        store
+            .record_cluster_backup_schedules(&cfgd_core::backup::ScheduleProjections::from([(
+                "docs".to_string(),
+                cfgd_core::backup::BackupScheduleProjection {
+                    schedule: "6h".to_string(),
+                    retention: Some(retention),
+                },
+            )]))
+            .unwrap();
+    }
+    (config_dir, state_dir)
+}
+
+/// How many snapshots the unit has on disk.
+fn snapshots_kept(state_dir: &Path) -> usize {
+    std::fs::read_dir(state_dir.join("backups").join("docs"))
+        .unwrap()
+        .count()
+}
+
+/// A cluster `BackupPolicy` owns a unit's `retention` as well as its schedule,
+/// so the run that prunes keeps the projected number. Holding the declared
+/// spec, `cfgd backup run` deleted snapshots the cadence the fleet set — and
+/// the daemon's own fire, plus `cfgd backup list`, said they were kept.
+#[test]
+fn a_backup_run_prunes_to_the_retention_the_cluster_projected() {
+    let (config_dir, state_dir) = backup_projection_env(5, Some(2), 4);
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    super::backup::run_backup_run(&cli, &printer, Some("docs")).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        2,
+        "the run prunes to the cluster's retention, not the profile's 5"
+    );
+}
+
+/// The same seam the other way round: a cluster raising retention above the
+/// declared number keeps what the cluster keeps, so a run cannot delete a
+/// snapshot the fleet's cadence is holding on to.
+#[test]
+fn a_backup_run_keeps_what_a_raised_cluster_retention_keeps() {
+    let (config_dir, state_dir) = backup_projection_env(2, Some(5), 4);
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    super::backup::run_backup_run(&cli, &printer, Some("docs")).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        5,
+        "the four seeded snapshots and this run's own are all inside the cluster's retention"
+    );
+}
+
+/// The backups an apply fires read the same projection: they are the same
+/// units, run by a different verb, and a machine whose apply pruned to the
+/// declared number would lose snapshots between two daemon fires.
+#[test]
+fn an_apply_prunes_its_backups_to_the_retention_the_cluster_projected() {
+    let (config_dir, state_dir) = backup_projection_env(5, Some(2), 4);
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::run_apply(&cli, &printer, &args).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        2,
+        "an apply's backups prune to the cluster's retention like every other run"
+    );
+}
+
+/// Every `BackupUnit` the CLI builds is bound to a spec the recorded
+/// projection was folded over, so no verb runs, prunes or reports a unit on a
+/// cadence the cluster replaced. A verb that deliberately wants the DECLARED
+/// spec says so with `// declared-spec-ok:` on the line or just above it.
+///
+/// `cfgd backup run` and the backups an apply fires once held the declared
+/// spec, so both pruned to the declared retention while the daemon's fire and
+/// `cfgd backup list` reported the cluster's.
+#[test]
+fn every_backup_unit_the_cli_builds_is_projected() {
+    const HATCH: &str = "// declared-spec-ok:";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
+        .into_iter()
+        .filter(|p| {
+            p.file_name().is_none_or(|n| n != "tests.rs")
+                && !p.components().any(|c| c.as_os_str() == "tests")
+        })
+        .collect();
+    let mut seen = 0usize;
+    let mut declared = Vec::new();
+    for path in sources {
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("BackupUnit::new(") {
+                continue;
+            }
+            let window = lines[n.saturating_sub(15)..=n].join("\n");
+            if window.contains(HATCH) {
+                continue;
+            }
+            seen += 1;
+            if !window.contains("projected_spec(") {
+                declared.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        seen, 8,
+        "the walk no longer reaches every unit-building surface (list, list --snapshots, \
+         restore, rollback's two, run, gc) plus the apply — it found {seen}"
+    );
+    assert!(
+        declared.is_empty(),
+        "a `BackupUnit` the CLI builds takes the spec the recorded projection was folded \
+         over (`cfgd_core::backup::projected_spec`), or says why it takes the declared one \
+         with `{HATCH} <why>`:\n{}",
+        declared.join("\n")
+    );
+}

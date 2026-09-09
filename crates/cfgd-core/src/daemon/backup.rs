@@ -72,15 +72,7 @@ impl BackupTask {
         last_finished: Option<&str>,
         projections: &crate::backup::ScheduleProjections,
     ) -> Option<Self> {
-        // The cluster's cadence replaces the declared one on the CLONE, so
-        // every reader of the held spec (the fire, the retention prune) sees
-        // the one schedule the unit actually runs on. The profile on disk is
-        // untouched; the projection is runtime state the next check-in
-        // replaces.
-        let effective = crate::backup::effective_schedule(spec, projections);
-        let mut spec = spec.clone();
-        spec.schedule = effective.schedule.map(str::to_string);
-        spec.retention = effective.retention;
+        let spec = crate::backup::projected_spec(spec, projections);
         let spec = &spec;
         let schedule_str = spec.schedule.clone()?;
         let Some(schedule) = BackupSchedule::parse(&schedule_str) else {

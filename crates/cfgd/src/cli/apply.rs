@@ -594,7 +594,12 @@ pub fn run_apply(
     // The units the run's `Backups` pseudo-phase will render. Built before the
     // run so the header's `Actions N planned` can count their hooks and
     // snapshots, which is the same enumeration the rollup reconciles against.
-    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = pending_backup_specs
+    let backup_projections = super::backup::recorded_projections(Some(state));
+    let projected_backup_specs: Vec<cfgd_core::config::BackupSpec> = pending_backup_specs
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &backup_projections))
+        .collect();
+    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = projected_backup_specs
         .iter()
         .map(|spec| {
             cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)

@@ -97,6 +97,26 @@ pub fn effective_schedule<'a>(
     }
 }
 
+/// One declared unit with the cadence a check-in projected folded into it.
+///
+/// The ONE fold every surface that RUNS a unit takes, because a projection
+/// changes `retention` as well as `schedule`: a run holding the declared spec
+/// prunes to the declared number, which either deletes snapshots the cluster's
+/// cadence keeps or keeps snapshots it does not. Every reader of the returned
+/// spec — the fire, the retention prune, the hooks — sees the one cadence the
+/// unit actually runs on.
+///
+/// The profile on disk is untouched. A projection is runtime state the next
+/// check-in replaces, and a unit pinned `scheduleOwner: Local` folds nothing
+/// (see [`effective_schedule`]).
+pub fn projected_spec(spec: &BackupSpec, projections: &ScheduleProjections) -> BackupSpec {
+    let effective = effective_schedule(spec, projections);
+    let mut projected = spec.clone();
+    projected.schedule = effective.schedule.map(str::to_string);
+    projected.retention = effective.retention;
+    projected
+}
+
 /// Floor for an interval schedule. `parse_duration_str` accepts `0`, which
 /// would turn the daemon loop's timer branch into a spin.
 const MIN_INTERVAL: Duration = Duration::from_secs(1);

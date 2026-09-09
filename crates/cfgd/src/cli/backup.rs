@@ -49,6 +49,25 @@ fn find_backup_spec<'a>(
     })
 }
 
+/// The cadences the last check-in recorded, read once for a whole command.
+///
+/// Every `BackupUnit` the CLI builds is bound to a
+/// [`cfgd_core::backup::projected_spec`] folded over these, because a cluster
+/// `BackupPolicy` owns a unit's `retention` as well as its `schedule`: a verb
+/// holding the declared spec prunes to a number neither the daemon's fire nor
+/// `cfgd backup list` reports.
+///
+/// An unreadable store costs the command the cluster's cadence, never the run
+/// — every unit then falls back to what its own profile declares, which is the
+/// same degradation the listing's history columns take.
+pub(in crate::cli) fn recorded_projections(
+    state: Option<&cfgd_core::state::StateStore>,
+) -> cfgd_core::backup::ScheduleProjections {
+    state
+        .and_then(|state| state.cluster_backup_schedules().ok())
+        .unwrap_or_default()
+}
+
 /// The three values every unit-constructing surface needs: where config lives,
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
 ///
@@ -375,9 +394,7 @@ pub fn cmd_backup_list(
     // What the last check-in said the cluster owns. An unreadable store already
     // cost this listing its history; it costs the effective cadence too, and
     // every unit falls back to the schedule its own profile declares.
-    let projections = state
-        .and_then(|state| state.cluster_backup_schedules().ok())
-        .unwrap_or_default();
+    let projections = recorded_projections(state);
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
@@ -402,7 +419,8 @@ pub fn cmd_backup_list(
                     .as_ref()
                     .zip(state)
                     .and_then(|((config_dir, state_dir), state)| {
-                        let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
+                        let projected = cfgd_core::backup::projected_spec(spec, &projections);
+                        let unit = BackupUnit::new(&projected, config_dir, profile_name, state_dir);
                         cfgd_core::backup::list_snapshots(&unit, state)
                             .ok()
                             .map(|s| s.len())
@@ -459,7 +477,8 @@ fn list_unit_snapshots(
     profile_name: &str,
 ) -> anyhow::Result<()> {
     let (config_dir, state, state_dir) = unit_context(ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, state)?
         .iter()
@@ -550,7 +569,8 @@ pub fn run_backup_restore(
     let spec = find_backup_spec(&backups, args.name)?;
 
     let (config_dir, state, state_dir) = unit_context(&ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     let snapshots = cfgd_core::backup::list_snapshots(&unit, state)?;
     let selected: &SnapshotInfo =
@@ -749,11 +769,13 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let projections = recorded_projections(Some(state));
     let entries: Vec<BackupRollbackEntry> = backups
         .iter()
         .filter_map(|spec| {
-            let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+            let projected = cfgd_core::backup::projected_spec(spec, &projections);
+            let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
             cfgd_core::backup::rollback_copy(&unit).map(|copy| BackupRollbackEntry {
                 name: spec.name.clone(),
                 copy: copy.path.posix().to_string(),
@@ -788,8 +810,9 @@ pub fn run_backup_rollback(
 
     let spec = find_backup_spec(&backups, name)?;
 
-    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     // Resolved before the prompt so the operator is told which copy they are
     // agreeing to, and so a unit with nothing to put back is refused without
@@ -983,7 +1006,12 @@ pub fn run_backup_run(
     }
 
     let (config_dir, state, state_dir) = unit_context(&ctx)?;
-    let units: Vec<BackupUnit<'_>> = targets
+    let projections = recorded_projections(Some(state));
+    let projected: Vec<config::BackupSpec> = targets
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &projections))
+        .collect();
+    let units: Vec<BackupUnit<'_>> = projected
         .iter()
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
@@ -1068,7 +1096,12 @@ pub fn run_backup_gc(
     };
 
     let (config_dir, state, state_dir) = unit_context(&ctx)?;
-    let units: Vec<BackupUnit<'_>> = targets
+    let projections = recorded_projections(Some(state));
+    let projected: Vec<config::BackupSpec> = targets
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &projections))
+        .collect();
+    let units: Vec<BackupUnit<'_>> = projected
         .iter()
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
