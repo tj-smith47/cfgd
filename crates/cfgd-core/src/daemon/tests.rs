@@ -3080,6 +3080,7 @@ fn action_resource_info_file_set_permissions() {
         target: PathBuf::from("/home/user/.ssh/config"),
         mode: 0o600,
         origin: "local".into(),
+        follow: false,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");

@@ -1246,6 +1246,17 @@ pub enum FileAction {
         target: PathBuf,
         mode: u32,
         origin: String,
+        /// Whether the chmod resolves a symlink at `target`.
+        ///
+        /// True for a `strategy: Symlink` entry alone, where the declared mode
+        /// belongs to the source file the link points at and the drift check
+        /// compares against that file's mode, so chmodding the link would leave
+        /// the entry drifted forever (Linux has no `lchmod`). Every other
+        /// strategy deploys a regular file, and following a link there would let
+        /// whoever owns the target's directory aim an elevated chmod at any file
+        /// on the machine. The planner decides it from the resolved strategy: a
+        /// probe at apply time would lose that race.
+        follow: bool,
     },
     Skip {
         target: PathBuf,

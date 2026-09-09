@@ -67,8 +67,19 @@ pub(super) fn apply_file_action_direct(
             }
             Ok(())
         }
-        FileAction::SetPermissions { target, mode, .. } => {
-            crate::set_file_permissions(target, *mode)?;
+        FileAction::SetPermissions {
+            target,
+            mode,
+            follow,
+            ..
+        } => {
+            if *follow {
+                // follow-ok: only a `strategy: Symlink` entry plans `follow: true`,
+                // and its declared mode belongs to the file the link points at.
+                crate::set_file_permissions(target, *mode)?;
+            } else {
+                crate::set_file_permissions_nofollow(target, *mode)?;
+            }
             Ok(())
         }
         FileAction::Skip { .. } => Ok(()),
@@ -119,10 +130,12 @@ impl FileAction {
                 target,
                 mode,
                 origin,
+                follow,
             } => FileAction::SetPermissions {
                 target: target.clone(),
                 mode: *mode,
                 origin: origin.clone(),
+                follow: *follow,
             },
             FileAction::Skip {
                 target,

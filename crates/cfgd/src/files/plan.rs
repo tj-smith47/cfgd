@@ -242,7 +242,9 @@ impl super::CfgdFileManager {
                         }
                     });
                 }
-                if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                if let Some(action) =
+                    self.check_permissions(&target_path, managed, profile, FileStrategy::Patch)?
+                {
                     actions.push(action);
                 }
                 continue;
@@ -303,7 +305,9 @@ impl super::CfgdFileManager {
                 let is_current = is_linked_to(&source_path, &target_path, strategy);
 
                 if is_current {
-                    if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                    if let Some(action) =
+                        self.check_permissions(&target_path, managed, profile, strategy)?
+                    {
                         actions.push(action);
                     }
                 } else if target_path.exists() || target_path.symlink_metadata().is_ok() {
@@ -325,7 +329,9 @@ impl super::CfgdFileManager {
                         source_hash: None,
                         patch: None,
                     });
-                    if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                    if let Some(action) =
+                        self.check_permissions(&target_path, managed, profile, strategy)?
+                    {
                         actions.push(action);
                     }
                 }
@@ -350,7 +356,9 @@ impl super::CfgdFileManager {
                     })?;
 
                 if rendered_content == target_content {
-                    if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                    if let Some(action) =
+                        self.check_permissions(&target_path, managed, profile, strategy)?
+                    {
                         actions.push(action);
                     }
                 } else {
@@ -371,7 +379,9 @@ impl super::CfgdFileManager {
                         patch: None,
                     });
 
-                    if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                    if let Some(action) =
+                        self.check_permissions(&target_path, managed, profile, strategy)?
+                    {
                         actions.push(action);
                     }
                 }
@@ -386,7 +396,9 @@ impl super::CfgdFileManager {
                     patch: None,
                 });
 
-                if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
+                if let Some(action) =
+                    self.check_permissions(&target_path, managed, profile, strategy)?
+                {
                     actions.push(action);
                 }
             }
@@ -776,11 +788,16 @@ impl super::CfgdFileManager {
     }
 
     /// Check if permissions need to be changed for a target file.
+    ///
+    /// `strategy` is the entry's RESOLVED strategy, which decides whether the
+    /// chmod may follow a link at the target: see
+    /// [`cfgd_core::providers::FileAction::SetPermissions::follow`].
     pub(super) fn check_permissions(
         &self,
         target: &Path,
         managed: &ManagedFileSpec,
         profile: &MergedProfile,
+        strategy: FileStrategy,
     ) -> Result<Option<FileAction>> {
         let target_str = target.display().to_string();
 
@@ -832,6 +849,7 @@ impl super::CfgdFileManager {
                             target: target.to_path_buf(),
                             mode: desired_mode,
                             origin: LOCAL_LAYER.to_string(),
+                            follow: matches!(strategy, FileStrategy::Symlink),
                         }));
                     }
                 } else {
@@ -841,6 +859,7 @@ impl super::CfgdFileManager {
                         target: target.to_path_buf(),
                         mode: desired_mode,
                         origin: LOCAL_LAYER.to_string(),
+                        follow: matches!(strategy, FileStrategy::Symlink),
                     }));
                 }
             }
@@ -1563,7 +1582,7 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let action = fm
-            .check_permissions(&target, &managed, &resolved.merged)
+            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
             .unwrap();
 
         assert!(action.is_some());
@@ -1604,7 +1623,7 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let action = fm
-            .check_permissions(&target, &managed, &resolved.merged)
+            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
             .unwrap();
 
         assert!(
@@ -1642,7 +1661,7 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let err = fm
-            .check_permissions(&target, &managed, &resolved.merged)
+            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
             .unwrap_err();
         let msg = err.to_string();
         assert!(
