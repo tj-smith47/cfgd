@@ -830,11 +830,13 @@ pub struct BackupPolicyUnitStatus {
     /// profile pinned the unit with `scheduleOwner: Local` and the policy
     /// reports it without scheduling it.
     pub owner: String,
-    /// The schedule in force on the machine. Absent while the machine has not
-    /// reported the unit yet.
+    /// The schedule the machine reported running the unit on: the one this
+    /// policy projected onto it where `owner` is `cluster`, the one the
+    /// machine's own profile declared where `owner` is `local`. Absent while
+    /// the machine has not reported the unit yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    /// The retention in force on the machine.
+    /// The retention the machine reported, on the same terms as `schedule`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<u32>,
     /// When the unit last ran, as an RFC 3339 timestamp.

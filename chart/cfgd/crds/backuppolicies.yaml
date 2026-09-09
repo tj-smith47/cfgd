@@ -214,15 +214,17 @@ spec:
                         reports it without scheduling it.
                       type: string
                     retention:
-                      description: The retention in force on the machine.
+                      description: The retention the machine reported, on the same terms as `schedule`.
                       format: uint32
                       minimum: 0.0
                       nullable: true
                       type: integer
                     schedule:
                       description: |-
-                        The schedule in force on the machine. Absent while the machine has not
-                        reported the unit yet.
+                        The schedule the machine reported running the unit on: the one this
+                        policy projected onto it where `owner` is `cluster`, the one the
+                        machine's own profile declared where `owner` is `local`. Absent while
+                        the machine has not reported the unit yet.
                       nullable: true
                       type: string
                   required:

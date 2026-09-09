@@ -124,15 +124,6 @@ fn restoring_verb_state(
     }
 }
 
-/// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
-/// caller assembles the entries from config + the state store and passes `now`,
-/// so a render pins in a test rather than reading a clock inside the builder.
-///
-/// `Status` and `Last Run` are two cells, the way `source list` splits them: one
-/// cell holding a status word AND a timestamp can be tinted by neither, and the
-/// instant it carried answered "when exactly" — the question the `-o json`
-/// payload's `lastRunAt` is for — on the one column a reader scans to learn how
-/// stale the unit is.
 /// The listing's Schedule Owner cell for one row.
 ///
 /// The entry carries the owner as the word its `-o json` reader matches on, so
@@ -151,6 +142,15 @@ fn schedule_owner_cell(entry: &BackupListEntry) -> String {
         )
 }
 
+/// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
+/// caller assembles the entries from config + the state store and passes `now`,
+/// so a render pins in a test rather than reading a clock inside the builder.
+///
+/// `Status` and `Last Run` are two cells, the way `source list` splits them: one
+/// cell holding a status word AND a timestamp can be tinted by neither, and the
+/// instant it carried answered "when exactly" — the question the `-o json`
+/// payload's `lastRunAt` is for — on the one column a reader scans to learn how
+/// stale the unit is.
 pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Backups");
 
@@ -413,8 +413,8 @@ pub fn cmd_backup_list(
                 schedule: spec.schedule.clone(),
                 schedule_owner: spec.schedule_owner.label().to_string(),
                 // Both effective slots answer one question — did the cluster
-                // CHANGE this — so both appear only when the value in force
-                // differs from the one the profile declared.
+                // CHANGE this — so both appear only when the value the cluster
+                // projected differs from the one the profile declared.
                 effective_schedule: (effective.from_cluster
                     && effective.schedule != spec.schedule.as_deref())
                 .then(|| effective.schedule.map(str::to_string))

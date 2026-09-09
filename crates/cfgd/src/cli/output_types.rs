@@ -703,17 +703,18 @@ pub struct BackupListEntry {
     /// constant key is what a consumer gates on to tell a unit a cluster
     /// `BackupPolicy` may reschedule from one the profile pinned.
     pub schedule_owner: String,
-    /// The cadence in force once a cluster `BackupPolicy`'s projection is
-    /// folded over `schedule`, present only when the cluster CHANGED it.
-    /// `schedule` stays what the profile declared, so a consumer can see both
-    /// what the machine asked for and what the cluster put in force, and the
-    /// key's presence means one thing: the two differ.
+    /// The cadence a cluster `BackupPolicy` projected onto this unit, present
+    /// only when the projection CHANGED it. `schedule` stays what the profile
+    /// declared, so a consumer can see both what the machine asked for and what
+    /// the cluster projected, and the key's presence means one thing: the two
+    /// differ.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_schedule: Option<String>,
     pub retention: u32,
-    /// The retention in force, on the same terms as `effective_schedule`:
-    /// present only when the cluster changed it. A projection that states no
-    /// retention leaves `retention` standing and omits this.
+    /// The retention the cluster projected, on the same terms as
+    /// `effective_schedule`: present only when the projection changed it. A
+    /// projection that states no retention leaves `retention` standing and
+    /// omits this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_retention: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1016,7 +1016,7 @@ fn backup_policy_rejects_two_units_sharing_a_name() {
 }
 
 /// A policy overrides a cadence; the unit it names is defined on the machine,
-/// so a policy that states no retention leaves the profile's own in force.
+/// so a policy that states no retention leaves the profile's own standing.
 #[test]
 fn backup_policy_accepts_a_unit_that_omits_retention() {
     let spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);

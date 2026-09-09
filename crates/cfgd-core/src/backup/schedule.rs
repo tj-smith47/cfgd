@@ -57,13 +57,13 @@ pub fn record_cluster_schedules(
 /// The cadence a unit actually runs on, once a cluster projection is folded
 /// over what the profile declared.
 pub struct EffectiveSchedule<'a> {
-    /// The schedule in force, `None` for a unit no layer scheduled (it runs on
-    /// every apply).
+    /// The schedule the unit runs on, `None` for a unit no layer scheduled (it
+    /// runs on every apply).
     pub schedule: Option<&'a str>,
-    /// The retention in force. A projection stating none leaves the profile's
-    /// own number standing.
+    /// The retention the unit keeps to. A projection stating none leaves the
+    /// profile's own number standing.
     pub retention: u32,
-    /// Whether a cluster `BackupPolicy` is what put the values above in force.
+    /// Whether a cluster `BackupPolicy` projected the values above.
     pub from_cluster: bool,
 }
 

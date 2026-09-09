@@ -1526,17 +1526,19 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
 /// that fell back to the host when its file is absent could never say this host
 /// has no brew, and three cascade pins depend on being able to say exactly that.
 ///
-/// Both halves are asked of a probe `PATH` carrying a `brew`, so the two
-/// answers differ by the seam alone: read off a brew-free host, a seam that
+/// The fall-through half is asked of a probe `PATH` carrying a `brew`, so the
+/// two answers differ by the seam alone: read off a brew-free host, a seam that
 /// wrongly fell through would answer `false` for the host's own reason and the
-/// pin would pass on a defect.
-#[cfg(unix)]
+/// pin would pass on a defect. `ProbePath` plants a Unix executable, so that
+/// half asks only where one can be planted; the seam's own answer is the same
+/// question on every platform and is asked on all of them.
 #[test]
 #[serial_test::serial]
 fn a_set_brew_seam_answers_alone() {
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    #[cfg(unix)]
     let _probe = cfgd_core::test_helpers::ProbePath::containing(&["brew"]);
 
     let seam = cfgd_core::test_helpers::EnvVarGuard::set(
@@ -1549,11 +1551,14 @@ fn a_set_brew_seam_answers_alone() {
     );
     drop(seam);
 
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
-    assert!(
-        brew_available(),
-        "with no seam the question falls through to the host, which is carrying a brew"
-    );
+    #[cfg(unix)]
+    {
+        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+        assert!(
+            brew_available(),
+            "with no seam the question falls through to the host, which is carrying a brew"
+        );
+    }
 }
 
 /// Every system arm seamed to a path holding nothing, so no arm can run and

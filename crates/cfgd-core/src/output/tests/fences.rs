@@ -13,9 +13,12 @@ fn workspace_rust_files() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![workspace_root().join("crates")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        // A directory the walk cannot open is a walk gone blind over whatever
+        // it held, and every fence built on this list would pass by reading
+        // less than the workspace.
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -3518,9 +3521,25 @@ fn every_display_label_is_the_lowercase_of_its_canonical_token() {
     let mut sites: Vec<String> = Vec::new();
     for path in &sources {
         let body = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        let production = crate::test_helpers::production_slice(&body);
+        // Per file, not merely per crate: `production_slice` drops a trailing
+        // test module and nothing else, so a walk reading fewer lines than
+        // precede this file's first `#[cfg(test)]` is a walk that went blind
+        // partway down it.
+        let before_tests = body
+            .lines()
+            .position(|l| l == "#[cfg(test)]")
+            .unwrap_or_else(|| body.lines().count());
+        let walked = production.lines().count();
+        assert!(
+            walked > 0 && walked >= before_tests,
+            "{}: the walk read {walked} lines of the {before_tests} that \
+             precede this file's test module",
+            path.display()
+        );
         let mut current: Option<String> = None;
-        for line in crate::test_helpers::production_slice(&body).lines() {
+        for line in production.lines() {
             if let Some(rest) = line.strip_prefix("impl ") {
                 current = rest.split_whitespace().next().map(str::to_string);
             }
@@ -3569,7 +3588,7 @@ fn every_display_label_is_the_lowercase_of_its_canonical_token() {
 fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
     let declarations = Path::new("reconciler").join("types.rs");
     let mut offenders = Vec::new();
-    let mut walked = 0usize;
+    let mut files_walked = 0usize;
     for path in workspace_rust_files() {
         let is_test_source = path.ends_with(Path::new("tests.rs"))
             || path
@@ -3581,9 +3600,24 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
             continue;
         }
         let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        walked += 1;
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        files_walked += 1;
         let production = crate::test_helpers::production_slice(&body);
+        // Per file, not merely per crate: `production_slice` drops a trailing
+        // test module and nothing else, so a walk reading fewer lines than
+        // precede this file's first `#[cfg(test)]` is a walk that went blind
+        // partway down it.
+        let before_tests = body
+            .lines()
+            .position(|l| l == "#[cfg(test)]")
+            .unwrap_or_else(|| body.lines().count());
+        let walked = production.lines().count();
+        assert!(
+            walked > 0 && walked >= before_tests,
+            "{}: the walk read {walked} lines of the {before_tests} that \
+             precede this file's test module",
+            path.display()
+        );
         let mut hatched = false;
         for (i, line) in production.lines().enumerate() {
             let previous = hatched;
@@ -3599,8 +3633,8 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
         }
     }
     assert!(
-        walked >= 100,
-        "the walk no longer reads the workspace's sources: {walked} files"
+        files_walked >= 100,
+        "the walk no longer reads the workspace's sources: {files_walked} files"
     );
     assert!(
         offenders.is_empty(),

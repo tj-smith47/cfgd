@@ -2174,7 +2174,7 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
 fn the_env_gate_and_the_module_gate_share_one_predicate() {
     let src = include_str!("mod.rs");
     let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
-    let mut walked = 0usize;
+    let mut files_walked = 0usize;
     let mut tag_sites: Vec<String> = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
@@ -2196,15 +2196,26 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
             if name == "test_helpers.rs" || name.starts_with("tests") {
                 continue;
             }
-            let body = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             let production = cfgd_core::test_helpers::production_slice(&body);
+            // Per file, not merely per crate: `production_slice` drops a
+            // trailing test module and nothing else, so a walk reading fewer
+            // lines than precede this file's first `#[cfg(test)]` is a walk
+            // that went blind partway down it.
+            let before_tests = body
+                .lines()
+                .position(|l| l == "#[cfg(test)]")
+                .unwrap_or_else(|| body.lines().count());
+            let walked = production.lines().count();
             assert!(
-                !production.trim().is_empty(),
-                "{} sliced away to nothing — the walk is reading no code",
+                walked > 0 && walked >= before_tests,
+                "{}: the walk read {walked} lines of the {before_tests} that \
+                 precede this file's test module",
                 path.display()
             );
-            walked += 1;
+            files_walked += 1;
             for (n, line) in production.lines().enumerate() {
                 // `cfg(target_os = "linux")` names the host this code compiles
                 // for, not a module's `platforms:` tag.
@@ -2219,8 +2230,8 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
         }
     }
     assert!(
-        walked >= 30,
-        "the walk reached only {walked} production sources under crates/cfgd-operator/src"
+        files_walked >= 30,
+        "the walk reached only {files_walked} production sources under crates/cfgd-operator/src"
     );
     assert_eq!(
         tag_sites.len(),
