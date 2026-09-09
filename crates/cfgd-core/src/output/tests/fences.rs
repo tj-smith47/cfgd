@@ -1807,7 +1807,7 @@ fn no_walk_folding_a_label_spells_an_offender_path_natively() {
     // The floor is the POPULATION: an empty offender list reads the same
     // whether the scan found every walk or none of them.
     assert!(
-        folding >= 6,
+        folding >= 9,
         "the scan read {folding} label-folding walks; it has stopped seeing them"
     );
 }
@@ -3733,16 +3733,22 @@ const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
 ];
 
 /// The calls that run a backup gc collection, whatever surface a pin drives it
-/// through: the engine helper, the library entry point and the argv of the real
-/// binary.
+/// through: the engine helper, the library entry point, the command wrapper and
+/// the argv of the real binary.
 ///
 /// Inside a file that already pins gc's failed-removal arm, one of these is
 /// what makes a function a candidate pin of that arm, so a future one is judged
-/// on what it DOES rather than on a name a needle has to guess.
+/// on what it DOES rather than on a name a needle has to guess. Each is spelled
+/// so no binding name is guessed either: the engine call is matched by its
+/// argument rather than by the identifier a harness happens to be bound to, and
+/// an iterator's own `collect()` takes no argument. `orphaned_snapshots` is
+/// deliberately absent — it reads rows and removes nothing, so no pin of the
+/// failed-removal arm can be driven through it alone.
 const GC_COLLECT_ENTRIES: &[&str] = &[
-    "h.collect(",
+    ".collect(&",
     "collect_orphans",
     "run_backup_gc",
+    "cmd_backup_gc(",
     "\"backup\", \"gc\"",
 ];
 
