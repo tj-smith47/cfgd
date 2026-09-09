@@ -190,13 +190,22 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
-        let gateway_config = runtime::build_gateway_config(Some(client.clone()), metrics.clone());
+        // One slot, shared by both halves: the controllers publish the cache
+        // they build on every attempt and the gateway reads whatever stands.
+        let backup_policies = controllers::BackupPolicyCache::default();
+        let gateway_config = runtime::build_gateway_config(
+            Some(client.clone()),
+            backup_policies.clone(),
+            metrics.clone(),
+        );
 
         tracing::info!("device gateway enabled");
 
         tokio::spawn(async move {
             loop {
-                match controllers::run(client.clone(), metrics.clone()).await {
+                match controllers::run(client.clone(), metrics.clone(), backup_policies.clone())
+                    .await
+                {
                     Ok(()) => break,
                     Err(e) => {
                         tracing::error!(error = %e, "controllers failed — retrying in 5s");
@@ -210,7 +219,7 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
-        controllers::run(client, metrics).await?;
+        controllers::run(client, metrics, controllers::BackupPolicyCache::default()).await?;
     }
 
     Ok(())
@@ -403,7 +412,8 @@ async fn run_standalone_gateway() -> Result<()> {
     let (mut health_handle, health_state) = spawn_health_server();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
 
-    let gateway_config = runtime::build_gateway_config(None, metrics);
+    let gateway_config =
+        runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics);
 
     health_state.set_ready();
 

@@ -84,6 +84,9 @@ impl EnrollmentMethod {
 pub struct AppState {
     pub db: ServerDb,
     pub kube_client: Option<kube::Client>,
+    /// The BackupPolicy watch cache the controllers publish, empty in a
+    /// standalone gateway; a check-in reads it before listing for itself.
+    pub backup_policies: crate::controllers::BackupPolicyCache,
     pub event_tx: tokio::sync::broadcast::Sender<FleetEvent>,
     pub enrollment_method: EnrollmentMethod,
     pub metrics: Option<Metrics>,

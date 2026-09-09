@@ -20,6 +20,7 @@ pub(crate) fn test_state() -> (SharedState, tempfile::TempDir) {
         AppState {
             db,
             kube_client: None,
+            backup_policies: Default::default(),
             event_tx,
             enrollment_method: EnrollmentMethod::Token,
             metrics: None,

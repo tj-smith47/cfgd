@@ -365,6 +365,35 @@ pub struct ControllerStores {
     pub namespaces: Store<PartialObjectMeta<Namespace>>,
 }
 
+/// The `BackupPolicy` watch cache, handed to a reader outside the controllers.
+///
+/// The device gateway answers every check-in with the cadences the cluster
+/// owns for that machine, and a namespaced LIST per check-in puts an API
+/// server round trip on the one request path a whole fleet drives. The
+/// controllers already keep a watch-backed cache of exactly those objects, so
+/// the gateway reads that instead.
+///
+/// The slot is REPLACED, never set once: [`run`] is retried, and each attempt
+/// builds its own watches, so a store left by an attempt that died would
+/// answer from a snapshot nothing updates any more. A reader that finds the
+/// slot empty, or a cache still completing its first list, lists for itself —
+/// an unpopulated cache is indistinguishable from a cluster that schedules
+/// nothing.
+#[derive(Clone, Default)]
+pub struct BackupPolicyCache(Arc<parking_lot::Mutex<Option<Store<BackupPolicy>>>>);
+
+impl BackupPolicyCache {
+    /// Publish the cache this controller run built, replacing any earlier one.
+    pub fn publish(&self, store: Store<BackupPolicy>) {
+        *self.0.lock() = Some(store);
+    }
+
+    /// The published cache, or `None` while no controller run has published one.
+    pub fn get(&self) -> Option<Store<BackupPolicy>> {
+        self.0.lock().clone()
+    }
+}
+
 /// Wait for `store` to have completed its initial list.
 ///
 /// A cache that is not yet populated is indistinguishable from an empty
@@ -552,7 +581,11 @@ where
     Ok(())
 }
 
-pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
+pub async fn run(
+    client: Client,
+    metrics: Metrics,
+    backup_policy_cache: BackupPolicyCache,
+) -> Result<(), OperatorError> {
     let reporter = Reporter {
         controller: "cfgd-operator".into(),
         instance: std::env::var("POD_NAME").ok(),
@@ -608,6 +641,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     };
     let cp_store = stores.config_policies.clone();
     let bp_store = stores.backup_policies.clone();
+    backup_policy_cache.publish(stores.backup_policies.clone());
 
     let ctx = Arc::new(ControllerContext {
         client: client.clone(),

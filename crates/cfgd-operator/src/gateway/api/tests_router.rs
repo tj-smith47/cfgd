@@ -1251,6 +1251,59 @@ async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin
     harness.finish().await;
 }
 
+/// A check-in is the one request path a whole fleet drives, so it answers from
+/// the cache the controllers already keep rather than listing the namespace's
+/// policies again: the harness expects no list, and finding one would fail it.
+#[tokio::test]
+#[serial]
+async fn checkin_answers_from_the_published_cache_without_listing_policies() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let policy: crate::crds::BackupPolicy = serde_json::from_value(backup_policy(
+        "fleet",
+        "nightly",
+        "2026-01-01T00:00:00Z",
+        vec![serde_json::json!({
+            "name": "dotfiles",
+            "hostname": "host-1",
+            "owner": "cluster",
+            "schedule": "daily",
+            "retention": 7,
+        })],
+    ))
+    .expect("a BackupPolicy the controller could have cached");
+    let (store, mut writer) = kube::runtime::reflector::store::<crate::crds::BackupPolicy>();
+    writer.apply_watcher_event(&kube::runtime::watcher::Event::Init);
+    writer.apply_watcher_event(&kube::runtime::watcher::Event::InitApply(policy));
+    writer.apply_watcher_event(&kube::runtime::watcher::Event::InitDone);
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    state.backup_policies.publish(store);
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "daily");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 7);
+    harness.finish().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::sync::Arc;
 
 use cfgd_core::backup::BackupScheduleProjection;
 
@@ -112,7 +113,7 @@ pub(super) async fn checkin(
         Some(client) => match find_machine_config_ref(client, &req.hostname).await {
             Ok(Some((namespace, name))) => {
                 report_device_status(client, &namespace, &name, &req).await;
-                policy_owned_schedules(client, &namespace, &req.hostname).await
+                policy_owned_schedules(&state, client, &namespace, &req.hostname).await
             }
             // No MachineConfig names this hostname: there is nothing to write a
             // status onto and no namespace to look for policies in, which is a
@@ -267,13 +268,17 @@ async fn apply_status_map(
 /// The cadences a cluster `BackupPolicy` owns for `hostname`, keyed by unit
 /// name.
 ///
-/// A live list, like [`find_machine_config_ref`]. Only a row the controller
-/// wrote as `cluster` projects: an owner word read any other way — `local`, or
-/// one no layer spells — is the machine's own refusal or an answer the policy
-/// could not read, and sending either would be the silent override the whole
-/// surface exists to prevent. The word is read through `ScheduleOwner`'s
-/// case-insensitive parser, the same reading the controller gives the device's
-/// own pin.
+/// Read from the controllers' own watch cache where one stands, and from a
+/// namespaced list where none does: the cache is empty in a standalone gateway
+/// and while a controller run is still completing its first list, and an
+/// unpopulated cache answers exactly as a cluster that schedules nothing would.
+///
+/// Only a row the controller wrote as `cluster` projects: an owner word read
+/// any other way — `local`, or one no layer spells — is the machine's own
+/// refusal or an answer the policy could not be read for, and sending either
+/// would be the silent override the whole surface exists to prevent. The word
+/// is read through `ScheduleOwner`'s case-insensitive parser, the same reading
+/// the controller gives the device's own pin.
 ///
 /// Two policies naming one unit for one machine is a cluster-side conflict the
 /// gateway cannot resolve on merit, so it resolves it stably: the policy with
@@ -281,28 +286,61 @@ async fn apply_status_map(
 /// answer is what keeps a machine from alternating between two cadences on
 /// successive check-ins.
 async fn policy_owned_schedules(
+    state: &SharedState,
     client: &kube::Client,
     namespace: &str,
     hostname: &str,
 ) -> Option<BTreeMap<String, BackupScheduleProjection>> {
-    use crate::crds::{BackupPolicy, ScheduleOwner};
-    use kube::ResourceExt;
+    use crate::crds::BackupPolicy;
     use kube::api::{Api, ListParams};
 
-    let policies: Api<BackupPolicy> = Api::namespaced(client.clone(), namespace);
-    let list = match policies.list(&ListParams::default()).await {
-        Ok(list) => list,
-        Err(e) => {
-            tracing::warn!(
-                namespace = %namespace,
-                error = %e,
-                "failed to list BackupPolicies for a device check-in; the device is told nothing rather than that the cluster owns nothing"
-            );
-            return None;
+    let policies = match cached_policies(state, namespace) {
+        Some(cached) => cached,
+        None => {
+            let api: Api<BackupPolicy> = Api::namespaced(client.clone(), namespace);
+            match api.list(&ListParams::default()).await {
+                Ok(list) => list.items.into_iter().map(Arc::new).collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        namespace = %namespace,
+                        error = %e,
+                        "failed to list BackupPolicies for a device check-in; the device is told nothing rather than that the cluster owns nothing"
+                    );
+                    return None;
+                }
+            }
         }
     };
 
-    let mut ordered: Vec<&BackupPolicy> = list.items.iter().collect();
+    Some(project_owned_schedules(&policies, namespace, hostname))
+}
+
+/// The namespace's policies out of the published watch cache, or `None` while
+/// no cache stands ready to answer.
+fn cached_policies(
+    state: &SharedState,
+    namespace: &str,
+) -> Option<Vec<Arc<crate::crds::BackupPolicy>>> {
+    use futures::FutureExt;
+
+    let store = state.backup_policies.get()?;
+    // A cache that has not completed its initial list holds nothing and says
+    // so exactly as an empty cluster would, so a check-in landing in that
+    // window lists rather than telling the device the cluster owns nothing.
+    store.wait_until_ready().now_or_never()?.ok()?;
+    Some(store.state_filter(|policy| policy.metadata.namespace.as_deref() == Some(namespace)))
+}
+
+/// Fold the policies scheduling `hostname` into one cadence per unit.
+fn project_owned_schedules(
+    policies: &[Arc<crate::crds::BackupPolicy>],
+    namespace: &str,
+    hostname: &str,
+) -> BTreeMap<String, BackupScheduleProjection> {
+    use crate::crds::ScheduleOwner;
+    use kube::ResourceExt;
+
+    let mut ordered: Vec<&Arc<crate::crds::BackupPolicy>> = policies.iter().collect();
     // Name breaks a timestamp tie, so two policies created in the same second
     // still resolve to one winner on every check-in.
     ordered.sort_by_cached_key(|p| (p.creation_timestamp(), p.name_any()));
@@ -313,6 +351,7 @@ async fn policy_owned_schedules(
         let Some(status) = policy.status.as_ref() else {
             continue;
         };
+        let policy_name = policy.name_any();
         for row in &status.units {
             if row.hostname != hostname
                 || !matches!(
@@ -333,7 +372,7 @@ async fn policy_owned_schedules(
                         schedule,
                         retention: row.retention,
                     });
-                    claimed_by.insert(row.name.clone(), policy.name_any());
+                    claimed_by.insert(row.name.clone(), policy_name.clone());
                 }
                 Entry::Occupied(_) => {
                     tracing::warn!(
@@ -341,14 +380,14 @@ async fn policy_owned_schedules(
                         hostname = %hostname,
                         unit = %row.name,
                         applied = %claimed_by.get(&row.name).map_or("", String::as_str),
-                        ignored = %policy.name_any(),
+                        ignored = %policy_name,
                         "two BackupPolicies schedule one backup unit for one machine; the older policy wins"
                     );
                 }
             }
         }
     }
-    Some(projected)
+    projected
 }
 
 pub(super) async fn list_devices(
