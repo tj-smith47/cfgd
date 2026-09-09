@@ -136,12 +136,9 @@ fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
 }
 
 #[test]
-#[cfg(unix)]
 fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
     // A removal that failed is a different failure from a history that could
-    // not be read, and it reaches the caller through the same code. Unix only:
-    // a path running through a file reads as `NotFound` on Windows, which is a
-    // payload already gone rather than one that would not go.
+    // not be read, and it reaches the caller through the same code.
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     let source = config_dir.path().join("data").join("notes.txt");
@@ -149,12 +146,7 @@ fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
     std::fs::write(&source, "hello backup").unwrap();
 
     let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
-    // Put a file where the old destination directory was, so every path
-    // recorded under it is unreachable and its removal genuinely fails.
-    let old = state_dir.path().join("old-backups");
-    std::fs::remove_dir_all(&old).unwrap();
-    std::fs::write(&old, "an operator's file").unwrap();
-    assert!(!stranded.exists());
+    let held = cfgd_core::test_helpers::hold_payload_unremovable(&stranded);
 
     let out = Command::cargo_bin("cfgd")
         .unwrap()
@@ -180,5 +172,8 @@ fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
         serde_json::json!([]),
         "nothing was collected: {parsed}"
     );
-    assert!(old.is_file(), "gc removed what it could not remove");
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
 }

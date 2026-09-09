@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::config::ScriptEntry;
 use crate::output::Printer;
+use crate::test_helpers::hold_payload_unremovable;
 
 /// A backup spec with everything but `name`/`source` left at its default.
 fn spec(name: &str, source: &Path) -> BackupSpec {
@@ -1192,58 +1193,6 @@ fn a_destination_restored_to_its_old_path_un_orphans_the_rows_it_stranded() {
         vec![away.destination_path.as_deref().expect("artifact")],
         "{outcome:?}"
     );
-}
-
-/// A recorded payload gc cannot remove, held that way for as long as the value
-/// lives.
-///
-/// The two operating systems refuse a removal for different reasons, so each
-/// gets the shape its own kernel actually refuses. On unix the snapshot's
-/// destination DIRECTORY is replaced with a file, so the recorded path runs
-/// through a file and yields `NotADirectory`; Windows reports that same path as
-/// `NotFound`, which the remover reads as a payload that was already gone, so
-/// there the snapshot file itself is opened granting no sharing at all and every
-/// `remove_file` against it fails with a sharing violation. Dropping the value
-/// releases the hold, so a test binds it across the collect it is proving.
-struct UnremovablePayload {
-    /// What must still be on disk after gc reports it could not remove the
-    /// payload: the stand-in file on unix, the held snapshot on Windows. Both
-    /// are files, so one question answers the claim on either OS.
-    witness: PathBuf,
-    #[cfg(windows)]
-    _held_open: std::fs::File,
-}
-
-impl UnremovablePayload {
-    fn witness_survives(&self) -> bool {
-        self.witness.is_file()
-    }
-}
-
-fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
-    #[cfg(unix)]
-    {
-        let dir = payload
-            .parent()
-            .expect("a recorded snapshot lives under a destination")
-            .to_path_buf();
-        std::fs::remove_dir_all(&dir).expect("clear the old destination");
-        std::fs::write(&dir, b"an operator's file").expect("file in its place");
-        UnremovablePayload { witness: dir }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(payload)
-            .expect("hold the snapshot open");
-        UnremovablePayload {
-            witness: payload.to_path_buf(),
-            _held_open: held,
-        }
-    }
 }
 
 #[test]

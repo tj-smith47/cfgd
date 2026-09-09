@@ -3963,6 +3963,62 @@ pub fn freeze_last_scan_at(
     store.freeze_last_scan_at(timestamp)
 }
 
+/// A recorded backup payload gc cannot remove, held that way for as long as the
+/// value lives.
+///
+/// The two operating systems refuse a removal for different reasons, so each
+/// gets the shape its own kernel actually refuses. On unix the snapshot's
+/// destination DIRECTORY is replaced with a file, so the recorded path runs
+/// through a file and yields `NotADirectory`; Windows reports that same path as
+/// `NotFound`, which the remover reads as a payload that was already gone, so
+/// there the snapshot file itself is opened granting no sharing at all and every
+/// `remove_file` against it — from this process or from a child running the real
+/// binary — fails with a sharing violation. Dropping the value releases the
+/// hold, so a caller binds it across the collection it is proving.
+pub struct UnremovablePayload {
+    /// What must still be on disk once gc has reported it could not remove the
+    /// payload: the stand-in file on unix, the held snapshot on Windows. Both
+    /// are files, so one question answers the claim on either OS.
+    witness: PathBuf,
+    #[cfg(windows)]
+    _held_open: std::fs::File,
+}
+
+impl UnremovablePayload {
+    /// Whether what was held unremovable is still there.
+    pub fn witness_survives(&self) -> bool {
+        self.witness.is_file()
+    }
+}
+
+/// Make the recorded snapshot at `payload` unremovable; see
+/// [`UnremovablePayload`] for the per-OS shape.
+pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
+    #[cfg(unix)]
+    {
+        let dir = payload
+            .parent()
+            .expect("a recorded snapshot lives under a destination")
+            .to_path_buf();
+        std::fs::remove_dir_all(&dir).expect("clear the old destination");
+        std::fs::write(&dir, b"an operator's file").expect("file in its place");
+        UnremovablePayload { witness: dir }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(payload)
+            .expect("hold the snapshot open");
+        UnremovablePayload {
+            witness: payload.to_path_buf(),
+            _held_open: held,
+        }
+    }
+}
+
 /// The production region of a Rust source file a walk-style pin reads: the file
 /// with EVERY top-level inline test module removed.
 ///
