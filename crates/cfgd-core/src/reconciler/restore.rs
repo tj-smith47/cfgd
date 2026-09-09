@@ -112,8 +112,11 @@ pub fn restore_file_from_backup(
         // hard-fail because rollback exists precisely to revert to a known
         // state — leaving SSH/age keys at 0644 because chmod failed silently
         // is exactly the security-relevant bug this guard prevents.
+        // The symlink case returned above, so this target is the regular file
+        // the write just created: a link here could only have been planted
+        // between the two, which is the swap the no-follow chmod refuses.
         if let Some(mode) = bk.permissions
-            && let Err(e) = crate::set_file_permissions(target, mode)
+            && let Err(e) = crate::set_file_permissions_nofollow(target, mode)
         {
             printer.status_simple(
                 Role::Warn,
@@ -209,9 +212,8 @@ fn restore_through_link(
         );
         return RestoreOutcome::Failed;
     }
-    // The recorded mode is the resolved file's, so it is set on the resolved
-    // file: chmod through a link changes the destination, which is the file
-    // whose mode was captured.
+    // follow-ok: the recorded mode is the resolved file's, and a chmod through
+    // the link lands on that same resolved file.
     if let Some(mode) = bk.permissions
         && let Err(e) = crate::set_file_permissions(target, mode)
     {

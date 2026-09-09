@@ -469,7 +469,16 @@ impl<'a> super::Reconciler<'a> {
 
                     // Apply declared permissions after deployment (no-op on Windows).
                     if let Some(mode) = mode {
-                        crate::set_file_permissions(&target, mode)?;
+                        if matches!(strategy, crate::config::FileStrategy::Symlink) {
+                            // follow-ok: a linked file's declared mode belongs to
+                            // the source it points at, the same contract
+                            // `FileAction::SetPermissions::follow` carries.
+                            crate::set_file_permissions(&target, mode)?;
+                        } else {
+                            // The target is a regular file this run just wrote,
+                            // often under a home an elevated run does not own.
+                            crate::set_file_permissions_nofollow(&target, mode)?;
+                        }
                     }
 
                     self.record_module_file(action, &target, strategy, apply_id)?;
