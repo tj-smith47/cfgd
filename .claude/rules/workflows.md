@@ -202,6 +202,14 @@ single-source-of-truth wiring.
   it (41 kills between 2026-09-04 and 2026-09-09, every one a rustdoc or the
   rust-analyzer beside it). A broken link is a merge blocker, not a commit
   blocker — CI refuses it before it lands.
+- e2e.yml's `gateway-tests` and `cli-tests` jobs CARGO-BUILD a release `cfgd`
+  (the gateway suite's `test-device-projection.sh` drives a real binary against
+  the gateway; the CLI suite is native), so both carry the same compile-cache
+  layering as e2e-setup.yml — `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER: sccache`
+  env, `mozilla-actions/sccache-action`, and `Swatinem/rust-cache` under a
+  per-job `key:` (`e2e-gateway`, `e2e-cli`). Every other e2e job rides the setup
+  job's images and needs none of it. A cold build is what the 25-minute budget
+  cannot absorb: raising the timeout hides a missing cache rather than fixing it.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after
