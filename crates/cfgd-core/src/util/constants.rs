@@ -41,6 +41,25 @@ pub const GIT_NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Default timeout for profile-level scripts (5 minutes).
 pub const PROFILE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Per-IP enrollment burst the device gateway grants up front.
+pub const ENROLL_RATE_LIMIT_BURST: u32 = 5;
+
+/// Per-IP enrollment attempts the device gateway refills each minute. It lives
+/// here rather than in the gateway because the DEVICE has to know it too: a 429
+/// answer is the gateway asking the device to wait for this quota, and a client
+/// ladder measured without it exhausts itself before a single token is back.
+pub const ENROLL_RATE_LIMIT_PER_MIN: u32 = 5;
+
+/// How long the quota above takes to hand back one token, in seconds, for the
+/// one caller that needs to do const arithmetic on it (`Duration`'s own division
+/// is not const).
+pub(crate) const ENROLL_RATE_LIMIT_REFILL_SECS: u64 = 60 / ENROLL_RATE_LIMIT_PER_MIN as u64;
+
+/// How long the quota above takes to hand back one token, which is the shortest
+/// wait that can turn a refused enrollment into an admitted one.
+pub const ENROLL_RATE_LIMIT_REFILL: std::time::Duration =
+    std::time::Duration::from_secs(ENROLL_RATE_LIMIT_REFILL_SECS);
+
 /// Maximum file size (10 MB) for backup content capture.
 /// Files larger than this are tracked but their content is not stored in backups.
 pub(super) const MAX_BACKUP_FILE_SIZE: u64 = 10 * 1024 * 1024;

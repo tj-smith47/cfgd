@@ -2472,6 +2472,42 @@ impl Drop for CommandPathMemoTtlGuard {
     }
 }
 
+/// RAII pin of the rate-limited retry ladder's first step, restoring the prior
+/// setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for a different
+/// reason: the ladder a 429 moves the gateway client onto is measured in seconds
+/// against the gateway's own enrollment quota, so a test proving that the client
+/// CHOSE that ladder (rather than the half-second transient one) would otherwise
+/// have to sleep the real wait to see it.
+///
+/// Pinning this one needs serialization: a test asserting that the UNPINNED
+/// accessor still answers the constant is measuring exactly what a concurrent pin
+/// displaces. Pair every use with `#[serial_test::serial(rate_limited_backoff)]`,
+/// the named group that assertion shares — named, so nothing else is held up.
+pub struct RateLimitedBackoffGuard {
+    prior: Option<u64>,
+}
+
+impl RateLimitedBackoffGuard {
+    /// Pin the first step of the rate-limited ladder to `step`, saturating at
+    /// the millisecond range. `u64::MAX` is the "no override" sentinel, so a pin
+    /// that would land on it saturates one below rather than silently restoring
+    /// the default it was called to displace.
+    pub fn pinned(step: std::time::Duration) -> Self {
+        let millis = u64::try_from(step.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::retry::set_rate_limited_backoff_override(Some(millis)),
+        }
+    }
+}
+
+impl Drop for RateLimitedBackoffGuard {
+    fn drop(&mut self) {
+        crate::retry::set_rate_limited_backoff_override(self.prior);
+    }
+}
+
 /// RAII pin of the installed-package enumeration memo's TTL, restoring the
 /// prior setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for the
 /// same reason and with the same three constructors: the enumeration memo also

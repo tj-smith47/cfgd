@@ -1,9 +1,15 @@
 //! In-process IP-keyed token-bucket rate limiter for unauthenticated routes.
 //!
-//! Bounds CPU + disk-IO amplification on `/enroll/*` and `/checkin`. Each
-//! verify call runs `tempfile::tempdir() + gpg/ssh-keygen + fs::write` —
-//! ~50–100 ms of compute per attempt. An attacker who hammers these endpoints
-//! without limit can drive sustained load with very little outbound bandwidth.
+//! Bounds CPU + disk-IO amplification on the three unauthenticated enrollment
+//! WRITE routes (`/api/v1/enroll`, `/enroll/challenge`, `/enroll/verify`) — the
+//! only routes this middleware is layered on. Each verify call runs
+//! `tempfile::tempdir() + gpg/ssh-keygen + fs::write` — ~50–100 ms of compute
+//! per attempt. An attacker who hammers those endpoints without limit can drive
+//! sustained load with very little outbound bandwidth.
+//!
+//! `/enroll/info` is read-only, and `/api/v1/checkin` sits behind a device API
+//! key, so neither is limited here: a caller who can check in has already
+//! enrolled through the limited routes.
 //!
 //! The bucket grants `burst` tokens up-front, refills at `refill_per_sec`, and
 //! tracks one bucket per peer IP. Buckets idle for more than `idle_evict` are

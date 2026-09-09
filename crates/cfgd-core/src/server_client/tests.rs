@@ -1088,14 +1088,62 @@ mod bridge {
 
 /// A gateway rationing its enrollment routes answers 429, which means "later",
 /// not "never" — a device sharing an egress address with its fleet must be able
-/// to wait the quota out instead of failing enrollment outright.
+/// to wait the quota out instead of failing enrollment outright. It also says
+/// WHEN, and the server knows when its own next token lands, so the advised wait
+/// is what the device sleeps rather than a ladder guessed on the client.
 #[test]
-fn enroll_retries_a_rate_limited_response() {
+#[serial_test::serial(rate_limited_backoff)]
+fn enroll_honours_the_wait_a_rate_limited_gateway_advised() {
+    // Pinned two orders of magnitude below the advised second, so the floor
+    // asserted at the end can only be met by reading the header.
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
     let mut server = mockito::Server::new();
     let limited = server
         .mock("POST", "/api/v1/enroll")
         .with_status(429)
         .with_header("Retry-After", "1")
+        .with_body(r#"{"error":"too many requests; slow down","retry_after_secs":1}"#)
+        .expect(1)
+        .create();
+    let admitted = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"enrolled","deviceId":"new-dev","apiKey":"new-key","username":"user1"}"#,
+        )
+        .expect(1)
+        .create();
+
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let started = std::time::Instant::now();
+    let result = client.enroll("bootstrap-token-429", &printer);
+    let elapsed = started.elapsed();
+
+    assert!(result.is_ok(), "429 must be retried, got {:?}", result);
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "the gateway advised a 1s wait; the client slept {elapsed:?}"
+    );
+    limited.assert();
+    admitted.assert();
+}
+
+/// A 429 that advises no wait still moves the client onto the rationed ladder:
+/// the transient half-second one would exhaust all three attempts before the
+/// quota that refused them has handed back a single token.
+#[test]
+#[serial_test::serial(rate_limited_backoff)]
+fn enroll_waits_on_the_rationed_ladder_when_a_429_advises_nothing() {
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
+    let mut server = mockito::Server::new();
+    let limited = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
         .with_body("rate limited")
         .expect(1)
         .create();
@@ -1110,9 +1158,54 @@ fn enroll_retries_a_rate_limited_response() {
 
     let client = ServerClient::new(&server.url(), None, "dev-1");
     let printer = test_printer();
+    let started = std::time::Instant::now();
     let result = client.enroll("bootstrap-token-429", &printer);
+    let elapsed = started.elapsed();
 
     assert!(result.is_ok(), "429 must be retried, got {:?}", result);
+    assert!(
+        elapsed < crate::retry::BackoffConfig::DEFAULT_TRANSIENT.initial_backoff,
+        "a 429 slept the transient ladder ({elapsed:?}), not the pinned rationed one"
+    );
     limited.assert();
     admitted.assert();
+}
+
+/// Every form the wait can arrive in, and every form that leaves the client on
+/// its own ladder instead.
+#[test]
+fn an_advised_wait_reads_the_seconds_form_from_the_header_or_the_body() {
+    use std::time::Duration;
+
+    assert_eq!(advised_wait(Some("7"), ""), Some(Duration::from_secs(7)));
+    assert_eq!(advised_wait(Some(" 7 "), ""), Some(Duration::from_secs(7)));
+    assert_eq!(
+        advised_wait(
+            None,
+            r#"{"error":"too many requests","retry_after_secs":9}"#
+        ),
+        Some(Duration::from_secs(9))
+    );
+    assert_eq!(advised_wait(Some("99999"), ""), Some(ADVISED_WAIT_CEILING));
+    // The header's other legal form is an HTTP-date, and a device's clock is
+    // exactly what cannot be trusted to subtract one from.
+    assert_eq!(
+        advised_wait(Some("Wed, 21 Oct 2015 07:28:00 GMT"), ""),
+        None
+    );
+    assert_eq!(advised_wait(Some("-5"), ""), None);
+    assert_eq!(advised_wait(None, "not json"), None);
+    assert_eq!(advised_wait(None, ""), None);
+}
+
+/// A status code alone says nothing about which field the gateway rejected.
+#[test]
+fn a_refusal_carries_the_gateways_own_words() {
+    assert_eq!(
+        refusal_detail(r#"{"error":"unauthorized"}"#),
+        "unauthorized"
+    );
+    assert_eq!(refusal_detail("  plain text  "), "plain text");
+    assert_eq!(refusal_detail(""), "");
+    assert_eq!(refusal_detail(&"x".repeat(500)).chars().count(), 200);
 }

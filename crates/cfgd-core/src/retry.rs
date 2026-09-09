@@ -27,15 +27,37 @@ impl BackoffConfig {
         initial_backoff: Duration::from_millis(500),
     };
 
-    /// Retry policy for a rate-limited response: the same three attempts, but
-    /// waiting long enough for a per-minute quota to hand back a token. The
-    /// gateway's own enrollment bucket refills one token every twelve seconds,
-    /// so a ladder measured in milliseconds exhausts itself before the quota
-    /// has moved at all; this one reaches eighteen seconds by its last attempt.
+    /// Retry policy for a rate-limited response the server gave no advised wait
+    /// for: the same three attempts, but measured against the quota that refused
+    /// them. The gateway's enrollment bucket hands back one token every
+    /// [`crate::ENROLL_RATE_LIMIT_REFILL`], so a ladder measured in milliseconds
+    /// exhausts itself before the quota has moved at all. Half that interval is
+    /// the smallest first step whose cumulative ladder (`1x` then `2x`) still
+    /// outlasts a full refill by the last attempt.
     pub const RATE_LIMITED: Self = Self {
         max_attempts: 3,
-        initial_backoff: Duration::from_secs(6),
+        initial_backoff: Duration::from_secs(crate::util::ENROLL_RATE_LIMIT_REFILL_SECS / 2),
     };
+
+    /// [`Self::RATE_LIMITED`], honouring the test override.
+    ///
+    /// The ladder it describes is measured in seconds, which is correct against
+    /// a real gateway and far too slow for a test that has to prove WHICH ladder
+    /// a 429 chose. Production reads the policy through here so a pin can make
+    /// that choice observable in milliseconds.
+    pub fn rate_limited() -> Self {
+        #[cfg(any(test, feature = "test-helpers"))]
+        {
+            let millis = RATE_LIMITED_BACKOFF_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+            if millis != u64::MAX {
+                return Self {
+                    initial_backoff: Duration::from_millis(millis),
+                    ..Self::RATE_LIMITED
+                };
+            }
+        }
+        Self::RATE_LIMITED
+    }
 
     /// Delay before `attempt` (1-indexed; attempt 0 has no preceding delay).
     /// Returns `Duration::ZERO` for `attempt == 0` so a single tight branch
@@ -47,6 +69,27 @@ impl BackoffConfig {
             self.initial_backoff * 2u32.pow(attempt - 1)
         }
     }
+}
+
+/// Millisecond override of [`BackoffConfig::RATE_LIMITED`]'s initial backoff, or
+/// [`u64::MAX`] for "no override". It exists so a test proving that a 429 moved
+/// the client onto the rationed ladder does not have to pay the rationed ladder's
+/// real seconds to see it.
+#[cfg(any(test, feature = "test-helpers"))]
+static RATE_LIMITED_BACKOFF_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Pin the rate-limited ladder's first step, or hand back the default with
+/// `None`. Returns what was pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::RateLimitedBackoffGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_rate_limited_backoff_override(millis: Option<u64>) -> Option<u64> {
+    let prior = RATE_LIMITED_BACKOFF_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
 }
 
 #[cfg(test)]
@@ -66,15 +109,28 @@ mod tests {
         );
     }
 
-    /// The gateway's enrollment bucket hands back one token every twelve
-    /// seconds, so a ladder that finishes sooner cannot clear a full bucket.
+    /// A ladder that finishes before the quota that refused it has handed back a
+    /// token cannot clear a full bucket, so the floor is the gateway's own
+    /// refill interval rather than a number copied beside it.
     #[test]
-    fn the_rate_limited_ladder_outlasts_a_per_minute_quota() {
+    fn the_rate_limited_ladder_outlasts_the_enrollment_quota() {
         let c = BackoffConfig::RATE_LIMITED;
         let total: Duration = (0..c.max_attempts).map(|a| c.delay_for_attempt(a)).sum();
         assert!(
-            total >= Duration::from_secs(12),
-            "rate-limited ladder ends at {total:?}"
+            total >= crate::ENROLL_RATE_LIMIT_REFILL,
+            "rate-limited ladder ends at {total:?}, quota refills in {:?}",
+            crate::ENROLL_RATE_LIMIT_REFILL
+        );
+    }
+
+    /// The pin the 429 tests read the ladder through has to be the same policy
+    /// production reads, or those tests prove something about a second ladder.
+    #[test]
+    #[serial_test::serial(rate_limited_backoff)]
+    fn the_rate_limited_accessor_is_the_constant_when_nothing_is_pinned() {
+        assert_eq!(
+            BackoffConfig::rate_limited().initial_backoff,
+            BackoffConfig::RATE_LIMITED.initial_backoff
         );
     }
 

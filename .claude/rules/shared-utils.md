@@ -33,6 +33,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `LABEL_MACHINE_CONFIG` / `LABEL_DEVICE_ID` — k8s label keys; use in gateway/controllers instead of raw strings.
 - `OCI_ANNOTATION_PLATFORM` — OCI manifest annotation key; use in `oci.rs` instead of the raw string.
 - `PROFILE_SCRIPT_TIMEOUT` (5m) / `COMMAND_TIMEOUT` (2m) / `GIT_NETWORK_TIMEOUT` (5m) — never hardcode the durations.
+- `ENROLL_RATE_LIMIT_BURST` / `ENROLL_RATE_LIMIT_PER_MIN` / `ENROLL_RATE_LIMIT_REFILL` — the device gateway's per-IP enrollment quota and the interval it hands one token back in; the gateway's limiter and the client's 429 retry ladder (`BackoffConfig::RATE_LIMITED`) both read it, never a hand copy.
 - `DURATION_BUCKETS_SHORT` / `DURATION_BUCKETS_LONG` — Prometheus histogram bucket presets.
 
 ## Time
@@ -451,6 +452,7 @@ Reached via `cfgd_core::test_helpers::*`, gated behind the `test-helpers` Cargo 
 - `CommandPathMemoTtlGuard::{never_expires, always_expired, pinned}` — RAII pin of the `command_path` TTL; needs no serialization.
 - `AvailableVersionMemoTtlGuard::…` — the same for the available-version ceiling; pair with `#[serial_test::serial(available_version_memo)]`.
 - `AvailabilityMemoTtlGuard::…` — the same for the provider-availability sweep; pair with the UNNAMED `#[serial_test::serial]`.
+- `RateLimitedBackoffGuard::pinned` — pins the rate-limited retry ladder's first step, so a test proving a 429 chose THAT ladder pays milliseconds rather than its real seconds; pair with `#[serial_test::serial(rate_limited_backoff)]`.
 - `ConfigReuseMaxAgeGuard::…` / `ModuleReuseTtlGuard::…` — the tick cache's two reuse ceilings; pair with `#[serial_test::serial(tick_cache_reuse)]`.
 - `GitRefreshWindowGuard::…` — the module git-cache refresh window; the pin SERIALIZES ITSELF.
 - `measured_in_a_stable_generation(measure)` — run `measure` in a window where nothing else moved the resolution generation. REQUIRED by every memo-hit claim; the closure must be re-runnable.
