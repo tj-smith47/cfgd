@@ -1,30 +1,6 @@
 # Gateway admin tests (GW-15 through GW-17, GW-24 through GW-30).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 
-# Helper: build auth header for admin API calls (redefine if not already present).
-if ! declare -f gw_admin_auth_header >/dev/null 2>&1; then
-    gw_admin_auth_header() {
-        if [ -n "$ADMIN_KEY" ]; then
-            echo "Authorization: Bearer $ADMIN_KEY"
-        else
-            echo "X-No-Auth: open-mode"
-        fi
-    }
-fi
-
-# Helper: create a fresh bootstrap token via admin API. Prints the token string.
-if ! declare -f gw_create_bootstrap_token >/dev/null 2>&1; then
-    gw_create_bootstrap_token() {
-        local username="${1:-e2e-user}"
-        local resp
-        resp=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
-            -H "Content-Type: application/json" \
-            -H "$(gw_admin_auth_header)" \
-            -d "{\"username\":\"$username\",\"team\":\"e2e-team\",\"expiresIn\":3600}" 2>/dev/null)
-        echo "$resp" | jq -r '.token // empty' 2>/dev/null
-    }
-fi
-
 # Helper: enroll a new device with a fresh token. Sets GW_HELPER_DEVICE_ID and
 # GW_HELPER_API_KEY in the caller's scope. Returns 0 on success.
 #

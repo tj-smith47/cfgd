@@ -52,10 +52,40 @@ dp_spawn_daemon() {
     exec env "${DP_ENV[@]}" "$CFGD_BIN" --config "$DP_CONF" --color never daemon
 }
 
-# Whether any process of THIS run's device is still alive, asked of the config
-# path rather than of a recorded pid, so the answer cannot be vacuous.
+# `pgrep`'s own availability, probed once: its "no match" and "not installed"
+# answers are rc 1 and rc 127, and a predicate that cannot tell them apart
+# reports every daemon as gone on a host without procps.
+DP_PGREP=absent
+command -v pgrep > /dev/null 2>&1 && DP_PGREP=present
+
+# Whether any process of THIS run's device is still alive. Asked of the recorded
+# pid first, which is the handle this script owns, and of the config path second
+# so a daemon that outlived its recorded pid is still seen. The path match CAN
+# also catch a shell whose own argv carries "$DP_CONF" — a future `dp_cfgd ... &`
+# would flip it — so the pid question comes first and the path question only
+# widens it.
+#
+# Returns 2, never 1, when pgrep cannot answer at all: a caller must not read
+# "not installed" as "gone".
 dp_daemon_alive() {
+    if [ -n "$DP_DAEMON_PID" ] && kill -0 "$DP_DAEMON_PID" 2> /dev/null; then
+        return 0
+    fi
+    [ "$DP_PGREP" = present ] || return 2
     pgrep -f "$DP_CONF" > /dev/null 2>&1
+    case $? in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# The word in the listing's Schedule Owner cell for this run's unit. Column four
+# of `cfgd backup list`, and a cron expression is exactly five fields, so the
+# owner is field eight of the unit's own row — asserted as the CELL rather than
+# as a substring of a render that also carries paths and status words.
+dp_owner_cell() {
+    dp_cfgd backup list 2>&1 | strip_sgr | awk -v unit="$DP_UNIT" '$1 == unit { print $8 }'
 }
 
 # One unit's field out of `cfgd backup list -o json`; "absent" for a key the
@@ -120,7 +150,11 @@ spec:
 EOF
 dp_write_profile Cluster
 
-ensure_cfgd_binary
+# A CI runner compiles this binary here, so the build's outcome is carried into
+# GW-32 rather than surfacing as an opaque `rc=127` from the first case to run it.
+DP_BIN_READY=yes
+ensure_cfgd_binary || DP_BIN_READY=no
+[ -x "${CFGD_BIN:-}" ] || DP_BIN_READY=no
 
 # =================================================================
 # GW-32: A real cfgd binary enrolls with the gateway
@@ -129,8 +163,14 @@ begin_test "GW-32: cfgd enroll stores a credential and registers the device"
 
 DP_TOKEN=$(gw_create_bootstrap_token "dp-user")
 
-if [ -z "$DP_TOKEN" ]; then
-    skip_test "GW-32" "No bootstrap token available (admin token API may have failed)"
+# Neither arm is a skip: the gateway is up (setup-gateway-env.sh waited on it and
+# minted a token of its own), so a refused mint here is the admin token API
+# failing, and a skip would take GW-33..35 with it while the summary still read
+# `0 failed`.
+if [ "$DP_BIN_READY" != yes ]; then
+    fail_test "GW-32" "No cfgd binary at '${CFGD_BIN:-unset}' — the release build failed"
+elif [ -z "$DP_TOKEN" ]; then
+    fail_test "GW-32" "The admin token API did not mint a bootstrap token for this case family"
 else
     GW32_PASS=true
     GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2>&1)
@@ -213,7 +253,7 @@ spec:
       cfgd.io/projection: "${DP_SELECTOR_VALUE}"
   units:
     - name: ${DP_UNIT}
-      schedule: "*/5 * * * *"
+      schedule: "17 * * * *"
       retention: 7
 EOF
 )
@@ -224,7 +264,7 @@ EOF
     # this machine has to exist before the device asks; a bare sleep here is
     # what would make the assertion below flaky.
     GW33_ROW_SCHEDULE=$(wait_for_k8s_field backuppolicy "$DP_BP_NAME" "$E2E_NAMESPACE" \
-        "{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].schedule}" "*/5 * * * *" 120)
+        "{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].schedule}" "17 * * * *" 120)
     GW33_ROW_RC=$?
     GW33_ROW_OWNER=$(kubectl get backuppolicy "$DP_BP_NAME" -n "$E2E_NAMESPACE" \
         -o jsonpath="{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].owner}" 2>/dev/null || echo "")
@@ -239,13 +279,15 @@ EOF
     GW33_EFF_SCHEDULE=$(dp_field effectiveSchedule)
     GW33_EFF_RETENTION=$(dp_field effectiveRetention)
     GW33_DECLARED=$(dp_field schedule)
-    GW33_HUMAN=$(dp_cfgd backup list 2>&1)
+    GW33_HUMAN=$(dp_cfgd backup list 2>&1 | strip_sgr)
+    GW33_OWNER_CELL=$(dp_owner_cell)
 
     echo "  scheduleOwner:      $GW33_OWNER"
     echo "  schedule:           $GW33_DECLARED"
     echo "  effectiveSchedule:  $GW33_EFF_SCHEDULE"
     echo "  effectiveRetention: $GW33_EFF_RETENTION"
-    printf '%s\n' "$GW33_HUMAN" | strip_sgr | sed 's/^/    /'
+    printf '%s\n' "$GW33_HUMAN" | sed 's/^/    /'
+    echo "  Schedule Owner cell: ${GW33_OWNER_CELL:-none}"
 
     assert_exit_code "$GW33_MC_RC" 0 || GW33_PASS=false
     assert_exit_code "$GW33_BP_RC" 0 || GW33_PASS=false
@@ -253,12 +295,12 @@ EOF
     assert_equals "$GW33_ROW_OWNER" "cluster" || GW33_PASS=false
     assert_exit_code "$GW33_CHECKIN_RC" 0 || GW33_PASS=false
     assert_equals "$GW33_OWNER" "cluster" || GW33_PASS=false
-    assert_equals "$GW33_EFF_SCHEDULE" "*/5 * * * *" || GW33_PASS=false
+    assert_equals "$GW33_EFF_SCHEDULE" "17 * * * *" || GW33_PASS=false
     assert_equals "$GW33_EFF_RETENTION" "7" || GW33_PASS=false
     # The declared cadence survives the projection: both halves are what let a
     # reader see the machine asked for one thing and the cluster set another.
     assert_equals "$GW33_DECLARED" "0 3 * * *" || GW33_PASS=false
-    assert_contains "$GW33_HUMAN" "projected" || GW33_PASS=false
+    assert_equals "$GW33_OWNER_CELL" "projected" || GW33_PASS=false
 
     if [ "$GW33_PASS" = true ]; then
         pass_test "GW-33"
@@ -284,7 +326,7 @@ else
 
     GW34_PASS=true
     assert_exit_code "$GW34_RC" 0 || GW34_PASS=false
-    assert_equals "$GW34_ROW" "${DP_UNIT}|*/5 * * * *|7" || GW34_PASS=false
+    assert_equals "$GW34_ROW" "${DP_UNIT}|17 * * * *|7" || GW34_PASS=false
 
     if [ "$GW34_PASS" = true ]; then
         pass_test "GW-34"
@@ -321,29 +363,28 @@ else
 
     GW35_PATCH_ERR=$(kubectl patch backuppolicy "$DP_BP_NAME" -n "$E2E_NAMESPACE" \
         --type=merge \
-        -p "{\"spec\":{\"units\":[{\"name\":\"${DP_UNIT}\",\"schedule\":\"*/7 * * * *\",\"retention\":7}]}}" \
+        -p "{\"spec\":{\"units\":[{\"name\":\"${DP_UNIT}\",\"schedule\":\"23 * * * *\",\"retention\":7}]}}" \
         2>&1 >/dev/null)
     GW35_PATCH_RC=$?
     echo "  policy patch rc=${GW35_PATCH_RC} ${GW35_PATCH_ERR}"
 
     GW35_ROW_SCHEDULE=$(wait_for_k8s_field backuppolicy "$DP_BP_NAME" "$E2E_NAMESPACE" \
-        "{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].schedule}" "*/7 * * * *" 120)
+        "{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].schedule}" "23 * * * *" 120)
     GW35_ROW_RC=$?
     echo "  policy row schedule='${GW35_ROW_SCHEDULE}' (rc=${GW35_ROW_RC})"
 
     # Nothing here re-runs `cfgd checkin`: the only thing that can move the
     # device's recorded cadence now is the daemon's own tick.
-    GW35_AFTER=$(dp_wait_field effectiveSchedule "*/7 * * * *" 180)
+    GW35_AFTER=$(dp_wait_field effectiveSchedule "23 * * * *" 180)
     GW35_AFTER_RC=$?
     GW35_NEXT_AFTER=$(dp_field nextRunAt)
-    # `*/5` and `*/7` share a next occurrence for four minutes of every hour, so
-    # "the stamp moved" is not a fact this test can hold at every wall clock.
-    # What it can hold is that the re-armed stamp is one the NEW cadence
-    # produces: a minute that is a multiple of seven.
+    # The two cadences fire on single, different minutes of the hour, so the
+    # re-armed stamp is a fact at every wall clock: its minute is the new
+    # cadence's own, and it is not the stamp the old cadence produced.
     GW35_NEXT_MINUTE=$(printf '%s' "$GW35_NEXT_AFTER" | sed -n 's/^.*T[0-9][0-9]:\([0-9][0-9]\):.*$/\1/p')
-    GW35_NEXT_MOD=none
-    [ -n "$GW35_NEXT_MINUTE" ] && GW35_NEXT_MOD=$((10#$GW35_NEXT_MINUTE % 7))
-    echo "  nextRunAt before=${GW35_NEXT_BEFORE} after=${GW35_NEXT_AFTER} (minute ${GW35_NEXT_MINUTE:-none} mod 7 = ${GW35_NEXT_MOD})"
+    GW35_NEXT_MOVED=no
+    [ -n "$GW35_NEXT_AFTER" ] && [ "$GW35_NEXT_AFTER" != "$GW35_NEXT_BEFORE" ] && GW35_NEXT_MOVED=yes
+    echo "  nextRunAt before=${GW35_NEXT_BEFORE} after=${GW35_NEXT_AFTER} (minute ${GW35_NEXT_MINUTE:-none}, moved ${GW35_NEXT_MOVED})"
 
     # The machine takes its unit back. The daemon re-reads the profile on its
     # next tick, reports `local`, the controller retires the policy's claim and
@@ -360,9 +401,11 @@ else
     GW35_LOCAL_EFF=$(dp_wait_field effectiveSchedule "absent" 180)
     GW35_LOCAL_EFF_RC=$?
     GW35_LOCAL_OWNER=$(dp_field scheduleOwner)
-    GW35_LOCAL_HUMAN=$(dp_cfgd backup list 2>&1)
+    GW35_LOCAL_HUMAN=$(dp_cfgd backup list 2>&1 | strip_sgr)
+    GW35_OWNER_CELL=$(dp_owner_cell)
     echo "  effectiveSchedule=${GW35_LOCAL_EFF} scheduleOwner=${GW35_LOCAL_OWNER}"
-    printf '%s\n' "$GW35_LOCAL_HUMAN" | strip_sgr | sed 's/^/    /'
+    printf '%s\n' "$GW35_LOCAL_HUMAN" | sed 's/^/    /'
+    echo "  Schedule Owner cell: ${GW35_OWNER_CELL:-none}"
 
     kill -TERM "$DP_DAEMON_PID" 2>/dev/null
     (sleep 5; kill -KILL "$DP_DAEMON_PID" 2>/dev/null || true) &
@@ -371,22 +414,30 @@ else
     kill -KILL "$GW35_WATCHDOG" 2>/dev/null || true
     wait "$GW35_WATCHDOG" 2>/dev/null || true
     GW35_STOPPED=running
-    dp_daemon_alive || GW35_STOPPED=stopped
-    DP_DAEMON_PID=""
+    dp_daemon_alive
+    case $? in
+        1) GW35_STOPPED=stopped ;;
+        2) GW35_STOPPED=unanswerable ;;
+    esac
+    # The recorded pid is the run-all.sh EXIT trap's own handle, so it is dropped
+    # only once the daemon is confirmed gone: a stop that failed, or that nothing
+    # could answer for, must leave the trap something to kill.
+    [ "$GW35_STOPPED" = stopped ] && DP_DAEMON_PID=""
     echo "  daemon after SIGTERM: $GW35_STOPPED"
 
     assert_equals "$GW35_READY" "ready" || GW35_PASS=false
     assert_exit_code "$GW35_PATCH_RC" 0 || GW35_PASS=false
     assert_exit_code "$GW35_ROW_RC" 0 || GW35_PASS=false
     assert_exit_code "$GW35_AFTER_RC" 0 || GW35_PASS=false
-    assert_equals "$GW35_AFTER" "*/7 * * * *" || GW35_PASS=false
-    assert_equals "$GW35_NEXT_MOD" "0" || GW35_PASS=false
+    assert_equals "$GW35_AFTER" "23 * * * *" || GW35_PASS=false
+    assert_equals "$GW35_NEXT_MINUTE" "23" || GW35_PASS=false
+    assert_equals "$GW35_NEXT_MOVED" "yes" || GW35_PASS=false
     assert_exit_code "$GW35_PIN_RC" 0 || GW35_PASS=false
     assert_exit_code "$GW35_LOCAL_ROW_RC" 0 || GW35_PASS=false
     assert_exit_code "$GW35_LOCAL_EFF_RC" 0 || GW35_PASS=false
     assert_equals "$GW35_LOCAL_EFF" "absent" || GW35_PASS=false
     assert_equals "$GW35_LOCAL_OWNER" "local" || GW35_PASS=false
-    assert_contains "$GW35_LOCAL_HUMAN" "local" || GW35_PASS=false
+    assert_equals "$GW35_OWNER_CELL" "local" || GW35_PASS=false
     assert_not_contains "$GW35_LOCAL_HUMAN" "projected" || GW35_PASS=false
     assert_equals "$GW35_STOPPED" "stopped" || GW35_PASS=false
 
@@ -404,22 +455,38 @@ fi
 # =================================================================
 begin_test "GW-36: the device-projection objects and daemon are gone"
 
-kubectl delete backuppolicy "$DP_BP_NAME" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null
-kubectl delete machineconfig "$DP_MC_NAME" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null
+GW36_BP_DEL=$(kubectl delete backuppolicy "$DP_BP_NAME" -n "$E2E_NAMESPACE" \
+    --ignore-not-found 2>&1)
+GW36_BP_DEL_RC=$?
+GW36_MC_DEL=$(kubectl delete machineconfig "$DP_MC_NAME" -n "$E2E_NAMESPACE" \
+    --ignore-not-found 2>&1)
+GW36_MC_DEL_RC=$?
+echo "  delete backuppolicy rc=${GW36_BP_DEL_RC} ${GW36_BP_DEL}"
+echo "  delete machineconfig rc=${GW36_MC_DEL_RC} ${GW36_MC_DEL}"
 
-GW36_LEFT=$(kubectl get backuppolicy,machineconfig -n "$E2E_NAMESPACE" -o name 2>/dev/null |
-    grep -F "projection-${E2E_RUN_ID}" || true)
+# The listing is read as its own step: piping it into `grep ... || true` greens a
+# `kubectl get` that never ran, which is the one failure this case exists to see.
+GW36_OBJECTS=$(kubectl get backuppolicy,machineconfig -n "$E2E_NAMESPACE" -o name 2>&1)
+GW36_GET_RC=$?
+GW36_LEFT=$(printf '%s\n' "$GW36_OBJECTS" | grep -F "projection-${E2E_RUN_ID}")
 GW36_DAEMON=gone
-dp_daemon_alive && GW36_DAEMON=running
-echo "  remaining objects: ${GW36_LEFT:-none}"
+dp_daemon_alive
+case $? in
+    0) GW36_DAEMON=running ;;
+    2) GW36_DAEMON=unanswerable ;;
+esac
+echo "  get rc=${GW36_GET_RC}, remaining objects: ${GW36_LEFT:-none}"
 echo "  daemon: $GW36_DAEMON"
 
 GW36_PASS=true
+assert_exit_code "$GW36_BP_DEL_RC" 0 || GW36_PASS=false
+assert_exit_code "$GW36_MC_DEL_RC" 0 || GW36_PASS=false
+assert_exit_code "$GW36_GET_RC" 0 || GW36_PASS=false
 assert_equals "$GW36_LEFT" "" || GW36_PASS=false
 assert_equals "$GW36_DAEMON" "gone" || GW36_PASS=false
 
 if [ "$GW36_PASS" = true ]; then
     pass_test "GW-36"
 else
-    fail_test "GW-36" "This run left objects or a daemon behind"
+    fail_test "GW-36" "This run left objects or a daemon behind, or could not prove it did not"
 fi

@@ -1,27 +1,6 @@
 # Gateway enrollment tests (GW-02 through GW-06).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 
-# Helper: build auth header for admin API calls.
-gw_admin_auth_header() {
-    if [ -n "$ADMIN_KEY" ]; then
-        echo "Authorization: Bearer $ADMIN_KEY"
-    else
-        # Open mode — no auth needed, but curl -H "" is harmless
-        echo "X-No-Auth: open-mode"
-    fi
-}
-
-# Helper: create a fresh bootstrap token via admin API. Prints the token string.
-gw_create_bootstrap_token() {
-    local username="${1:-e2e-user}"
-    local resp
-    resp=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
-        -H "Content-Type: application/json" \
-        -H "$(gw_admin_auth_header)" \
-        -d "{\"username\":\"$username\",\"team\":\"e2e-team\",\"expiresIn\":3600}" 2>/dev/null)
-    echo "$resp" | jq -r '.token // empty' 2>/dev/null
-}
-
 # =================================================================
 # GW-02: Token-based enrollment
 # =================================================================
