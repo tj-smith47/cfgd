@@ -1313,6 +1313,7 @@ fn a_debug_module_with_a_post_apply_script_gets_no_init_container() {
         "and nothing references the emptyDir the mounted path would have added: {patch_json}"
     );
 }
+
 #[test]
 fn build_patches_module_without_oci_artifact() {
     let pod = serde_json::json!({
@@ -2166,10 +2167,71 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
 /// The module gate and the env gate are ONE predicate. Two spellings of "does
 /// this `platforms:` list admit a Linux container" drift the moment one grows a
 /// tag the other does not, so the tag literal lives in `injects_on_linux` alone
-/// and every other site composes it.
+/// and every other site composes it. The literal half is asked of the whole
+/// operator crate: a second reader of a `platforms:` list is as likely to
+/// appear in a controller as in this file.
 #[test]
 fn the_env_gate_and_the_module_gate_share_one_predicate() {
     let src = include_str!("mod.rs");
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
+    let mut walked = 0usize;
+    let mut tag_sites: Vec<String> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            // A file that IS test scaffolding carries no `#[cfg(test)]` of its
+            // own for the slice to cut at, so it is named out here instead.
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == "test_helpers.rs" || name.starts_with("tests") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let production = cfgd_core::test_helpers::production_slice(&body);
+            assert!(
+                !production.trim().is_empty(),
+                "{} sliced away to nothing — the walk is reading no code",
+                path.display()
+            );
+            walked += 1;
+            for (n, line) in production.lines().enumerate() {
+                // `cfg(target_os = "linux")` names the host this code compiles
+                // for, not a module's `platforms:` tag.
+                if line.contains("\"linux\"") && !line.contains("target_os") {
+                    tag_sites.push(format!(
+                        "{}:{}",
+                        path.strip_prefix(&root).unwrap_or(&path).display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        walked >= 30,
+        "the walk reached only {walked} production sources under crates/cfgd-operator/src"
+    );
+    assert_eq!(
+        tag_sites.len(),
+        1,
+        "the `linux` tag literal belongs to injects_on_linux alone, and it is \
+         the whole operator crate that must not spell it again: {tag_sites:?}"
+    );
+    assert!(
+        tag_sites[0].starts_with("webhook"),
+        "the one tag literal sits beside the predicate: {tag_sites:?}"
+    );
     assert_eq!(
         src.matches("\"linux\"").count(),
         1,

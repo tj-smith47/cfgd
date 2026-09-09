@@ -184,7 +184,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 
 **For platform & infrastructure engineers:**
 - [Multi-source config](docs/sources.md): publish team baselines with policy tiers (locked/required/recommended/optional)
-- [Kubernetes operator](docs/operator.md): CRDs for MachineConfig, ConfigPolicy, DriftAlert; admission webhook; device gateway with fleet dashboard
+- [Kubernetes operator](docs/operator.md): CRDs for MachineConfig, ConfigPolicy, ClusterConfigPolicy, DriftAlert, BackupPolicy, Module; admission webhook; device gateway with fleet dashboard
 - [Node configuration](docs/system-configurators.md): sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp, certificates
 - [CSI driver](docs/operator.md): OCI-based module injection into pods via volumes
 - [Crossplane integration](docs/team-config.md): TeamConfig XR for self-service team environment distribution

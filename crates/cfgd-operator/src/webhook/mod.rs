@@ -536,7 +536,6 @@ fn ptr(path: &str) -> jsonptr::PointerBuf {
     jsonptr::PointerBuf::parse(path).unwrap_or_else(|_| jsonptr::PointerBuf::default())
 }
 
-/// Build JSON patch operations to inject CSI volumes, volumeMounts, and env vars.
 /// The patch operations injecting `modules` into `pod`, and the names of the
 /// modules the platform gate skipped whole.
 fn build_injection_patches<'m>(
@@ -563,8 +562,6 @@ fn build_injection_patches<'m>(
             value: serde_json::json!([]),
         }));
     }
-
-    let mut needs_scripts_emptydir = false;
 
     // Ensure volumeMounts and env arrays exist on each container
     for (i, container) in containers.iter().enumerate() {
@@ -667,10 +664,6 @@ fn build_injection_patches<'m>(
                 }
             }
         }
-
-        if spec.scripts.post_apply.is_some() {
-            needs_scripts_emptydir = true;
-        }
     }
 
     // Add init containers for modules with postApply scripts
@@ -687,15 +680,13 @@ fn build_injection_patches<'m>(
             }));
         }
 
-        if needs_scripts_emptydir {
-            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
-                path: ptr("/spec/volumes/-"),
-                value: serde_json::json!({
-                    "name": "cfgd-scripts",
-                    "emptyDir": {}
-                }),
-            }));
-        }
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path: ptr("/spec/volumes/-"),
+            value: serde_json::json!({
+                "name": "cfgd-scripts",
+                "emptyDir": {}
+            }),
+        }));
 
         for (name, _version, spec) in &script_modules {
             let safe_name = cfgd_core::sanitize_k8s_name(name);

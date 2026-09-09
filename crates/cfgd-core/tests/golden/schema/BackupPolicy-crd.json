@@ -29,7 +29,7 @@
       "type": "object"
     },
     "LabelSelector": {
-      "description": "Kubernetes-style label selector with match_labels and match_expressions.",
+      "description": "Kubernetes-style label selector with `matchLabels` and `matchExpressions`.",
       "properties": {
         "matchExpressions": {
           "default": [],

@@ -166,7 +166,7 @@ pub struct Condition {
 // ConfigPolicy
 // ---------------------------------------------------------------------------
 
-/// Kubernetes-style label selector with match_labels and match_expressions.
+/// Kubernetes-style label selector with `matchLabels` and `matchExpressions`.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {

@@ -11,6 +11,7 @@ Each team gets a dedicated namespace. Resources are scoped as follows:
 | MachineConfig | Namespaced | Only within the team's namespace |
 | ConfigPolicy | Namespaced | Applies only to MachineConfigs in the same namespace |
 | DriftAlert | Namespaced | Associated with a MachineConfig in the same namespace |
+| BackupPolicy | Namespaced | Schedules backups for MachineConfigs in the same namespace |
 | ClusterConfigPolicy | Cluster | Applies across all namespaces matching its `namespaceSelector` |
 | Module | Cluster | Shared across all namespaces |
 

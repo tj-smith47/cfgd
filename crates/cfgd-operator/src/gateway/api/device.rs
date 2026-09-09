@@ -239,12 +239,9 @@ async fn apply_status_map(
     use kube::api::{Api, Patch, PatchParams};
 
     let machines: Api<MachineConfig> = Api::namespaced(client.clone(), namespace);
-    // `api_version` / `kind` borrow from this, so it outlives the body rather
-    // than being a temporary in the initializer.
-    let dynamic_type = ();
     let body = MachineConfigStatusApply {
-        api_version: <MachineConfig as kube::Resource>::api_version(&dynamic_type),
-        kind: <MachineConfig as kube::Resource>::kind(&dynamic_type),
+        api_version: <MachineConfig as kube::Resource>::api_version(&()),
+        kind: <MachineConfig as kube::Resource>::kind(&()),
         metadata: ApplyMetadata { name },
         status,
     };

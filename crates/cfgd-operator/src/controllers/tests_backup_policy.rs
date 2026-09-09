@@ -46,7 +46,25 @@ fn reporting(mut mc: MachineConfig, unit: &str, owner: &str) -> MachineConfig {
 
 /// A machine whose device reported that it owns `unit`'s schedule itself.
 fn pinning(mc: MachineConfig, unit: &str) -> MachineConfig {
-    reporting(mc, unit, ScheduleOwner::Local.label())
+    pinning_each(mc, &[unit])
+}
+
+/// The same, for a machine that pinned SEVERAL of the policy's units — the
+/// shape that tells the pinned clause's two counts apart.
+fn pinning_each(mut mc: MachineConfig, units: &[&str]) -> MachineConfig {
+    mc.status = Some(MachineConfigStatus {
+        backup_schedule_owners: units
+            .iter()
+            .map(|unit| {
+                (
+                    (*unit).to_string(),
+                    ScheduleOwner::Local.label().to_string(),
+                )
+            })
+            .collect(),
+        ..Default::default()
+    });
+    mc
 }
 
 /// The status body of the patch the reconcile sent, as the typed object the
@@ -225,6 +243,85 @@ async fn reconcile_backup_policy_reports_a_machine_whose_schedule_owner_it_canno
     assert_eq!(
         status.conditions[0].message,
         "1 backup unit scheduled across 1 machine; 1 unit pinned on 1 machine"
+    );
+}
+
+/// The pinned clause's two counts are different things: one machine can pin
+/// several of the policy's units, so a fixture where they happen to be equal
+/// cannot tell a units count from a machines count.
+#[tokio::test]
+async fn reconcile_backup_policy_counts_pinned_units_apart_from_the_machines_pinning_them() {
+    let policy = backup_policy(
+        "nightly",
+        NS,
+        vec![
+            backup_unit("dotfiles", "0 3 * * *"),
+            backup_unit("notes", "6h"),
+        ],
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(backup_policy_status_path("nightly"))
+                .returning_json(&policy),
+        ],
+        stores_with(vec![
+            pinning_each(machine_config("mc-laptop", NS), &["dotfiles", "notes"]),
+            machine_config("mc-nuc", NS),
+        ]),
+    );
+
+    reconcile_backup_policy(Arc::new(policy), ctx)
+        .await
+        .expect("a machine pinning both units reconciles");
+
+    let report = harness.finish().await;
+    let status = patched_status(&report.captured[0].body_json());
+    assert_eq!(status.units.len(), 4, "two machines, two units each");
+    assert_eq!(
+        status.conditions[0].message,
+        "2 backup units scheduled across 1 machine; 2 units pinned on 1 machine"
+    );
+}
+
+/// The warning names ONE machine and counts the rest, so the counting clause
+/// only exists once a second machine has reported a word no layer spells.
+#[tokio::test]
+async fn reconcile_backup_policy_counts_the_other_machines_whose_owner_it_could_not_read() {
+    let policy = backup_policy("nightly", NS, vec![backup_unit("dotfiles", "0 3 * * *")]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            expect_event_post(NS),
+            ExpectedCall::patch_status(backup_policy_status_path("nightly"))
+                .returning_json(&policy),
+        ],
+        stores_with(vec![
+            reporting(machine_config("mc-laptop", NS), "dotfiles", "Locale"),
+            reporting(machine_config("mc-nuc", NS), "dotfiles", "Klaster"),
+        ]),
+    );
+
+    reconcile_backup_policy(Arc::new(policy), ctx)
+        .await
+        .expect("two unreadable owners are reported, not an error");
+
+    let report = harness.finish().await;
+    let event_note =
+        serde_json::to_string(&report.captured[0].body_json()).expect("the event serializes");
+    assert!(
+        event_note.contains("mc-laptop.test") && event_note.contains("Locale"),
+        "one machine is named in full: {event_note}"
+    );
+    assert!(
+        event_note.contains("1 other machine did the same"),
+        "and every other machine that did is a count: {event_note}"
+    );
+
+    let status = patched_status(&report.captured[1].body_json());
+    assert_eq!(
+        status.conditions[0].message, "1 unit pinned on 2 machines",
+        "nothing was scheduled, so that clause drops"
     );
 }
 

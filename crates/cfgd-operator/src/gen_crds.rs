@@ -446,8 +446,14 @@ mod tests {
                         .get("description")
                         .and_then(Value::as_str)
                         .unwrap_or_else(|| panic!("{file}: a capped list carries no description"));
+                    // The whole NUMBER, not a substring of one: a cap narrowed
+                    // from 50 to 5 leaves every description saying 50, and a
+                    // substring test reads that as the new cap being stated.
+                    let states_the_cap = description
+                        .split(|c: char| !c.is_ascii_digit())
+                        .any(|run| run.parse::<u64>().is_ok_and(|n| n == max));
                     assert!(
-                        description.contains(&max.to_string()),
+                        states_the_cap,
                         "{file}: a capped list's description must state its own cap of {max}: \
                          {description}"
                     );
@@ -491,6 +497,7 @@ mod tests {
         let docs = super::render_each().expect("render CRDs");
         let mut rendered: BTreeSet<String> = BTreeSet::new();
         let mut plurals: BTreeSet<String> = BTreeSet::new();
+        let mut scopes: BTreeSet<(String, String)> = BTreeSet::new();
         let mut capped = 0usize;
         for doc in &docs {
             let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
@@ -498,6 +505,13 @@ mod tests {
                 .as_str()
                 .unwrap_or_else(|| panic!("{} declares no spec.names.kind", doc.name))
                 .to_string();
+            scopes.insert((
+                kind.clone(),
+                crd["spec"]["scope"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{} declares no spec.scope", doc.name))
+                    .to_string(),
+            ));
             assert!(
                 rendered.insert(kind.clone()),
                 "{kind} is rendered more than once"
@@ -691,6 +705,53 @@ mod tests {
         assert_eq!(
             looped, plurals,
             "{taskfile}: gen:crds:check must diff every rendered CRD copy"
+        );
+
+        // The isolation model a team reads before writing RBAC: a kind missing
+        // from it reads as a kind that does not exist, and a kind whose scope
+        // the table gets wrong sends the reader to write a Role where only a
+        // ClusterRole can grant it.
+        let tenancy = "docs/multi-tenancy.md";
+        let documented_scopes: BTreeSet<(String, String)> = roster_file(tenancy)
+            .lines()
+            .skip_while(|l| !l.trim().starts_with("## Namespace Isolation Model"))
+            .take_while(|l| !l.trim().starts_with("## RBAC"))
+            .filter_map(|l| {
+                let mut cells = l.trim().trim_matches('|').split('|').map(str::trim);
+                let kind = cells.next()?;
+                let scope = cells.next()?;
+                rendered
+                    .contains(kind)
+                    .then(|| (kind.to_string(), scope.to_string()))
+            })
+            .collect();
+        assert_eq!(
+            documented_scopes, scopes,
+            "{tenancy}'s isolation table must name every rendered kind at its rendered scope"
+        );
+
+        // The feature list a reader meets first: a kind it omits is a kind
+        // nobody looking at the repo's front page knows the operator serves.
+        let readme = "README.md";
+        let body = roster_file(readme);
+        let operator_line = body
+            .lines()
+            .find(|l| l.trim_start().starts_with("- [Kubernetes operator]"))
+            .unwrap_or_else(|| panic!("{readme}: no Kubernetes operator bullet"));
+        let listed: BTreeSet<String> = operator_line
+            .split("CRDs for ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{readme}: the operator bullet names no CRDs"))
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect();
+        assert_eq!(
+            listed, rendered,
+            "{readme}'s operator bullet must name every rendered CRD kind"
         );
 
         let connection = "chart/cfgd/templates/tests/test-connection.yaml";
