@@ -17,7 +17,7 @@
 # `set -e` is load-bearing rather than tidy: every assertion below judges the
 # OUTPUT of a command run through `su -l`, so a setup step that failed silently
 # would be read as a verdict about cfgd. FreeBSD's /bin/sh has no `pipefail`,
-# so the two pipelines here read their own producer's status explicitly.
+# so every pipeline here reads its own producer's status explicitly.
 
 set -eu
 
@@ -55,6 +55,9 @@ delete_test_user() {
     [ "$victim_uid" -ge 1000 ] ||
         fail 1 "refusing to delete $USER_NAME: uid $victim_uid is a system account"
     case $victim_home in
+    */../* | */..)
+        fail 1 "refusing to delete $USER_NAME: home '$victim_home' contains a '..' component"
+        ;;
     /home/?*) ;;
     *) fail 1 "refusing to delete $USER_NAME: home '$victim_home' is not under /home" ;;
     esac
@@ -62,10 +65,19 @@ delete_test_user() {
 }
 
 passwd_home() {
-    getent passwd "$1" | cut -d: -f6
+    entry=$(getent passwd "$1") || fail 1 "no passwd entry for $1"
+    echo "$entry" | cut -d: -f6
 }
 
+# `pw` accepts a login name containing dots, so `CFGD_NPM_TEST_USER=..` would
+# record home /home/.. and hand `pw userdel -r` every real user's home. The shape
+# is judged here, before any `pw` call and before the home check downstream.
 [ -n "$USER_NAME" ] || fail 1 "CFGD_NPM_TEST_USER is empty"
+case $USER_NAME in
+*[!a-z0-9_-]* | [!a-z_]*)
+    fail 1 "CFGD_NPM_TEST_USER must be a plain login name ([a-z_][a-z0-9_-]*), got '$USER_NAME'"
+    ;;
+esac
 if id "$USER_NAME" >/dev/null 2>&1; then
     echo "==> removing the previous $USER_NAME"
     delete_test_user
