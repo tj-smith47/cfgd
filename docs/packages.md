@@ -48,10 +48,12 @@ as installed:
 
 The unprivileged arm is proven on a real host as well as in unit tests: CI's
 FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
-`task test:freebsd:npm-prefix` target) as a non-root user against the `www/npm`
-package, whose configured prefix is the root-owned `/usr/local`, and asserts
-that a declared package's binary lands in `$HOME/.npm-global/bin` and that the
-generated env file puts that directory on `PATH`.
+`task test:freebsd:npm-prefix` target) against the `www/npm` package, whose
+configured prefix is the root-owned `/usr/local`. The script itself needs root
+to install that package and create the test account, and it runs every `cfgd`
+invocation as the unprivileged user, asserting that a declared package's binary
+lands in `$HOME/.npm-global/bin` and that the generated env file puts that
+directory on `PATH`.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a

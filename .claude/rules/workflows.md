@@ -113,15 +113,24 @@ single-source-of-truth wiring.
   server-side with no FreeBSD surface (same rationale as the Windows branch).
   The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
   the VM); `task`/`nextest`/`npm` come from pkg; no protoc (neither in-scope
-  crate compiles protos). After `task test:ci` the guest builds `--bin cfgd`
-  and runs `task test:freebsd:npm-prefix`, the real-host proof of the
-  unprivileged npm global-prefix fallback documented in `docs/packages.md`:
-  the unit pins inject both elevation and the write-probe, so only a real
-  non-root user against the real `www/npm` (configured prefix `/usr/local`,
-  root-owned) can observe cfgd fall back to `$HOME/.npm-global` and pass
-  `--prefix`. The FreeBSD-only decision lives in the Taskfile's `uname -s`
-  branch like `test:ci`'s, and `npm` is installed in `prepare` rather than by
-  the script because `IGNORE_OSVERSION` is not exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
+  crate compiles protos). The `run:` block opens on `set -e`: it holds three
+  commands now, the guest script's shell flags are the action's rather than
+  GitHub's, and without the abort a failing `task test:ci` is followed by a
+  passing build and the leg reports green on red tests.
+- After `task test:ci` that same guest builds `--bin cfgd` and runs
+  `task test:freebsd:npm-prefix`, the real-host proof of the unprivileged npm
+  global-prefix fallback documented in `docs/packages.md`: the unit pins
+  inject both elevation and the write-probe, so only a real non-root user
+  against the real `www/npm` (configured prefix `/usr/local`, root-owned) can
+  observe cfgd fall back to `$HOME/.npm-global` and pass `--prefix`.
+  **That step runs as root and mutates the guest**: it installs `www/npm`,
+  and it creates and `pw userdel -r`s the `cfgdnpm` user, home included. It
+  belongs only on a disposable guest, which is why the FreeBSD-only decision
+  is a Taskfile `uname -s` branch like `test:ci`'s and never a leg of
+  `task ci`; the script refuses a non-root caller, a non-FreeBSD host, and a
+  target user whose uid or home says it is somebody real. `npm` is installed
+  in `prepare` rather than by the script because `IGNORE_OSVERSION` is not
+  exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg
   locally against the accept VM (start-if-stopped, poll, sync, `task test:ci`).

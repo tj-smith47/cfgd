@@ -181,6 +181,10 @@ jobs:
             pkg install -y rustup-init git task nextest gmake perl5 npm
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
+            # The guest script's shell flags are the action's, not GitHub's, so
+            # the abort is stated here: without it a failing test leg is followed
+            # by a passing build and the whole job reports green.
+            set -e
             . "$HOME/.cargo/env"
             task test:ci
             # The npm prefix fallback's unit pins inject both elevation and the
