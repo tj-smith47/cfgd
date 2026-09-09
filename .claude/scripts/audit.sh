@@ -548,10 +548,11 @@ log_section "No Unwrap in Library Code"
 #     to unwrap freely (matches the anodizer anti-patterns convention).
 #   - test_*.rs / tests_*.rs: test-only modules gated by #![cfg(test)]
 #     (e.g. test_kube_harness.rs, tests_drift_alert.rs).
+#   - src/**/tests/*.rs: a directory declared `#[cfg(test)] mod tests;` from its parent
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|/src/.*/tests/[^/]*\.rs:'
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status

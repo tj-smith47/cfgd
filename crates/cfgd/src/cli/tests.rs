@@ -15025,49 +15025,34 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
-    let mut stack = vec![cli_dir.clone()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
+    for p in rust_sources_under(&cli_dir) {
+        let body = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", p.display()));
+        checked += 1;
+        let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
+        // A hand-spelled generated line can carry its two tells on two
+        // physical lines; fold every continuation back first.
+        for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
+            let line = line.as_str();
+            let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
+            // A fixture joining a generated file's name onto a directory
+            // is building a path; a bare mention in an assertion needle or
+            // a synthesized row's id is not.
+            if joins.iter().any(|j| line.contains(j.as_str())) {
+                offenders.push(format!(
+                    "{where_}: joins a hardcoded env file name — take \
+                     `cfgd_core::reconciler::primary_env_file(home)`"
+                ));
             }
-            if !p.extension().is_some_and(|e| e == "rs") {
-                continue;
-            }
-            let Ok(body) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            checked += 1;
-            let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
-            // A hand-spelled generated line can carry its two tells on two
-            // physical lines; fold every continuation back first.
-            for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
-                let line = line.as_str();
-                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
-                // A fixture joining a generated file's name onto a directory
-                // is building a path; a bare mention in an assertion needle or
-                // a synthesized row's id is not.
-                if joins.iter().any(|j| line.contains(j.as_str())) {
-                    offenders.push(format!(
-                        "{where_}: joins a hardcoded env file name — take \
-                         `cfgd_core::reconciler::primary_env_file(home)`"
-                    ));
-                }
-                // A generated line carries its owner comment, which is what a
-                // hand-edited (deliberately non-generated) fixture body lacks.
-                if line.contains("managed by cfgd")
-                    && owner_comments.iter().any(|c| line.contains(c.as_str()))
-                {
-                    offenders.push(format!(
-                        "{where_}: spells a generated env line by hand — render \
-                         it through `MergedEnvItems::declared_line`"
-                    ));
-                }
+            // A generated line carries its owner comment, which is what a
+            // hand-edited (deliberately non-generated) fixture body lacks.
+            if line.contains("managed by cfgd")
+                && owner_comments.iter().any(|c| line.contains(c.as_str()))
+            {
+                offenders.push(format!(
+                    "{where_}: spells a generated env line by hand — render \
+                     it through `MergedEnvItems::declared_line`"
+                ));
             }
         }
     }
@@ -15185,27 +15170,21 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
 fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources = String::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                if p.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "rs")
-                && p.file_name().is_some_and(|n| n != "tests.rs")
-                && let Ok(body) = std::fs::read_to_string(&p)
+    ] {
+        for p in rust_sources_under(&dir) {
+            if p.file_name().is_some_and(|n| n == "tests.rs")
+                || p.components().any(|c| c.as_os_str() == "tests")
             {
-                sources.push_str(&body);
-                sources.push('\n');
+                continue;
             }
+            let body = std::fs::read_to_string(&p).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", p.display())
+            });
+            sources.push_str(&body);
+            sources.push('\n');
         }
     }
     assert!(
@@ -15217,17 +15196,25 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
     let mut checked = 0usize;
     while let Some(path) = scripts.pop() {
         if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                scripts.extend(entries.flatten().map(|e| e.path()));
-            }
+            let entries = std::fs::read_dir(&path).unwrap_or_else(|e| {
+                panic!(
+                    "{}: the walk must read every directory: {e}",
+                    path.display()
+                )
+            });
+            scripts.extend(entries.map(|e| {
+                e.unwrap_or_else(|err| {
+                    panic!("{}: the walk must read every entry: {err}", path.display())
+                })
+                .path()
+            }));
             continue;
         }
         if path.extension().is_none_or(|e| e != "sh") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every script: {e}", path.display()));
         for (n, line) in body.lines().enumerate() {
             // A grep against anything else reads a manifest, a kubectl payload
             // or a proc file — none of them cfgd's own prose.
@@ -15318,9 +15305,9 @@ fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies(
     ];
     let mut top = true;
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
         for entry in entries.flatten() {
             let p = entry.path();
             let named_dockerfile = p
@@ -31982,26 +31969,18 @@ fn every_bootstrap_failure_names_what_it_installed() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                if p.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "rs")
-                && p.file_name().is_some_and(|n| n != "tests.rs")
-                && let Ok(body) = std::fs::read_to_string(&p)
+    ] {
+        for p in rust_sources_under(&dir) {
+            if p.components().any(|c| c.as_os_str() == "tests")
+                || p.file_name().is_some_and(|n| n == "tests.rs")
             {
-                files.push((p, production_body(&body)));
+                continue;
             }
+            let production = cfgd_core::test_helpers::production_slice_of(&p);
+            files.push((p, production));
         }
     }
 
@@ -32141,30 +32120,19 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     };
     let mut seen = 0usize;
     let mut offenders = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(path);
-                }
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs")
+    ] {
+        for path in rust_sources_under(&dir) {
+            if path.components().any(|c| c.as_os_str() == "tests")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             let mut from = 0usize;
             while let Some(at) = body[from..].find(".detail(format!(\"") {
                 let open = from + at + ".detail(format!(\"".len();
@@ -32844,24 +32812,15 @@ fn one_stored_literal_for_a_missing_package() {
     // lands. Dedicated test files are skipped — this test's own source
     // quotes the needle, and a fixture may seed a legacy literal on purpose.
     let mut files = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs")
-                || path.file_name().is_some_and(|n| n == "tests.rs")
-            {
-                continue;
-            }
-            files.push(path);
-        }
+    ] {
+        files.extend(
+            rust_sources_under(&dir)
+                .into_iter()
+                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs")),
+        );
     }
     let mut seen = 0usize;
     let mut offenders = Vec::new();
@@ -32953,21 +32912,14 @@ fn one_stored_literal_for_a_missing_package() {
 fn every_empty_drift_verdict_states_whether_a_check_ran() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut carriers = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
+    ] {
+        for path in rust_sources_under(&dir) {
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             if text.contains("No drift detected") || text.contains("No drift recorded") {
                 carriers.push(path);
             }
@@ -35288,21 +35240,13 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 #[test]
 fn every_plan_running_verb_settles_its_link_deployed_hashes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let mut sources = Vec::new();
-    let mut pending = vec![root];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && path.file_name().is_none_or(|n| n != "tests.rs")
-                && !path.components().any(|c| c.as_os_str() == "tests")
-            {
-                sources.push(path);
-            }
-        }
-    }
+    let mut sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
+        .into_iter()
+        .filter(|p| {
+            p.file_name().is_none_or(|n| n != "tests.rs")
+                && !p.components().any(|c| c.as_os_str() == "tests")
+        })
+        .collect();
     // The daemon's own applying tick is the third apply path; it holds its
     // file manager apart from the registry, so it reaches the core seam
     // directly rather than through the CLI helper.

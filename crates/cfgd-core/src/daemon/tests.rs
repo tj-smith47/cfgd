@@ -10504,9 +10504,9 @@ fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
         for entry in entries.flatten() {
             let path = entry.path();
             match entry.file_type() {

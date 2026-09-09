@@ -414,10 +414,12 @@ mod tests {
     fn no_revision_verb_argv_spells_end_of_options() {
         let mut offenders = Vec::new();
         let mut seen = 0usize;
-        for path in workspace_rust_files() {
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+        for path in crate::test_helpers::rust_sources_under(
+            &crate::test_helpers::workspace_root().join("crates"),
+        ) {
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             // Prose says the words on purpose — the rule is documented where it
             // is enforced, and a comment spawns no process.
             let code = body
@@ -535,32 +537,6 @@ mod tests {
             revision_verb_argvs("PullStage::Checkout => \"checkout\",").is_empty(),
             "a verb WORD spawns nothing and is left alone"
         );
-    }
-
-    /// Every `.rs` file under every crate's `src/`.
-    fn workspace_rust_files() -> Vec<std::path::PathBuf> {
-        let mut out = Vec::new();
-        let mut stack = vec![
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("crates"),
-        ];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(path);
-                }
-            }
-        }
-        assert!(!out.is_empty(), "found no sources under crates/");
-        out
     }
 
     /// Saves and restores the `CFGD_COSIGN_BIN` env var so tests stay isolated

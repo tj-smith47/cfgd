@@ -2867,9 +2867,16 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
 /// Both failures are read off the message, not off the panic: a walk that
 /// swallowed the directory it could not open still ends up with nothing to
 /// return, so "I could not look" and "there was nothing there" arrive as the
-/// same empty list and only the wording tells them apart.
+/// same empty list, and only the wording — the directory's own name included —
+/// tells them apart.
+///
+/// The success arm asserts the whole vector rather than a count, because the
+/// three properties every caller reads off this list are separable and each
+/// fails silently on its own: a walk that stopped descending, one that stopped
+/// filtering, and one that returned the filesystem's order all answer a length
+/// check.
 #[test]
-fn the_source_walk_fails_on_a_root_it_cannot_open_and_on_one_holding_no_source() {
+fn the_source_walk_fails_on_a_root_it_cannot_open_and_lists_every_source_under_one_it_can() {
     fn walk_failure(root: &Path) -> String {
         match std::panic::catch_unwind(|| rust_sources_under(root)) {
             Ok(files) => format!("the walk returned {} files", files.len()),
@@ -2882,9 +2889,10 @@ fn the_source_walk_fails_on_a_root_it_cannot_open_and_on_one_holding_no_source()
 
     let root = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
 
-    let unopenable = walk_failure(&root.path().join("nothing-here"));
+    let missing = root.path().join("nothing-here");
+    let unopenable = walk_failure(&missing);
     assert!(
-        unopenable.contains("must read every directory"),
+        unopenable.contains("must read every directory") && unopenable.contains("nothing-here"),
         "a root the walk could not open answered: {unopenable}"
     );
 
@@ -2894,10 +2902,20 @@ fn the_source_walk_fails_on_a_root_it_cannot_open_and_on_one_holding_no_source()
         "a root holding no source answered: {empty}"
     );
 
-    let source = root.path().join("held.rs");
-    std::fs::write(&source, "fn held() {}\n")
-        .unwrap_or_else(|e| panic!("{}: write source: {e}", source.display()));
-    assert_eq!(rust_sources_under(root.path()), vec![source]);
+    let nested = root.path().join("sub");
+    std::fs::create_dir(&nested).unwrap_or_else(|e| panic!("{}: mkdir: {e}", nested.display()));
+    for (file, body) in [
+        (root.path().join("z.rs"), "fn z() {}\n"),
+        (nested.join("a.rs"), "fn a() {}\n"),
+        (root.path().join("notes.txt"), "not a source\n"),
+    ] {
+        std::fs::write(&file, body).unwrap_or_else(|e| panic!("{}: write: {e}", file.display()));
+    }
+    assert_eq!(
+        rust_sources_under(root.path()),
+        vec![nested.join("a.rs"), root.path().join("z.rs")],
+        "every .rs under the root, at every depth, nothing else, sorted"
+    );
 }
 
 /// The line that CLOSES a multi-line literal is source after the closing
@@ -3349,9 +3367,9 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

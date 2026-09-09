@@ -4061,6 +4061,37 @@ pub fn workspace_root() -> PathBuf {
         .join("..")
 }
 
+/// Every file under `root`, at any depth, in whatever order the filesystem
+/// lists them.
+///
+/// The failure policy every walk in this module shares: a directory it cannot
+/// open, and an entry it cannot read, each fail the walk. Both are a walk gone
+/// blind over whatever was there, and the population a caller then judges is
+/// shorter than the one it claims to have read, which is a pass nobody asked
+/// for.
+fn files_under_root(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", dir.display())
+                })
+                .path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 /// Every `.rs` source under `root`, sorted.
 ///
 /// A directory the walk cannot open is a walk gone blind over whatever it held,
@@ -4069,21 +4100,10 @@ pub fn workspace_root() -> PathBuf {
 /// shrinking the population in silence. The order is the sort, so a walk's own
 /// output and any message it builds read the same on every host.
 pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-            panic!("{}: the walk must read every directory: {e}", dir.display())
-        });
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
+    let mut out: Vec<PathBuf> = files_under_root(root)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
     assert!(
         !out.is_empty(),
         "{}: the walk found no sources, so it proves nothing",
@@ -4135,9 +4155,9 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut stack = vec![root.join("crates")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -4167,21 +4187,10 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
 /// the COMPLEMENT of, so a render captured under a new extension is
 /// classified rather than skipped in silence.
 pub fn snapshot_root_files() -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = snapshot_golden_roots();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
+    let mut files: Vec<PathBuf> = snapshot_golden_roots()
+        .iter()
+        .flat_map(|root| files_under_root(root))
+        .collect();
     files.sort();
     files
 }

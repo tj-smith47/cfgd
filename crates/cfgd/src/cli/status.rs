@@ -3784,53 +3784,40 @@ mod tests {
         }
 
         let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-        let mut stack = vec![cli_root.clone()];
         let mut files = 0usize;
         let mut literals = 0usize;
-        while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every directory: {e}", dir.display())
-            });
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if path.file_name().is_some_and(|n| n != "tests") {
-                        stack.push(path);
-                    }
+        for path in cfgd_core::test_helpers::rust_sources_under(&cli_root) {
+            if path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            files += 1;
+            let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
+            let rel = cfgd_core::to_posix_string(&rel);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let mut hatched = false;
+            for (n, line) in production.lines().enumerate() {
+                if line.trim().is_empty() {
+                    hatched = false;
+                }
+                if line.contains("basename-ok:") {
+                    hatched = true;
+                }
+                if hatched || line.trim_start().starts_with("//") {
                     continue;
                 }
-                if path.extension().is_none_or(|e| e != "rs")
-                    || path.file_name().is_some_and(|n| n == "tests.rs")
-                {
-                    continue;
-                }
-                files += 1;
-                let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
-                let rel = cfgd_core::to_posix_string(&rel);
-                let production = cfgd_core::test_helpers::production_slice_of(&path);
-                let mut hatched = false;
-                for (n, line) in production.lines().enumerate() {
-                    if line.trim().is_empty() {
-                        hatched = false;
-                    }
-                    if line.contains("basename-ok:") {
-                        hatched = true;
-                    }
-                    if hatched || line.trim_start().starts_with("//") {
-                        continue;
-                    }
-                    for literal in string_literals(line) {
-                        literals += 1;
-                        for tell in &basename_tells {
-                            assert!(
-                                !names_a_target(&literal, tell),
-                                "{rel}:{}: `{literal}` names an env target by its \
-                                 basename — ask \
-                                 `cfgd_core::reconciler::recorded_env_method` \
-                                 instead, or say why with `// basename-ok: <why>`",
-                                n + 1
-                            );
-                        }
+                for literal in string_literals(line) {
+                    literals += 1;
+                    for tell in &basename_tells {
+                        assert!(
+                            !names_a_target(&literal, tell),
+                            "{rel}:{}: `{literal}` names an env target by its \
+                             basename — ask \
+                             `cfgd_core::reconciler::recorded_env_method` \
+                             instead, or say why with `// basename-ok: <why>`",
+                            n + 1
+                        );
                     }
                 }
             }

@@ -2176,38 +2176,24 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
     let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
     let mut files_walked = 0usize;
     let mut tag_sites: Vec<String> = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-            .flatten()
-        {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            // A file that IS test scaffolding carries no `#[cfg(test)]` of its
-            // own for the slice to cut at, so it is named out here instead.
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name == "test_helpers.rs" || name.starts_with("tests") {
-                continue;
-            }
-            let production = cfgd_core::test_helpers::production_slice_of(&path);
-            files_walked += 1;
-            for (n, line) in production.lines().enumerate() {
-                // `cfg(target_os = "linux")` names the host this code compiles
-                // for, not a module's `platforms:` tag.
-                if line.contains("\"linux\"") && !line.contains("target_os") {
-                    tag_sites.push(format!(
-                        "{}:{}",
-                        path.strip_prefix(&root).unwrap_or(&path).display(),
-                        n + 1
-                    ));
-                }
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        // A file that IS test scaffolding carries no `#[cfg(test)]` of its
+        // own for the slice to cut at, so it is named out here instead.
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name == "test_helpers.rs" || name.starts_with("tests") {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        files_walked += 1;
+        for (n, line) in production.lines().enumerate() {
+            // `cfg(target_os = "linux")` names the host this code compiles
+            // for, not a module's `platforms:` tag.
+            if line.contains("\"linux\"") && !line.contains("target_os") {
+                tag_sites.push(format!(
+                    "{}:{}",
+                    path.strip_prefix(&root).unwrap_or(&path).display(),
+                    n + 1
+                ));
             }
         }
     }

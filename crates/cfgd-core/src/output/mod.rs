@@ -1126,20 +1126,10 @@ mod condense_script_label_tests {
         }
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        let mut pending = vec![root.join("output")];
-        while let Some(dir) = pending.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && path.file_name().is_none_or(|n| n != "tests.rs")
-                {
-                    files.push(path);
-                }
-            }
-        }
+        let mut files: Vec<_> = crate::test_helpers::rust_sources_under(&root.join("output"))
+            .into_iter()
+            .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+            .collect();
         files.push(root.join("reconciler/format.rs"));
         let idioms = [
             "chars().take(",

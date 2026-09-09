@@ -2337,10 +2337,8 @@ mod outranked_tests {
         let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let cli = core.join("../../cfgd/src");
         let mut offenders = Vec::new();
-        let mut files = Vec::new();
-        for root in [core, cli] {
-            rust_files(&root, &mut files);
-        }
+        let mut files = crate::test_helpers::rust_sources_under(&core);
+        files.extend(crate::test_helpers::rust_sources_under(&cli));
         assert!(files.len() > 100, "the walk reached {} files", files.len());
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
@@ -2349,9 +2347,9 @@ mod outranked_tests {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
@@ -2377,20 +2375,6 @@ mod outranked_tests {
             declined_decisions_title(2, DecisionsTitleScope::Listing),
             "Declined Decisions (2 items)"
         );
-    }
-
-    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
     }
 
     /// Every kind `decision_resource_content` recognizes is classified by
