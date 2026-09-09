@@ -3804,27 +3804,10 @@ mod tests {
                 {
                     continue;
                 }
-                let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("{}: the walk must read every source: {e}", path.display())
-                });
                 files += 1;
                 let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
                 let rel = cfgd_core::to_posix_string(&rel);
-                let production = cfgd_core::test_helpers::production_slice(&body);
-                // Per file, not merely per crate: `production_slice` drops a
-                // trailing test module and nothing else, so a walk reading
-                // fewer lines than precede this file's first `#[cfg(test)]` is
-                // a walk that went blind partway down it.
-                let before_tests = body
-                    .lines()
-                    .position(|l| l == "#[cfg(test)]")
-                    .unwrap_or_else(|| body.lines().count());
-                let walked = production.lines().count();
-                assert!(
-                    walked > 0 && walked >= before_tests,
-                    "{rel}: the walk read {walked} lines of the {before_tests} that \
-                     precede this file's test module"
-                );
+                let production = cfgd_core::test_helpers::production_slice_of(&path);
                 let mut hatched = false;
                 for (n, line) in production.lines().enumerate() {
                     if line.trim().is_empty() {
@@ -3859,6 +3842,7 @@ mod tests {
         );
         // And the one answerer really is reached, so the walk above cannot
         // pass by this file having stopped classifying env rows at all.
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
         let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
         assert!(
             production.matches("recorded_env_method(").count() >= 2,

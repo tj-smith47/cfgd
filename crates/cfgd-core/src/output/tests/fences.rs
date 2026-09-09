@@ -2455,10 +2455,7 @@ fn every_production_path_read_takes_the_read_guard() {
         {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let body = crate::test_helpers::production_slice(&raw);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         // Each declaration as the line range it covers and whether its own
@@ -2704,13 +2701,10 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         if path.file_name() != Some(std::ffi::OsStr::new("test_helpers.rs")) {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
         files_read += 1;
         // The trailing test module exercises the helpers, so its own tests
         // reach every seed and would be derived as helpers themselves.
-        let body = crate::test_helpers::production_slice(&raw);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let owners = impl_owners(&lines);
         let relative = source_label(&path);
@@ -2813,6 +2807,69 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         derived.len() >= 10,
         "the derivation found {} env-mutating helpers: {derived:?}",
         derived.len()
+    );
+}
+
+/// A walk that reads several sources reads each one through
+/// [`crate::test_helpers::production_slice_of`], which owns both halves the
+/// walk needs: the read that must not be swallowed, and the per-file floor on
+/// what the slice returned.
+///
+/// The pure [`crate::test_helpers::production_slice`] takes a body, so a caller
+/// reaching it inside a loop has already read the file itself and can only
+/// carry the floor by hand — which is how the same block came to be copied,
+/// and how three walks came to carry no floor at all. A caller that genuinely
+/// holds one compiled-in body and no path keeps the pure cut and says so with
+/// `// unfloored-slice-ok: <why>` on that line or the one above it.
+#[test]
+fn every_multi_file_production_walk_reads_through_the_floored_helper() {
+    // Spelled in parts, or this walk's own needle is the first offender it
+    // finds.
+    let needle = concat!("production_", "slice(");
+    let hatch = concat!("unfloored-", "slice-ok:");
+    let mut offenders = Vec::new();
+    let mut sources = 0usize;
+    for path in workspace_rust_files() {
+        if path.file_name() == Some(std::ffi::OsStr::new("test_helpers.rs")) {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        let lines: Vec<&str> = body.lines().collect();
+        let mut spells = false;
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if line.contains(concat!("production_", "slice_of(")) {
+                spells = true;
+            }
+            if !line.contains(needle) {
+                continue;
+            }
+            spells = true;
+            let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
+            if line.contains(hatch) || above.contains(hatch) {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+        if spells {
+            sources += 1;
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "read the file through `cfgd_core::test_helpers::production_slice_of`, \
+         which reads it and floors the slice at the lines preceding its test \
+         module, or say why one body needs the pure cut with \
+         `// unfloored-slice-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        sources >= 4,
+        "the walk found the slice helper in {sources} sources; it has stopped \
+         reading the population it judges"
     );
 }
 
@@ -3520,24 +3577,7 @@ fn every_display_label_is_the_lowercase_of_its_canonical_token() {
 
     let mut sites: Vec<String> = Vec::new();
     for path in &sources {
-        let body = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
-        let production = crate::test_helpers::production_slice(&body);
-        // Per file, not merely per crate: `production_slice` drops a trailing
-        // test module and nothing else, so a walk reading fewer lines than
-        // precede this file's first `#[cfg(test)]` is a walk that went blind
-        // partway down it.
-        let before_tests = body
-            .lines()
-            .position(|l| l == "#[cfg(test)]")
-            .unwrap_or_else(|| body.lines().count());
-        let walked = production.lines().count();
-        assert!(
-            walked > 0 && walked >= before_tests,
-            "{}: the walk read {walked} lines of the {before_tests} that \
-             precede this file's test module",
-            path.display()
-        );
+        let production = crate::test_helpers::production_slice_of(path);
         let mut current: Option<String> = None;
         for line in production.lines() {
             if let Some(rest) = line.strip_prefix("impl ") {
@@ -3599,25 +3639,8 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
         if path.ends_with(&declarations) || is_test_source {
             continue;
         }
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
         files_walked += 1;
-        let production = crate::test_helpers::production_slice(&body);
-        // Per file, not merely per crate: `production_slice` drops a trailing
-        // test module and nothing else, so a walk reading fewer lines than
-        // precede this file's first `#[cfg(test)]` is a walk that went blind
-        // partway down it.
-        let before_tests = body
-            .lines()
-            .position(|l| l == "#[cfg(test)]")
-            .unwrap_or_else(|| body.lines().count());
-        let walked = production.lines().count();
-        assert!(
-            walked > 0 && walked >= before_tests,
-            "{}: the walk read {walked} lines of the {before_tests} that \
-             precede this file's test module",
-            path.display()
-        );
+        let production = crate::test_helpers::production_slice_of(&path);
         let mut hatched = false;
         for (i, line) in production.lines().enumerate() {
             let previous = hatched;

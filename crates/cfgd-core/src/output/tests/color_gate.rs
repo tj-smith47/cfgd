@@ -272,10 +272,7 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
         if path.ends_with("theme.rs") || path.components().any(|c| c.as_os_str() == "tests") {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let production = crate::test_helpers::production_slice(&src);
+        let production = crate::test_helpers::production_slice_of(path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let code = line.trim_start();

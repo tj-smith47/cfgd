@@ -313,8 +313,7 @@ mod tests {
         let offenders: Vec<String> = files
             .iter()
             .filter_map(|path| {
-                let src = std::fs::read_to_string(path).ok()?;
-                let body = crate::test_helpers::production_slice(&src);
+                let body = crate::test_helpers::production_slice_of(path);
                 body.lines()
                     .find(|line| {
                         line.contains("format!(\">=") && !line.contains("floor-composer-ok:")

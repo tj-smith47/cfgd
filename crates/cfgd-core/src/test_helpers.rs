@@ -3993,8 +3993,9 @@ pub fn freeze_last_scan_at(
 /// — no such literal exists today, and `cli::tests::production_body` assumes
 /// the same shape.
 ///
-/// A walk over several files pairs this with a per-file floor on what it found,
-/// so a future re-blinding fails rather than passes quietly.
+/// A walk over several files reads through [`production_slice_of`] instead,
+/// which owns the read and the per-file floor that keeps a re-blinding from
+/// passing quietly.
 pub fn production_slice(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut lines = src.lines();
@@ -4023,6 +4024,30 @@ pub fn production_slice(src: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The production region of the Rust source at `path`, read here so the two
+/// halves a multi-file walk needs cannot be separated: a source the walk cannot
+/// read fails it, and a slice shorter than the lines preceding the file's first
+/// `#[cfg(test)]` fails it, because [`production_slice`] drops a trailing test
+/// module and nothing else, so a shorter read is a walk that went blind partway
+/// down the file. A walk over several files reads every one through this;
+/// [`production_slice`] stays the pure cut for a caller holding one body.
+pub fn production_slice_of(path: &Path) -> String {
+    let body = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+    let production = production_slice(&body);
+    let before_tests = body
+        .lines()
+        .position(|l| l == "#[cfg(test)]")
+        .unwrap_or_else(|| body.lines().count());
+    let walked = production.lines().count();
+    assert!(
+        walked > 0 && walked >= before_tests,
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's test module",
+        path.display()
+    );
+    production
 }
 
 /// The workspace root: the directory holding `crates/`.

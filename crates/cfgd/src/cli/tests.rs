@@ -8611,9 +8611,10 @@ fn build_registry_has_system_configurators() {
 /// "not registered" rather than "not available on this host".
 #[test]
 fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
-    let body = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/registry.rs"))
-        .unwrap();
-    let production = cfgd_core::test_helpers::production_slice(&body);
+    let production = cfgd_core::test_helpers::production_slice_of(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/cli/registry.rs"
+    )));
     // The floor: an empty offender set means nothing only while the walk is
     // still reading the block it judges.
     assert!(
@@ -15726,10 +15727,7 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (n, line) in production.lines().enumerate() {
             let code = line.trim_start();
             if code.starts_with("//") || code.starts_with("///") {
@@ -30339,10 +30337,7 @@ fn every_merged_env_view_is_built_once_per_command() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let mut open: Vec<&str> = Vec::new();
         let mut prev = "";
         for line in production.lines() {
@@ -30443,10 +30438,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let Some((_, composers)) = COMPOSERS.iter().find(|(ty, _)| {
@@ -30556,10 +30548,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
         if name == "tests.rs" || name == "test_helpers.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains("\"package\".to_string()")
@@ -30653,11 +30642,8 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
             if name == "tests.rs" || name == "test_helpers.rs" || path == exempt {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             for (i, (n, line)) in lines.iter().enumerate() {
                 if line.contains("resource_id") {
@@ -30748,11 +30734,8 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
         seen += 1;
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines = cfgd_core::test_helpers::logical_source_lines(&production);
         for (i, (n, line)) in lines.iter().enumerate() {
             if line.contains("drift_operands(") {
@@ -30835,11 +30818,8 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
             if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             for (i, (n, line)) in lines.iter().enumerate() {
                 let code = line.trim_start();
@@ -30944,11 +30924,8 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
             if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             // Folded, so a mint rustfmt broke across a `\`-continued literal
             // still presents its tell and its composer on one logical line.
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
@@ -31039,10 +31016,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
         if name == "tests.rs" || name == "test_helpers.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (i, line) in production.lines().enumerate() {
             if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
                 producers.push(format!(
@@ -31083,10 +31057,7 @@ fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel()
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (i, line) in production.lines().enumerate() {
             let code = line.trim();
             if code.starts_with("//") || !code.contains("\"unknown\"") {
@@ -31253,10 +31224,7 @@ fn no_result_section_respells_a_word_its_command_title_already_spent() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let headings = literals(&production, "printer.heading(\"");
         let sections = literals(&production, "printer.section(\"");
         for heading in &headings {
@@ -32935,10 +32903,9 @@ fn one_stored_literal_for_a_missing_package() {
     let mut offenders = Vec::new();
     for path in files {
         let file = cfgd_core::to_posix_string(&path);
-        let text = std::fs::read_to_string(&path).unwrap();
         // A file's own inline test module builds fixture rows whose literals
         // are the point; only the production region is walked.
-        let text = cfgd_core::test_helpers::production_slice(&text);
+        let text = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(r#"resource_type: "package""#) {
@@ -34302,11 +34269,8 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
             {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let body = cfgd_core::test_helpers::production_slice(&raw);
+            let body = cfgd_core::test_helpers::production_slice_of(&path);
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 // A trailing `// old → new` on a code line is still a
@@ -34376,11 +34340,8 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let mut enclosing_fn = String::new();
             for (i, (n, line)) in lines.iter().enumerate() {
@@ -34474,11 +34435,8 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let in_git_rs = path.ends_with("modules/git.rs");
             for (i, (n, line)) in lines.iter().enumerate() {
@@ -34609,11 +34567,8 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines: Vec<&str> = production.lines().collect();
             // Tokens the tell's own spelling contributes (`with_data`,
             // `serde_json`, `to_`, `json`) are never themselves the bound
@@ -34773,10 +34728,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
@@ -36043,9 +35995,7 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
 
     for rel in files {
         let path = root.join(rel);
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         let mut checked = 0usize;
         for (n, line) in lines.iter().enumerate() {
@@ -36153,9 +36103,7 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for rel in MINTS.iter().map(|(f, _)| *f).chain(READERS) {
         let path = root.join(rel);
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         let mut checked = 0usize;
         let mut built = 0usize;
@@ -36244,10 +36192,7 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
     let mut files: Vec<std::path::PathBuf> = walk_rust_files(&dir);
     files.sort();
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if line.contains("system_resource_key(") {
@@ -36292,10 +36237,6 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
 /// holding its own state store and profiles directory.
 #[test]
 fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
-    let body = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
-    )
-    .expect("doctor.rs unreadable");
     // The words `status`/`diff` spend on a resource they CHECKED, plus the
     // section name `diff` reserves for configurator drift.
     const RESERVED: &[&str] = &[
@@ -36310,7 +36251,9 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
 
     // Flattened, because rustfmt wraps a long `.section_if_nonempty(` onto the
     // line below its opener and a line-scoped scan reads right past it.
-    let production = cfgd_core::test_helpers::production_slice(&body);
+    let production = cfgd_core::test_helpers::production_slice_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
+    );
     let flat = production
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
