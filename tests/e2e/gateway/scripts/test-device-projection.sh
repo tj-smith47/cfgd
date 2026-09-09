@@ -31,15 +31,31 @@ echo "device-projection-fixture" > "$DP_DATA/db.sql"
 # Every root the binary resolves is pinned inside the run's scratch tree: the
 # runner dogfoods cfgd, and a device credential or state row written to the real
 # HOME would be this suite editing the operator's own machine.
+DP_ENV=(
+    HOME="$DP_HOME"
+    XDG_CONFIG_HOME="$DP_HOME/.config"
+    XDG_STATE_HOME="$DP_HOME/.local/state"
+    XDG_CACHE_HOME="$DP_HOME/.cache"
+    CFGD_STATE_DIR="$DP_STATE"
+    CFGD_CACHE_DIR="$DP_HOME/.cache/cfgd"
+    CFGD_DAEMON_IPC_PATH="$DP_ROOT/cfgd.sock"
+)
+
 dp_cfgd() {
-    env HOME="$DP_HOME" \
-        XDG_CONFIG_HOME="$DP_HOME/.config" \
-        XDG_STATE_HOME="$DP_HOME/.local/state" \
-        XDG_CACHE_HOME="$DP_HOME/.cache" \
-        CFGD_STATE_DIR="$DP_STATE" \
-        CFGD_CACHE_DIR="$DP_HOME/.cache/cfgd" \
-        CFGD_DAEMON_IPC_PATH="$DP_ROOT/cfgd.sock" \
-        "$CFGD_BIN" --config "$DP_CONF" --color never "$@"
+    env "${DP_ENV[@]}" "$CFGD_BIN" --config "$DP_CONF" --color never "$@"
+}
+
+# The backgrounded job has to BE the daemon: a shell function put in the
+# background forks first, so `$!` would name a wrapper whose death says nothing
+# about the process still holding the state store. `exec` replaces that fork.
+dp_spawn_daemon() {
+    exec env "${DP_ENV[@]}" "$CFGD_BIN" --config "$DP_CONF" --color never daemon
+}
+
+# Whether any process of THIS run's device is still alive, asked of the config
+# path rather than of a recorded pid, so the answer cannot be vacuous.
+dp_daemon_alive() {
+    pgrep -f "$DP_CONF" > /dev/null 2>&1
 }
 
 # One unit's field out of `cfgd backup list -o json`; "absent" for a key the
@@ -287,7 +303,7 @@ if [ ! -f "$DP_STATE/device-credential.json" ]; then
 else
     GW35_PASS=true
     rm -f "$DP_ROOT/cfgd.sock"
-    dp_cfgd daemon > "$DP_DAEMON_LOG" 2>&1 &
+    dp_spawn_daemon > "$DP_DAEMON_LOG" 2>&1 &
     DP_DAEMON_PID=$!
     GW35_READY=timeout
     GW35_DEADLINE=$((SECONDS + 60))
@@ -355,7 +371,7 @@ else
     kill -KILL "$GW35_WATCHDOG" 2>/dev/null || true
     wait "$GW35_WATCHDOG" 2>/dev/null || true
     GW35_STOPPED=running
-    kill -0 "$DP_DAEMON_PID" 2>/dev/null || GW35_STOPPED=stopped
+    dp_daemon_alive || GW35_STOPPED=stopped
     DP_DAEMON_PID=""
     echo "  daemon after SIGTERM: $GW35_STOPPED"
 
@@ -394,7 +410,7 @@ kubectl delete machineconfig "$DP_MC_NAME" -n "$E2E_NAMESPACE" --ignore-not-foun
 GW36_LEFT=$(kubectl get backuppolicy,machineconfig -n "$E2E_NAMESPACE" -o name 2>/dev/null |
     grep -F "projection-${E2E_RUN_ID}" || true)
 GW36_DAEMON=gone
-[ -n "${DP_DAEMON_PID:-}" ] && kill -0 "$DP_DAEMON_PID" 2>/dev/null && GW36_DAEMON=running
+dp_daemon_alive && GW36_DAEMON=running
 echo "  remaining objects: ${GW36_LEFT:-none}"
 echo "  daemon: $GW36_DAEMON"
 
