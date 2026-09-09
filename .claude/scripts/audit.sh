@@ -552,7 +552,7 @@ log_section "No Unwrap in Library Code"
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/[^:]*/tests/[^/:]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:'
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status
