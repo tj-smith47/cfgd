@@ -1194,25 +1194,65 @@ fn a_destination_restored_to_its_old_path_un_orphans_the_rows_it_stranded() {
     );
 }
 
-/// Replace the old destination DIRECTORY with a file, so every recorded path
-/// under it is unreachable. Unix-only: the error kind a path that runs through
-/// a file yields is `NotADirectory` there and `NotFound` on Windows, which the
-/// remover reads as a payload that was already gone.
-#[cfg(unix)]
-fn strand_behind_a_file(h: &Harness, dir: &str) {
-    let path = h.root.join(dir);
-    std::fs::remove_dir_all(&path).expect("clear the old destination");
-    std::fs::write(&path, b"an operator's file").expect("file in its place");
+/// A recorded payload gc cannot remove, held that way for as long as the value
+/// lives.
+///
+/// The two operating systems refuse a removal for different reasons, so each
+/// gets the shape its own kernel actually refuses. On unix the snapshot's
+/// destination DIRECTORY is replaced with a file, so the recorded path runs
+/// through a file and yields `NotADirectory`; Windows reports that same path as
+/// `NotFound`, which the remover reads as a payload that was already gone, so
+/// there the snapshot file itself is opened granting no sharing at all and every
+/// `remove_file` against it fails with a sharing violation. Dropping the value
+/// releases the hold, so a test binds it across the collect it is proving.
+struct UnremovablePayload {
+    /// What must still be on disk after gc reports it could not remove the
+    /// payload: the stand-in file on unix, the held snapshot on Windows. Both
+    /// are files, so one question answers the claim on either OS.
+    witness: PathBuf,
+    #[cfg(windows)]
+    _held_open: std::fs::File,
+}
+
+impl UnremovablePayload {
+    fn witness_survives(&self) -> bool {
+        self.witness.is_file()
+    }
+}
+
+fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
+    #[cfg(unix)]
+    {
+        let dir = payload
+            .parent()
+            .expect("a recorded snapshot lives under a destination")
+            .to_path_buf();
+        std::fs::remove_dir_all(&dir).expect("clear the old destination");
+        std::fs::write(&dir, b"an operator's file").expect("file in its place");
+        UnremovablePayload { witness: dir }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(payload)
+            .expect("hold the snapshot open");
+        UnremovablePayload {
+            witness: payload.to_path_buf(),
+            _held_open: held,
+        }
+    }
 }
 
 #[test]
-#[cfg(unix)]
 fn gc_that_cannot_remove_a_payload_keeps_its_row() {
     let h = Harness::new();
     let source = h.seed_file("data.db", b"payload");
     let mut s = spec("db", &source);
-    let (first, _) = orphan_by_moving_the_destination(&h, &mut s);
-    strand_behind_a_file(&h, "dest-a");
+    let (first, payload) = orphan_by_moving_the_destination(&h, &mut s);
+    let held = hold_payload_unremovable(&payload);
 
     let outcome = h.collect(&s);
 
@@ -1232,13 +1272,12 @@ fn gc_that_cannot_remove_a_payload_keeps_its_row() {
         "a row was dropped while its payload was still there to collect"
     );
     assert!(
-        h.root.join("dest-a").is_file(),
+        held.witness_survives(),
         "gc removed what it could not remove"
     );
 }
 
 #[test]
-#[cfg(unix)]
 fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
     let h = Harness::new();
     let source = h.seed_file("data.db", b"payload");
@@ -1247,7 +1286,7 @@ fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
 
     s.destination = Some(h.root.join("dest-a"));
     s.name_pattern = "snapshot-0".to_string();
-    h.run(&s);
+    let first = h.run(&s);
     s.destination = Some(h.root.join("dest-c"));
     s.name_pattern = "snapshot-1".to_string();
     let second = h.run(&s);
@@ -1255,7 +1294,8 @@ fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
     s.name_pattern = "snapshot-2".to_string();
     h.run(&s);
 
-    strand_behind_a_file(&h, "dest-a");
+    let stranded = PathBuf::from(first.destination_path.clone().expect("artifact"));
+    let _held = hold_payload_unremovable(&stranded);
     let collectable = PathBuf::from(second.destination_path.clone().expect("artifact"));
 
     let outcome = h.collect(&s);
