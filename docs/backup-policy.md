@@ -106,7 +106,8 @@ whole recorded set from it, which is how a cadence the cluster stopped owning is
 
 The machine holds the answer alongside its profile and never inside it: the projection decides
 when a cluster-owned unit is next due, and `cfgd backup list` shows it in the Schedule and
-Retention cells with `cluster` in the Schedule Owner column. `-o json` carries the declared value
+Retention cells with `projected` in the Schedule Owner column, which reads `cluster` for a unit
+the policy left alone and `local` for one pinned to the machine. `-o json` carries the declared value
 always and the effective one only when the cluster CHANGED it, so the presence of
 `effectiveSchedule` or `effectiveRetention` states an override rather than restating a cadence the
 profile already declared. Nothing rewrites `spec.backups[]`, so a machine that stops matching a

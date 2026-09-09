@@ -133,6 +133,24 @@ fn restoring_verb_state(
 /// instant it carried answered "when exactly" — the question the `-o json`
 /// payload's `lastRunAt` is for — on the one column a reader scans to learn how
 /// stale the unit is.
+/// The listing's Schedule Owner cell for one row.
+///
+/// The entry carries the owner as the word its `-o json` reader matches on, so
+/// the type is read back through the same `FromStr` the config parser uses
+/// rather than compared by hand; a word no variant spells renders as it was
+/// stored. Whether the cluster's answer replaced the declared cadence is the
+/// question the two effective slots already answer, so it is not asked twice.
+fn schedule_owner_cell(entry: &BackupListEntry) -> String {
+    let overridden = entry.effective_schedule.is_some() || entry.effective_retention.is_some();
+    entry
+        .schedule_owner
+        .parse::<cfgd_core::config::ScheduleOwner>()
+        .map_or_else(
+            |_| entry.schedule_owner.clone(),
+            |owner| owner.listing_label(overridden).to_string(),
+        )
+}
+
 pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     let mut doc = Doc::new().heading("Backups");
 
@@ -183,7 +201,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
                     .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 None,
             ),
-            (e.schedule_owner.clone(), None),
+            (schedule_owner_cell(e), None),
             (
                 e.effective_retention.unwrap_or(e.retention).to_string(),
                 None,

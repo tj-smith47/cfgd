@@ -60,7 +60,7 @@ use pretty_assertions::assert_eq;
 
 use common::{
     apply_args, apply_args_dry_run, backup_list_profile_setup, backup_profile_setup,
-    backup_profile_with_one_failure_setup, cli_for,
+    backup_profile_with_one_failure_setup, cli_for, strand_a_snapshot,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -1267,55 +1267,6 @@ fn apply_dry_run_human_shows_pending_backups() {
     );
 }
 
-/// Write a one-unit `withbackups` profile whose `docs` backup snapshots
-/// `source` into `destination`, plus the `cfgd.yaml` selecting it. Rewriting it
-/// with a second `destination` is how a test moves a unit the way an operator
-/// editing their config does.
-fn write_gc_profile(config_dir: &Path, source: &Path, destination: &Path) {
-    let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      destination: {}\n      retention: 3\n",
-        cfgd_core::to_posix_string(source),
-        cfgd_core::to_posix_string(destination),
-    );
-    let profiles_dir = config_dir.join("profiles");
-    std::fs::create_dir_all(&profiles_dir).unwrap();
-    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
-    std::fs::write(
-        config_dir.join("cfgd.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n",
-    )
-    .unwrap();
-}
-
-/// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
-/// and snapshot again — the prune that discovers the stranded payload and marks
-/// its row `orphaned`. Returns the path the first run wrote and what the second
-/// run printed, which is where the closing `cfgd backup gc` hint lands.
-fn strand_a_snapshot(
-    config_dir: &Path,
-    state_dir: &Path,
-    source: &Path,
-) -> (std::path::PathBuf, String) {
-    let old = state_dir.join("old-backups");
-    write_gc_profile(config_dir, source, &old);
-    let cli = cli_for(config_dir, state_dir);
-    let (printer, _cap) = Printer::for_test_doc();
-    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
-    drop(printer);
-
-    let stranded = std::fs::read_dir(&old)
-        .expect("the first destination must exist after a run")
-        .map(|e| e.expect("entry").path())
-        .next()
-        .expect("the first run wrote a snapshot");
-
-    write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
-    let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
-    drop(printer);
-    (stranded, cfgd_core::output::strip_ansi(&cap.human()))
-}
-
 #[test]
 fn backup_gc_renders_one_group_per_unit_with_an_orphan() {
     let config_dir = tempfile::tempdir().unwrap();
@@ -1453,7 +1404,8 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
     // `cmd_backup_gc` would exit the process on this run, so the body is driven
-    // directly and the code it would use asserted against the constant.
+    // directly; the exit code itself is pinned against the real binary in
+    // `tests/backup_exit_code.rs`.
     let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
     drop(printer);
 
@@ -1483,7 +1435,6 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
         "no verdict claims a state no read earned:\n{human}"
     );
     assert_eq!(outcome.tally().failed, 2, "{outcome:?}");
-    assert_eq!(cfgd_core::exit::ExitCode::Error.as_i32(), 1);
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
@@ -1521,11 +1472,11 @@ fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
     drop(printer);
 
     // `cmd_backup_gc` turns exactly this into an exit, and it exits the
-    // process, so the code it would use is asserted against the constant the
-    // docs name rather than by running the binary.
+    // process, so this drives the body and pins what it found; the exit code
+    // the same setup produces is pinned against the real binary in
+    // `tests/backup_exit_code.rs`.
     assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
     assert!(outcome.collected.is_empty(), "{outcome:?}");
-    assert_eq!(cfgd_core::exit::ExitCode::Error.as_i32(), 1);
     assert!(old.is_file(), "gc removed what it could not remove");
 }
 
@@ -2551,9 +2502,12 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
 }
 
 /// What a check-in answered with reaches the listing: a unit the machine left
-/// open runs on the cluster's cadence, and the Owner column says whose it is,
-/// while a unit the machine pinned keeps its own. `-o json` carries both the
-/// declared and the effective values, so a reader can see what was overridden.
+/// open runs on the cluster's cadence, and the Schedule Owner cell says whether
+/// that answer REPLACED what the profile declared (`projected`), merely
+/// restated it (`cluster`), or was ignored because the unit is pinned
+/// (`local`). `-o json` carries both the declared and the effective values and
+/// keeps `scheduleOwner` at the two words the schema spells, so the third word
+/// is the human listing's alone.
 #[test]
 fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     let (config_dir, state_dir) = backup_list_profile_setup();
@@ -2602,8 +2556,8 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     };
     let docs = row("docs");
     assert!(
-        docs.contains("0 4 * * *") && docs.contains("cluster") && docs.contains(" 30 "),
-        "a cluster-owned unit runs on the projected cadence: {docs}"
+        docs.contains("0 4 * * *") && docs.contains("projected") && docs.contains(" 30 "),
+        "a unit the cluster's answer replaced reads `projected`: {docs}"
     );
     let weekly = row("weekly");
     assert!(
@@ -2612,8 +2566,10 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     );
     let mirrors = row("mirrors");
     assert!(
-        mirrors.contains("0 2 * * *") && mirrors.contains("cluster"),
-        "a cluster answer that restates the declared cadence still runs it: {mirrors}"
+        mirrors.contains("0 2 * * *")
+            && mirrors.contains("cluster")
+            && !mirrors.contains("projected"),
+        "a cluster answer that restates the declared cadence still reads `cluster`: {mirrors}"
     );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
@@ -2632,6 +2588,10 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     let docs = unit("docs");
     assert_eq!(docs["effectiveSchedule"], "0 4 * * *");
     assert_eq!(docs["effectiveRetention"], 30);
+    assert_eq!(
+        docs["scheduleOwner"], "cluster",
+        "`projected` is the listing's word; the wire keeps the declared owner"
+    );
     assert_eq!(docs["retention"], 3, "the declared value stays readable");
     assert!(docs["schedule"].is_null(), "docs declares no schedule");
     let weekly = unit("weekly");

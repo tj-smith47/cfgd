@@ -132,8 +132,9 @@ columns take: an unknown count is not a count of zero.
 
 `Status` and `Last Run` are two columns, the way `source list` splits them: the verdict is
 tinted by what it says, and the age beside it answers how stale the unit is. `Next Run`
-counts forward the same way (`in 11h`, `due now`). All three read as relative time on
-purpose — `-o json` keeps the exact instants in `lastRunAt` and `nextRunAt`.
+counts forward the same way, reading `due now` once the next due instant has passed. All three
+read as relative time on purpose: `-o json` keeps the exact instants in `lastRunAt` and
+`nextRunAt`.
 
 The count is the unit's own snapshots only. The safety copy [`cfgd backup restore`](#restoring)
 takes of what it overwrites is a sidecar beside the source, not a snapshot in the destination, so
@@ -353,7 +354,27 @@ backups:
 Which layer owns the unit's schedule. `Cluster` (the default) leaves the unit open to the
 cluster's [`BackupPolicy`](backup-policy.md), which may set or replace its `schedule` and
 `retention`; `Local` pins the unit to this machine, so the policy still reports the unit but
-projects no schedule onto it. `cfgd backup list` names it in the `Schedule Owner` column.
+projects no schedule onto it.
+
+`cfgd backup list`'s `Schedule Owner` column names one of three words. `projected` says a cluster
+policy answered and the unit now runs on the cadence that answer carried; `cluster` says the unit
+is open to a policy that has replaced nothing, so its own declaration still runs; `local` says the
+unit is pinned to this machine. The `Schedule` and `Retention` cells beside it read the projected
+values, and `-o json` keeps both sets: `schedule` / `retention` are what the profile declared,
+`effectiveSchedule` / `effectiveRetention` what the cluster projected.
+
+```console
+$ cfgd backup list
+Backups
+Name      Source                         Schedule   Schedule Owner  Retention  Snapshots  Status   Last Run  Next Run
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  0 4 * * *  projected       30         1          Success  just now  in 6h
+journal   ~/Documents/journal            0 3 * * *  local           3          1          Success  just now  in 5h
+```
+
+`notes-db` declared no schedule and left `scheduleOwner` at its `Cluster` default, so the policy's
+`0 4 * * *` and its retention of 30 are what runs. `journal` is pinned `Local`, so the same policy
+reports it and projects nothing onto it, and the `0 3 * * *` the profile declared still runs.
 
 ```yaml
 backups:

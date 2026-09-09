@@ -2158,9 +2158,11 @@ document to stdout: the payload is always one JSON value and the nonzero exit co
 failure. For
 `backup list`: an array of
 `{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, orphaned?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
-where `scheduleOwner` is `cluster` or `local` (the lowercase word the `Schedule Owner` column
-shows) and is present on every unit. `effectiveSchedule` and `effectiveRetention` carry the value
-a cluster [`BackupPolicy`](backup-policy.md) put in force, and each appears only when it DIFFERS
+where `scheduleOwner` is `cluster` or `local` (the layer the profile declared, whatever the
+cluster went on to project) and is present on every unit. The `Schedule Owner` column reads a
+third word, `projected`, for a `cluster` unit whose cadence a policy replaced.
+`effectiveSchedule` and `effectiveRetention` carry the value
+a cluster [`BackupPolicy`](backup-policy.md) projected, and each appears only when it DIFFERS
 from the declared one: the key's presence is the claim that the cluster changed this, so an answer
 restating what the profile already declared adds neither.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
@@ -2361,7 +2363,7 @@ authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit
 pinned `scheduleOwner: Local` ignores them, and nothing rewrites the profile on disk.
-[`cfgd backup list`](#cfgd-backup) shows the value in force. An answer that omits the cadences
+[`cfgd backup list`](#cfgd-backup) shows the projected value. An answer that omits the cadences
 entirely is a gateway that could not read the cluster, and the machine keeps the set it already
 recorded rather than retiring it.
 

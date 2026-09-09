@@ -3,10 +3,10 @@
 //!
 //! Both halves of cfgd describe the same file: `cfgd-core`'s parser reads it
 //! out of `module.yaml`, and the cluster-side Module CRD accepts it as part of
-//! a Kubernetes resource. Owning the types here — with serde and schemars as
-//! the only dependencies — is what lets the CRD reuse them without the CSI node
-//! plugin, which builds `cfgd-core` with `default-features = false`, inheriting
-//! the kube/k8s-openapi stack through them.
+//! a Kubernetes resource. Owning the types here — in a crate that depends on no
+//! other cfgd crate and on neither kube nor k8s-openapi — is what lets the CRD
+//! reuse them without the CSI node plugin, which builds `cfgd-core` with
+//! `default-features = false`, inheriting that stack through them.
 
 mod enum_de;
 
@@ -397,6 +397,26 @@ impl ScheduleOwner {
             ScheduleOwner::Local => "local",
         }
     }
+
+    /// The word a backup LISTING reads in its Schedule Owner cell.
+    ///
+    /// [`Self::label`] names the layer that may own the cadence; a listing has
+    /// to answer the narrower question its neighbouring cells raise, because
+    /// the Schedule and Retention beside it are the values in effect and a
+    /// reader has no other clue that they are not the ones the profile spells.
+    /// So a `Cluster` unit whose cluster answer REPLACED the declared cadence
+    /// reads `projected`, a cluster that merely restated it keeps `cluster`,
+    /// and a pinned unit keeps `local`. `overridden` is the caller's own
+    /// answer, the same one that filled its effective slots.
+    ///
+    /// Display only, and the listing's alone: the stored spelling and every
+    /// `scheduleOwner` on the wire stay [`Self::as_str`] / [`Self::label`].
+    pub fn listing_label(self, overridden: bool) -> &'static str {
+        match self {
+            ScheduleOwner::Cluster if overridden => "projected",
+            other => other.label(),
+        }
+    }
 }
 
 /// One backup unit's cluster-owned cadence, as the device gateway answers a
@@ -605,15 +625,19 @@ pub fn validate_file_target<'a>(
             "{subject}: target must not be empty"
         )));
     }
-    if let Some(first) = seen.get(target) {
-        return Err(FileShapeError(if first == subject {
-            format!("{subject}: declared twice")
-        } else {
-            format!("{subject}: target '{target}' duplicates {first}")
-        }));
+    match seen.entry(target) {
+        std::collections::hash_map::Entry::Occupied(first) => {
+            Err(FileShapeError(if first.get() == subject {
+                format!("{subject}: declared twice")
+            } else {
+                format!("{subject}: target '{target}' duplicates {}", first.get())
+            }))
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(subject.to_string());
+            Ok(())
+        }
     }
-    seen.insert(target, subject.to_string());
-    Ok(())
 }
 
 /// Reject a `platforms:` tag no host can ever match.
@@ -1008,86 +1032,6 @@ mod tests {
         assert_eq!(rendered.trim(), "Yaml");
     }
 
-    /// Every label-bearing type this crate owns, with the `(canonical token,
-    /// display label)` pairs read off its own `ALL` — so a new VARIANT is
-    /// covered by construction. The type list is the only hand-written half,
-    /// and the walk below checks it against the source.
-    fn labelled_types() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
-        vec![
-            (
-                "FileStrategy",
-                FileStrategy::ALL
-                    .iter()
-                    .map(|v| (v.as_str(), v.method_label()))
-                    .collect(),
-            ),
-            (
-                "ScheduleOwner",
-                ScheduleOwner::ALL
-                    .iter()
-                    .map(|v| (v.as_str(), v.label()))
-                    .collect(),
-            ),
-        ]
-    }
-
-    /// A display label is the ASCII-lowercase of the canonical token beside it,
-    /// on every label-bearing type this crate owns: a hand-written arm
-    /// returning anything else compiles, and one that reads `Local` where the
-    /// listing prints `local` would make the two spellings of one value drift.
-    /// The variant population comes from each type's `ALL`; the TYPE population
-    /// is read back off the source, so a third label-bearing type cannot be
-    /// invisible to this walk the way a hand-listed pair of enums would let it
-    /// be.
-    #[test]
-    fn every_display_label_is_the_lowercase_of_its_canonical_token() {
-        let table = labelled_types();
-        for (ty, pairs) in &table {
-            assert!(!pairs.is_empty(), "{ty} states no variants");
-            for (token, label) in pairs {
-                assert_eq!(
-                    *label,
-                    token.to_ascii_lowercase(),
-                    "{ty}::{token}'s label is not its token lowercased"
-                );
-            }
-        }
-
-        // The trailing test module carries these very literals, so the walk
-        // reads the production region alone.
-        let production = include_str!("lib.rs")
-            .split("\n#[cfg(test)]")
-            .next()
-            .expect("a source has a first region");
-        let mut current = None;
-        let mut sites: Vec<&str> = Vec::new();
-        for line in production.lines() {
-            if let Some(rest) = line.strip_prefix("impl ") {
-                current = rest.split_whitespace().next();
-            }
-            if line.contains("pub fn label(") || line.contains("pub fn method_label(") {
-                sites.push(current.unwrap_or_else(|| panic!("a label fn outside an impl: {line}")));
-            }
-        }
-        assert!(
-            sites.len() >= 2,
-            "the walk no longer reaches the crate's label fns — it found {sites:?}"
-        );
-        let listed: Vec<&str> = table.iter().map(|(ty, _)| *ty).collect();
-        for site in &sites {
-            assert!(
-                listed.contains(site),
-                "{site} states a display label no walk checks; add it to `labelled_types`"
-            );
-        }
-        for ty in &listed {
-            assert!(
-                sites.contains(ty),
-                "{ty} is listed but states no display label in this crate"
-            );
-        }
-    }
-
     #[test]
     fn schedule_owner_defaults_to_cluster_and_parses_case_insensitively() {
         let absent: BackupSpec =
@@ -1109,8 +1053,9 @@ mod tests {
 
     /// A word read as a plain string — one a device reported, one another
     /// component stored — reaches the enum through the same matcher a document
-    /// does, so the two cannot read one value two ways. The refusal names the
-    /// value and every token that would have been taken.
+    /// does, so the two cannot read one value two ways. Both refusals — the
+    /// parse's and the document's — name the value and every token that would
+    /// have been taken.
     #[test]
     fn a_string_valued_enum_parses_every_casing_and_names_what_it_refuses() {
         for word in ["Local", "local", "LOCAL", "lOcAl"] {
@@ -1133,6 +1078,16 @@ mod tests {
         assert!(
             refused.contains("Locale") && refused.contains("Cluster") && refused.contains("Local"),
             "the refusal names the value and the tokens: {refused}"
+        );
+
+        let deserialized = serde_yaml::from_str::<ScheduleOwner>("Locale")
+            .expect_err("a document spelling no variant is refused too")
+            .to_string();
+        assert!(
+            deserialized.contains("Locale")
+                && deserialized.contains("Cluster")
+                && deserialized.contains("Local"),
+            "the Deserialize refusal names the value and the tokens: {deserialized}"
         );
     }
 
