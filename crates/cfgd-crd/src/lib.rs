@@ -1020,24 +1020,17 @@ impl BackupPolicySpec {
         for (i, unit) in self.units.iter().enumerate() {
             // The name is matched against a unit the machine's own profile
             // defines, so a name no local profile could legally carry is
-            // refused here rather than reported per machine forever after. A
-            // name that fails the grammar is never asked whether it is a
-            // duplicate: the answer would be about a string no unit can have.
-            let name = unit.name.trim();
-            match cfgd_schema::validate_backup_unit_name(&unit.name) {
-                Err(why) => errors.push(format!("spec.units[{i}].name: {why}")),
-                Ok(()) if !seen.insert(name) => errors.push(format!(
-                    "spec.units[{i}].name '{name}' is declared twice; a unit takes one schedule"
-                )),
-                Ok(()) => {}
+            // refused here rather than reported per machine forever after.
+            if let Err(why) = cfgd_schema::validate_backup_unit_name(&unit.name) {
+                errors.push(format!("spec.units[{i}].name: {why}"));
+            }
+            if let Err(e) =
+                cfgd_schema::validate_backup_unit_shape(&unit.name, unit.retention, &mut seen)
+            {
+                errors.push(format!("spec.units[{i}].{e}"));
             }
             if let Err(why) = cfgd_schema::validate_backup_schedule_grammar(&unit.schedule) {
                 errors.push(format!("spec.units[{i}].{why}"));
-            }
-            if unit.retention == Some(0) {
-                errors.push(format!(
-                    "spec.units[{i}].retention must be at least 1; 0 would prune every snapshot the unit takes"
-                ));
             }
         }
         if errors.is_empty() {

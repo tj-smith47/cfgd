@@ -828,6 +828,51 @@ pub fn validate_backup_unit_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A backup unit that breaks one of the shape rules a list of units answers to.
+///
+/// The message is the whole refusal and opens on the FIELD it is about, so a
+/// caller with its own error type prefixes its own subject (`backup 'docs': `,
+/// `spec.units[1].`) rather than re-wording the rejection — the same relabel
+/// [`FileShapeError`] takes.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct BackupShapeError(pub String);
+
+/// Validate one backup unit against the rules that are about the LIST it sits
+/// in rather than about the unit alone: its `name` is not one an earlier unit
+/// already took, and its `retention` keeps something.
+///
+/// `seen` is the caller's own set, carried across its loop, so one pass answers
+/// the uniqueness question for a whole list. `retention` is the DECLARED value:
+/// `None` is the field omitted, which takes the default and is always legal.
+///
+/// The ONE rule behind both the machine's own `spec.backups[]` and the
+/// cluster-side `BackupPolicy.spec.units[]`. Two units sharing a name leave no
+/// answer to which schedule the unit runs on, and a `0` retention would prune
+/// every snapshot the unit takes, so a policy the API server admits is one a
+/// machine's own parser also accepts.
+pub fn validate_backup_unit_shape<'a>(
+    name: &'a str,
+    retention: Option<u32>,
+    seen: &mut std::collections::HashSet<&'a str>,
+) -> Result<(), BackupShapeError> {
+    if !seen.insert(name.trim()) {
+        return Err(BackupShapeError(
+            "name is declared twice; a unit takes one schedule".to_string(),
+        ));
+    }
+    if retention == Some(0) {
+        // The rule is shared, so the sentence names no layer's own default:
+        // omitting the field takes the machine's `default_backup_retention` in
+        // a profile and leaves the machine's own number standing in a policy.
+        return Err(BackupShapeError(
+            "retention must be at least 1 (0 would keep no backups); omit the field to take the default"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

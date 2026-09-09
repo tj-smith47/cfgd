@@ -1100,26 +1100,13 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
     for spec in specs {
         validate_backup_name(&spec.name)?;
         let subject = format!("backup '{}'", spec.name);
-        if !seen_names.insert(spec.name.trim()) {
-            return Err(ConfigError::Invalid {
-                message: format!(
-                    "duplicate backup name '{}': names must be unique across spec.backups",
-                    spec.name
-                ),
-            }
-            .into());
-        }
+        cfgd_schema::validate_backup_unit_shape(&spec.name, Some(spec.retention), &mut seen_names)
+            .map_err(|e| ConfigError::Invalid {
+                message: format!("{subject}: {e}"),
+            })?;
         validate_backup_name_pattern(&subject, &spec.name_pattern)?;
         if let Some(schedule) = &spec.schedule {
             validate_backup_schedule(&subject, schedule)?;
-        }
-        if spec.retention == 0 {
-            return Err(ConfigError::Invalid {
-                message: format!(
-                    "{subject}: retention must be at least 1 (0 would keep no backups); omit the field to use the default of 10"
-                ),
-            }
-            .into());
         }
     }
     Ok(())
@@ -1129,6 +1116,20 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
 mod tests {
     use super::*;
     use cfgd_schema::{PatchFormat, default_backup_name_pattern, default_backup_retention};
+
+    /// What the shared unit-shape rule says about a unit declared after
+    /// `taken`, so this parser's message is asserted against the rule itself
+    /// rather than against a copy of its wording.
+    fn shared_shape_refusal<'a>(
+        name: &'a str,
+        retention: Option<u32>,
+        taken: &[&'a str],
+    ) -> String {
+        let mut seen: std::collections::HashSet<&'a str> = taken.iter().copied().collect();
+        cfgd_schema::validate_backup_unit_shape(name, retention, &mut seen)
+            .expect_err("the shape rule refuses this unit")
+            .to_string()
+    }
 
     /// A minimal valid backup unit; tests override only the field under test.
     fn backup(name: &str) -> BackupSpec {
@@ -1477,7 +1478,13 @@ postBackup:
         ];
         let err = validate_backup_specs(&specs).expect_err("duplicate names must be rejected");
         let msg = format!("{err}");
-        assert!(msg.contains("duplicate backup name"), "got: {msg}");
+        // Ground truth is the shared rule, which the cluster-side
+        // `BackupPolicy.spec.units[]` answers to as well; this parser only
+        // prefixes the subject a local document can name.
+        assert!(
+            msg.contains(&shared_shape_refusal(" db ", None, &["db"])),
+            "got: {msg}"
+        );
         assert!(msg.contains("' db '"), "got: {msg}");
     }
 
@@ -1544,7 +1551,10 @@ postBackup:
         }];
         let err = validate_backup_specs(&specs).expect_err("retention 0 must be rejected");
         let msg = format!("{err}");
-        assert!(msg.contains("retention must be at least 1"), "got: {msg}");
+        assert!(
+            msg.contains(&shared_shape_refusal("db", Some(0), &[])),
+            "got: {msg}"
+        );
     }
 
     #[test]

@@ -1008,10 +1008,15 @@ fn backup_policy_rejects_two_units_sharing_a_name() {
     ])
     .validate()
     .unwrap_err();
+    // Ground truth is the shared rule the machine's own `spec.backups[]`
+    // parser answers to; the policy only prefixes the field path.
+    let mut seen = std::collections::HashSet::from(["dotfiles"]);
+    let shared = cfgd_schema::validate_backup_unit_shape("dotfiles", None, &mut seen)
+        .expect_err("a name a sibling already took")
+        .to_string();
     assert!(
-        errs.iter()
-            .any(|e| e.contains("spec.units[1].name") && e.contains("twice")),
-        "should reject the duplicate at its own index: {errs:?}"
+        errs.contains(&format!("spec.units[1].{shared}")),
+        "should state the shared rule at the duplicate's own index: {errs:?}"
     );
 }
 
@@ -1029,9 +1034,16 @@ fn backup_policy_rejects_a_retention_of_zero() {
     let mut spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);
     spec.units[0].retention = Some(0);
     let errs = spec.validate().unwrap_err();
+    let shared = cfgd_schema::validate_backup_unit_shape(
+        "dotfiles",
+        Some(0),
+        &mut std::collections::HashSet::new(),
+    )
+    .expect_err("a retention that keeps nothing")
+    .to_string();
     assert!(
-        errs.iter().any(|e| e.contains("spec.units[0].retention")),
-        "should name the zero retention: {errs:?}"
+        errs.contains(&format!("spec.units[0].{shared}")),
+        "should state the shared rule about the zero retention: {errs:?}"
     );
     spec.units[0].retention = Some(1);
     assert!(spec.validate().is_ok(), "1 is the smallest kept snapshot");
