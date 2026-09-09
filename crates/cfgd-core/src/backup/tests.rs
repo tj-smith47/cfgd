@@ -1244,7 +1244,7 @@ fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
     h.run(&s);
 
     let stranded = PathBuf::from(first.destination_path.clone().expect("artifact"));
-    let _held = hold_payload_unremovable(&stranded);
+    let held = hold_payload_unremovable(&stranded);
     let collectable = PathBuf::from(second.destination_path.clone().expect("artifact"));
 
     let outcome = h.collect(&s);
@@ -1253,6 +1253,10 @@ fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
     assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
     assert_eq!(outcome.tally().status, crate::state::ApplyStatus::Partial);
     assert!(!collectable.exists(), "the removable payload survived");
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -3720,3 +3720,125 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
         offenders.join("\n")
     );
 }
+
+/// Files holding a pin of gc's failed-removal arm, and the number of pins each
+/// still has to yield.
+///
+/// A floor per file, so a pin whose shape drifts out of needle reach fails here
+/// rather than leaving the walk reading three members of a class of four.
+const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
+    ("crates/cfgd-core/src/backup/tests.rs", 2),
+    ("crates/cfgd/tests/backup_exit_code.rs", 1),
+    ("crates/cfgd/tests/backup_snapshots.rs", 1),
+];
+
+/// The shapes that make a backup payload unremovable, read off
+/// [`crate::test_helpers::hold_payload_unremovable`]'s own source, so renaming
+/// the stand-in's contents or switching the Windows sharing call moves this
+/// walk with the producer instead of blinding it.
+fn unremovable_payload_tells() -> Vec<String> {
+    let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the producer must be readable: {} — {e}", path.display()));
+    let label = source_label(&path);
+    let slice = source_functions(&label, &body)
+        .into_iter()
+        .find(|(_, slice)| declared_fn_name(slice) == Some("hold_payload_unremovable"))
+        .map(|(_, slice)| slice)
+        .expect("the fixture must still be a free function in test_helpers.rs");
+    let stand_in = slice
+        .split_once("b\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(literal, _)| literal.to_string())
+        .expect("the unix arm must still write a stand-in file with a literal body");
+    assert!(
+        slice.contains("share_mode("),
+        "the Windows arm must still hold the snapshot open through share_mode"
+    );
+    vec![stand_in, "share_mode(".to_string()]
+}
+
+/// Every pin of gc's failed-removal arm reaches its unremovable payload through
+/// the one fixture, and no such pin is gated to one operating system.
+///
+/// The arm is the same on every host — a removal cfgd cannot perform keeps its
+/// row — but the reason a kernel refuses one is not, so a pin that hand-rolls
+/// the unix shape can only ever run there and the arm goes unproven everywhere
+/// else. Both halves are the finding: a stand-in written beside the fixture
+/// drifts from it, and a `#[cfg(unix)]` over a pin of this arm silently takes
+/// the arm out of the Windows and macOS suites. `// unix-only-gc-ok: <why>`
+/// hatches a pin that genuinely asserts a unix-only fact.
+#[test]
+fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
+    let tells = unremovable_payload_tells();
+    let mut judged: Vec<(String, String)> = Vec::new();
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        // The producer states both shapes by definition, and this walk quotes
+        // them to find the others.
+        if posix.ends_with("src/test_helpers.rs") || posix.ends_with("output/tests/fences.rs") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the walk could not read {} — {e}", path.display()));
+        let lines: Vec<&str> = body.lines().collect();
+        let relative = source_label(&path);
+
+        for (open, slice) in source_functions(&relative, &body) {
+            let Some(name) = declared_fn_name(&slice) else {
+                continue;
+            };
+            let attributes = &lines[attribute_block_start(&lines, open - 1)..open - 1];
+            let hatched = attributes
+                .iter()
+                .chain(slice.lines().collect::<Vec<_>>().iter())
+                .any(|l| l.contains("unix-only-gc-ok:"));
+            let reaches = slice.contains("hold_payload_unremovable");
+            let hand_rolled = tells.iter().any(|tell| slice.contains(tell.as_str()));
+            // A pin of this arm names what it could not remove, whatever
+            // surface it drives.
+            let names_the_arm =
+                name.contains("cannot_remove") || name.contains("cannot_be_removed");
+            if !(reaches || hand_rolled || names_the_arm) {
+                continue;
+            }
+            let at = format!("{relative}:{open}: {name}");
+            judged.push((posix.clone(), at.clone()));
+            if hatched {
+                continue;
+            }
+            if hand_rolled && !reaches {
+                offenders.push(format!("{at}: hand-rolled unremovable payload"));
+            }
+            if attributes
+                .iter()
+                .any(|l| l.trim_start().starts_with("#[cfg(unix)]"))
+            {
+                offenders.push(format!("{at}: gated to unix"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a pin of gc's failed-removal arm must hold its payload through \
+         `cfgd_core::test_helpers::hold_payload_unremovable`, which refuses the \
+         removal the way each OS really does, and must run on every OS:\n{}",
+        offenders.join("\n")
+    );
+    for (file, floor) in GC_FAILED_REMOVAL_PINS {
+        let found = judged.iter().filter(|(p, _)| p.ends_with(file)).count();
+        assert!(
+            found >= *floor,
+            "{file} yielded {found} pins of gc's failed-removal arm, under its \
+             floor of {floor} — a member has fallen out of needle reach:\n{}",
+            judged
+                .iter()
+                .map(|(_, at)| at.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}

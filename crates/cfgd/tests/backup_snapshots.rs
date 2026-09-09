@@ -1448,7 +1448,6 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
 }
 
 #[test]
-#[cfg(unix)]
 fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
@@ -1457,14 +1456,7 @@ fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
     std::fs::write(&source, "hello backup").unwrap();
 
     let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
-    // Put a file where the old destination directory was, so every path
-    // recorded under it is unreachable and its removal genuinely fails. Unix
-    // only: a path running through a file reads as `NotFound` on Windows,
-    // which is a payload already gone rather than one that would not go.
-    let old = state_dir.path().join("old-backups");
-    std::fs::remove_dir_all(&old).unwrap();
-    std::fs::write(&old, "an operator's file").unwrap();
-    assert!(!stranded.exists());
+    let held = cfgd_core::test_helpers::hold_payload_unremovable(&stranded);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
@@ -1477,7 +1469,10 @@ fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
     // `tests/backup_exit_code.rs`.
     assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
     assert!(outcome.collected.is_empty(), "{outcome:?}");
-    assert!(old.is_file(), "gc removed what it could not remove");
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
 }
 
 // ─────────────────────────────────────────────────────
