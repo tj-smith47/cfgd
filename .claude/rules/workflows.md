@@ -112,8 +112,16 @@ single-source-of-truth wiring.
   to `-p cfgd-core -p cfgd`, because cfgd-csi/cfgd-operator are k8s
   server-side with no FreeBSD surface (same rationale as the Windows branch).
   The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
-  the VM); `task`/`nextest` come from pkg; no protoc (neither in-scope crate
-  compiles protos). The guest gets `mem: 10240`: rustc compiling cfgd-core's
+  the VM); `task`/`nextest`/`npm` come from pkg; no protoc (neither in-scope
+  crate compiles protos). After `task test:ci` the guest builds `--bin cfgd`
+  and runs `task test:freebsd:npm-prefix`, the real-host proof of the
+  unprivileged npm global-prefix fallback documented in `docs/packages.md`:
+  the unit pins inject both elevation and the write-probe, so only a real
+  non-root user against the real `www/npm` (configured prefix `/usr/local`,
+  root-owned) can observe cfgd fall back to `$HOME/.npm-global` and pass
+  `--prefix`. The FreeBSD-only decision lives in the Taskfile's `uname -s`
+  branch like `test:ci`'s, and `npm` is installed in `prepare` rather than by
+  the script because `IGNORE_OSVERSION` is not exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg
   locally against the accept VM (start-if-stopped, poll, sync, `task test:ci`).

@@ -189,6 +189,21 @@ tasks:
             ssh {{.HOST}} 'shutdown -p now' || true
           fi
 
+  test:freebsd:npm-prefix:
+    desc: "Real-host proof of the unprivileged npm global-prefix fallback (FreeBSD only, needs root). BIN overrides the cfgd binary under test."
+    vars:
+      BIN: '{{.BIN | default "target/debug/cfgd"}}'
+    cmds:
+      - cmd: |
+          # No RUNNER_OS inside the vmactions guest, so discriminate on uname
+          # like `test:ci` does. Every other host has a writable npm prefix or
+          # no `www/npm` at all, so there is nothing for the check to observe.
+          if [ "$(uname -s)" != "FreeBSD" ]; then
+            echo "==> skipping test:freebsd:npm-prefix: FreeBSD only (uname -s is $(uname -s))"
+            exit 0
+          fi
+          sh tests/real-host/freebsd-npm-prefix.sh '{{.BIN}}'
+
   test:threads:
     desc: "Thread-model leg: plain `cargo test` (not nextest) at a high thread count, run by `task ci` and CI's dedicated ubuntu-only job."
     deps: [_check:tmp-headroom]

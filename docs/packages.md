@@ -46,6 +46,13 @@ as installed:
 4. If the probe fails, cfgd falls back to `$HOME/.npm-global`, creating it if
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
 
+The unprivileged arm is proven on a real host as well as in unit tests: CI's
+FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
+`task test:freebsd:npm-prefix` target) as a non-root user against the `www/npm`
+package, whose configured prefix is the root-owned `/usr/local`, and asserts
+that a declared package's binary lands in `$HOME/.npm-global/bin` and that the
+generated env file puts that directory on `PATH`.
+
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
 directory cfgd created, so its `bin` directory is written into the generated

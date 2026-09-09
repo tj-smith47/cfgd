@@ -175,11 +175,20 @@ jobs:
             # ordinary userland tooling, so the minor-version gate is noise.
             export IGNORE_OSVERSION=yes
             pkg update -f
-            pkg install -y rustup-init git task nextest gmake perl5
+            # npm is the subject of the real-host prefix check in `run:`, and
+            # it must come from pkg here: IGNORE_OSVERSION is not exported into
+            # that shell, so a pkg install attempted there is rejected.
+            pkg install -y rustup-init git task nextest gmake perl5 npm
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
             . "$HOME/.cargo/env"
             task test:ci
+            # The npm prefix fallback's unit pins inject both elevation and the
+            # write-probe, so only a real host proves it: a non-root user, the
+            # real www/npm whose configured prefix is the root-owned
+            # /usr/local, and npm honouring the --prefix cfgd passes.
+            cargo build --bin cfgd
+            task test:freebsd:npm-prefix BIN=target/debug/cfgd
 
   audit:
     name: Code Audit
