@@ -54,6 +54,15 @@ tasks:
       - sh: '[ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
+  _check:mem-headroom:
+    internal: true
+    desc: "Precondition: rustdoc over this workspace peaks near 10 GB; refuse to start it with less available, so it fails here instead of the kernel killing whatever else is largest."
+    preconditions:
+      # MemAvailable is in kB; 10 GB = 10485760 kB. Only Linux exposes /proc/meminfo;
+      # the macOS and Windows runners are never short of it for this step.
+      - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 10485760 ]'
+        msg: "Under 10 GB of memory available: rustdoc for this workspace peaks near 10 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate; run it there, not here."
+
   # --- Build ---
 
   build:
@@ -83,11 +92,10 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, doc, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate is CI's alone
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: test
       - task: audit
 
@@ -108,8 +116,8 @@ tasks:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
-    desc: Build rustdoc for the workspace, denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...)
-    deps: [_check:tmp-headroom]
+    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). No local chain runs it; it refuses to start with under 10 GB of memory available."
+    deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
       # The cfgd and cfgd-operator rustdocs each peak near 10 GB; two in flight on a
@@ -450,7 +458,7 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in `task ci` and CI, not here
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI only, never here
     cmds:
       - task: tidy
       - task: clippy
@@ -542,11 +550,10 @@ tasks:
       - git push {{.CLI_ARGS | default "origin master"}}
 
   ci:
-    desc: Run all CI checks (everything except cross-platform builds)
+    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which only CI's host has the memory for)
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: schema:check
       - task: gen:crds:check
       - task: version-files:check

@@ -176,10 +176,14 @@ single-source-of-truth wiring.
   `#[allow(rustdoc::invalid_html_tags)]`. Everywhere else, prefer a backtick
   code span over a backslash escape for a literal that looks like an HTML
   tag — it resolves the same lint and reads cleaner in the source. The gate
-  lives in `task ci` and `task check` beside this job, and deliberately NOT in
-  `task lint` (the `task commit` chain): the two rustdocs are a four-minute
-  serial leg that peaks near 10 GB, and a broken link is a merge blocker, not
-  a commit blocker — CI refuses it before it lands.
+  lives in this job ONLY: no local target (`task ci`, `task check`, `task
+  lint`, the `task commit` chain) chains to `task doc`, and the task itself
+  refuses to start with under 10 GB available (`_check:mem-headroom`). The
+  two rustdocs peak near 10 GB each; on the 12 GB dev host that is the
+  kernel OOM-killing the largest process on the box, whichever session owns
+  it (41 kills between 2026-09-04 and 2026-09-09, every one a rustdoc or the
+  rust-analyzer beside it). A broken link is a merge blocker, not a commit
+  blocker — CI refuses it before it lands.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after
