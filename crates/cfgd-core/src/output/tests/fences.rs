@@ -3732,15 +3732,29 @@ const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
     ("crates/cfgd/tests/backup_snapshots.rs", 1),
 ];
 
+/// The calls that run a backup gc collection, whatever surface a pin drives it
+/// through: the engine helper, the library entry point and the argv of the real
+/// binary.
+///
+/// Inside a file that already pins gc's failed-removal arm, one of these is
+/// what makes a function a candidate pin of that arm, so a future one is judged
+/// on what it DOES rather than on a name a needle has to guess.
+const GC_COLLECT_ENTRIES: &[&str] = &[
+    "h.collect(",
+    "collect_orphans",
+    "run_backup_gc",
+    "\"backup\", \"gc\"",
+];
+
 /// The shapes that make a backup payload unremovable, read off
 /// [`crate::test_helpers::hold_payload_unremovable`]'s own source, so renaming
 /// the stand-in's contents or switching the Windows sharing call moves this
 /// walk with the producer instead of blinding it.
 fn unremovable_payload_tells() -> Vec<String> {
     let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
-    let body = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("the producer must be readable: {} — {e}", path.display()));
     let label = source_label(&path);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the producer must be readable: {label} — {e}"));
     let slice = source_functions(&label, &body)
         .into_iter()
         .find(|(_, slice)| declared_fn_name(slice) == Some("hold_payload_unremovable"))
@@ -3778,13 +3792,18 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
         let posix = crate::to_posix_string(&path);
         // The producer states both shapes by definition, and this walk quotes
         // them to find the others.
-        if posix.ends_with("src/test_helpers.rs") || posix.ends_with("output/tests/fences.rs") {
+        if posix.ends_with("cfgd-core/src/test_helpers.rs")
+            || posix.ends_with("output/tests/fences.rs")
+        {
             continue;
         }
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("the walk could not read {} — {e}", path.display()));
-        let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the walk could not read {relative} — {e}"));
+        let lines: Vec<&str> = body.lines().collect();
+        let floored = GC_FAILED_REMOVAL_PINS
+            .iter()
+            .any(|(file, _)| posix.ends_with(file));
 
         for (open, slice) in source_functions(&relative, &body) {
             let Some(name) = declared_fn_name(&slice) else {
@@ -3797,15 +3816,19 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
                 .any(|l| l.contains("unix-only-gc-ok:"));
             let reaches = slice.contains("hold_payload_unremovable");
             let hand_rolled = tells.iter().any(|tell| slice.contains(tell.as_str()));
-            // A pin of this arm names what it could not remove, whatever
-            // surface it drives.
-            let names_the_arm =
-                name.contains("cannot_remove") || name.contains("cannot_be_removed");
-            if !(reaches || hand_rolled || names_the_arm) {
+            // Inside a file that already holds pins of this arm, anything
+            // driving a collection is a candidate pin of it whatever it is
+            // called, so a future one cannot hide behind a name no needle
+            // spells.
+            let drives_a_collection =
+                floored && GC_COLLECT_ENTRIES.iter().any(|call| slice.contains(call));
+            if !(reaches || hand_rolled || drives_a_collection) {
                 continue;
             }
             let at = format!("{relative}:{open}: {name}");
-            judged.push((posix.clone(), at.clone()));
+            if reaches || hand_rolled {
+                judged.push((posix.clone(), at.clone()));
+            }
             if hatched {
                 continue;
             }
@@ -3841,4 +3864,22 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
                 .join("\n")
         );
     }
+    // A floor only guards a file it names, so the table has to be the whole
+    // non-zero set: a pin landing in a fourth file is judged here and watched
+    // by nothing, free to fall out of needle reach unnoticed.
+    let unfloored: std::collections::BTreeSet<&str> = judged
+        .iter()
+        .map(|(file, _)| file.as_str())
+        .filter(|file| {
+            !GC_FAILED_REMOVAL_PINS
+                .iter()
+                .any(|(floored, _)| file.ends_with(floored))
+        })
+        .collect();
+    assert!(
+        unfloored.is_empty(),
+        "a file holding a pin of gc's failed-removal arm needs a row in \
+         `GC_FAILED_REMOVAL_PINS`, or its count can fall to zero unwatched:\n{}",
+        unfloored.into_iter().collect::<Vec<_>>().join("\n")
+    );
 }
