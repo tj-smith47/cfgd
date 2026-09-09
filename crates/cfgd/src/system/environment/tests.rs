@@ -1664,12 +1664,16 @@ fn environment_name_returns_environment() {
 }
 
 /// Every system-scope environment file this configurator writes must be
-/// readable by the unprivileged sessions that source it, not only by the
-/// root process that wrote it. `atomic_write_str` lands its tempfile on
-/// 0600, so each writer widens explicitly, and this walks the pair rather
-/// than pinning one of them: a root-only `/etc/profile.d/cfgd-env.sh` aborts
-/// every unprivileged login shell on FreeBSD and is silently skipped on
-/// Linux, either way defeating the all-users promise the file exists for.
+/// readable by the unprivileged sessions that source it, not only by the root
+/// process that wrote it.
+///
+/// The static half of this class is
+/// `every_privileged_writer_says_whether_a_non_root_reader_opens_its_file`,
+/// which walks the producers; this is the behavioural half, over every writer
+/// that takes its path as a parameter. It also pins the WIDEN rather than a
+/// set: `/etc/environment` keeps lines cfgd never wrote, so its mode is the
+/// administrator's and an absolute `0o644` would drop a `0o664` file's
+/// group-write bit on every apply.
 #[cfg(unix)]
 #[test]
 fn every_system_scope_env_file_is_readable_by_the_sessions_that_source_it() {
@@ -1683,8 +1687,10 @@ fn every_system_scope_env_file_is_readable_by_the_sessions_that_source_it() {
     EnvironmentConfigurator::write_etc_environment_to(&etc_environment, &managed).unwrap();
     let profile_d = dir.path().join("profile.d").join("cfgd-env.sh");
     EnvironmentConfigurator::write_profile_d_to(&profile_d, &managed).unwrap();
+    let plist = dir.path().join("com.cfgd.environment.plist");
+    EnvironmentConfigurator::write_launchd_plist_to(&plist, &managed).unwrap();
 
-    for path in [&etc_environment, &profile_d] {
+    for path in [&etc_environment, &profile_d, &plist] {
         let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(
             mode,
@@ -1693,4 +1699,19 @@ fn every_system_scope_env_file_is_readable_by_the_sessions_that_source_it() {
             path.display()
         );
     }
+
+    // A mode the administrator set on a file cfgd only partly owns survives the
+    // widen: 0o664 keeps its group-write bit and gains nothing but read bits.
+    cfgd_core::set_file_permissions(&etc_environment, 0o664).unwrap();
+    managed.insert("LANG".to_string(), "en_US.UTF-8".to_string());
+    EnvironmentConfigurator::write_etc_environment_to(&etc_environment, &managed).unwrap();
+    let mode = std::fs::metadata(&etc_environment)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o664,
+        "the widen must preserve the administrator's own mode, got {mode:o}"
+    );
 }

@@ -334,6 +334,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 - `file_identity(path)` — that identity as ONE value, captured now and compared later by a holder that must notice its path being re-pointed. `None` reads as "cannot say", never "different".
 - `try_file_identity(path)` — the same probe REPORTING why it failed; reach for it wherever "not the file I opened" and "I could not look" must lead to different actions.
 - `file_permissions_mode(metadata)` / `set_file_permissions(path, mode)` / `is_executable(path, metadata)` — Unix mode bits and exec-bit; no-ops or extension checks on Windows.
+- `system::widen_world_readable(path)` (`crates/cfgd/src/system/mod.rs`) — the ONE widen for a file a privileged configurator writes that an unprivileged reader must open (the system env files, the macOS `env.sh`, the LaunchDaemon plist, an installed systemd unit). It ORs the read bits onto the mode the file already carries, so an administrator's own mode on a part-owned file survives. `every_privileged_writer_says_whether_a_non_root_reader_opens_its_file` walks the module; `// user-scope-ok: <why>` marks a file only its own user reads.
 - `capture_file_state(path)` / `capture_file_resolved_state(path)` / `FileState` — content, hash, permissions and symlink state, unfollowed and followed.
 
 ## Process / commands

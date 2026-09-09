@@ -145,6 +145,7 @@ impl SystemConfigurator for ContainerdConfigurator {
         // Backup existing config before overwriting
         let backup = cfgd_core::capture_file_state(&config_path).map_err(CfgdError::Io)?;
 
+        // user-scope-ok: read by the containerd daemon as root, never by a user session
         cfgd_core::atomic_write_str(&config_path, &content)?;
 
         cx.report(Role::Info, "Restarting containerd");
@@ -158,6 +159,7 @@ impl SystemConfigurator for ContainerdConfigurator {
                     Role::Warn,
                     "containerd restart failed — restoring previous config",
                 );
+                // user-scope-ok: the rollback of that same root-read file
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
                     cx.report(
                         Role::Warn,

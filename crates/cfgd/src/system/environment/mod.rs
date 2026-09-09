@@ -187,7 +187,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
-        widen_system_env_file(path)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -220,7 +220,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
-        widen_system_env_file(path)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -263,6 +263,11 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(&env_sh, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        // This configurator runs privileged, and `default_config_dir()` resolves
+        // from the running process's HOME: under `sudo -E cfgd apply` the file
+        // lands root-owned in the invoking user's home, whose rc line then gets
+        // EACCES on its own `. ~/.config/cfgd/env.sh`.
+        super::widen_world_readable(&env_sh).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -298,10 +303,9 @@ impl EnvironmentConfigurator {
 
         cfgd_core::atomic_write_str(plist_path, &plist)
             .map_err(cfgd_core::errors::CfgdError::Io)?;
-        // launchd loads a system daemon only if its plist is owned by root and not writable by
-        // group/other; 0644 is the conventional accepted mode (atomic_write_str defaults to 0600).
-        cfgd_core::set_file_permissions(plist_path, 0o644)
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        // launchd loads a system daemon only if its plist is owned by root and
+        // readable; the write lands 0600.
+        super::widen_world_readable(plist_path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -517,23 +521,6 @@ impl SystemConfigurator for EnvironmentConfigurator {
 
         Ok(())
     }
-}
-
-/// Widen a system-scope environment file to 0644.
-///
-/// These files exist to be read by sessions that are not the privileged
-/// process that wrote them, and `atomic_write_str` lands its tempfile on
-/// 0600. A root-only `/etc/profile.d/cfgd-env.sh` is worse than absent:
-/// FreeBSD's `/etc/profile` sources every `/etc/profile.d/*.sh`
-/// unconditionally, so a refused read aborts the login shell of every
-/// unprivileged user on the machine, while Linux's `/etc/profile` skips the
-/// unreadable file and silently leaves the managed variables unset. The
-/// macOS LaunchDaemon plist widens the same way, for launchd's own reason.
-///
-/// A no-op on Windows, where [`cfgd_core::set_file_permissions`] has no mode
-/// bits to set.
-fn widen_system_env_file(path: &std::path::Path) -> Result<()> {
-    cfgd_core::set_file_permissions(path, 0o644).map_err(cfgd_core::errors::CfgdError::Io)
 }
 
 #[cfg(test)]
