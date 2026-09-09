@@ -27,6 +27,16 @@ impl BackoffConfig {
         initial_backoff: Duration::from_millis(500),
     };
 
+    /// Retry policy for a rate-limited response: the same three attempts, but
+    /// waiting long enough for a per-minute quota to hand back a token. The
+    /// gateway's own enrollment bucket refills one token every twelve seconds,
+    /// so a ladder measured in milliseconds exhausts itself before the quota
+    /// has moved at all; this one reaches eighteen seconds by its last attempt.
+    pub const RATE_LIMITED: Self = Self {
+        max_attempts: 3,
+        initial_backoff: Duration::from_secs(6),
+    };
+
     /// Delay before `attempt` (1-indexed; attempt 0 has no preceding delay).
     /// Returns `Duration::ZERO` for `attempt == 0` so a single tight branch
     /// at the call site handles both the first-attempt and retry cases.
@@ -53,6 +63,18 @@ mod tests {
         assert_eq!(
             BackoffConfig::DEFAULT_TRANSIENT.delay_for_attempt(0),
             Duration::ZERO
+        );
+    }
+
+    /// The gateway's enrollment bucket hands back one token every twelve
+    /// seconds, so a ladder that finishes sooner cannot clear a full bucket.
+    #[test]
+    fn the_rate_limited_ladder_outlasts_a_per_minute_quota() {
+        let c = BackoffConfig::RATE_LIMITED;
+        let total: Duration = (0..c.max_attempts).map(|a| c.delay_for_attempt(a)).sum();
+        assert!(
+            total >= Duration::from_secs(12),
+            "rate-limited ladder ends at {total:?}"
         );
     }
 

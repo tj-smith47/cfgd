@@ -255,9 +255,12 @@ impl ServerClient {
         sp: &mut crate::output::Spinner<'_>,
     ) -> std::result::Result<String, String> {
         let retry = crate::retry::BackoffConfig::DEFAULT_TRANSIENT;
+        // Which ladder the NEXT wait is measured on: only the arm that saw the
+        // failure knows whether the server was busy or was rationing.
+        let mut policy = retry;
         let mut last_err = String::new();
         for attempt in 0..retry.max_attempts {
-            let delay = retry.delay_for_attempt(attempt);
+            let delay = policy.delay_for_attempt(attempt);
             if !delay.is_zero() {
                 // Named only from the second attempt on: the opening label
                 // already covers the first, and "attempt 1 of 3" on a request
@@ -281,10 +284,24 @@ impl ServerClient {
                         last_err = format!("failed to read response: {}", e);
                     }
                 },
+                // 429 is the one 4xx that says "later" rather than "never":
+                // the gateway rations its enrollment routes per source IP, so
+                // a device sharing an egress address with the rest of its
+                // fleet could otherwise never enrol at all.
+                Err(ureq::Error::StatusCode(429)) => {
+                    policy = crate::retry::BackoffConfig::RATE_LIMITED;
+                    last_err = "rate limited (HTTP 429)".to_string();
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max = retry.max_attempts,
+                        "Rate limited, retrying"
+                    );
+                }
                 // 5xx responses are retried as transient server errors; ureq 3
                 // surfaces them as `StatusCode` (status-as-error is on for this
                 // agent), replacing ureq 2's `Error::Status(code, _)`.
                 Err(ureq::Error::StatusCode(code)) if code >= 500 => {
+                    policy = retry;
                     last_err = format!("server error (HTTP {})", code);
                     tracing::debug!(
                         attempt = attempt + 1,
@@ -293,7 +310,7 @@ impl ServerClient {
                         "Server error, retrying"
                     );
                 }
-                // A 4xx status is a hard request error — do not retry.
+                // Every other 4xx is a hard request error — do not retry.
                 Err(e @ ureq::Error::StatusCode(_)) => {
                     return Err(format!("request error: {}", e));
                 }
@@ -301,6 +318,7 @@ impl ServerClient {
                 // Protocol, …) is a transport-layer failure — ureq 2's
                 // `Error::Transport`. Retry with backoff.
                 Err(e) => {
+                    policy = retry;
                     last_err = format!("network error: {}", e);
                     tracing::debug!(
                         attempt = attempt + 1,

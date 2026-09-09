@@ -1085,3 +1085,34 @@ mod bridge {
         assert_snapshot("drift_report.txt", &captured);
     }
 }
+
+/// A gateway rationing its enrollment routes answers 429, which means "later",
+/// not "never" — a device sharing an egress address with its fleet must be able
+/// to wait the quota out instead of failing enrollment outright.
+#[test]
+fn enroll_retries_a_rate_limited_response() {
+    let mut server = mockito::Server::new();
+    let limited = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_header("Retry-After", "1")
+        .with_body("rate limited")
+        .expect(1)
+        .create();
+    let admitted = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"enrolled","deviceId":"new-dev","apiKey":"new-key","username":"user1"}"#,
+        )
+        .expect(1)
+        .create();
+
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let result = client.enroll("bootstrap-token-429", &printer);
+
+    assert!(result.is_ok(), "429 must be retried, got {:?}", result);
+    limited.assert();
+    admitted.assert();
+}
