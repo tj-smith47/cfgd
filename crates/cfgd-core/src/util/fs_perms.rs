@@ -205,7 +205,12 @@ pub fn widen_file_permissions_nofollow(_path: &std::path::Path, _bits: u32) -> s
 /// Open `path` for reading, refusing a final symlink.
 ///
 /// Read-only because `fchmod(2)` needs no write access, and a key file cfgd is
-/// about to tighten may well be unwritable.
+/// about to tighten may well be unwritable. The open still needs READ access,
+/// which `chmod(2)` did not: a target its owner left unreadable (`0o000`,
+/// `0o200`) can no longer have its mode set, and that surfaces as a refusal,
+/// never a silent skip. The portable alternatives are worse, since Linux's
+/// `fchmodat` rejects `AT_SYMLINK_NOFOLLOW` and an `O_PATH` descriptor cannot be
+/// `fchmod`ded.
 #[cfg(unix)]
 fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -391,5 +396,75 @@ mod tests {
     fn parse_octal_mode_overflow_errs() {
         // "10000" parses as 0o10000 which exceeds 0o7777.
         assert!(parse_octal_mode("10000").is_err());
+    }
+
+    /// Both no-follow chmods refuse a symlink, and the file it points at keeps
+    /// its mode.
+    ///
+    /// `O_NOFOLLOW` is the whole of the defence, and it lives in this crate: a
+    /// caller's own pin stays green while the flag is gone, because the chmod it
+    /// asserts still succeeds on the regular file it planted. What breaks without
+    /// the flag is the link case, so the link case is pinned beside the flag.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_by_both_nofollow_chmods_and_keeps_its_targets_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("id_ed25519");
+        std::fs::write(&secret, b"private").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = tmp.path().join("declared");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let declared = super::set_file_permissions_nofollow(&link, 0o644);
+        assert!(
+            declared.is_err(),
+            "a declared mode must refuse a symlink, got {declared:?}"
+        );
+        let widened = super::widen_file_permissions_nofollow(&link, 0o044);
+        assert!(
+            widened.is_err(),
+            "a widen must refuse a symlink, got {widened:?}"
+        );
+        let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the file the link points at must keep its mode"
+        );
+    }
+
+    /// A target its owner left unreadable is answered, never silently skipped.
+    ///
+    /// The no-follow pair opens the file before it chmods the descriptor, so it
+    /// needs READ access where `chmod(2)` needed none. A caller that cannot open
+    /// the target gets the error, and the mode it asked for is not reported as
+    /// applied.
+    #[cfg(unix)]
+    #[test]
+    fn a_target_left_unreadable_is_answered_rather_than_silently_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("id_ed25519");
+        std::fs::write(&key, b"private").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let declared = super::set_file_permissions_nofollow(&key, 0o600);
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        if crate::is_root() {
+            // An elevated run's open bypasses the mode bits, so the chmod lands.
+            assert!(
+                declared.is_ok(),
+                "root must still set the mode, got {declared:?}"
+            );
+            assert_eq!(mode, 0o600);
+        } else {
+            assert!(
+                declared.is_err(),
+                "an unopenable target must refuse, got {declared:?}"
+            );
+            assert_eq!(mode, 0o000, "a refused chmod moves nothing");
+        }
     }
 }

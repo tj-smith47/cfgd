@@ -981,6 +981,10 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
 /// takes [`cfgd_core::set_file_permissions_nofollow`] /
 /// [`cfgd_core::widen_file_permissions_nofollow`] or carries a
 /// `// follow-ok: <why>` line stating whose directory the path sits in.
+///
+/// This walk judges the `cfgd` binary's system and file engines. The daemon's
+/// reconciler is judged by its twin in `cfgd-core`, because the two crates
+/// compile separately and neither walk can read the other's sources.
 #[test]
 fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_safe() {
     let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

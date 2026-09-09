@@ -8303,6 +8303,7 @@ fn every_action_variant() -> Vec<Action> {
             target: PathBuf::from("/home/u/.chmodded"),
             mode: 0o600,
             origin: "profile".to_string(),
+            follow: false,
         }),
         Action::File(FileAction::Skip {
             target: PathBuf::from("/home/u/.skipped"),
@@ -10837,6 +10838,7 @@ fn apply_file_set_permissions_action() {
                 target: target.clone(),
                 mode: 0o755,
                 origin: "local".to_string(),
+                follow: false,
             })],
         )],
         warnings: vec![],
@@ -15031,6 +15033,7 @@ fn format_action_description_file_set_permissions() {
         target: PathBuf::from("/etc/config.yaml"),
         mode: 0o600,
         origin: "local".to_string(),
+        follow: false,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "file:chmod:0o600:/etc/config.yaml");
@@ -17091,6 +17094,7 @@ fn format_plan_items_file_set_permissions() {
             target: PathBuf::from("/home/user/.ssh/id_rsa"),
             mode: 0o600,
             origin: "local".into(),
+            follow: false,
         })],
     );
     let items = plan_items(&phase);
@@ -17400,6 +17404,7 @@ fn clone_action_set_permissions_preserves_all_fields() {
         target: PathBuf::from("/home/user/.ssh/key"),
         mode: 0o600,
         origin: "local".into(),
+        follow: false,
     };
     let cloned = action.clone_action();
     match cloned {
@@ -17407,10 +17412,12 @@ fn clone_action_set_permissions_preserves_all_fields() {
             target,
             mode,
             origin,
+            follow,
         } => {
             assert_eq!(target, PathBuf::from("/home/user/.ssh/key"));
             assert_eq!(mode, 0o600);
             assert_eq!(origin, "local");
+            assert!(!follow);
         }
         other => panic!("expected SetPermissions, got: {other:?}"),
     }
@@ -17441,6 +17448,55 @@ fn clone_action_skip_preserves_all_fields() {
 // ---------------------------------------------------------------------------
 // apply_file_action_direct — filesystem operations with tempdir
 // ---------------------------------------------------------------------------
+
+/// The core executor refuses a symlink at a non-Symlink entry's target.
+///
+/// `apply_file_action_direct` is the second executor of the same action, so the
+/// `follow` decision has to hold here too or the daemon path reopens the hole the
+/// CLI path closed.
+#[test]
+#[cfg(unix)]
+fn apply_file_action_direct_chmod_refuses_a_symlink_unless_the_entry_follows() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("id_ed25519");
+    std::fs::write(&secret, "private").unwrap();
+    crate::set_file_permissions(&secret, 0o600).unwrap();
+    let target = dir.path().join("perms.txt");
+    std::os::unix::fs::symlink(&secret, &target).unwrap();
+
+    let refused = super::file_action::apply_file_action_direct(
+        &FileAction::SetPermissions {
+            target: target.clone(),
+            mode: 0o644,
+            origin: "local".into(),
+            follow: false,
+        },
+        dir.path(),
+        "test",
+    );
+    assert!(refused.is_err(), "a planted symlink must be refused");
+    let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the link's target must keep its mode");
+
+    super::file_action::apply_file_action_direct(
+        &FileAction::SetPermissions {
+            target,
+            mode: 0o640,
+            origin: "local".into(),
+            follow: true,
+        },
+        dir.path(),
+        "test",
+    )
+    .unwrap();
+    let followed = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        followed, 0o640,
+        "a Symlink entry's declared mode must reach the source file"
+    );
+}
 
 #[test]
 fn apply_file_action_direct_creates_file_with_copy() {
@@ -30590,4 +30646,65 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
     assert!(!Reconciler::delivered_by_this_run(
         &delivered, "brew", "neovim"
     ));
+}
+
+/// Every path-based chmod in the reconciler says why following a symlink is safe
+/// there.
+///
+/// [`crate::set_file_permissions`] resolves its path again and follows whatever
+/// link it finds. Under an elevated run inside a directory an unprivileged user
+/// owns, that is a read-anything primitive: unlink the file cfgd just wrote, plant
+/// a link at another user's private key, and root applies the mode to that
+/// instead. The no-follow pair closes it by chmodding a descriptor, so every site
+/// here either takes [`crate::set_file_permissions_nofollow`] or carries a
+/// `// follow-ok: <why>` line stating whose mode the declared one is.
+///
+/// This walk judges the daemon's own engine. The `cfgd` binary's system and file
+/// engines are judged by its twin there, because the two crates compile
+/// separately and neither walk can read the other's sources.
+#[test]
+fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut sites = 0usize;
+    let mut files = 0usize;
+    for path in crate::test_helpers::rust_sources_under(&root) {
+        if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.parent().is_some_and(|p| p.ends_with("tests"))
+        {
+            continue;
+        }
+        let body = crate::test_helpers::production_slice_of(&path);
+        files += 1;
+        let rel = crate::to_posix_string(path.strip_prefix(&root).unwrap_or(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if !(line.contains("set_file_permissions(") || line.contains("fs::set_permissions(")) {
+                continue;
+            }
+            sites += 1;
+            if lines[idx.saturating_sub(3)..idx]
+                .iter()
+                .any(|l| l.contains("follow-ok:"))
+            {
+                continue;
+            }
+            offenders.push(format!(
+                "{rel}:{}: chmods a path that may be a symlink, take \
+                 `set_file_permissions_nofollow`, else mark it \
+                 `// follow-ok: <why the declared mode belongs to the file the \
+                 link points at>`",
+                idx + 1
+            ));
+        }
+    }
+    assert!(
+        files >= 15 && sites >= 2,
+        "the walk read {files} files and {sites} chmods, too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every path-based chmod states why it may follow a link:\n{}",
+        offenders.join("\n")
+    );
 }
