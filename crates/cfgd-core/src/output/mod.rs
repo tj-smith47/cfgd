@@ -414,11 +414,13 @@ pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Dis
 /// already the word, and passes through.
 #[must_use]
 pub fn drift_kind_label(resource_type: &str) -> &str {
+    use crate::reconciler::{ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE};
+
     match resource_type {
         "env-var" => "env",
-        "env" => "env file",
-        "env-rc" => "rc line",
-        "env-session" => "live session",
+        ENV_RESOURCE_TYPE => "env file",
+        ENV_RC_RESOURCE_TYPE => "rc line",
+        ENV_SESSION_RESOURCE_TYPE => "live session",
         other => other,
     }
 }
@@ -432,7 +434,13 @@ pub fn drift_kind_label(resource_type: &str) -> &str {
 /// redundant.
 #[must_use]
 pub fn is_shell_drift_kind(resource_type: &str) -> bool {
-    matches!(resource_type, "env" | "env-rc" | "env-var" | "alias")
+    matches!(
+        resource_type,
+        crate::reconciler::ENV_RESOURCE_TYPE
+            | crate::reconciler::ENV_RC_RESOURCE_TYPE
+            | "env-var"
+            | "alias"
+    )
 }
 
 /// The subject a drift/verify item row reads.
@@ -442,13 +450,19 @@ pub fn is_shell_drift_kind(resource_type: &str) -> bool {
 /// sentence; every other kind keeps the `<kind> <id>` shape the id itself
 /// completes (`package ripgrep`, `file ~/.zshrc`). One composer so the three
 /// surfaces cannot spell one row two ways.
+///
+/// The id is a stored key and spells the home directory absolutely; the subject
+/// is a display slot and folds it, here rather than at each caller, so no
+/// surface can render the one row `~/.bashrc` and `/home/tj/.bashrc` depending
+/// on which of them built it.
 #[must_use]
 pub fn drift_item_subject(resource_type: &str, resource_id: &str) -> String {
     let label = drift_kind_label(resource_type);
+    let id = crate::fold_home_in_text(resource_id);
     if is_shell_drift_kind(resource_type) {
-        format!("{label}: {resource_id}")
+        format!("{label}: {id}")
     } else {
-        format!("{label} {resource_id}")
+        format!("{label} {id}")
     }
 }
 

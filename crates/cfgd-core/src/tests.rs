@@ -924,17 +924,19 @@ fn path_value(env: &[config::EnvVar]) -> &str {
 }
 
 #[test]
-fn a_layers_path_concatenates_onto_the_base_in_declaration_order() {
+fn a_layers_path_prepend_lands_ahead_of_the_one_it_folds_onto() {
     let mut base = vec![ev("PATH", "$HOME/.local/bin:$PATH"), ev("EDITOR", "vim")];
     fold_env_layer(
         &mut base,
         &[ev("PATH", "/opt/homebrew/bin:$PATH"), ev("EDITOR", "nvim")],
         ':',
     );
-    // Base bucket first, then overlay, with the ambient reference written once.
+    // The overlay's prepend leads, the way a later declaration putting its own
+    // directory ahead of the ambient reference does, with that reference
+    // written once.
     assert_eq!(
         path_value(&base),
-        "$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+        "/opt/homebrew/bin:$HOME/.local/bin:$PATH"
     );
     // Every other name is still last-writer-wins.
     assert_eq!(
@@ -957,7 +959,9 @@ fn entries_after_the_ambient_reference_stay_after_it() {
 fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
     let mut base = vec![ev("PATH", "/only/this")];
     fold_env_layer(&mut base, &[ev("PATH", "/and/this")], ':');
-    assert_eq!(path_value(&base), "/only/this:/and/this");
+    // Neither declaration names the ambient reference, so both entries are
+    // prepends and the overlay's leads.
+    assert_eq!(path_value(&base), "/and/this:/only/this");
 }
 
 #[test]
@@ -974,12 +978,12 @@ fn one_directory_written_two_ways_lands_on_path_once() {
         &[ev("PATH", &format!("{literal}{sep}/opt/bin"))],
         sep,
     );
-    // First occurrence wins, so the spelling the earlier layer used survives;
-    // the overlay names no ambient reference, so its remaining entry joins the
-    // bucket ahead of the one the base declaration placed.
+    // The first occurrence in the RENDERED order wins, and the prepend bucket
+    // renders the overlay's entries first, so the overlay's spelling of the one
+    // directory both declarations name is the one that survives.
     assert_eq!(
         path_value(&base),
-        format!("$HOME/.cargo/bin{sep}/opt/bin{sep}$PATH")
+        format!("{literal}{sep}/opt/bin{sep}$PATH")
     );
 }
 
@@ -990,14 +994,14 @@ fn the_windows_separator_folds_the_same_way() {
     // unusable one.
     let mut base = vec![ev("PATH", "C:\\tools;$env:PATH")];
     fold_env_layer(&mut base, &[ev("PATH", "C:\\other;$env:PATH")], ';');
-    assert_eq!(path_value(&base), "C:\\tools;C:\\other;$env:PATH");
+    assert_eq!(path_value(&base), "C:\\other;C:\\tools;$env:PATH");
 }
 
 #[test]
 fn the_ambient_reference_keeps_the_spelling_of_the_first_declaration_that_named_one() {
     let mut base = vec![ev("PATH", "/a:${PATH}")];
     fold_env_layer(&mut base, &[ev("PATH", "/b:$PATH")], ':');
-    assert_eq!(path_value(&base), "/a:/b:${PATH}");
+    assert_eq!(path_value(&base), "/b:/a:${PATH}");
 }
 
 #[test]

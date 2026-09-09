@@ -47,7 +47,8 @@ pub use env_engine::{
 };
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
-    EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
+    EnvHostProbeOverride, EnvHostProbeOverrideGuard, env_target_basenames,
+    with_env_host_probe_override_guard,
 };
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;

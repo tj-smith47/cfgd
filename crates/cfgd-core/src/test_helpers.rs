@@ -2823,6 +2823,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then set it to `value`.
     pub fn set(key: &'static str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::set_var(key, value);
@@ -2833,6 +2834,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then remove it.
     pub fn unset(key: &'static str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::remove_var(key);
@@ -2841,8 +2843,23 @@ impl EnvVarGuard {
     }
 }
 
+/// `PATH` is read by every `command_path` resolution and by every spawn, so a
+/// write to it is only sound inside the window [`path_env_mutation_guard`]
+/// holds: the guard is what blocks a concurrent reader, and declaring it AFTER
+/// the `EnvVarGuard` leaves the restore outside the window it was supposed to
+/// bracket. Debug-only, so the guard's own restore path pays nothing in
+/// release, and it is a deterministic tell rather than a convention.
+fn refuse_unbracketed_path_write(key: &str) {
+    debug_assert!(
+        key != "PATH" || path_env_exclusive_guard_held(),
+        "a PATH write must sit inside path_env_mutation_guard()'s window; \
+         declare the mutation guard BEFORE the EnvVarGuard so it drops last"
+    );
+}
+
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
+        refuse_unbracketed_path_write(self.key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             match self.prior.take() {

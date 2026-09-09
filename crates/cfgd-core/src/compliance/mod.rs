@@ -750,10 +750,11 @@ pub fn declared_package_versions(
         let installed = match cx.installed_for(pm) {
             Ok(set) => set,
             Err(e) => {
-                tracing::debug!(
+                tracing::warn!(
                     manager = pm.name(),
                     error = %e,
-                    "package versions for check-in: manager could not be queried, withholding the whole map"
+                    "{} could not be queried, withholding packageVersions from the check-in",
+                    pm.name()
                 );
                 return None;
             }

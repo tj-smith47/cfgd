@@ -25604,7 +25604,7 @@ fn a_failed_index_refresh_warns_and_lets_the_phase_continue() {
         // The note belongs to the group whose index went stale, not to whichever
         // group happens to be first: a caveat filed under the wrong owner points
         // the reader at the wrong thing to fix.
-        .filter(|(owner, _)| owner.token() == "cfgd:managers")
+        .filter(|(owner, _)| owner.token() == Owner::cfgd(MANAGERS_GROUP).token())
         .flat_map(|(_, notes)| notes)
         .filter(|n| n.message.contains("index refresh failed"))
         .collect();
@@ -29940,8 +29940,8 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     // writes joins on `:` and names the ambient value `$PATH` — only the
     // SPLIT of the declared value follows the host's own separator.
     assert!(
-        line.contains("$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:"),
-        "every declaration contributes, in declaration order: {line}"
+        line.contains("$HOME/.cargo/bin:$HOME/go/bin:$HOME/.local/bin:"),
+        "every declaration contributes, the latest layer's prepend leading: {line}"
     );
     assert_eq!(
         line.matches("$PATH").count(),

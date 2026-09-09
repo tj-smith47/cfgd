@@ -216,6 +216,17 @@ pub struct SystemCheckError {
     pub error: String,
 }
 
+impl SystemCheckError {
+    /// The key as a rendered row subject: the home directory folded to `~/`,
+    /// because a key naming an env target or a managed file carries an absolute
+    /// path the surrounding rows all show folded. `key` itself stays the stored
+    /// spelling every payload serializes.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        crate::fold_home_in_text(&self.key)
+    }
+}
+
 /// Where a declared package's installed copy stands against the `minVersion`
 /// floor its declaration pins.
 ///

@@ -696,6 +696,103 @@ pub fn recorded_env_method(resource_id: &str) -> &'static str {
 pub const ENV_VERB_WRITE: &str = "write";
 pub const ENV_VERB_INJECT: &str = "inject";
 
+/// Every path segment a generated env surface occupies on some host, derived
+/// by driving [`env_targets`] over every platform, probe shape and scope.
+///
+/// [`recorded_env_method`] answers the write-vs-inject question off a target's
+/// file name, so a display surface can be tempted to answer it the same way —
+/// and the names such a surface would test against are exactly the ones the
+/// target builders spell. Derived here rather than listed beside the walk that
+/// hunts them, so a dialect this engine gains or renames reaches that walk with
+/// it; each target contributes its file name, plus the parent directory whose
+/// `.d` suffix is what gives the file its dialect.
+#[cfg(any(test, feature = "test-helpers"))]
+#[must_use]
+pub fn env_target_basenames() -> Vec<String> {
+    let hosts = [
+        (EnvPlatform::Linux, Path::new("/home/tj")),
+        (EnvPlatform::MacOs, Path::new("/Users/tj")),
+        (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+        (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+    ];
+    // The two bash login shapes, each with the rest of the host's dialects
+    // present, so no arm is gated off in both passes.
+    let probes = [
+        EnvHostProbe {
+            shell: "/bin/zsh".to_string(),
+            fish_present: true,
+            bash_profile_exists: true,
+            bash_login_exists: false,
+            git_bash_present: true,
+            zsh_present: true,
+        },
+        EnvHostProbe {
+            shell: "/bin/bash".to_string(),
+            fish_present: true,
+            bash_profile_exists: false,
+            bash_login_exists: true,
+            git_bash_present: true,
+            zsh_present: true,
+        },
+    ];
+
+    let mut names = std::collections::BTreeSet::new();
+    for (platform, home) in hosts {
+        let env = vec![
+            EnvVar {
+                name: "PATH".to_string(),
+                value: format!("$HOME/.cargo/bin{}$PATH", path_separator(platform)),
+                platforms: vec![],
+            },
+            EnvVar {
+                name: "EDITOR".to_string(),
+                value: "nvim".to_string(),
+                platforms: vec![],
+            },
+        ];
+        let aliases = vec![ShellAlias {
+            name: "ll".to_string(),
+            command: "ls -al".to_string(),
+            platforms: vec![],
+        }];
+        let path_dirs = vec![ManagerPathDir::new(
+            "cargo",
+            format!("{}/.cargo/bin", crate::to_posix_string(home)),
+        )];
+        let origins = EnvOrigins::default();
+        for probe in &probes {
+            for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
+                for target in env_targets(
+                    EnvContent::new(&env, &aliases, &path_dirs, &origins),
+                    scope,
+                    home,
+                    probe,
+                    platform,
+                ) {
+                    let path = match &target {
+                        EnvTarget::ManagedFile { path, .. } => path.clone(),
+                        EnvTarget::SourceLine { rc_path, .. } => rc_path.clone(),
+                        // The live session names an act, not a file.
+                        EnvTarget::LiveSession { .. } => continue,
+                    };
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        names.insert(name.to_string());
+                    }
+                    if let Some(dir) = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .filter(|n| n.ends_with(".d"))
+                    {
+                        names.insert(dir.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn unix_targets(
     content: EnvContent<'_>,
     scope: EnvScope,

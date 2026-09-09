@@ -3442,3 +3442,171 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
         docs.len()
     );
 }
+
+/// Every label-bearing type cfgd-schema owns, with the `(canonical token,
+/// display label)` pairs read off its own `ALL` — so a new VARIANT is covered
+/// by construction. The type list is the only hand-written half, and
+/// [`every_display_label_is_the_lowercase_of_its_canonical_token`] checks it
+/// against the source.
+fn labelled_schema_types() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "FileStrategy",
+            cfgd_schema::FileStrategy::ALL
+                .iter()
+                .map(|v| (v.as_str(), v.method_label()))
+                .collect(),
+        ),
+        (
+            "ScheduleOwner",
+            cfgd_schema::ScheduleOwner::ALL
+                .iter()
+                .map(|v| (v.as_str(), v.label()))
+                .collect(),
+        ),
+    ]
+}
+
+/// Whether a source line declares a display label, judged on the SHAPE of the
+/// name rather than on the two spellings that exist today: a third accessor
+/// called `owner_label` or `phase_label` joins the population without editing
+/// this walk.
+fn declares_a_display_label(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("pub fn ")
+        .and_then(|rest| rest.split_once('('))
+        .is_some_and(|(name, _)| name.ends_with("label"))
+}
+
+/// A display label is the ASCII-lowercase of the canonical token beside it, on
+/// every label-bearing type cfgd-schema owns: a hand-written arm returning
+/// anything else compiles, and one that reads `Local` where the listing prints
+/// `local` would make the two spellings of one value drift.
+///
+/// The variant population comes from each type's `ALL`; the TYPE population is
+/// read back off cfgd-schema's sources, so a third label-bearing type cannot be
+/// invisible to this walk the way a hand-listed pair of enums would let it be.
+/// The walk lives here because cfgd-schema is a leaf crate: it cannot reach
+/// [`crate::test_helpers::production_slice`], and a bare `#[cfg(test)]` anchor
+/// of its own goes blind at the first test-only import above the label fns.
+#[test]
+fn every_display_label_is_the_lowercase_of_its_canonical_token() {
+    let table = labelled_schema_types();
+    for (ty, pairs) in &table {
+        assert!(!pairs.is_empty(), "{ty} states no variants");
+        for (token, label) in pairs {
+            assert_eq!(
+                *label,
+                token.to_ascii_lowercase(),
+                "{ty}::{token}'s label is not its token lowercased"
+            );
+        }
+    }
+
+    let schema_src = workspace_root().join("crates/cfgd-schema/src");
+    let sources: Vec<PathBuf> = workspace_rust_files()
+        .into_iter()
+        .filter(|p| p.starts_with(&schema_src))
+        .collect();
+    assert!(
+        sources.len() >= 2,
+        "the walk reached {} sources under crates/cfgd-schema/src; the crate \
+         was moved or renamed",
+        sources.len()
+    );
+
+    let mut sites: Vec<String> = Vec::new();
+    for path in &sources {
+        let body = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut current: Option<String> = None;
+        for line in crate::test_helpers::production_slice(&body).lines() {
+            if let Some(rest) = line.strip_prefix("impl ") {
+                current = rest.split_whitespace().next().map(str::to_string);
+            }
+            if declares_a_display_label(line) {
+                sites.push(
+                    current
+                        .clone()
+                        .unwrap_or_else(|| panic!("a label fn outside an impl: {line}")),
+                );
+            }
+        }
+    }
+    assert!(
+        sites.len() >= 2,
+        "the walk no longer reaches cfgd-schema's label fns — it found {sites:?}"
+    );
+    let listed: Vec<&str> = table.iter().map(|(ty, _)| *ty).collect();
+    for site in &sites {
+        assert!(
+            listed.contains(&site.as_str()),
+            "{site} states a display label no walk checks; add it to \
+             `labelled_schema_types`"
+        );
+    }
+    for ty in &listed {
+        assert!(
+            sites.iter().any(|s| s == ty),
+            "{ty} is listed but states no display label in cfgd-schema"
+        );
+    }
+}
+
+/// The two hyphenated env resource types are matched on in both crates, so a
+/// rename has to reach every matcher at once.
+///
+/// `ENV_RC_RESOURCE_TYPE` / `ENV_SESSION_RESOURCE_TYPE` exist to make that
+/// true, and the promise held only while nothing spelled the word instead:
+/// five production matchers had drifted to bare literals — the pending-decision
+/// prune, the daemon tick's vouching list, and the drift report's own kind
+/// vocabulary — each of which a rename would have left matching a type nothing
+/// writes. The walk is both crates' production slices; the file DECLARING the
+/// constants is the one exception, and a serde or wire spelling that must stay
+/// a literal carries `// env-type-literal-ok: <why>` on its own line or the one
+/// above it.
+#[test]
+fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
+    let declarations = Path::new("reconciler").join("types.rs");
+    let mut offenders = Vec::new();
+    let mut walked = 0usize;
+    for path in workspace_rust_files() {
+        let is_test_source = path.ends_with(Path::new("tests.rs"))
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tests_"))
+            || path.components().any(|c| c.as_os_str() == "tests");
+        if path.ends_with(&declarations) || is_test_source {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        walked += 1;
+        let production = crate::test_helpers::production_slice(&body);
+        let mut hatched = false;
+        for (i, line) in production.lines().enumerate() {
+            let previous = hatched;
+            hatched = line.contains("env-type-literal-ok:");
+            if previous || hatched || line.trim_start().starts_with("//") {
+                continue;
+            }
+            for literal in ["\"env-rc\"", "\"env-session\""] {
+                if line.contains(literal) {
+                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        walked >= 100,
+        "the walk no longer reads the workspace's sources: {walked} files"
+    );
+    assert!(
+        offenders.is_empty(),
+        "match on `cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE` / \
+         `ENV_SESSION_RESOURCE_TYPE` instead, so a rename reaches every \
+         matcher:\n{}",
+        offenders.join("\n")
+    );
+}

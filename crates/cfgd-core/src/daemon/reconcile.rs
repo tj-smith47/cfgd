@@ -1549,7 +1549,13 @@ pub(super) fn tick_cannot_refind(
             _ => false,
         }),
         // script-literal-ok: resource TYPES, not manager names
-        "file" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => false,
+        "file"
+        | "secret"
+        | "script"
+        | crate::reconciler::ENV_RESOURCE_TYPE
+        | crate::reconciler::ENV_RC_RESOURCE_TYPE
+        | crate::reconciler::ENV_SESSION_RESOURCE_TYPE
+        | "manager" => false,
         _ => true,
     }
 }

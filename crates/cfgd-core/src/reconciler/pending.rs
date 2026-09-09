@@ -20,7 +20,10 @@ use crate::errors::Result;
 use crate::state::{PendingDecision, StateStore};
 use crate::to_posix_string;
 
-use super::{Action, Plan, SystemAction, action_resource_info};
+use super::{
+    Action, ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, Plan, SystemAction,
+    action_resource_info,
+};
 
 /// Every resource a merged profile declares, in decision vocabulary.
 ///
@@ -2129,7 +2132,11 @@ impl DecisionExclusions {
             },
             // The env surface is withheld as a unit, so every per-item and
             // per-file spelling under it is a row the tick did not judge.
-            "env-var" | "alias" | "env" | "env-rc" | "env-session" => self.withholds_env_surface(),
+            "env-var"
+            | "alias"
+            | ENV_RESOURCE_TYPE
+            | ENV_RC_RESOURCE_TYPE
+            | ENV_SESSION_RESOURCE_TYPE => self.withholds_env_surface(),
             _ => false,
         }
     }
