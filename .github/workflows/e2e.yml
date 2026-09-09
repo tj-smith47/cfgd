@@ -197,7 +197,7 @@ jobs:
     name: "Gateway Tests"
     runs-on: arc-cfgd
     needs: [setup]
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
@@ -205,6 +205,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      # test-device-projection.sh drives a real cfgd binary against the
+      # gateway, so this job builds one through ensure_cfgd_binary the way the
+      # operator job does for `cfgd module push`.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install go-task
         uses: go-task/setup-task@v2
