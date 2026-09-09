@@ -2360,29 +2360,20 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("packages tree is readable") {
-            let path = entry.expect("readable entry").path();
-            if path.is_dir() {
-                stack.push(path);
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        if path.file_name().is_some_and(|f| f == "tests.rs") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        for (n, line) in body.lines().enumerate() {
+            if !line.contains(".stderr") {
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs")
-                || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
-            {
+            if hatched.iter().any(|(shape, _)| line.contains(shape)) {
                 continue;
             }
-            let body = std::fs::read_to_string(&path).expect("readable source");
-            for (n, line) in body.lines().enumerate() {
-                if !line.contains(".stderr") {
-                    continue;
-                }
-                if hatched.iter().any(|(shape, _)| line.contains(shape)) {
-                    continue;
-                }
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
         }
     }
     assert!(

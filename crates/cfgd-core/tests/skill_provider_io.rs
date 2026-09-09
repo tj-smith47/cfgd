@@ -335,7 +335,9 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
             root.display()
         )
     });
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = entry
+            .unwrap_or_else(|e| panic!("{}: the walk must read every entry: {e}", root.display()));
         let p = entry.path();
         if p.is_dir() {
             out.extend(walk_files(&p));

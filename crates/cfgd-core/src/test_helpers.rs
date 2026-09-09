@@ -4158,7 +4158,10 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
         let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
             panic!("{}: the walk must read every directory: {e}", dir.display())
         });
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             if !path.is_dir() {
                 continue;

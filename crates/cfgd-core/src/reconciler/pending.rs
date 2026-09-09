@@ -2339,7 +2339,7 @@ mod outranked_tests {
         let mut offenders = Vec::new();
         let mut files = crate::test_helpers::rust_sources_under(&core);
         files.extend(crate::test_helpers::rust_sources_under(&cli));
-        assert!(files.len() > 100, "the walk reached {} files", files.len());
+        let mut scanned = 0usize;
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
@@ -2347,6 +2347,7 @@ mod outranked_tests {
             {
                 continue;
             }
+            scanned += 1;
             let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: the walk must read every source: {e}", path.display())
             });
@@ -2360,6 +2361,7 @@ mod outranked_tests {
                 }
             }
         }
+        assert!(scanned > 100, "the walk scanned {scanned} files");
         assert!(
             offenders.is_empty(),
             "a decisions section title composes through `pending_decisions_title` / \

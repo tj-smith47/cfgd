@@ -15308,7 +15308,10 @@ fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies(
         let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
             panic!("{}: the walk must read every directory: {e}", dir.display())
         });
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let p = entry.path();
             let named_dockerfile = p
                 .file_name()
@@ -15330,8 +15333,11 @@ fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies(
 
     let mut checked = 0usize;
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
+        let body = match std::fs::read_to_string(&path) {
+            Ok(body) => body,
+            // a binary asset carries no download line
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(e) => panic!("{}: the walk must read every file: {e}", path.display()),
         };
         let commands = logical_lines(&body);
         for (i, (line_no, cmd)) in commands.iter().enumerate() {

@@ -10507,16 +10507,24 @@ fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
         let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
             panic!("{}: the walk must read every directory: {e}", dir.display())
         });
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => stack.push(path),
                 Ok(ft) if ft.is_file() => {
-                    if let Ok(body) = std::fs::read_to_string(&path) {
-                        out.push((path, body));
-                    }
+                    let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                        panic!("{}: the walk must read every file: {e}", path.display())
+                    });
+                    out.push((path, body));
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(e) => panic!(
+                    "{}: the walk must classify every entry: {e}",
+                    path.display()
+                ),
             }
         }
     }
@@ -12229,7 +12237,6 @@ mod harness {
         )
     }
 
-    #[allow(dead_code)]
     pub(super) struct TriggerSenders {
         pub file_tx: mpsc::Sender<PathBuf>,
         pub reconcile_tx: mpsc::Sender<()>,

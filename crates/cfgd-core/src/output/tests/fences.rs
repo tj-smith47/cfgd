@@ -2906,6 +2906,7 @@ fn the_source_walk_fails_on_a_root_it_cannot_open_and_lists_every_source_under_o
     std::fs::create_dir(&nested).unwrap_or_else(|e| panic!("{}: mkdir: {e}", nested.display()));
     for (file, body) in [
         (root.path().join("z.rs"), "fn z() {}\n"),
+        (root.path().join("m.rs"), "fn m() {}\n"),
         (nested.join("a.rs"), "fn a() {}\n"),
         (root.path().join("notes.txt"), "not a source\n"),
     ] {
@@ -2913,7 +2914,11 @@ fn the_source_walk_fails_on_a_root_it_cannot_open_and_lists_every_source_under_o
     }
     assert_eq!(
         rust_sources_under(root.path()),
-        vec![nested.join("a.rs"), root.path().join("z.rs")],
+        vec![
+            root.path().join("m.rs"),
+            nested.join("a.rs"),
+            root.path().join("z.rs")
+        ],
         "every .rs under the root, at every depth, nothing else, sorted"
     );
 }
@@ -3370,7 +3375,10 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
         let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
             panic!("{}: the walk must read every directory: {e}", dir.display())
         });
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == "target") {
