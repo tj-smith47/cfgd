@@ -187,6 +187,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
+        widen_system_env_file(path)?;
         Ok(())
     }
 
@@ -219,6 +220,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        widen_system_env_file(path)?;
         Ok(())
     }
 
@@ -515,6 +517,23 @@ impl SystemConfigurator for EnvironmentConfigurator {
 
         Ok(())
     }
+}
+
+/// Widen a system-scope environment file to 0644.
+///
+/// These files exist to be read by sessions that are not the privileged
+/// process that wrote them, and `atomic_write_str` lands its tempfile on
+/// 0600. A root-only `/etc/profile.d/cfgd-env.sh` is worse than absent:
+/// FreeBSD's `/etc/profile` sources every `/etc/profile.d/*.sh`
+/// unconditionally, so a refused read aborts the login shell of every
+/// unprivileged user on the machine, while Linux's `/etc/profile` skips the
+/// unreadable file and silently leaves the managed variables unset. The
+/// macOS LaunchDaemon plist widens the same way, for launchd's own reason.
+///
+/// A no-op on Windows, where [`cfgd_core::set_file_permissions`] has no mode
+/// bits to set.
+fn widen_system_env_file(path: &std::path::Path) -> Result<()> {
+    cfgd_core::set_file_permissions(path, 0o644).map_err(cfgd_core::errors::CfgdError::Io)
 }
 
 #[cfg(test)]

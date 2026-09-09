@@ -1662,3 +1662,35 @@ fn environment_name_returns_environment() {
     let ec = EnvironmentConfigurator;
     assert_eq!(ec.name(), "environment");
 }
+
+/// Every system-scope environment file this configurator writes must be
+/// readable by the unprivileged sessions that source it, not only by the
+/// root process that wrote it. `atomic_write_str` lands its tempfile on
+/// 0600, so each writer widens explicitly, and this walks the pair rather
+/// than pinning one of them: a root-only `/etc/profile.d/cfgd-env.sh` aborts
+/// every unprivileged login shell on FreeBSD and is silently skipped on
+/// Linux, either way defeating the all-users promise the file exists for.
+#[cfg(unix)]
+#[test]
+fn every_system_scope_env_file_is_readable_by_the_sessions_that_source_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut managed = BTreeMap::new();
+    managed.insert("EDITOR".to_string(), "vim".to_string());
+
+    let etc_environment = dir.path().join("environment");
+    EnvironmentConfigurator::write_etc_environment_to(&etc_environment, &managed).unwrap();
+    let profile_d = dir.path().join("profile.d").join("cfgd-env.sh");
+    EnvironmentConfigurator::write_profile_d_to(&profile_d, &managed).unwrap();
+
+    for path in [&etc_environment, &profile_d] {
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode,
+            0o644,
+            "{} must be world-readable, got {mode:o}",
+            path.display()
+        );
+    }
+}
