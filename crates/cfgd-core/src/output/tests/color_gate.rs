@@ -188,20 +188,6 @@ fn a_progress_bar_paints_no_escape_onto_a_colourless_stream() {
 /// gate wraps.
 #[test]
 fn every_styled_span_reaches_bytes_through_the_one_gate() {
-    fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rs_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
     // The CLASS, not one spelling of it. An escape reaches a stream as a
     // literal in any of Rust's notations, as the raw byte, or through a
     // library that writes one on the caller's behalf: indicatif resolves a
@@ -255,9 +241,7 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
     }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output");
-    let mut files = Vec::new();
-    rs_files(&root, &mut files);
-    files.sort();
+    let files = crate::test_helpers::rust_sources_under(&root);
     assert!(
         files.len() > 20,
         "the walk found almost no sources under {}, so it proves nothing",

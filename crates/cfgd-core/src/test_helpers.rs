@@ -4061,6 +4061,38 @@ pub fn workspace_root() -> PathBuf {
         .join("..")
 }
 
+/// Every `.rs` source under `root`, sorted.
+///
+/// A directory the walk cannot open is a walk gone blind over whatever it held,
+/// and a fence built on a short list passes by reading less than it claims, so
+/// an unopenable directory and an empty result both fail here rather than
+/// shrinking the population in silence. The order is the sort, so a walk's own
+/// output and any message it builds read the same on every host.
+pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "{}: the walk found no sources, so it proves nothing",
+        root.display()
+    );
+    out.sort();
+    out
+}
+
 /// Every snapshot-golden root in the workspace, workspace-relative.
 ///
 /// Named rather than only derived: a derivation alone shrinks in silence when

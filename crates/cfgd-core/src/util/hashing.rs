@@ -287,24 +287,10 @@ mod tests {
     /// leniency on its own.
     #[test]
     fn every_floor_comparison_composes_its_requirement_in_one_place() {
-        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    rust_files(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(path);
-                }
-            }
-        }
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("the crate sits under crates/");
-        let mut files = Vec::new();
-        rust_files(crates, &mut files);
+        let files = crate::test_helpers::rust_sources_under(crates);
         assert!(
             files.len() > 100,
             "the walk found {} files, so it proves nothing",

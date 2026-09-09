@@ -3,6 +3,7 @@ use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
+use cfgd_core::test_helpers::rust_sources_under;
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -15721,8 +15722,7 @@ fn every_result_line_opens_with_a_past_tense_verb() {
 fn no_command_words_the_up_to_date_verdict_for_itself() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
     for path in files {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
@@ -15806,8 +15806,7 @@ fn production_body(body: &str) -> String {
 /// `tests.rs` itself removed — the population every literal sweep below walks.
 fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
@@ -16294,8 +16293,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
 #[test]
 fn every_reconciler_the_binary_builds_names_its_recording_scope() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut built = 0usize;
     let mut offenders = Vec::new();
     for path in files {
@@ -16348,8 +16346,7 @@ fn every_reconciler_the_binary_builds_names_its_recording_scope() {
 #[test]
 fn every_single_subject_source_title_uses_the_owner_spelling() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source");
-    let mut files = walk_rust_files(&dir);
-    files.sort();
+    let files = rust_sources_under(&dir);
     let mut owner_titles = 0usize;
     let mut plural_titles = 0usize;
     let mut offenders = Vec::new();
@@ -18268,11 +18265,7 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
     let providers_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
         .iter()
-        .flat_map(|dir| {
-            let mut files = walk_rust_files(&providers_root.join(dir));
-            files.sort();
-            files
-        })
+        .flat_map(|dir| rust_sources_under(&providers_root.join(dir)))
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .filter(|p| {
@@ -18416,8 +18409,7 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .join("../cfgd-core/src")
         .canonicalize()
         .expect("the workspace sibling crate is checked out beside this one");
-    let mut files = walk_rust_files(&core_src);
-    files.sort();
+    let files = rust_sources_under(&core_src);
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
@@ -18504,8 +18496,7 @@ fn no_in_flight_label_carries_a_trailing_ellipsis() {
 #[test]
 fn no_apply_path_warn_restates_a_printer_line() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut package_files = walk_rust_files(&packages_dir);
-    package_files.sort();
+    let package_files = rust_sources_under(&packages_dir);
     let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
         .into_iter()
         .filter(|(path, _)| {
@@ -30323,8 +30314,7 @@ fn every_merged_env_view_is_built_once_per_command() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&cli_dir);
     for path in files {
         let name = path
             .file_name()
@@ -30427,8 +30417,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&cli_dir);
     for path in files {
         let name = path
             .file_name()
@@ -30537,8 +30526,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&core_src);
-    files.sort();
+    let files = rust_sources_under(&core_src);
     for path in files {
         let name = path
             .file_name()
@@ -30630,8 +30618,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
     let exempt = roots[1].join("reconciler/format.rs");
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let (mut seen, mut anchors) = (0usize, 0usize);
         for path in files {
             let name = path
@@ -30727,8 +30714,7 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&root);
-    files.sort();
+    let files = rust_sources_under(&root);
     let (mut seen, mut anchors) = (0usize, 0usize);
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
@@ -30806,8 +30792,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -30912,8 +30897,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -31004,8 +30988,8 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
 #[test]
 fn every_resolved_package_producer_routes_through_the_one_resolver() {
     let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = walk_rust_files(&cfgd.join("src"));
-    files.extend(walk_rust_files(&cfgd.join("../cfgd-core/src")));
+    let mut files = rust_sources_under(&cfgd.join("src"));
+    files.extend(rust_sources_under(&cfgd.join("../cfgd-core/src")));
     files.sort();
     let mut producers = Vec::new();
     for path in files {
@@ -31050,8 +31034,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
 #[test]
 fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel() {
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages);
-    files.sort();
+    let files = rust_sources_under(&packages);
     let mut offenders = Vec::new();
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
@@ -31076,23 +31059,6 @@ fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel()
          never by a literal:\n{}",
         offenders.join("\n")
     );
-}
-
-/// Every `.rs` file under `dir`, recursively.
-fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(walk_rust_files(&path));
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-    out
 }
 
 /// A package-manager install verb is a fact the FAMILY owns. `cfgd module
@@ -31126,8 +31092,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let declaration = src.join("packages").join("simple").join("mod.rs");
 
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut offenders = Vec::new();
     for path in files {
         if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
@@ -31208,8 +31173,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
 fn no_result_section_respells_a_word_its_command_title_already_spent() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
 
     // `printer.heading("X")` / `printer.section("X")`, off a non-comment line.
     let literals = |body: &str, call: &str| -> Vec<String> {
@@ -34189,8 +34153,8 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
 #[test]
 fn no_journal_line_folds_the_home_directory() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = walk_rust_files(&root.join("src"));
-    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
+    let mut files = rust_sources_under(&root.join("src"));
+    files.extend(rust_sources_under(&root.join("../cfgd-core/src")));
     files.sort();
     let mut journal_lines = 0usize;
     let mut hatched = 0usize;
@@ -34250,7 +34214,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
     // The floors are what a walk over the WRONG root cannot fake: a root that
     // resolves nowhere sees no files. Both counts are far under today's real
     // counts, so a deletion does not trip them and a re-rooting does — a
-    // floor of 1 would let a regression in `walk_rust_files` or the skip
+    // floor of 1 would let a regression in `rust_sources_under` or the skip
     // filter blind 99% of the tree and still pass.
     const FLOOR_FILES: [usize; 2] = [80, 90];
 
@@ -34258,8 +34222,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
     let roots = [root.join("src"), root.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, walk_root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(walk_root);
-        files.sort();
+        let files = rust_sources_under(walk_root);
         let mut seen = 0usize;
         for path in files {
             if path.file_name().is_none_or(|n| n == "tests.rs")
@@ -34323,8 +34286,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34417,8 +34379,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34552,8 +34513,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34715,8 +34675,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     // because a builder named otherwise is the same bug with a different
     // spelling.
     let cli_dir = manifest.join("src/cli");
-    let mut cli_files = walk_rust_files(&cli_dir);
-    cli_files.sort();
+    let cli_files = rust_sources_under(&cli_dir);
     let mut builder_seen = 0usize;
     let mut builder_offenders = Vec::new();
     for path in cli_files {
@@ -35403,8 +35362,7 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
 #[test]
 fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages_dir);
-    files.sort();
+    let files = rust_sources_under(&packages_dir);
     let spawns = [
         ".output()",
         ".status()",
@@ -35567,8 +35525,7 @@ fn the_bootstrap_arm_walk_catches_an_own_arm_through_any_spawn_wrapper() {
 #[test]
 fn every_multi_arm_bootstrap_honours_the_planned_method() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages_dir);
-    files.sort();
+    let files = rust_sources_under(&packages_dir);
     let arm_helpers = ARM_SELECTING_HELPERS;
     let mut seen = 0usize;
     let mut offenders = Vec::new();
@@ -35644,8 +35601,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
 #[test]
 fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut linked = 0usize;
     let mut rows = Vec::new();
     let mut pointers = Vec::new();
@@ -36189,8 +36145,7 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
         .expect("cfgd-core reconciler directory");
     let mut offenders = Vec::new();
     let mut composed = 0usize;
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&dir);
     for path in files {
         let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
@@ -36512,7 +36467,7 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         .join("../cfgd-core/src/output")
         .canonicalize()
         .expect("cfgd-core/src/output");
-    for path in walk_rust_files(&core_output) {
+    for path in rust_sources_under(&core_output) {
         if path.components().any(|c| c.as_os_str() == "tests") {
             continue;
         }

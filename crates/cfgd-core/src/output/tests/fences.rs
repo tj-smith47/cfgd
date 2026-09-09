@@ -4,32 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
-    KNOWN_GOLDEN_ROOTS, snapshot_golden_roots, snapshot_goldens, snapshot_root_files,
-    workspace_root,
+    KNOWN_GOLDEN_ROOTS, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
+    snapshot_root_files, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
 fn workspace_rust_files() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![workspace_root().join("crates")];
-    while let Some(dir) = stack.pop() {
-        // A directory the walk cannot open is a walk gone blind over whatever
-        // it held, and every fence built on this list would pass by reading
-        // less than the workspace.
-        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-            panic!("{}: the walk must read every directory: {e}", dir.display())
-        });
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    assert!(!out.is_empty(), "found no sources under crates/");
-    out
+    rust_sources_under(&workspace_root().join("crates"))
 }
 
 /// `MultiProgress::suspend` and `ProgressBar::suspend` both `unwrap()` an
@@ -2818,14 +2799,14 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// The pure [`crate::test_helpers::production_slice`] takes a body, so a caller
 /// reaching it inside a loop has already read the file itself and can only
 /// carry the floor by hand — which is how the same block came to be copied,
-/// and how three walks came to carry no floor at all. A caller that genuinely
+/// and how most walks came to carry no floor at all. A caller that genuinely
 /// holds one compiled-in body and no path keeps the pure cut and says so with
 /// `// unfloored-slice-ok: <why>` on that line or the one above it.
 #[test]
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     // Spelled in parts, or this walk's own needle is the first offender it
     // finds.
-    let needle = concat!("production_", "slice(");
+    let needle = concat!("production_", "slice");
     let hatch = concat!("unfloored-", "slice-ok:");
     let mut offenders = Vec::new();
     let mut sources = 0usize;
@@ -2841,13 +2822,20 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             if line.trim_start().starts_with("//") {
                 continue;
             }
-            if line.contains(concat!("production_", "slice_of(")) {
-                spells = true;
-            }
             if !line.contains(needle) {
                 continue;
             }
             spells = true;
+            // The bare identifier, judged by what FOLLOWS it: an `_` there is
+            // the floored helper or one of its own test names, and anything
+            // else is the pure cut reached by name — called, handed to a
+            // `map`, or imported under a name this walk would never see.
+            let bare = line
+                .match_indices(needle)
+                .any(|(at, _)| !line[at + needle.len()..].starts_with('_'));
+            if !bare {
+                continue;
+            }
             let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
             if line.contains(hatch) || above.contains(hatch) {
                 continue;
@@ -2871,6 +2859,45 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         "the walk found the slice helper in {sources} sources; it has stopped \
          reading the population it judges"
     );
+}
+
+/// Every fence in this file is a claim about a POPULATION, so the walk that
+/// enumerates it fails rather than returning a shorter one.
+///
+/// Both failures are read off the message, not off the panic: a walk that
+/// swallowed the directory it could not open still ends up with nothing to
+/// return, so "I could not look" and "there was nothing there" arrive as the
+/// same empty list and only the wording tells them apart.
+#[test]
+fn the_source_walk_fails_on_a_root_it_cannot_open_and_on_one_holding_no_source() {
+    fn walk_failure(root: &Path) -> String {
+        match std::panic::catch_unwind(|| rust_sources_under(root)) {
+            Ok(files) => format!("the walk returned {} files", files.len()),
+            Err(payload) => payload
+                .downcast::<String>()
+                .map(|m| *m)
+                .unwrap_or_else(|_| String::from("a panic carrying no message")),
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+
+    let unopenable = walk_failure(&root.path().join("nothing-here"));
+    assert!(
+        unopenable.contains("must read every directory"),
+        "a root the walk could not open answered: {unopenable}"
+    );
+
+    let empty = walk_failure(root.path());
+    assert!(
+        empty.contains("found no sources"),
+        "a root holding no source answered: {empty}"
+    );
+
+    let source = root.path().join("held.rs");
+    std::fs::write(&source, "fn held() {}\n")
+        .unwrap_or_else(|e| panic!("{}: write source: {e}", source.display()));
+    assert_eq!(rust_sources_under(root.path()), vec![source]);
 }
 
 /// The line that CLOSES a multi-line literal is source after the closing
