@@ -26,6 +26,12 @@ log_warn()    { _yellow; printf "WARN";  _reset; printf ":  %s\n" "$1"; WARNINGS
 log_ok()      { _green;  printf "OK";    _reset; printf ":    %s\n" "$1"; }
 log_section() { printf "\n--- %s ---\n" "$1"; }
 
+# Bound a report to its first `n` lines. `head` closes the pipe as soon as it
+# has them, and the SIGPIPE that follows fails the pipeline under `set -o
+# pipefail` — aborting the audit precisely on the runs with the most to say.
+# awk drains its input instead, so the producer always finishes writing.
+first_lines() { awk -v n="$1" 'NR <= n'; }
+
 # --- Shared awk library ---
 # Prepend to any awk program that counts braces or honours an `<x>-ok:` marker,
 # so every gate answers "is this code?" and "is this exempt?" the same way. A
@@ -446,7 +452,7 @@ check_pattern() {
             error) log_error "$label" ;;
             warn)  log_warn "$label"  ;;
         esac
-        echo "$results" | head -20
+        echo "$results" | first_lines 20
     else
         log_ok "$label"
     fi
@@ -481,7 +487,7 @@ check_core_boundary() {
 
     if [[ -n "$results" ]]; then
         log_error "$module/ must not import ${forbidden//:/, }"
-        echo "$results" | head -10
+        echo "$results" | first_lines 10
     fi
 }
 
@@ -616,7 +622,7 @@ done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
     log_error "tracing::info!/warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
-    echo "$advisory_violations" | head -20
+    echo "$advisory_violations" | first_lines 20
 else
     log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
 fi
@@ -658,7 +664,7 @@ done < <(find "${narration_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 narration_violations=$(echo "$narration_violations" | sed '/^$/d')
 if [[ -n "$narration_violations" ]]; then
     log_error "tracing::info! outside daemon/ (a second copy of a line the Printer already prints, on the stream the live region repaints — demote to debug!, delete it, or mark // tracing-ok: <why>):"
-    echo "$narration_violations" | head -20
+    echo "$narration_violations" | first_lines 20
 else
     log_ok "No tracing::info! outside daemon/"
 fi
@@ -715,7 +721,7 @@ done < <(find crates -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
     log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/a review-finding tag like B1 beside \"finding\"|\"review\"|\"proved\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
-    echo "$comment_voice_violations" | head -20
+    echo "$comment_voice_violations" | first_lines 20
 else
     log_ok "No session-narrative or self-citation comments"
 fi
@@ -871,7 +877,7 @@ done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
-    | head -5 || true)
+    | first_lines 5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
     echo "$dupes"
@@ -1115,7 +1121,7 @@ done < <(audit_scan_files) \
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
-    echo "$fn_dupes" | head -10
+    echo "$fn_dupes" | first_lines 10
 else
     log_ok "No duplicated function definitions across files"
 fi
@@ -1136,7 +1142,7 @@ bad_renames=$(grep -rn '#\[serde(rename = "' "${SRC_ROOTS[@]}" --include='*.rs' 
     || true)
 if [[ -n "$bad_renames" ]]; then
     log_error "Found kebab-case explicit serde rename attributes (should be camelCase):"
-    echo "$bad_renames" | head -10
+    echo "$bad_renames" | first_lines 10
 else
     log_ok "No kebab-case explicit serde rename attributes"
 fi
@@ -1160,7 +1166,7 @@ if [[ -n "$config_fields" ]]; then
         || true)
     if [[ -n "$kebab_fields" ]]; then
         log_error "Found kebab-case config field names in string literals (should be camelCase):"
-        echo "$kebab_fields" | head -10
+        echo "$kebab_fields" | first_lines 10
     else
         log_ok "No kebab-case config field names in string literals"
     fi
@@ -1198,7 +1204,7 @@ while IFS= read -r -d '' rsfile; do
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
     log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or lockfile.rs (CLAUDE.md rule #5):"
-    printf "%s" "$config_parse_violations" | head -10
+    printf "%s" "$config_parse_violations" | first_lines 10
 else
     log_ok "Config parsing confined to config/, generate/, schema/, and lockfile.rs in cfgd-core"
 fi
@@ -1262,7 +1268,7 @@ done
 effective_violations=$(echo "$effective_violations" | sed '/^$/d')
 if [[ -n "$effective_violations" ]]; then
     log_error "Read path reads profile-only desired state (use cfgd_core::effective::* so module resources stay visible):"
-    echo "$effective_violations" | head -20
+    echo "$effective_violations" | first_lines 20
 else
     log_ok "Read paths route desired state through cfgd_core::effective::*"
 fi
@@ -1492,7 +1498,7 @@ raw_spawns=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
     log_error "Raw tokio::task::spawn_blocking (use cfgd_core::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
-    echo "$raw_spawns" | head -10
+    echo "$raw_spawns" | first_lines 10
 else
     log_ok "No raw spawn_blocking in workspace production code"
 fi
@@ -1521,7 +1527,7 @@ sleep_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$sleep_violations" ]]; then
     log_error "thread::sleep/tokio::time::sleep in test code (flaky timing sync — use the observables catalogued in shared-utils.md: ConcurrencyWitness, a channel/oneshot handshake, await_queued_path_writer, await_blocking_source_acquire, a bounded deadline-poll — or annotate // sleep-ok: <why no observable exists>):"
-    echo "$sleep_violations" | head -20
+    echo "$sleep_violations" | first_lines 20
 else
     log_ok "No unguarded sleep-as-synchronization in test code"
 fi
@@ -1558,7 +1564,7 @@ raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$raw_capture_violations" ]]; then
     log_error "Raw Printer capture-buffer read in test code (use cfgd_core::test_helpers::captured_text(&buf), or annotate // raw-capture-ok: <why>):"
-    echo "$raw_capture_violations" | head -20
+    echo "$raw_capture_violations" | first_lines 20
 else
     log_ok "No raw Printer capture-buffer reads in test code"
 fi
@@ -1959,7 +1965,7 @@ for tape in demo/*.tape; do
         # (sync.tape) inherits that script's init; the script is the tape's
         # theme selector — either a `--theme` on its init or a `theme:` in the
         # config it seeds — and is checked in its place.
-        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | head -n1)
+        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | first_lines 1)
         if [ -z "$setup_script" ] || ! grep -Eq -- "(--theme|^ *theme:) ${DEMO_THEME}( |\"|'|\$)" "demo/scripts/${setup_script}"; then
             theme_gap="${theme_gap}${tape} (no cfgd init and no setup script selecting the ${DEMO_THEME} theme)"$'\n'
         fi
@@ -2030,6 +2036,26 @@ else
     log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
 fi
 
+log_section "case_insensitive_enum! reaches serde through \$crate"
+
+# The macro is `#[macro_export]`ed, so its expansion lands in crates that carry
+# no serde dependency of their own. A bare `serde::` path in the expansion
+# compiles cleanly here — cfgd-schema has serde — and breaks only in such a
+# consumer, which no in-repo build would ever catch.
+enum_de_file="crates/cfgd-schema/src/enum_de.rs"
+if require_files "case_insensitive_enum! serde-path scan" "$enum_de_file"; then
+    bare_serde="$(grep -n 'serde::' "$enum_de_file" \
+        | grep -v '^[0-9]*:[[:space:]]*//' \
+        | sed 's/\$crate::serde::/ /g' \
+        | grep 'serde::' || true)"
+    if [ -n "$bare_serde" ]; then
+        log_error "case_insensitive_enum!'s expansion names serde directly (reach it through \`\$crate::serde\`, so a crate without serde can still invoke the macro):"
+        printf '%s\n' "$bare_serde" | first_lines 10
+    else
+        log_ok "case_insensitive_enum! names serde only through \$crate::serde"
+    fi
+fi
+
 log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
 
 # The CSI node plugin never touches a Kubernetes API object, so it builds
@@ -2055,7 +2081,7 @@ if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>"$cs
     rm -f "$csi_stderr"
 elif ! grep -qx 'cfgd-core' <<<"$(awk '{print $1}' <<<"$csi_tree")"; then
     rm -f "$csi_stderr"
-    log_error "the resolution named no \`cfgd-core\` line: a wrong tree, or a polluted capture"
+    log_error "the resolution named no \`cfgd-core\` line, this gate's canary crate: a wrong tree, a polluted capture, or cfgd-csi genuinely no longer depending on it"
 else
     rm -f "$csi_stderr"
     csi_heavy="$(awk '{print $1}' <<<"$csi_tree" | sort -u \
