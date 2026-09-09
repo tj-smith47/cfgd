@@ -61,7 +61,7 @@ tasks:
       # MemAvailable is in kB; 10 GB = 10485760 kB. Only Linux exposes /proc/meminfo;
       # the macOS and Windows runners are never short of it for this step.
       - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 10485760 ]'
-        msg: "Under 10 GB of memory available: rustdoc for this workspace peaks near 10 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate; run it there, not here."
+        msg: "Under 10 GB of memory available: rustdoc for this workspace peaks near 10 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate and `task push`'s; run it there, or free the memory first."
 
   # --- Build ---
 
@@ -92,7 +92,7 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate is CI's alone
+    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate runs in CI and ahead of `task push`
     cmds:
       - task: fmt:check
       - task: clippy
@@ -116,7 +116,7 @@ tasks:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
-    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). No local chain runs it; it refuses to start with under 10 GB of memory available."
+    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). No local chain but `task push` runs it; it refuses to start with under 10 GB of memory available."
     deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
@@ -458,7 +458,7 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI only, never here
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
     cmds:
       - task: tidy
       - task: clippy
@@ -539,18 +539,21 @@ tasks:
       - cargo check --target x86_64-pc-windows-gnu -p cfgd-core -p cfgd
 
   push:
-    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    desc: "Rustdoc- and coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.
       - sh: git diff --quiet && git diff --cached --quiet
         msg: "Working tree is dirty — commit your changes before task push."
     cmds:
+      # The rustdoc gate is otherwise CI's alone; a push is the one local step
+      # that should not learn about a broken doc link from CI.
+      - task: doc
       - task: coverage:gate
       - git push {{.CLI_ARGS | default "origin master"}}
 
   ci:
-    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which only CI's host has the memory for)
+    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which CI and `task push` run)
     cmds:
       - task: fmt:check
       - task: clippy

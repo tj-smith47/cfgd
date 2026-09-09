@@ -921,6 +921,10 @@ log_section "DRY — Duplicated Function Definitions"
 # `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
 # re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
 # rendered payload's fields, not the reconciler types they name.
+# `CollectOutcome`'s `tally`, `action_count` and `role` answer for a gc run
+# what `ApplyRun`, `Phase` and the status rows answer for theirs, each on its
+# own type; `cli::output_types::is_zero` is a private serde predicate with one
+# user, the twin of `state::types`'s, and `*n == 0` carries no rule to drift.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "is_clean crates/cfgd-core/src/backup/mod.rs"
@@ -930,6 +934,10 @@ ALLOWED_FN_PAIRS=(
     "source crates/cfgd-core/src/reconciler/types.rs"
     "execute crates/cfgd-core/src/reconciler/run.rs"
     "lane crates/cfgd-core/src/providers/mod.rs"
+    "tally crates/cfgd-core/src/backup/gc.rs"
+    "action_count crates/cfgd-core/src/backup/gc.rs"
+    "role crates/cfgd-core/src/backup/gc.rs"
+    "is_zero crates/cfgd/src/cli/output_types.rs"
     "node_id crates/cfgd-core/src/reconciler/managers.rs"
     "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
     "token crates/cfgd/src/cli/output_types.rs"

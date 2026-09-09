@@ -114,8 +114,8 @@ profile already declared. Nothing rewrites `spec.backups[]`, so a machine that s
 policy falls back to its own declaration on the next check-in.
 
 Every run of a projected unit reads that answer, not just the daemon's scheduled fire:
-`cfgd backup run`, the backups a `cfgd apply` fires, and `cfgd backup gc` all keep to the
-projected `retention`, so the number of snapshots the listing reports is the number any of them
+`cfgd backup run` and the backups a `cfgd apply` fires both keep to the projected
+`retention`, so the number of snapshots the listing reports is the number either of them
 leaves behind. `scheduleOwner: Local` pins both halves at once, the schedule and the retention,
 because a unit the machine owns takes nothing from the cluster.
 

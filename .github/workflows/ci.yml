@@ -46,6 +46,23 @@ jobs:
       - name: Check formatting
         run: task fmt:check
 
+  # Rustdoc is the longest single step in this workflow, so it gets its own
+  # job and starts with the first wave instead of queueing behind clippy.
+  rustdoc:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rustdoc
+        run: task doc
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -61,9 +78,6 @@ jobs:
 
       - name: Clippy
         run: task clippy
-
-      - name: Rustdoc
-        run: task doc
 
       - name: Schema drift guard
         run: task schema:check

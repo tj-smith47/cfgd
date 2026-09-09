@@ -151,16 +151,16 @@ single-source-of-truth wiring.
   (`task`, anodizer on PATH from the action step, docker, helm, yq, jq),
   and that job checks out with `fetch-depth: 0` because the prediction
   walks the tags.
-- The `clippy` job also runs `task doc` (`cargo doc --workspace --no-deps
+- The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
-  the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var), right
-  after `task clippy` and ahead of the schema/CRD/chart drift guards: it needs
-  the same Rust toolchain checkout as clippy and nothing else, so a second job
-  would only add a redundant checkout+toolchain setup for a `cargo`
-  invocation that must recompile under its own feature set either way (the
-  doc leg's `--all-features` pulls in `test-helpers`, which `cargo clippy
-  --workspace --all-targets` above it does not build, so the two legs do not
-  even share a build cache). `--all-features` is load-bearing, not decoration:
+  the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its
+  only step, in the first wave beside `fmt` and `clippy`: it is the longest
+  single step in the workflow, and inside the `clippy` job it queued the
+  schema/CRD/chart drift guards behind it. Its checkout+toolchain setup is
+  paid twice on purpose; the doc leg's `--all-features` pulls in
+  `test-helpers`, which `cargo clippy --workspace --all-targets` does not
+  build, so the two legs never shared a build cache even in one job.
+  `--all-features` is load-bearing, not decoration:
   `cfgd-core` is the only crate in the workspace with a non-default feature (`test-helpers`),
   and without it the gate never compiles `test_helpers.rs` or the
   `EnvHostProbeOverride` seam at all, so a broken link inside either one
@@ -176,7 +176,8 @@ single-source-of-truth wiring.
   `#[allow(rustdoc::invalid_html_tags)]`. Everywhere else, prefer a backtick
   code span over a backslash escape for a literal that looks like an HTML
   tag — it resolves the same lint and reads cleaner in the source. The gate
-  lives in this job ONLY: no local target (`task ci`, `task check`, `task
+  lives in this job and in `task push`, which runs it ahead of the push and
+  blocks on a failure; no other local target (`task ci`, `task check`, `task
   lint`, the `task commit` chain) chains to `task doc`, and the task itself
   refuses to start with under 10 GB available (`_check:mem-headroom`). The
   two rustdocs peak near 10 GB each; on the 12 GB dev host that is the
