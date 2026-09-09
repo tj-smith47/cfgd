@@ -142,7 +142,10 @@ impl SshKeysConfigurator {
                 format!("Creating SSH directory: {}", dir.posix()),
             );
             fs::create_dir_all(dir)?;
-            cfgd_core::set_file_permissions(dir, 0o700)?;
+            // No-follow: this runs under the invoking user's HOME, which an
+            // elevated run does not own, so a swap between the create and the
+            // chmod would point 0700 at a directory root needs readable.
+            cfgd_core::set_file_permissions_nofollow(dir, 0o700)?;
         }
         Ok(())
     }
@@ -205,7 +208,10 @@ impl SshKeysConfigurator {
                 path.posix()
             ),
         );
-        cfgd_core::set_file_permissions(path, mode)?;
+        // No-follow: the declared mode can be as wide as 0644, and the key path
+        // sits in a directory the invoking user owns, so following a symlink
+        // planted there would hand that mode to any file on the machine.
+        cfgd_core::set_file_permissions_nofollow(path, mode)?;
         Ok(())
     }
 }

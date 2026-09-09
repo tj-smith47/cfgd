@@ -156,7 +156,10 @@ pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
     // Full `0o7777`: a sidecar is the file it preserves, and a setuid or sticky
     // bit dropped in the copy is not restorable from it.
     if let Some(mode) = crate::file_permissions_mode_full(&meta) {
-        crate::set_file_permissions(&backup_path, mode)
+        // No-follow: the sidecar lands beside the target, in a directory that is
+        // often the user's own, so a symlink planted at it between the copy and
+        // the chmod would carry the displaced file's mode somewhere else.
+        crate::set_file_permissions_nofollow(&backup_path, mode)
             .map_err(|e| failed(target, format!("mode of {}: {e}", backup_path.posix())))?;
     }
     prune_stamped_sidecars(target, &backup_path);

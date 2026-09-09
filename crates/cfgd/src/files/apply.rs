@@ -438,7 +438,13 @@ fn probe_dir_writable(dir: &Path, target: &Path) -> Result<()> {
 }
 
 /// Set file permissions (Unix mode bits). No-op on Windows.
+///
+/// The follow is the contract here, not an oversight: a `strategy: Symlink`
+/// entry's target IS a link cfgd deployed, and its declared `permissions:`
+/// belongs to the source file the link points at.
 pub(super) fn set_permissions(path: &Path, mode: u32) -> Result<()> {
+    // follow-ok: a managed Symlink entry's declared mode lands on the file the
+    // link points at, which is why this one resolves the link.
     cfgd_core::set_file_permissions(path, mode).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             FileError::PermissionDenied {

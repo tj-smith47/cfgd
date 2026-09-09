@@ -144,6 +144,9 @@ impl SystemConfigurator for CertificateConfigurator {
                                     desired_mode, path_str, name
                                 ),
                             );
+                            // follow-ok: certPath/keyPath/caPath name a node's
+                            // trust store, whose directories are root-owned;
+                            // no unprivileged user can plant a link there.
                             cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {

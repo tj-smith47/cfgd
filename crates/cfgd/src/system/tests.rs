@@ -929,6 +929,15 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
                 continue;
             }
             writers += 1;
+            // The two halves are scoped differently on purpose. A hatch is a
+            // claim about ONE file, so it must sit directly above its own write
+            // or a function holding two writes would answer for both with one
+            // line. A widen is a statement the function makes, and
+            // `systemd_unit.rs` makes it eight lines below its write inside an
+            // `else if let Err(e)` chain, so that half is read per function.
+            let hatched = lines[idx.saturating_sub(2)..idx]
+                .iter()
+                .any(|l| l.contains("user-scope-ok:"));
             let lo = fn_starts
                 .iter()
                 .rev()
@@ -940,8 +949,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
                 .find(|s| **s > idx)
                 .copied()
                 .unwrap_or(lines.len());
-            let window = lines[lo..hi].join("\n");
-            if window.contains("widen_world_readable(") || window.contains("user-scope-ok:") {
+            if hatched || lines[lo..hi].join("\n").contains("widen_world_readable(") {
                 continue;
             }
             offenders.push(format!(
@@ -959,5 +967,106 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
         offenders.is_empty(),
         "every privileged writer states who reads its file:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// Every path-based chmod in these two modules says why following a symlink is
+/// safe there.
+///
+/// `std::fs::set_permissions` resolves its path again and follows whatever link it
+/// finds. Under an elevated run inside a directory an unprivileged user owns, that
+/// is a read-anything primitive: unlink the file cfgd just wrote, plant a link at
+/// another user's private key, and root applies the mode to that instead. The
+/// no-follow pair closes it by chmodding a descriptor, so every site here either
+/// takes [`cfgd_core::set_file_permissions_nofollow`] /
+/// [`cfgd_core::widen_file_permissions_nofollow`] or carries a
+/// `// follow-ok: <why>` line stating whose directory the path sits in.
+#[test]
+fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_safe() {
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders: Vec<String> = Vec::new();
+    let mut sites = 0usize;
+    let mut files = 0usize;
+    for dir in ["src/system", "src/files"] {
+        let root = crate_root.join(dir);
+        for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+            if path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.parent().is_some_and(|p| p.ends_with("tests"))
+            {
+                continue;
+            }
+            let body = cfgd_core::test_helpers::production_slice_of(&path);
+            files += 1;
+            let rel = cfgd_core::to_posix_string(path.strip_prefix(crate_root).unwrap_or(&path));
+            let lines: Vec<&str> = body.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                if !(line.contains("set_file_permissions(")
+                    || line.contains("fs::set_permissions("))
+                {
+                    continue;
+                }
+                sites += 1;
+                if lines[idx.saturating_sub(3)..idx]
+                    .iter()
+                    .any(|l| l.contains("follow-ok:"))
+                {
+                    continue;
+                }
+                offenders.push(format!(
+                    "{rel}:{}: chmods a path that may be a symlink, take \
+                     `set_file_permissions_nofollow` (or \
+                     `widen_file_permissions_nofollow`), else mark it \
+                     `// follow-ok: <why the directory is root-owned>`",
+                    idx + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        files >= 15 && sites >= 2,
+        "the walk read {files} files and {sites} chmods, too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every path-based chmod states why it may follow a link:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A symlink at the path is refused, and the file it points at keeps its mode.
+///
+/// This is the privilege boundary the widen crosses: `macos_write_env_sh` runs
+/// elevated inside a directory the invoking user owns, so the window between the
+/// write and the widen belongs to that user.
+#[test]
+#[cfg(unix)]
+fn the_widen_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret = dir.path().join("id_ed25519");
+    std::fs::write(&secret, "private").expect("write");
+    cfgd_core::set_file_permissions(&secret, 0o600).expect("chmod");
+    let link = dir.path().join("env.sh");
+    std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+
+    let widened = super::widen_world_readable(&link);
+    assert!(
+        widened.is_err(),
+        "the widen must refuse a symlink, got {widened:?}"
+    );
+    let declared = cfgd_core::set_file_permissions_nofollow(&link, 0o644);
+    assert!(
+        declared.is_err(),
+        "a declared mode must refuse a symlink, got {declared:?}"
+    );
+    let mode = std::fs::metadata(&secret)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the file the link points at must keep its mode"
     );
 }

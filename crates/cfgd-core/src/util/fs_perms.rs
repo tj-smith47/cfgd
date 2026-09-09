@@ -146,6 +146,75 @@ pub fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Res
     Ok(())
 }
 
+/// Set Unix permission mode bits on a file WITHOUT following a final symlink.
+///
+/// Reach for this instead of [`set_file_permissions`] wherever an elevated run
+/// chmods a path inside a directory an unprivileged user owns: their own home,
+/// their `~/.ssh`, the directory a displaced target sat in. `std::fs::set_permissions`
+/// resolves the path again and follows whatever link it finds, so between cfgd
+/// writing a file and cfgd chmodding it the owner of that directory can unlink it
+/// and plant a symlink at another user's private key. The mode then lands on the
+/// link's target. Here the path is resolved once, `O_NOFOLLOW` refuses a symlink
+/// outright (`ELOOP`), and the mode is set through that descriptor, so a swap
+/// after the open cannot move it either.
+///
+/// A symlink at `path` is an error, never a follow. That is the point, so a
+/// caller whose target legitimately IS a symlink (a `strategy: Symlink` entry
+/// whose declared mode belongs to the file it points at) keeps
+/// [`set_file_permissions`] and says why.
+///
+/// No-op on Windows, like [`set_file_permissions`].
+#[cfg(unix)]
+pub fn set_file_permissions_nofollow(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let file = open_nofollow(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(windows)]
+pub fn set_file_permissions_nofollow(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    tracing::debug!(
+        "set_file_permissions_nofollow is a no-op on Windows (NTFS uses inherited ACLs)"
+    );
+    Ok(())
+}
+
+/// OR `bits` onto the mode a file already carries, reading and writing it through
+/// ONE [`set_file_permissions_nofollow`]-style descriptor.
+///
+/// The read and the write must share a descriptor: reading the mode by path and
+/// setting it by path resolves twice, which is the race the no-follow open exists
+/// to close. The OR is what keeps a mode its owner chose (a `0o664`
+/// `/etc/environment`) rather than stamping an absolute one.
+///
+/// No-op on Windows, where there are no mode bits to widen.
+#[cfg(unix)]
+pub fn widen_file_permissions_nofollow(path: &std::path::Path, bits: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let file = open_nofollow(path)?;
+    let mode = file.metadata()?.permissions().mode();
+    file.set_permissions(std::fs::Permissions::from_mode(mode | bits))
+}
+
+#[cfg(windows)]
+pub fn widen_file_permissions_nofollow(_path: &std::path::Path, _bits: u32) -> std::io::Result<()> {
+    tracing::debug!("widen_file_permissions_nofollow is a no-op on Windows");
+    Ok(())
+}
+
+/// Open `path` for reading, refusing a final symlink.
+///
+/// Read-only because `fchmod(2)` needs no write access, and a key file cfgd is
+/// about to tighten may well be unwritable.
+#[cfg(unix)]
+fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
 /// Check if a file is executable.
 /// Unix: checks the executable bit in mode.
 /// Windows: checks file extension against known executable types.

@@ -77,14 +77,15 @@ pub(super) fn read_command_output(cmd: &mut Command) -> String {
 /// a `0o664` file's group-write bit on every apply. A file cfgd wrote fresh has
 /// no mode of its own to keep, so `0o600 | 0o044` is the 0644 convention anyway.
 ///
-/// A no-op on Windows, where [`cfgd_core::file_permissions_mode`] answers `None`
-/// and there are no mode bits to widen.
+/// The widen goes through [`cfgd_core::widen_file_permissions_nofollow`], so a
+/// symlink at the path is refused rather than followed: `macos_write_env_sh`
+/// widens `~/.config/cfgd/env.sh` while elevated, inside a directory the invoking
+/// user owns, and a path-based chmod there lets that user unlink the file between
+/// the write and the widen and point root at another user's private key.
+///
+/// A no-op on Windows, where there are no mode bits to widen.
 pub(super) fn widen_world_readable(path: &std::path::Path) -> std::io::Result<()> {
-    let metadata = std::fs::metadata(path)?;
-    match cfgd_core::file_permissions_mode(&metadata) {
-        Some(mode) => cfgd_core::set_file_permissions(path, mode | 0o044),
-        None => Ok(()),
-    }
+    cfgd_core::widen_file_permissions_nofollow(path, 0o044)
 }
 
 /// Diff a YAML mapping against actual values.
