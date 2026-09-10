@@ -84,7 +84,7 @@ mod tests {
     /// line has to stay parseable. The C1 half is the one `serde_json` does not
     /// answer on its own.
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn the_json_log_line_neutralizes_a_hostile_field_and_stays_parseable() {
         let poison = format!("nvim{}{}[2Kevil{}[2Kworse", '\r', '\u{1b}', '\u{9b}');
         let capture = Capture::default();

@@ -1098,7 +1098,7 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
 }
 
 #[test]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 fn fresh_bootstrap_migration_emits_no_warn() {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let path = tmp.path().to_str().expect("path").to_string();
@@ -1113,7 +1113,7 @@ fn fresh_bootstrap_migration_emits_no_warn() {
 }
 
 #[test]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 fn existing_schema_dup_emits_warn() {
     // Bootstrap cleanly so the devices table + both ALTER columns exist, then
     // rewind schema_version to 1 to simulate a pre-tracking upgrade whose

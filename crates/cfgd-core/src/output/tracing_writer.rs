@@ -435,7 +435,7 @@ mod tests {
     /// by hand. A subscriber built without the timer prints `<sentence>` with
     /// no way to tell when the daemon said it, which is what shipped before.
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn a_daemon_log_line_opens_with_its_local_time_and_level() {
         #[derive(Clone)]
         struct Capture(std::sync::Arc<std::sync::Mutex<String>>);

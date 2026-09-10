@@ -7144,7 +7144,7 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
 /// `sync: pull failed` on the journal on every tick, forever, for a config
 /// directory the user never put under version control.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 async fn a_sync_tick_over_a_plain_directory_logs_no_pull_failure() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -8838,7 +8838,7 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
 /// lacked, silently); only the tick that sees the pull does — and it counts
 /// the ONE file the pull moved, not the three the row covers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
     reset_daemon_log();
     let tmp = tempfile::tempdir().unwrap();
@@ -9113,7 +9113,7 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
 /// apply converged nothing. The policy is `Auto` here precisely so a regression
 /// runs the apply and writes the phantom row this asserts is absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_row() {
     reset_daemon_log();
     let tmp = tempfile::tempdir().unwrap();
@@ -9248,7 +9248,7 @@ async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_ro
 /// files converged that cfgd explicitly refused to write. The refusal itself is
 /// counted, unlike the decline: it is work the reader must act on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
+#[serial_test::serial(tracing_dispatcher)]
 async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
     use crate::PathDisplayExt;
 
@@ -12009,11 +12009,13 @@ fn build_webhook_payload_accepts_empty_strings() {
 /// [`capture_run_logs`] below does not reach. `set_global_default` may be
 /// called once per process, so the capture is installed once and shared;
 /// [`reset_daemon_log`] clears it. Reading it back is not all the
-/// `daemon_log` group has to cover: installing ANY subscriber mutates the
-/// process-global dispatcher registry and the per-callsite interest caches, so
-/// every declaration in this binary that installs one holds that group too,
+/// `tracing_dispatcher` group has to cover: installing ANY subscriber mutates
+/// the process-global dispatcher registry and the per-callsite interest caches,
+/// so every declaration in this binary that installs one holds that group too,
 /// readers and scoped captures alike. Without that, a capture can come back
-/// holding a foreign declaration's lines and missing its own.
+/// holding a foreign declaration's lines and missing its own. The group is named
+/// for the dispatcher rather than for this capture because two other binaries
+/// install subscribers under it and have no daemon log at all.
 static DAEMON_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 #[derive(Clone, Copy)]
@@ -12040,7 +12042,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for DaemonLogWriter {
 }
 
 /// Install the global capture if it is not already installed, and empty it.
-// serial-group-ok: installs the one global capture; its readers hold the group.
+// serial-group-ok: installs the one global capture; every declaration reading it or installing a subscriber of its own holds the group.
 fn reset_daemon_log() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
@@ -12308,6 +12310,7 @@ mod harness {
     /// PRINTED, and the reconcile/sync intervals it left behind (both start at
     /// 300s). Two channels because the reload reports itself on the daemon's
     /// journal while a config deprecation still reaches the terminal.
+    // serial-group-ok: the installer's wrapper; only declarations holding the group call it.
     fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> SighupRun {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
@@ -12332,6 +12335,7 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial(tracing_dispatcher)]
     fn apply_sighup_reload_warns_on_unparseable_config() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("bad.yaml");
@@ -12348,6 +12352,7 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial(tracing_dispatcher)]
     fn apply_sighup_reload_updates_atomics_and_reports_changes() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -12367,6 +12372,7 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial(tracing_dispatcher)]
     fn apply_sighup_reload_states_scope_is_timers_and_backups_only() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -12390,6 +12396,7 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial(tracing_dispatcher)]
     fn apply_sighup_reload_reports_no_changes_for_silent_config() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -12409,6 +12416,7 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial(tracing_dispatcher)]
     fn apply_sighup_reload_drains_theme_deprecations() {
         // An operator-triggered SIGHUP is a discrete reload, not a periodic
         // tick, so re-showing the notice here is a fresh-invocation echo, not
@@ -12474,7 +12482,7 @@ spec:
     /// reader edits. The absolute path of a cache checkout names the same file
     /// in a directory nobody opened.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_watch_event_names_the_file_relative_to_the_config_dir() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -12503,10 +12511,10 @@ spec:
     /// describe the pull `sync: pulled` already reported; repeating them turns
     /// one line into a screenful.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_watch_event_a_pull_explains_stays_off_the_info_stream() {
         // A relative name no other test emits: `daemon_log` is a process-global
-        // capture and `serial(daemon_log)` excludes only the tests that READ
+        // capture and `serial(tracing_dispatcher)` excludes only the tests that READ
         // it, so a sibling in the unnamed group logging the same relative path
         // satisfied this needle and failed the assertion for work this test
         // never did.
@@ -13665,7 +13673,7 @@ spec:
     /// composition (a torn manifest), skipping the tick fail-closed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_per_module_tick_refreshes_the_subscriptions_the_config_declares() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -13909,7 +13917,7 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_processes_sighup_then_shuts_down() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -16518,7 +16526,7 @@ spec: {}
     /// The one thing that stays a `Printer` line is the Ctrl+C hint, and a
     /// capture printer has no interactive stdin, so it must not appear here.
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn print_startup_banner_logs_health_and_cadences() {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let logs = capture_run_logs(|| {
@@ -16886,7 +16894,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_external_triggers_shuts_down_cleanly() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17024,7 +17032,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_sighup_tick_and_reloads_intervals() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17507,7 +17515,7 @@ spec: {}
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_production_triggers_progresses_past_setup_then_shutsdown_on_sigterm() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17738,7 +17746,7 @@ spec: {}
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn the_reconcile_loop_reports_through_the_journal_and_never_the_printer() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17800,7 +17808,7 @@ spec: {}
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_drift_tick_leaves_the_printer_silent_and_names_the_change_in_the_journal() {
         reset_daemon_log();
         // A file-change tick walks handle_file_change_tick → drift recording →
@@ -19028,14 +19036,20 @@ mod ipc_socket_security {
         );
     }
 
-    /// A socket directory another account owns is refused, mode 0700 or not.
+    /// A socket directory another account owns is refused, mode 0700 or not, and
+    /// so is one whose ANCESTOR another account owns.
     ///
     /// 0700 is fully `rwx` to the directory's OWNER, so a root daemon whose
     /// runtime directory resolves under an unprivileged user's session would
     /// otherwise accept a directory that user can write, and the socket chmod
-    /// below it is path-based. Arranging a foreign owner needs the power to
-    /// `chown`, so the refusal arm runs only as root; as an ordinary user the
-    /// pin still proves the accepting arm, and the refusal arm is unexercised
+    /// below it is path-based. The same capability sits one component out: every
+    /// operation after the refusal names the socket by path, so an account owning
+    /// any ancestor can rename the directory root created and leave a link of its
+    /// own in that component's place. The second arm therefore asserts the
+    /// refusal names the OFFENDING COMPONENT and not the leaf, which passes both
+    /// of the leaf's own checks. Arranging a foreign owner needs the power to
+    /// `chown`, so both refusal arms run only as root; as an ordinary user the
+    /// pin still proves the accepting arm, and the refusals are unexercised
     /// there.
     #[cfg(unix)]
     #[test]
@@ -19057,6 +19071,18 @@ mod ipc_socket_security {
         assert!(
             format!("{err}").contains("owned by uid 1"),
             "the refusal must name the owner it found, got {err}"
+        );
+
+        let outer = tmp.path().join("outer");
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::os::unix::fs::chown(&outer, Some(1), Some(1)).unwrap();
+        let err = ensure_owner_private_dir(&inner)
+            .expect_err("a path whose ancestor another uid owns must be refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(&outer.display().to_string()) && !msg.contains("inner"),
+            "the refusal must name the offending component rather than the leaf, got {msg}"
         );
     }
 
@@ -20289,7 +20315,7 @@ mod backup_timers {
     /// half alone, so this pin drives the loop and lets nothing between the
     /// notify and the re-resolution go untested.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_running_loop_re_resolves_its_timers_when_the_projection_is_raised() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -21062,7 +21088,7 @@ mod backup_timers {
     }
 
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn sighup_reload_picks_up_added_changed_and_removed_units() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21577,7 +21603,7 @@ mod backup_timers {
     }
 
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn sighup_over_a_broken_profile_keeps_the_running_schedules() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21632,7 +21658,7 @@ mod backup_timers {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_due_retry_re_resolves_and_restores_the_timer_set() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21676,7 +21702,7 @@ mod backup_timers {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration() {
         // Same recovery path, but the healed profile declares zero backups.
         // "restored: 0 scheduled" reads as a broken recovery when it is really
@@ -21786,7 +21812,7 @@ mod backup_timers {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // The recovery path the startup retry opens: booted on a broken
         // profile (0 timers), profile since fixed, sources still unavailable.
@@ -21839,7 +21865,7 @@ mod backup_timers {
 
     #[test]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // Same state, reached the other way: a SIGHUP arriving while nothing is
         // running adopts rather than refusing (there is nothing to protect), so
@@ -21885,7 +21911,7 @@ mod backup_timers {
     }
 
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn a_fully_resolved_reload_still_reports_a_plain_all_clear() {
         // The qualifier must ride ONLY the degraded state: a healthy reload has
         // to stay a bare Ok, or the warning stops meaning anything.
@@ -22354,7 +22380,7 @@ mod backup_timers {
     /// the row it finds is whatever ran BEFORE, so a unit with any history at
     /// all would be logged as a run that completed and did not happen.
     #[test]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn a_busy_scheduled_unit_logs_its_holder_over_its_own_history() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -23086,7 +23112,7 @@ mod log_dialect {
     /// the start went to `debug!`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_tick_with_nothing_to_do_logs_its_completion() {
         reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
@@ -23110,7 +23136,7 @@ mod log_dialect {
     /// two surfaces came to describe one tick differently.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn an_applying_tick_logs_the_counts_its_rollup_shows() {
         reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
@@ -23153,7 +23179,7 @@ mod log_dialect {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[cfg(unix)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn an_applying_tick_logs_the_work_its_plan_could_not_name() {
         reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
@@ -23191,7 +23217,7 @@ mod log_dialect {
     /// a bare completion cannot say which of them converged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_per_module_tick_names_the_module_it_converged() {
         reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
@@ -23209,7 +23235,7 @@ mod log_dialect {
     /// source, stops mid-thought and then repeats itself in a second grammar.
     /// The sentence carries the source and both ends of the move.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_pull_names_the_source_and_both_ends_of_the_move() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();

@@ -11,12 +11,13 @@ use crate::PathDisplayExt;
 pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 
 /// Create `dir` (and parents) with mode 0700, then verify the resulting
-/// directory is owner-private AND owned by the running euid. Used by
-/// `run_health_server` to guarantee the IPC socket cannot be dropped into a
-/// location another account can reach. Refuses to proceed if the final mode has
-/// any group/other bits set: an attacker with `+w` on the parent could rename
-/// the socket and substitute theirs, defeating the 0600 set on the socket
-/// itself.
+/// directory is owner-private AND owned by the running euid, and that no
+/// account but this one can swap any component of the path that reaches it.
+/// Used by `run_health_server` to guarantee the IPC socket cannot be dropped
+/// into a location another account can reach. Refuses to proceed if the final
+/// mode has any group/other bits set: an attacker with `+w` on the parent could
+/// rename the socket and substitute theirs, defeating the 0600 set on the
+/// socket itself.
 ///
 /// The mode half covers the umask-leak case (mkdir under default 0o022 leaving
 /// 0755) as well as operator-pre-created directories with the wrong perms. The
@@ -24,10 +25,13 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// unprivileged user is fully writable BY that user, and this daemon's runtime
 /// directory resolves under `$XDG_RUNTIME_DIR` or `$HOME`, so a root daemon
 /// started in that user's session would let its owner unlink the bound socket
-/// and plant a symlink there for the chmod in `run_health_server` to follow.
-/// Both halves answer for the DIRECTORY; an unprivileged user pretending to be
-/// root is a different question and stays out of the local-daemon threat model,
-/// root being trusted on the host already.
+/// and plant a symlink there for the chmod in `run_health_server` to follow. The
+/// PATH half, [`refuse_swappable_path`], covers what both halves of a
+/// final-component check leave open: every operation after this function returns
+/// names the socket by path, so an ancestor another account can re-point aims
+/// the chmod just as well as the directory itself could. An unprivileged user
+/// pretending to be root is a different question and stays out of the
+/// local-daemon threat model, root being trusted on the host already.
 #[cfg(unix)]
 pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -67,7 +71,131 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
         }
         .into());
     }
-    Ok(())
+    refuse_swappable_path(dir, euid)
+}
+
+/// Refuse a socket directory whose path some other account could re-point
+/// between this check and the path-based chmod in `run_health_server`.
+///
+/// `ensure_owner_private_dir`'s two refusals above answer for the directory's
+/// own inode, and everything after them works by PATH: `exists`, `remove_file`,
+/// `bind`, then `set_permissions`. A final-component check therefore leaves the
+/// ancestors open, which is the whole capability in this module's own threat
+/// model: the unprivileged owner of `$HOME` and `$HOME/.cache` lets the root
+/// daemon create `…/cfgd/runtime` (root-owned, 0700, both refusals satisfied),
+/// then renames that component and drops a link of their own in its place, and
+/// the bind plus the chmod resolve through the link. Closing the capability is
+/// what this walk does; narrowing the race would only shorten it.
+///
+/// The walk runs from the ROOT down rather than in `Path::ancestors`' own order,
+/// because a component's verdict means nothing until every component above it is
+/// known unswappable, and each one is read with `symlink_metadata` so a link is
+/// seen as a link rather than followed. Three facts per component:
+///
+/// 1. OWNERSHIP: the component is owned by this euid, or by uid 0. Demanding
+///    this euid alone would refuse `/` and `/home`, root-owned on every host, so
+///    no user-scope daemon could ever start; and root is trusted here already —
+///    it can chown, chmod and unlink anything this socket protects. The socket's
+///    OWN directory is held to the stricter `uid == euid` by the caller above:
+///    cfgd binds in a directory of its own, never in one root merely lent it.
+/// 2. WRITABILITY BY OTHERS: group- or other-writable is refused unless the
+///    sticky bit is set. `/tmp` is 1777 and is a legitimate runtime root (it is
+///    also where every fixture of this module builds its tree), and the sticky
+///    bit is precisely what makes a world-writable directory unswappable: only
+///    an entry's own owner, the directory's owner or root may rename or unlink
+///    it, so an account that can merely create siblings cannot replace the
+///    component this walk just read.
+/// 3. LINK COMPONENTS: a link is admitted and the walk CONTINUES through its
+///    target. The two facts above have already proved that no untrusted account
+///    could have placed or re-pointed it, so a link inside an unswappable
+///    directory is a deliberate configuration rather than an attack — refusing
+///    one outright would refuse macOS, where every per-user and temporary path
+///    runs through `/var` -> `private/var`, and would refuse a host whose
+///    `/var/run` is a link to `/run` (cfgd's own system default is `/run/cfgd`,
+///    which is a real directory there, so only an operator-set
+///    `CFGD_RUNTIME_DIR` reaches that shape). What a link cannot do is escape
+///    the judgment: its target's components are walked by these same three
+///    rules, so a chain that ends in a directory another account owns is refused
+///    where it escapes.
+///
+/// A `..` component is refused outright: every `stat` of a prefix ending in one
+/// resolves the links above it, which is exactly what this walk is written not
+/// to do, so its verdict would be about paths it never read.
+#[cfg(unix)]
+fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let refuse = |message: String| DaemonError::HealthSocketError { message };
+    let mut path = crate::absolutize_path(dir);
+    // One pass per link component; 64 is where every unix reports ELOOP.
+    for _ in 0..64 {
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(refuse(format!(
+                "refusing to bind: path {} contains a `..` component, which no                  component-by-component check can judge",
+                path.posix()
+            ))
+            .into());
+        }
+        let mut follow: Option<std::path::PathBuf> = None;
+        for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            if component.as_os_str().is_empty() {
+                continue;
+            }
+            let meta = std::fs::symlink_metadata(component)
+                .map_err(|e| refuse(format!("stat path component {}: {}", component.posix(), e)))?;
+            let uid = meta.uid();
+            if uid != euid && uid != 0 {
+                return Err(refuse(format!(
+                    "refusing to bind: path component {} is owned by uid {} rather than uid {} or root",
+                    component.posix(),
+                    uid,
+                    euid
+                ))
+                .into());
+            }
+            let mode = meta.permissions().mode() & 0o7777;
+            if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+                return Err(refuse(format!(
+                    "refusing to bind: path component {} is writable by other accounts \
+                     (mode {:o}) without the sticky bit that would keep them from \
+                     replacing it",
+                    component.posix(),
+                    mode
+                ))
+                .into());
+            }
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(component)
+                    .map_err(|e| refuse(format!("read link {}: {}", component.posix(), e)))?;
+                let rest = path
+                    .strip_prefix(component)
+                    .unwrap_or(std::path::Path::new(""));
+                let base = if target.is_absolute() {
+                    target
+                } else {
+                    component
+                        .parent()
+                        .unwrap_or(std::path::Path::new("/"))
+                        .join(target)
+                };
+                follow = Some(base.join(rest));
+                break;
+            }
+        }
+        match follow {
+            Some(next) => path = next,
+            None => return Ok(()),
+        }
+    }
+    Err(refuse(format!(
+        "refusing to bind: path {} resolves through more than 64 symlinks",
+        dir.posix()
+    ))
+    .into())
 }
 
 // --- Health Server ---
@@ -100,9 +228,10 @@ pub(crate) async fn run_health_server(
     // Tighten the freshly-bound socket to 0600 (default Linux umask 0022
     // leaves it 0755 / world-readable). Done immediately after bind so the
     // window where a parallel `nc -U` could succeed is sub-millisecond. The
-    // containment is the refusal above, which has just proved this socket's own
-    // directory both owner-private and owned by this euid, so no other account
-    // can put an entry in it. A `umask` around the bind would narrow the socket
+    // containment is the refusal above, which has just proved that every
+    // component of this path is owned by this process (or by root) and writable
+    // by nobody else, so no other account can put an entry in it or re-point
+    // the path it sits on. A `umask` around the bind would narrow the socket
     // without any chmod, but umask is process-global and this daemon writes
     // files from other threads while the server binds.
     // follow-ok: `open(2)` on a unix socket is ENXIO, so the primitive cannot serve this path.

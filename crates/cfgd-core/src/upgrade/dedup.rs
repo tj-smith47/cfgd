@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn count_stale_skills_swallows_a_providers_list_error() {
         // One provider whose `list` errors must contribute 0 (best-effort), never
         // abort the aggregate — the other providers' stale counts still surface.
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn ride_along_skips_a_provider_whose_list_errors() {
         // A provider whose user-scope `list` errors is skipped (warn + continue);
         // with no other present user-scope skill, nothing is refreshed and the
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     fn ride_along_skips_a_skill_whose_install_errors() {
         // A present user-scope skill whose re-render `install` errors is skipped
         // (warn, leave stale) rather than aborting the post-upgrade tail. Codex

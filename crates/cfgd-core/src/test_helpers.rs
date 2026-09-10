@@ -4211,7 +4211,9 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// no walk at all. The roots are derived by reading `crates_dir` rather than
 /// listed, so a crate added to the workspace joins the population with it, and
 /// each root is a crate's `src`: a bare `crates/` root would read
-/// `cfgd/tests/common/mod.rs` as production.
+/// `cfgd/tests/common/mod.rs` as production. A `build.rs` is outside the roots
+/// and outside the class — it runs as the building user in its own `OUT_DIR`,
+/// never elevated inside a directory another account owns.
 ///
 /// `std::fs::set_permissions` resolves its path again and follows whatever link
 /// it finds. Under an elevated run inside a directory an unprivileged user owns,
@@ -4243,8 +4245,13 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// wiser. A function DECLARATION is skipped on the same grounds, and so is a
 /// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
 pub struct ChmodPopulation {
-    /// Crate `src` roots the walk read.
-    pub roots: usize,
+    /// Crate `src` roots the walk read, workspace-relative.
+    ///
+    /// The NAMES rather than a count, so a caller can fail by name when a root
+    /// is renamed or moved out of `crates/`: a count is restored by any crate
+    /// that happens to appear, and the walk then reads a narrower population in
+    /// silence.
+    pub roots: Vec<String>,
     /// Production sources the walk read.
     pub files: usize,
     /// Chmod-shaped calls it read, no-follow ones included.
@@ -4285,19 +4292,32 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
         "carry_dir_mode(",
     ];
     let mut population = ChmodPopulation {
-        roots: 0,
+        roots: Vec::new(),
         files: 0,
         chmods: 0,
         offenders: Vec::new(),
     };
     let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(crates_dir)
         .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
-        .filter_map(|entry| entry.ok().map(|e| e.path().join("src")))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
         .filter(|src| src.is_dir())
         .collect();
     roots.sort();
-    population.roots = roots.len();
     let workspace = workspace_root();
+    population.roots = roots
+        .iter()
+        .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
+        .collect();
     for path in roots.iter().flat_map(|root| rust_sources_under(root)) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         // A file that IS test scaffolding carries no `#[cfg(test)]` of its own

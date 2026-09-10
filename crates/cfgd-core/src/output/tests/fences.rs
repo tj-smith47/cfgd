@@ -2406,10 +2406,16 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// including through the helper that installs for it: a test calling such a
 /// helper installs a subscriber without naming one, which is how an
 /// unserialized installer reached this binary.
+///
+/// A WRAPPER around an install joins this table as its own row, pin column the
+/// declaration and reader column the call: the walk judges the declaration a pin
+/// is written in, so a wrapper that installs for its callers is judged once and
+/// its callers are judged by nothing. Hatching the wrapper and rostering it is
+/// what makes the next hop out cost two lines rather than a paragraph.
 const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
     (
         ".with_subscriber(",
-        "daemon_log",
+        "tracing_dispatcher",
         "capture_run_logs_async(",
         1,
     ),
@@ -2451,20 +2457,26 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
     ),
     (
         "fn capture_warn_logs",
-        "daemon_log",
+        "tracing_dispatcher",
         "capture_warn_logs(",
         1,
     ),
+    ("fn run_sighup", "tracing_dispatcher", "run_sighup(", 1),
     (
         "fn with_trace_subscriber",
-        "daemon_log",
+        "tracing_dispatcher",
         "with_trace_subscriber(",
         1,
     ),
-    ("set_global_default(", "daemon_log", "daemon_log()", 1),
+    (
+        "set_global_default(",
+        "tracing_dispatcher",
+        "daemon_log()",
+        1,
+    ),
     (
         "tracing::subscriber::with_default(",
-        "daemon_log",
+        "tracing_dispatcher",
         "capture_run_logs(",
         5,
     ),
@@ -4183,15 +4195,38 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
 ///
 /// The floor sits AT what the workspace holds rather than under it, so a call
 /// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
-/// and the assertion prints the numbers it read.
+/// and the assertion prints the numbers it read. The roots are named as well as
+/// counted, for the reason [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named:
+/// a count survives a root renamed or moved out of `crates/` as long as some
+/// other crate appears to restore it.
 #[test]
 fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
+    /// Every crate root the walk must still be reading, workspace-relative.
+    const CHMOD_WALK_ROOTS: &[&str] = &[
+        "crates/cfgd-core/src",
+        "crates/cfgd-crd/src",
+        "crates/cfgd-csi/src",
+        "crates/cfgd-operator/src",
+        "crates/cfgd-schema/src",
+        "crates/cfgd/src",
+    ];
     let crates_dir = crate::test_helpers::workspace_root().join("crates");
     let population = crate::test_helpers::path_based_chmod_population(&crates_dir);
+    let unread: Vec<&str> = CHMOD_WALK_ROOTS
+        .iter()
+        .copied()
+        .filter(|named| !population.roots.iter().any(|read| read == named))
+        .collect();
     assert!(
-        population.roots >= 6 && population.files >= 391 && population.chmods >= 31,
+        unread.is_empty(),
+        "the walk no longer reads {unread:?}; it read {:?} — a renamed or moved \
+         crate root leaves its chmods judged by nobody",
+        population.roots
+    );
+    assert!(
+        population.roots.len() >= 6 && population.files >= 391 && population.chmods >= 31,
         "the walk read {} crate roots, {} files and {} chmods, too few to be the population",
-        population.roots,
+        population.roots.len(),
         population.files,
         population.chmods
     );
