@@ -93,7 +93,16 @@ pub struct FileState {
 /// failure (`EACCES` on an intermediate directory, `ELOOP`) is propagated: those
 /// are not "no link target", and degrading them to replacing the link destroys
 /// the link on exactly the paths cfgd understands least.
-fn resolve_write_target(
+///
+/// A caller re-applying a RECORDED mode resolves through here too, rather than
+/// chmodding the path it wrote: the mode belongs to the file the write landed
+/// on, and a chain (`link -> mid -> real`) names another link at its first hop,
+/// which the no-follow chmod refuses outright. Resolving the chain for a chmod
+/// does not re-open the elevated-chmod hazard, because the uid guard refuses a
+/// destination another user owns and both that guard's own read-back and the
+/// chmod open with `O_NOFOLLOW`: a component swapped after the canonicalization
+/// is an error, never a hop onto a third file.
+pub(crate) fn resolve_write_target(
     path: &std::path::Path,
 ) -> std::result::Result<std::path::PathBuf, std::io::Error> {
     let link_meta = match std::fs::symlink_metadata(path) {

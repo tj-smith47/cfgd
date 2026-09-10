@@ -207,11 +207,26 @@ pub fn widen_file_permissions_nofollow(_path: &std::path::Path, _bits: u32) -> s
 ///
 /// Read-only because `fchmod(2)` needs no write access, and a key file cfgd is
 /// about to tighten may well be unwritable. The open still needs READ access,
-/// which `chmod(2)` did not: a target its owner left unreadable (`0o000`,
-/// `0o200`) can no longer have its mode set, and that surfaces as a refusal,
-/// never a silent skip. The portable alternatives are worse, since Linux's
-/// `fchmodat` rejects `AT_SYMLINK_NOFOLLOW` and an `O_PATH` descriptor cannot be
-/// `fchmod`ded.
+/// which `chmod(2)` did not: a target, or the source a `strategy: Symlink` entry
+/// names, left unreadable by its owner (`0o000`, `0o200`, `0o300`) can no longer
+/// have its mode set. A linked entry's declared mode belongs to the source file,
+/// so the source is the path the chmod names and the refusal reaches it on the
+/// same terms as any target.
+///
+/// That is a narrow, loud and recoverable price for the property. The declared
+/// mode is chmodded only where it differs from the file's current one (or on a
+/// re-link), so a file already AT its read-less mode is never chmodded again; the
+/// case that fails fails with the real `EACCES` on its own action rather than
+/// silently, and `chmod +r` on the named file clears it for the next run. An
+/// elevated run is unaffected, root bypassing the read check, and that is the run
+/// the no-follow open exists for.
+///
+/// The portable alternatives are worse. Linux's `fchmodat` rejects
+/// `AT_SYMLINK_NOFOLLOW` and an `O_PATH` descriptor cannot be `fchmod`ded, so the
+/// only ways back are a path-based chmod (the misdirection this primitive exists
+/// to refuse) or a Linux-only `/proc/self/fd` hop beside a separate macOS
+/// `lchmod` arm: new `libc` surface on two platforms, plus a `/proc` a container
+/// need not mount, to serve a mode nobody can read.
 #[cfg(unix)]
 fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
