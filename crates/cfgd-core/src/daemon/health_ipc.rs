@@ -10,14 +10,28 @@ use crate::PathDisplayExt;
 /// daemon — 256 KiB leaves three orders of magnitude of headroom.
 pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 
-/// Create `dir` (and parents) with mode 0700, then verify the resulting
-/// directory is owner-private AND owned by the running euid, and that no
-/// account but this one can swap any component of the path that reaches it.
+/// Judge the path that reaches `dir`, then create `dir` (and any missing
+/// parents) with mode 0700 and verify the result is owner-private AND owned by
+/// the running euid.
+///
 /// Used by `run_health_server` to guarantee the IPC socket cannot be dropped
 /// into a location another account can reach. Refuses to proceed if the final
 /// mode has any group/other bits set: an attacker with `+w` on the parent could
 /// rename the socket and substitute theirs, defeating the 0600 set on the
 /// socket itself.
+///
+/// The ORDER is load-bearing. [`refuse_swappable_path`] runs against the
+/// deepest component that already exists, before anything is created or
+/// chmodded, because both of those mutations work by PATH and a path-based
+/// mutation resolves every ancestor through whatever stands there: a recursive
+/// create under an ancestor another account re-pointed makes a root-owned
+/// directory wherever they aimed it, and a path-based chmod under one lands
+/// 0700 on a directory that already existed, locking its own owner out.
+/// `O_NOFOLLOW` answers for the FINAL component alone and cannot answer for
+/// either. The missing tail is then made one component at a time with
+/// `mkdir(2)`, which never follows a final symlink and answers `EEXIST` for a
+/// component that appeared since the walk, so every component this call adds is
+/// one it made itself and the walk's verdict covers the whole path.
 ///
 /// The mode half covers the umask-leak case (mkdir under default 0o022 leaving
 /// 0755) as well as operator-pre-created directories with the wrong perms. The
@@ -25,102 +39,155 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// unprivileged user is fully writable BY that user, and this daemon's runtime
 /// directory resolves under `$XDG_RUNTIME_DIR` or `$HOME`, so a root daemon
 /// started in that user's session would let its owner unlink the bound socket
-/// and plant a symlink there for the chmod in `run_health_server` to follow. The
-/// PATH half, [`refuse_swappable_path`], covers what both halves of a
-/// final-component check leave open: every operation after this function returns
-/// names the socket by path, so an ancestor another account can re-point aims
-/// the chmod just as well as the directory itself could. An unprivileged user
-/// pretending to be root is a different question and stays out of the
-/// local-daemon threat model, root being trusted on the host already.
+/// and plant a symlink there for the chmod in `run_health_server` to follow. An
+/// unprivileged user pretending to be root is a different question and stays out
+/// of the local-daemon threat model, root being trusted on the host already.
 #[cfg(unix)]
 pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::create_dir_all(dir).map_err(|e| DaemonError::HealthSocketError {
-        message: format!("create parent {}: {}", dir.posix(), e),
-    })?;
-    crate::set_file_permissions_nofollow(dir, 0o700).map_err(|e| {
-        DaemonError::HealthSocketError {
-            message: format!("chmod parent {}: {}", dir.posix(), e),
-        }
-    })?;
-    let meta = std::fs::metadata(dir).map_err(|e| DaemonError::HealthSocketError {
-        message: format!("stat parent {}: {}", dir.posix(), e),
-    })?;
+    let refuse = |message: String| DaemonError::HealthSocketError { message };
+    let dir = crate::absolutize_path(dir);
+    let euid = nix::unistd::geteuid().as_raw();
+
+    // The deepest component that already exists is found with
+    // `symlink_metadata` rather than an `exists` probe, which follows: a
+    // dangling link is exactly the component an attacker plants, and a
+    // following probe walks straight past it and hands the tail's `mkdir` the
+    // target they chose.
+    let (existing, existing_meta) = dir
+        .ancestors()
+        .find_map(|p| p.symlink_metadata().ok().map(|meta| (p, meta)))
+        .ok_or_else(|| refuse(format!("stat parent {}: no component exists", dir.posix())))?;
+
+    refuse_swappable_path(existing, euid)?;
+
+    // Nothing left to create means the leaf already stood there, so its KIND is
+    // settled before the chmod: the no-follow open refuses a symlink (`ELOOP`)
+    // but opens a regular file happily, and a file standing where the directory
+    // belongs would have its own mode rewritten instead of being refused.
+    if existing == dir.as_path()
+        && !existing_meta.is_dir()
+        && !existing_meta.file_type().is_symlink()
+    {
+        return Err(refuse(format!(
+            "refusing to bind: parent directory {} is not a directory",
+            dir.posix()
+        ))
+        .into());
+    }
+
+    let tail = dir
+        .strip_prefix(existing)
+        .unwrap_or(std::path::Path::new(""));
+    let mut cursor = existing.to_path_buf();
+    for part in tail.components() {
+        cursor.push(part);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&cursor)
+            .map_err(|e| refuse(format!("create parent {}: {}", cursor.posix(), e)))?;
+    }
+
+    // The mode is still set explicitly: `mkdir(2)` masks its argument with the
+    // process umask, so a host umask withholding the owner bits would leave a
+    // directory this daemon cannot traverse.
+    crate::set_file_permissions_nofollow(&dir, 0o700)
+        .map_err(|e| refuse(format!("chmod parent {}: {}", dir.posix(), e)))?;
+    let meta = std::fs::metadata(&dir)
+        .map_err(|e| refuse(format!("stat parent {}: {}", dir.posix(), e)))?;
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
-        return Err(DaemonError::HealthSocketError {
-            message: format!(
-                "refusing to bind: parent directory {} is not owner-private (mode {:o})",
-                dir.posix(),
-                mode
-            ),
-        }
+        return Err(refuse(format!(
+            "refusing to bind: parent directory {} is not owner-private (mode {:o})",
+            dir.posix(),
+            mode
+        ))
         .into());
     }
-    let euid = nix::unistd::geteuid().as_raw();
     if meta.uid() != euid {
-        return Err(DaemonError::HealthSocketError {
-            message: format!(
-                "refusing to bind: parent directory {} is owned by uid {} rather than uid {}",
-                dir.posix(),
-                meta.uid(),
-                euid
-            ),
-        }
+        return Err(refuse(format!(
+            "refusing to bind: parent directory {} is owned by uid {} rather than uid {}",
+            dir.posix(),
+            meta.uid(),
+            euid
+        ))
         .into());
     }
-    refuse_swappable_path(dir, euid)
+    Ok(())
 }
 
 /// Refuse a socket directory whose path some other account could re-point
 /// between this check and the path-based chmod in `run_health_server`.
 ///
-/// `ensure_owner_private_dir`'s two refusals above answer for the directory's
-/// own inode, and everything after them works by PATH: `exists`, `remove_file`,
-/// `bind`, then `set_permissions`. A final-component check therefore leaves the
-/// ancestors open, which is the whole capability in this module's own threat
-/// model: the unprivileged owner of `$HOME` and `$HOME/.cache` lets the root
-/// daemon create `…/cfgd/runtime` (root-owned, 0700, both refusals satisfied),
-/// then renames that component and drops a link of their own in its place, and
-/// the bind plus the chmod resolve through the link. Closing the capability is
-/// what this walk does; narrowing the race would only shorten it.
+/// `ensure_owner_private_dir`'s two refusals answer for the directory's own
+/// inode, and everything around them works by PATH: the create, the chmod, then
+/// `exists`, `remove_file`, `bind` and `set_permissions`. A final-component
+/// check therefore leaves the ancestors open, which is the whole capability in
+/// this module's own threat model: the unprivileged owner of `$HOME` and
+/// `$HOME/.cache` lets the root daemon create `…/cfgd/runtime` (root-owned,
+/// 0700, both refusals satisfied), then renames that component and drops a link
+/// of their own in its place, and every later path-based operation resolves
+/// through the link. Closing the capability is what this walk does; narrowing
+/// the race would only shorten it. Its caller runs it BEFORE any mutation, for
+/// the reason stated there.
 ///
 /// The walk runs from the ROOT down rather than in `Path::ancestors`' own order,
 /// because a component's verdict means nothing until every component above it is
 /// known unswappable, and each one is read with `symlink_metadata` so a link is
-/// seen as a link rather than followed. Three facts per component:
+/// seen as a link rather than followed. Three facts per component, asked in this
+/// order:
 ///
 /// 1. OWNERSHIP: the component is owned by this euid, or by uid 0. Demanding
 ///    this euid alone would refuse `/` and `/home`, root-owned on every host, so
-///    no user-scope daemon could ever start; and root is trusted here already —
+///    no user-scope daemon could ever start; and root is trusted here already:
 ///    it can chown, chmod and unlink anything this socket protects. The socket's
 ///    OWN directory is held to the stricter `uid == euid` by the caller above:
 ///    cfgd binds in a directory of its own, never in one root merely lent it.
-/// 2. WRITABILITY BY OTHERS: group- or other-writable is refused unless the
-///    sticky bit is set. `/tmp` is 1777 and is a legitimate runtime root (it is
-///    also where every fixture of this module builds its tree), and the sticky
-///    bit is precisely what makes a world-writable directory unswappable: only
-///    an entry's own owner, the directory's owner or root may rename or unlink
-///    it, so an account that can merely create siblings cannot replace the
-///    component this walk just read.
-/// 3. LINK COMPONENTS: a link is admitted and the walk CONTINUES through its
-///    target. The two facts above have already proved that no untrusted account
-///    could have placed or re-pointed it, so a link inside an unswappable
-///    directory is a deliberate configuration rather than an attack — refusing
-///    one outright would refuse macOS, where every per-user and temporary path
-///    runs through `/var` -> `private/var`, and would refuse a host whose
-///    `/var/run` is a link to `/run` (cfgd's own system default is `/run/cfgd`,
-///    which is a real directory there, so only an operator-set
-///    `CFGD_RUNTIME_DIR` reaches that shape). What a link cannot do is escape
-///    the judgment: its target's components are walked by these same three
-///    rules, so a chain that ends in a directory another account owns is refused
-///    where it escapes.
+/// 2. LINK COMPONENTS: a link is admitted and the walk CONTINUES through its
+///    target. Ownership has already proved that no untrusted account could have
+///    placed or re-pointed it, `lchown` being the only way to move a link's own
+///    uid, so a link inside a directory this walk found unswappable is a
+///    deliberate configuration rather than an attack.
 ///
-/// A `..` component is refused outright: every `stat` of a prefix ending in one
-/// resolves the links above it, which is exactly what this walk is written not
-/// to do, so its verdict would be about paths it never read.
+///    This question is asked ABOVE the writability rule because a link's own
+///    mode bits are not the permission that rule is about. The kernel ignores
+///    them on every access, Linux stores 0o777 on every symlink and macOS 0o755,
+///    and what actually decides whether another account can replace a link is
+///    its PARENT's mode, which this same pass read one component earlier. Judged
+///    on its own mode a link would be refused on Linux and admitted on macOS,
+///    which is two predicates rather than one.
+///
+///    Refusing links outright is not available: this module's own fixtures build
+///    under a `$TMPDIR` that is `/var/folders/…` on macOS, reached through
+///    `/var` -> `private/var`, and an operator-set `CFGD_RUNTIME_DIR` can sit
+///    under a host whose `/var/run` is a link to `/run` (cfgd's own system
+///    default is `/run/cfgd`, a real directory there, so the default path does
+///    not need the admission and the macOS default, under
+///    `$HOME/Library/Application Support`, is link-free). What a link cannot do
+///    is escape the judgment: its target's components are walked by these same
+///    three rules, so a chain that ends in a directory another account owns is
+///    refused where it escapes.
+///
+///    A relative target resolves against the link's own parent, and a LEADING
+///    `..` run is folded off that parent lexically rather than left to the `..`
+///    refusal below: every component of that parent was read in this same pass
+///    and found not to be a link, so dropping one names the directory the kernel
+///    would reach. A `..` anywhere else in a target stays in the path and is
+///    refused on the next pass, its prefix being components this walk has not
+///    read.
+/// 3. WRITABILITY BY OTHERS: group- or other-writable is refused unless the
+///    sticky bit is set. `/tmp` is 1777 and is a legitimate runtime root, and the
+///    sticky bit is precisely what makes a world-writable directory unswappable:
+///    only an entry's own owner, the directory's owner or root may rename or
+///    unlink it, so an account that can merely create siblings cannot replace the
+///    component this walk just read.
+///
+/// A `..` component in the path as given is refused outright: every `stat` of a
+/// prefix ending in one resolves the links above it, which is exactly what this
+/// walk is written not to do, so its verdict would be about paths it never read.
 #[cfg(unix)]
 fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -135,7 +202,8 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
             return Err(refuse(format!(
-                "refusing to bind: path {} contains a `..` component, which no                  component-by-component check can judge",
+                "refusing to bind: path {} contains a `..` component, which no \
+                 component-by-component check can judge",
                 path.posix()
             ))
             .into());
@@ -157,6 +225,38 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                 ))
                 .into());
             }
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(component)
+                    .map_err(|e| refuse(format!("read link {}: {}", component.posix(), e)))?;
+                let rest = path
+                    .strip_prefix(component)
+                    .unwrap_or(std::path::Path::new(""));
+                let base = if target.is_absolute() {
+                    target
+                } else {
+                    let mut base = component
+                        .parent()
+                        .unwrap_or(std::path::Path::new("/"))
+                        .to_path_buf();
+                    let mut parts = target.components().peekable();
+                    while let Some(part) = parts.peek() {
+                        match part {
+                            std::path::Component::ParentDir => {
+                                base.pop();
+                            }
+                            std::path::Component::CurDir => {}
+                            _ => break,
+                        }
+                        parts.next();
+                    }
+                    for part in parts {
+                        base.push(part);
+                    }
+                    base
+                };
+                follow = Some(base.join(rest));
+                break;
+            }
             let mode = meta.permissions().mode() & 0o7777;
             if mode & 0o022 != 0 && mode & 0o1000 == 0 {
                 return Err(refuse(format!(
@@ -167,23 +267,6 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                     mode
                 ))
                 .into());
-            }
-            if meta.file_type().is_symlink() {
-                let target = std::fs::read_link(component)
-                    .map_err(|e| refuse(format!("read link {}: {}", component.posix(), e)))?;
-                let rest = path
-                    .strip_prefix(component)
-                    .unwrap_or(std::path::Path::new(""));
-                let base = if target.is_absolute() {
-                    target
-                } else {
-                    component
-                        .parent()
-                        .unwrap_or(std::path::Path::new("/"))
-                        .join(target)
-                };
-                follow = Some(base.join(rest));
-                break;
             }
         }
         match follow {

@@ -19055,6 +19055,7 @@ mod ipc_socket_security {
     #[test]
     fn the_socket_directory_refuses_an_owner_that_is_not_this_process() {
         use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
         let mine = tmp.path().join("mine");
@@ -19083,6 +19084,105 @@ mod ipc_socket_security {
         assert!(
             msg.contains(&outer.display().to_string()) && !msg.contains("inner"),
             "the refusal must name the offending component rather than the leaf, got {msg}"
+        );
+
+        let victim = tmp.path().join("victim-tree");
+        let standing = victim.join("standing");
+        std::fs::create_dir_all(&standing).unwrap();
+        crate::set_file_permissions(&standing, 0o755).unwrap();
+        let aimed = tmp.path().join("aimed");
+        std::fs::create_dir(&aimed).unwrap();
+        std::os::unix::fs::symlink(&victim, aimed.join("link")).unwrap();
+        std::os::unix::fs::chown(&aimed, Some(1), Some(1)).unwrap();
+
+        let err = ensure_owner_private_dir(&aimed.join("link").join("standing"))
+            .expect_err("a path aimed through an ancestor another uid owns must be refused");
+        assert!(
+            format!("{err}").contains(&aimed.display().to_string()),
+            "the refusal must name the component that other uid owns, got {err}"
+        );
+        let mode = std::fs::metadata(&standing).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "the directory the planted link aims at must keep its own mode"
+        );
+
+        let err = ensure_owner_private_dir(&aimed.join("link").join("fresh"))
+            .expect_err("a path aimed through an ancestor another uid owns must be refused");
+        assert!(
+            format!("{err}").contains(&aimed.display().to_string()),
+            "the refusal must name the component that other uid owns, got {err}"
+        );
+        assert!(
+            !victim.join("fresh").exists(),
+            "the refusal must create nothing inside the directory the link aims at"
+        );
+    }
+
+    /// A link standing in a path component is walked THROUGH rather than judged
+    /// on its own mode, and the verdict comes from what it points at.
+    ///
+    /// A symlink's own mode bits are never consulted by the kernel and differ by
+    /// operating system: Linux stores 0o777 on every symlink, macOS 0o755. Asked
+    /// the writability question, a Linux link is refused and a macOS one
+    /// admitted, so this pin is what keeps the two hosts deciding the same way.
+    /// It is also the only arm that reaches the walk's link branch at all, which
+    /// is why the relative-target fold is asserted here beside the absolute one.
+    ///
+    /// Both trees sit under the sticky temporary root the walk admits by its
+    /// writability rule, which is the shape every fixture of this module builds
+    /// in. Pointing a link at a directory another account owns needs the power
+    /// to `chown`, so the escaping arm runs only as root; as an ordinary user the
+    /// pin still proves both admissions.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_walks_through_a_link_component_rather_than_judging_its_mode() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        ensure_owner_private_dir(&link.join("cfgd"))
+            .expect("a link component inside a directory this euid owns must be admitted");
+        let mode = std::fs::metadata(real.join("cfgd"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the leaf created through the link must be owner-private, got {mode:o}"
+        );
+
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let relative = nested.join("up");
+        std::os::unix::fs::symlink("../real", &relative).unwrap();
+        ensure_owner_private_dir(&relative.join("via-relative"))
+            .expect("a relative link target must fold against the prefix already judged");
+        assert!(
+            real.join("via-relative").is_dir(),
+            "a relative target must resolve to the directory it names"
+        );
+
+        if !crate::is_root() {
+            return;
+        }
+        let theirs = tmp.path().join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
+        let escapes = tmp.path().join("escapes");
+        std::fs::create_dir(&escapes).unwrap();
+        std::os::unix::fs::symlink(&theirs, escapes.join("out")).unwrap();
+        let err = ensure_owner_private_dir(&escapes.join("out").join("cfgd"))
+            .expect_err("a link into a directory another uid owns must be refused");
+        assert!(
+            format!("{err}").contains("owned by uid 1"),
+            "the refusal must name the uid it found past the link, got {err}"
         );
     }
 
