@@ -653,6 +653,12 @@ pub fn file_url(path: &Path) -> String {
 /// answers where it points, which is not what a fold of its own ancestors
 /// composes. A test asserting a path as the operator GAVE it keeps comparing
 /// against the unfolded path, that being the string its subject renders.
+///
+/// Unix only, and gated rather than documented: on Windows `canonicalize`
+/// answers with a `\\?\` verbatim path, which no expectation rendered through
+/// `display()` matches, so a fold there would hand every caller a root its own
+/// subject can never produce.
+#[cfg(unix)]
 pub fn folded_temp_root(root: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|e| {
         panic!(

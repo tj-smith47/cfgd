@@ -19053,10 +19053,15 @@ mod ipc_socket_security {
     /// any ancestor can rename the directory root created and leave a link of its
     /// own in that component's place. The second arm therefore asserts the
     /// refusal names the OFFENDING COMPONENT and not the leaf, which passes both
-    /// of the leaf's own checks. Arranging a foreign owner needs the power to
-    /// `chown`, so both refusal arms run only as root; as an ordinary user the
-    /// pin still proves the accepting arm, and the refusals are unexercised
-    /// there.
+    /// of the leaf's own checks.
+    ///
+    /// Arranging a foreign owner needs the power to `chown`, so every arm here
+    /// runs as root and the pin proves nothing at any other uid. That is what
+    /// its name carries: arms like these sharing a pin with ones that do run
+    /// unprivileged report a single green line for both, and a reader of the run
+    /// cannot tell which half it executed. The accepting arm this pin used to
+    /// open on is `health_ipc`'s own
+    /// `ensure_owner_private_dir_creates_with_mode_700`, which holds at any uid.
     ///
     /// The refusals name a component of the path the WALK judges, which it folds
     /// every link out of as it descends, so the fixture is rooted on
@@ -19065,18 +19070,15 @@ mod ipc_socket_security {
     /// walk has already recomposed.
     #[cfg(unix)]
     #[test]
-    fn the_socket_directory_refuses_an_owner_that_is_not_this_process() {
+    fn the_socket_directory_refuses_an_owner_that_is_not_this_process_as_root() {
         use crate::daemon::health_ipc::ensure_owner_private_dir;
         use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let root = crate::test_helpers::folded_temp_root(tmp.path());
-        let mine = root.join("mine");
-        ensure_owner_private_dir(&mine).expect("a directory this euid owns must be accepted");
 
         if !crate::is_root() {
             return;
         }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
         let theirs = root.join("theirs");
         std::fs::create_dir(&theirs).unwrap();
         std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
@@ -19144,9 +19146,9 @@ mod ipc_socket_security {
     ///
     /// Both trees sit under the sticky temporary root the walk admits by its
     /// writability rule, which is the shape every fixture of this module builds
-    /// in. Pointing a link at a directory another account owns needs the power
-    /// to `chown`, so the escaping arm runs only as root; as an ordinary user the
-    /// pin still proves both admissions.
+    /// in. Both arms hold at any uid; the escaping arm, which needs the power to
+    /// `chown`, is the sibling
+    /// `the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root`.
     #[cfg(unix)]
     #[test]
     fn the_socket_directory_walks_through_a_link_component_rather_than_judging_its_mode() {
@@ -19181,21 +19183,67 @@ mod ipc_socket_security {
             real.join("via-relative").is_dir(),
             "a relative target must resolve to the directory it names"
         );
+    }
+
+    /// A link component aimed at a directory another account owns is refused by
+    /// the rule that names the escape, and the refusal names the link that
+    /// composed the path it is judging.
+    ///
+    /// The ownership rule is reached here on a component the walk folded TO
+    /// rather than one the operator wrote, and this is the only arm of the module
+    /// where it is: every ownership refusal its sibling
+    /// `the_socket_directory_refuses_an_owner_that_is_not_this_process_as_root`
+    /// raises lands on the first pass, where there is no fold to name. The
+    /// sentence therefore states the offending component, the uid found there,
+    /// the uid it was measured against and the fold that put it in the path, and
+    /// asserting it whole is what pins those four in their order. A
+    /// `contains("owned by uid 1")` alone stays green with the provenance dropped
+    /// or a different link named in it, which leaves an operator a component they
+    /// never wrote and nothing pointing at the link that produced it.
+    ///
+    /// Arranging a foreign owner needs the power to `chown`, so this pin runs as
+    /// root and proves nothing at any other uid, which is what its name carries.
+    /// The admissions it was split out of hold at any uid in
+    /// `the_socket_directory_walks_through_a_link_component_rather_than_judging_its_mode`.
+    ///
+    /// Rooted on [`crate::test_helpers::folded_temp_root`]: the expectation is a
+    /// string the walk composed, and on a host whose `$TMPDIR` is reached through
+    /// a link the walk has folded that link out before it reaches the planted
+    /// one, so a clause built from the tempdir's own path names a prefix the walk
+    /// cannot produce.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
 
         if !crate::is_root() {
             return;
         }
-        let theirs = tmp.path().join("theirs");
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let theirs = root.join("theirs");
         std::fs::create_dir(&theirs).unwrap();
         std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
-        let escapes = tmp.path().join("escapes");
+        let escapes = root.join("escapes");
         std::fs::create_dir(&escapes).unwrap();
-        std::os::unix::fs::symlink(&theirs, escapes.join("out")).unwrap();
-        let err = ensure_owner_private_dir(&escapes.join("out").join("cfgd"))
+        let planted = escapes.join("out");
+        std::os::unix::fs::symlink(&theirs, &planted).unwrap();
+
+        let err = ensure_owner_private_dir(&planted.join("cfgd"))
             .expect_err("a link into a directory another uid owns must be refused");
+        // The guard above settles the euid, so the uid the refusal measured
+        // against is spelled rather than read back from the process.
+        let expected = format!(
+            "path component {} is owned by uid 1 rather than uid 0 or root \
+             (composed from the link {} -> {})",
+            theirs.display(),
+            planted.display(),
+            theirs.display()
+        );
         assert!(
-            format!("{err}").contains("owned by uid 1"),
-            "the refusal must name the uid it found past the link, got {err}"
+            format!("{err}").contains(&expected),
+            "the refusal must name the component, both uids and the fold that composed the \
+             path, in that order; wanted {expected}, got {err}"
         );
     }
 
@@ -19307,10 +19355,10 @@ mod ipc_socket_security {
     /// comparing against the unfolded path and says so with
     /// `// unfolded-path-ok: <why>`.
     ///
-    /// The ceiling: both tells are read over the whole function, so a pin holding
-    /// assertions of both kinds counts as answered by either one. The population
-    /// is small enough that the hatch's own sentence is the real check, and a pin
-    /// needing both answers at once is better split in two.
+    /// The ceiling: all three tells are read over the whole function, so a pin
+    /// holding assertions of both kinds counts as answered by either one. The
+    /// population is small enough that the hatch's own sentence is the real
+    /// check, and a pin needing both answers at once is better split in two.
     #[cfg(unix)]
     #[test]
     fn every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root() {
@@ -19318,18 +19366,26 @@ mod ipc_socket_security {
         // member of the population it judges.
         const THIS_WALK: &str =
             "every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root";
-        const SOURCES: [&str; 2] = ["health_ipc.rs", "tests.rs"];
 
+        // `ensure_owner_private_dir` is `pub(crate)` inside a private module, so
+        // any source under `daemon/` can pin it today and a wider re-export would
+        // widen that: the population is every source of this crate rather than the
+        // two files that happen to hold a pin, or a pin in a third one goes
+        // unjudged with both floors below still green.
         let dir = crate::test_helpers::workspace_root()
             .join("crates")
             .join("cfgd-core")
-            .join("src")
-            .join("daemon");
+            .join("src");
+        let sources = crate::test_helpers::rust_sources_under(&dir);
         let mut candidates: Vec<String> = Vec::new();
         let mut judged: Vec<String> = Vec::new();
         let mut offenders: Vec<String> = Vec::new();
-        for source in SOURCES {
-            let path = dir.join(source);
+        for path in sources {
+            let source = path
+                .strip_prefix(&dir)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string();
             let body = crate::test_helpers::walked_file_body(&path);
             let lines = crate::test_helpers::logical_source_lines(&body);
             let mut i = 0;
@@ -19364,12 +19420,12 @@ mod ipc_socket_security {
                     let at = format!("{source}:{}: {name}", lines[i].0);
                     candidates.push(at.clone());
                     // A path reaches an expectation rendered, so a `contains(`
-                    // and a `display()` on ONE logical line is the tell that this
-                    // pin's verdict turns on the path the message carries.
-                    if fn_lines
-                        .iter()
-                        .any(|l| l.contains("contains(") && l.contains("display()"))
-                    {
+                    // and a `display()` anywhere in the function is the tell that
+                    // this pin's verdict turns on the path the message carries.
+                    // Read over the function rather than one line because a pin
+                    // asserting a whole composed sentence builds it in a
+                    // `format!` spanning several, which no single line holds.
+                    if whole.contains("contains(") && whole.contains("display()") {
                         judged.push(at.clone());
                         if !whole.contains("folded_temp_root")
                             && !whole.contains("unfolded-path-ok")
@@ -19389,9 +19445,9 @@ mod ipc_socket_security {
             candidates.join("\n")
         );
         assert!(
-            judged.len() >= 7,
+            judged.len() >= 8,
             "the walk judged {} pins comparing a rendered path against a refusal, fewer than the \
-             7 it was written against, so it is reading less than it claims:\n{}",
+             8 it was written against, so it is reading less than it claims:\n{}",
             judged.len(),
             judged.join("\n")
         );

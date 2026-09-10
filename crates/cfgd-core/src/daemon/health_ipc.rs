@@ -316,8 +316,14 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
             if component.as_os_str().is_empty() {
                 continue;
             }
-            let meta = std::fs::symlink_metadata(component)
-                .map_err(|e| refuse(format!("stat path component {}: {}", component.posix(), e)))?;
+            let meta = std::fs::symlink_metadata(component).map_err(|e| {
+                refuse(format!(
+                    "stat path component {}: {}{}",
+                    component.posix(),
+                    e,
+                    provenance(&composed_from)
+                ))
+            })?;
             let uid = meta.uid();
             if uid != euid && uid != 0 {
                 return Err(refuse(format!(
@@ -330,8 +336,14 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                 .into());
             }
             if meta.file_type().is_symlink() {
-                let target = std::fs::read_link(component)
-                    .map_err(|e| refuse(format!("read link {}: {}", component.posix(), e)))?;
+                let target = std::fs::read_link(component).map_err(|e| {
+                    refuse(format!(
+                        "read link {}: {}{}",
+                        component.posix(),
+                        e,
+                        provenance(&composed_from)
+                    ))
+                })?;
                 let rest = path
                     .strip_prefix(component)
                     .unwrap_or(std::path::Path::new(""));
