@@ -7754,6 +7754,112 @@ fn an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip() {
     );
 }
 
+/// An env surface the machine REFUSES settles `Failed`, at the one production
+/// site that can mint it.
+///
+/// The post-phase regeneration is the only writer of an after-plan env surface,
+/// and its error arm is what files the failure: a run whose late input landed but
+/// whose surface could not be written must say so as a failure, never as a
+/// converged total the warn line above it contradicts. `Performed` and `Skipped`
+/// were both pinned against the real producer from the start; this arm was
+/// carried as "unreachable on this host" instead, which is only true of an
+/// injection made of permission bits, since the suite may run as root.
+///
+/// A DIRECTORY at the target is the injection that does not: the rename an
+/// atomic write finishes with cannot replace a directory for any user. Every
+/// planted path comes from the engine's own target list through
+/// `managed_env_files`, so a fixture cannot plant where nothing writes, and the
+/// rc source lines the same scope plans still succeed — which is what keeps the
+/// claim from being satisfied by a run that wrote nothing at all.
+#[test]
+fn a_refused_env_regeneration_is_recorded_as_an_after_plan_failure() {
+    use crate::providers::SecretAction;
+    use crate::reconciler::{AfterPlan, AfterPlanOutcome, AfterPlanState, MergedEnvItems};
+    use crate::test_helpers::MockSecretProvider;
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("super-secret-value"),
+    ));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env.push(crate::config::EnvVar {
+        name: "API_TOKEN".to_string(),
+        value: String::new(),
+        platforms: vec![],
+    });
+    // The scope that keeps the regeneration on disk: under the default `All` it
+    // also plans a live-session refresh, which publishes into the invoking
+    // user's own login session, and a test home cannot sandbox that shell-out.
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
+
+    let targets: Vec<std::path::PathBuf> =
+        MergedEnvItems::new(&resolved.merged.env, &[], &Default::default(), &[], &[])
+            .managed_env_files(tmp.path(), resolved.merged.env_scope)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+    assert!(
+        !targets.is_empty(),
+        "this host's generator writes at least one managed env file, or the \
+         injection has nothing to refuse"
+    );
+    for target in &targets {
+        std::fs::create_dir_all(target).unwrap_or_else(|e| panic!("{}: {e}", target.display()));
+    }
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::ResolveEnv {
+                provider: "vault".to_string(),
+                reference: "kv/data/token".to_string(),
+                envs: vec!["API_TOKEN".to_string()],
+                template: None,
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            true,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("a refused surface is a recorded failure, not an aborted apply");
+
+    let outcomes = result.after_plan();
+    let failed: Vec<&AfterPlanOutcome> = outcomes
+        .iter()
+        .filter(|o| o.state == AfterPlanState::Failed)
+        .collect();
+    assert_eq!(
+        failed.len(),
+        targets.len(),
+        "every planted target is one refused surface: {outcomes:?}"
+    );
+    assert!(
+        failed.iter().all(|o| o.subject == AfterPlan::EnvSurface),
+        "a refused env surface is env-surface work: {outcomes:?}"
+    );
+}
+
 /// A session publish no manager can perform leaves NO `env-session` row behind,
 /// while its attempted siblings in the same apply record theirs.
 ///

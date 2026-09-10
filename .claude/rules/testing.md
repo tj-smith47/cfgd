@@ -137,8 +137,10 @@ CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
 ```
 
 The evidence is identical and no other reader can see the mutation. Scratch goes under
-`~/.cache/`, never `/tmp`, and the probe tree AND its target dir are deleted as soon as
-the probe's red run is captured — never left standing for a later probe to reuse.
+`~/.cache/`, never `/tmp`, and the probe TREE is deleted as soon as the probe's red run is
+captured, so nothing later reads a tree still carrying a deliberate defect. The shared
+target dir (`~/.cache/cfgd-debug/red-target`) is retained: a fresh tree is copied per
+probe, so what a kept target dir changes is rebuild cost, never what a probe measures.
 
 ## Fixture versions: use the 9.9.x sentinel range
 

@@ -137,7 +137,7 @@ impl FileAction {
                 origin,
             } => FileAction::Skip {
                 target: target.clone(),
-                // file-skip-reason-ok: a structural rebuild of a reason judged at the mint that stated it
+                // file-skip-reason-unreadable-ok: a structural rebuild of a reason judged at the mint that stated it
                 reason: reason.clone(),
                 origin: origin.clone(),
             },

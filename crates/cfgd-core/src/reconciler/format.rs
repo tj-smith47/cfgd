@@ -104,7 +104,11 @@ pub const FILE_SKIP_VERB: &str = "skip";
 /// refused too: the stem cannot tell a longer word from the verb it contains,
 /// and refusing the rare honest one is the cheap direction when the expensive
 /// one is a row that says `skip` twice — `// file-skip-reason-ok: <why>` is how
-/// such a reason states that it is not a restatement.
+/// such a reason states that it is not a restatement. That marker waives the
+/// DOUBLING judgement and nothing else: a mint whose reason the static half
+/// cannot read at all is a different exemption under its own marker, because one
+/// spelling for both let a hatch placed for unreadability silence this rule over
+/// a reason whose bytes were there to be judged.
 ///
 /// Enforced at both ends, as the family's other members are, and neither end
 /// covers what the other misses: the composition asserts it in debug builds, so
@@ -1435,6 +1439,70 @@ mod tests {
         false
     }
 
+    /// The part of `line` the compiler reads as code: everything before the `//`
+    /// that opens a comment, which is the first `//` lying outside a string
+    /// literal.
+    ///
+    /// `carried` is the `(in a literal, escaped)` state the line above left open,
+    /// so a `//` inside a multi-line literal is content rather than a comment.
+    /// The character walk below cannot tell a brace or a quote in a comment from
+    /// one in code, and a WHOLLY commented line is not the only shape that
+    /// carries one: a trailing `// FileAction::Skip {` opened a region nothing in
+    /// it mints, and a trailing `// "` flipped the literal guard for every line
+    /// after it.
+    fn code_before_a_comment(line: &str, carried: (bool, bool)) -> &str {
+        let (mut in_str, mut escaped) = carried;
+        let bytes = line.as_bytes();
+        for (at, ch) in line.char_indices() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+            } else if ch == '"' {
+                in_str = true;
+            } else if ch == '/' && bytes.get(at + 1) == Some(&b'/') {
+                return &line[..at];
+            }
+        }
+        line
+    }
+
+    /// The cut the walk masks its lines through reads a `//` as a comment only
+    /// where the compiler does.
+    ///
+    /// The character scan below cannot tell a brace or a quote in a comment from
+    /// one in code, so what the cut keeps is what decides whether a construction
+    /// is masked at the right depth: a trailing comment goes, a `//` inside a
+    /// string literal stays, an escaped quote does not end that literal early, and
+    /// a literal still open from the line above carries its answer onto this one.
+    #[test]
+    fn the_comment_cut_reads_a_slash_pair_the_way_the_compiler_does() {
+        assert_eq!(
+            code_before_a_comment("    reason: \"x\", // FileAction::Skip {", (false, false)),
+            "    reason: \"x\", ",
+            "a trailing comment is not code"
+        );
+        assert_eq!(
+            code_before_a_comment("    let at = \"https://example/\";", (false, false)),
+            "    let at = \"https://example/\";",
+            "a `//` inside a literal is content"
+        );
+        assert_eq!(
+            code_before_a_comment("    \"a\\\" // b\"; // cut", (false, false)),
+            "    \"a\\\" // b\"; ",
+            "an escaped quote does not close the literal the `//` sits in"
+        );
+        assert_eq!(
+            code_before_a_comment("    open // still literal\", then code", (true, false)),
+            "    open // still literal\", then code",
+            "a literal the line above left open carries onto this one"
+        );
+    }
+
     /// No `FileAction::Skip` reason spends the verb its own row already spelled.
     ///
     /// The one-slot member of the same family: this action composes as
@@ -1459,7 +1527,14 @@ mod tests {
     /// refused by the RULE rather than by the expression's shape: a bare
     /// identifier is exempted nowhere, so a structural rebuild of a reason
     /// judged at the mint that stated it says so with
-    /// `// file-skip-reason-ok: <why>` on the field's line or the one above.
+    /// `// file-skip-reason-unreadable-ok: <why>` on the field's line or the one
+    /// above. That marker is NARROW: it waives the refusal, never the rule, so a
+    /// hatched field whose reason the resolver can read after all is minted and
+    /// doubling-judged like any other. The doubling exemption is the separate
+    /// `// file-skip-reason-ok: <why>` that
+    /// [`super::file_skip_reason_doubling_error`] states the use of, and the two
+    /// are separate markers so a hatch placed against unreadability cannot also
+    /// silence the rule over bytes the walk can read.
     /// A count floor cannot stand in for the refusal: a third mint the resolver
     /// could not read would lower no count, so the walk would pass having judged
     /// it never, and the composer's debug assertion only reaches what a debug
@@ -1547,9 +1622,7 @@ mod tests {
             let mut depth: Option<i32> = None;
             let mut carried_literal: Option<(bool, bool)> = None;
             for (idx, line) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
+                let line = code_before_a_comment(line, carried_literal.unwrap_or((false, false)));
                 let from = match depth {
                     Some(_) => 0,
                     None => match line.find(opener) {
@@ -1571,13 +1644,15 @@ mod tests {
                 // across lines.
                 //
                 // The `"`-literal guard travels with that depth, so a brace in
-                // the body of a multi-line literal opens nothing either. The two
-                // shapes it still cannot tell from a literal's delimiters are a
-                // raw string's inner `"` and a char literal (`'{'`), and the
-                // cost of one is a region masked at the wrong depth, which
-                // passes SILENTLY rather than refusing; neither shape appears in
-                // today's population, and a reason needing one says so with the
-                // hatch.
+                // the body of a multi-line literal opens nothing either. A
+                // comment's own delimiters are already gone, cut by
+                // `code_before_a_comment` above. The two shapes the guard still
+                // cannot tell from a literal's delimiters are a raw string's
+                // inner `"` and a char literal (`'{'`), and the cost of one is a
+                // region masked at the wrong depth, which passes SILENTLY rather
+                // than refusing; neither shape appears in today's population, and
+                // a reason a mis-masked region leaves unreadable says so with the
+                // unreadability hatch.
                 let mut open = depth.unwrap_or(1);
                 let (mut in_str, mut escaped) = carried_literal.unwrap_or((false, false));
                 let mut region = " ".repeat(from);
@@ -1640,9 +1715,15 @@ mod tests {
                 depth = (open > 0).then_some(open);
                 carried_literal = depth.map(|_| (in_str, escaped));
                 let line = region.as_str();
-                let hatched = lines[idx.saturating_sub(1)..=idx]
-                    .iter()
-                    .any(|l| l.contains("file-skip-reason-ok:"));
+                // Read off the RAW lines, which still carry the comments the
+                // code portion cut, and split by what each marker waives.
+                let hatched = |tell: &str| {
+                    lines[idx.saturating_sub(1)..=idx]
+                        .iter()
+                        .any(|l| l.contains(tell))
+                };
+                let doubling_hatched = hatched("file-skip-reason-ok:");
+                let unreadable_hatched = hatched("file-skip-reason-unreadable-ok:");
                 // The `reason` field-init SHORTHAND, which the `reason: ` scan
                 // cannot see at all and which clippy's `redundant_field_names`
                 // is what pushes an author toward. A match PATTERN binds the
@@ -1654,7 +1735,7 @@ mod tests {
                     let after = line[at + "reason".len()..].trim_start();
                     before.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '.')
                         && (after.is_empty() || after.starts_with(','))
-                }) && !hatched
+                }) && !unreadable_hatched
                     && !binds_in_a_pattern(&lines, idx, at + "reason".len())
                 {
                     unjudged.push((
@@ -1676,17 +1757,19 @@ mod tests {
                         None => literals.get(name).cloned(),
                     };
                     let site = format!("{relative}:{}", idx + 1);
-                    if !hatched {
-                        if !expr.starts_with('"') && ambiguous.contains(name) {
+                    if !expr.starts_with('"') && ambiguous.contains(name) {
+                        if !unreadable_hatched {
                             unjudged.push((
                                 site,
                                 format!("`{name}` is declared with two different values"),
                             ));
-                        } else if let Some(reason) = reason {
-                            mints.push((site, reason));
-                        } else {
-                            unjudged.push((site, expr.to_string()));
                         }
+                    } else if let Some(reason) = reason {
+                        if !doubling_hatched {
+                            mints.push((site, reason));
+                        }
+                    } else if !unreadable_hatched {
+                        unjudged.push((site, expr.to_string()));
                     }
                 }
             }
@@ -1695,7 +1778,7 @@ mod tests {
             unjudged.is_empty(),
             "a skip reason the walk cannot read is judged by no walk: {unjudged:?}; state it \
              as a string literal or as a `const` whose name no other production const \
-             takes, or hatch it with `// file-skip-reason-ok: <why>`"
+             takes, or hatch it with `// file-skip-reason-unreadable-ok: <why>`"
         );
         assert!(
             mints.len() >= 2,

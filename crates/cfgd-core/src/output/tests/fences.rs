@@ -4374,6 +4374,26 @@ const WALK_FILE_READ: &str = "read_to_string";
 /// Spellings that drop that call's failure instead of reporting it.
 const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", "unwrap_or("];
 
+/// Whether a column-0 attribute line opens a region the compiler builds only
+/// when `test` is on.
+///
+/// Judged on the predicate's SHAPE rather than on one spelling of it: `test` is
+/// a cfg flag a composite predicate may carry (`#[cfg(all(test, feature =
+/// "crd"))]`, `#[cfg(any(test, feature = "test-helpers"))]`), and an exact match
+/// against `#[cfg(test)]` read every composite one as production and dropped its
+/// file whole. A `not(` anywhere in the predicate disqualifies it, because
+/// `#[cfg(not(test))]` opens the opposite region, and `test` is matched as a
+/// whole word with `-` counted into it so `feature = "test-helpers"` — a gate the
+/// compiler honours outside a test build — is not mistaken for the flag.
+fn opens_a_test_region(line: &str) -> bool {
+    let attribute = line.split_once("//").map_or(line, |(code, _)| code);
+    attribute.starts_with("#[cfg(")
+        && !attribute.contains("not(")
+        && attribute
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            .any(|word| word == "test")
+}
+
 /// A walk that cannot read a file it enumerated FAILS, rather than reading less
 /// than its floor promises.
 ///
@@ -4386,11 +4406,16 @@ const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", 
 /// inline.
 ///
 /// The population is every `.rs` source of every crate, judged over its TEST
-/// region: a file that IS scaffolding (named `tests.rs` or `test_helpers.rs`, or
+/// region: a file that IS scaffolding (one whose name opens on `test`, or one
 /// lying under a `tests/` directory) is judged whole, and every other file only
-/// from its first column-0 `#[cfg(test)]` on, which is where the walks living in
-/// an inline test module begin. Six of them do, `reconciler/format.rs`'s among
-/// them, so a filename filter read a narrower population than the rule claims.
+/// from its first column-0 attribute that opens a test region, which is where the
+/// walks living in an inline test module begin. Six of them do,
+/// `reconciler/format.rs`'s among them, so a filename filter read a narrower
+/// population than the rule claims. A scaffolding name is matched by its PREFIX
+/// because `tests.rs` is one spelling of it and `tests_module.rs` is another: a
+/// whole-file test module carries no anchor of its own, the parent's
+/// `#[cfg(test)] mod tests_module;` being what gates it, so an exact-name test
+/// dropped eleven files holding nothing but test declarations.
 /// A production read whose file may legitimately be absent
 /// (`/etc/os-release`, a cached credential, a target a check is asking about)
 /// falls outside the REGION rather than outside the filename, and is never
@@ -4415,13 +4440,24 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
         // `production_slice` reads from the other side, so the production
         // carve-out falls out of the REGION and a walk written in an inline test
         // module is inside the population rather than outside it.
-        let from = if name == "tests.rs" || name == "test_helpers.rs" || posix.contains("/tests/") {
-            0
+        let from = if name.starts_with("test") || posix.contains("/tests/") {
+            Some(0)
         } else {
-            match lines.iter().position(|l| *l == "#[cfg(test)]") {
-                Some(at) => at,
-                None => continue,
+            lines.iter().position(|l| opens_a_test_region(l))
+        };
+        // A file holding test declarations whose region the anchor never found is
+        // not a file with nothing to judge: `files` has already counted it, so the
+        // drop reports itself rather than lowering a floor no single file can move.
+        let Some(from) = from else {
+            if lines.iter().any(|l| {
+                let trimmed = l.trim_start();
+                trimmed.starts_with("#[test]") || trimmed.starts_with("#[tokio::test")
+            }) {
+                offenders.push(format!(
+                    "{posix}: holds test declarations the walk found no test region for"
+                ));
             }
+            continue;
         };
         for (idx, line) in lines.iter().enumerate().skip(from) {
             if !line.contains(WALK_FILE_READ) {
