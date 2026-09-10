@@ -601,10 +601,16 @@ pub fn module_listing_display(stored: &str, drift: DriftVerdict) -> (&'static st
 #[cfg(test)]
 mod apply_summary_tests {
     use super::*;
+    use crate::test_helpers::assert_slots_discriminate;
 
     /// The stored column is a wire shape and the human column is a sentence.
     /// `Summary  {"failed":0,"succeeded":22,"total":22}` was the stored value
     /// printed verbatim.
+    ///
+    /// Every arm whose sentence states more than one count holds counts that
+    /// differ pairwise, executed through `assert_slots_discriminate`: a clause
+    /// built from a sibling's field renders the very number the arm expects
+    /// otherwise. The clean arm is the one exception and says why.
     #[test]
     fn a_stored_summary_reads_back_as_prose_on_a_human_surface() {
         let clean = ApplySummary::Actions {
@@ -617,6 +623,8 @@ mod apply_summary_tests {
             not_run: None,
             aborted: false,
         };
+        // A clean run's `total` and `succeeded` ARE one number, and its
+        // sentence states a single count, so there is nothing to tell apart.
         assert_eq!(ApplySummary::prose(&clean.to_column()), "22 succeeded");
 
         let split = ApplySummary::Actions {
@@ -629,6 +637,7 @@ mod apply_summary_tests {
             not_run: None,
             aborted: false,
         };
+        assert_slots_discriminate(&[("total", 13), ("succeeded", 12), ("skipped", 1)]);
         assert_eq!(
             ApplySummary::prose(&split.to_column()),
             "12 succeeded, 1 skipped"
@@ -636,17 +645,23 @@ mod apply_summary_tests {
 
         let aborted = ApplySummary::Actions {
             after_plan: 0,
-            total: 9,
+            total: 10,
             succeeded: 4,
             skipped: 0,
             failed: 1,
             not_attempted: 0,
-            not_run: Some(4),
+            not_run: Some(5),
             aborted: true,
         };
+        assert_slots_discriminate(&[
+            ("total", 10),
+            ("succeeded", 4),
+            ("failed", 1),
+            ("not run", 5),
+        ]);
         assert_eq!(
             ApplySummary::prose(&aborted.to_column()),
-            "4 succeeded, 1 failed, 4 not run (aborted)"
+            "4 succeeded, 1 failed, 5 not run (aborted)"
         );
 
         // Work the run learned it had to do is outside `total` too, and the
@@ -655,17 +670,23 @@ mod apply_summary_tests {
         // one action of.
         let after_plan = ApplySummary::Actions {
             after_plan: 3,
-            total: 1,
+            total: 6,
             succeeded: 1,
-            skipped: 0,
+            skipped: 5,
             failed: 0,
             not_attempted: 0,
             not_run: None,
             aborted: false,
         };
+        assert_slots_discriminate(&[
+            ("total", 6),
+            ("succeeded", 1),
+            ("skipped", 5),
+            ("after the plan", 3),
+        ]);
         assert_eq!(
             ApplySummary::prose(&after_plan.to_column()),
-            "1 succeeded, 3 after the plan"
+            "1 succeeded, 5 skipped, 3 after the plan"
         );
         assert!(
             !clean.to_column().contains("afterPlan"),
@@ -676,17 +697,23 @@ mod apply_summary_tests {
         // that reconcile against it; a row with none carries no field for it.
         let withheld = ApplySummary::Actions {
             after_plan: 0,
-            total: 2,
+            total: 5,
             succeeded: 2,
-            skipped: 0,
+            skipped: 3,
             failed: 0,
             not_attempted: 1,
             not_run: None,
             aborted: false,
         };
+        assert_slots_discriminate(&[
+            ("total", 5),
+            ("succeeded", 2),
+            ("skipped", 3),
+            ("not attempted", 1),
+        ]);
         assert_eq!(
             ApplySummary::prose(&withheld.to_column()),
-            "2 succeeded, 1 not attempted"
+            "2 succeeded, 3 skipped, 1 not attempted"
         );
         assert!(
             !clean.to_column().contains("notAttempted"),

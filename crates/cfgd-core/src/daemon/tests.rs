@@ -23176,6 +23176,12 @@ mod log_dialect {
     /// `onChange` hook fires on whether this very tick changed anything. Folded
     /// into `succeeded` it reported two actions for a plan of one, on the one
     /// line a reader of the journal keeps.
+    ///
+    /// Two declared MODULES against one hook, so the line's two counts differ
+    /// and a class clause built from the planned success count renders a number
+    /// this assertion rejects; the plural and singular forms are exercised
+    /// together. Two files of one module would not do it: a module's files are
+    /// one `DeployFiles` action whatever their number.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[cfg(unix)]
     #[serial_test::serial]
@@ -23186,28 +23192,36 @@ mod log_dialect {
         let _home = crate::with_test_home_guard(tmp.path());
         std::fs::write(
             tmp.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  scripts:\n    onChange:\n      - \"true\"\n  modules:\n    - mymod\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  scripts:\n    onChange:\n      - \"true\"\n  modules:\n    - mymod\n    - othermod\n",
         )
         .unwrap();
-        let module_dir = tmp.path().join("modules").join("mymod");
-        std::fs::create_dir_all(&module_dir).unwrap();
-        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
-        let target = tmp.path().join("app.conf");
-        std::fs::write(
-            module_dir.join("module.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
-                crate::to_posix_string(&target)
-            ),
-        )
-        .unwrap();
+        for (module, source, target) in [
+            ("mymod", "app.conf", tmp.path().join("app.conf")),
+            ("othermod", "other.conf", tmp.path().join("other.conf")),
+        ] {
+            let module_dir = tmp.path().join("modules").join(module);
+            std::fs::create_dir_all(&module_dir).unwrap();
+            std::fs::write(module_dir.join(source), format!("from {module}\n")).unwrap();
+            std::fs::write(
+                module_dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module}\nspec:\n  files:\n    - source: {source}\n      target: {}\n      strategy: Copy\n",
+                    crate::to_posix_string(&target)
+                ),
+            )
+            .unwrap();
+        }
 
+        crate::test_helpers::assert_slots_discriminate(&[
+            ("actions succeeded", 2),
+            ("onChange hooks after the plan", 1),
+        ]);
         run_tick(&config_path, &state_dir, None).await;
 
         let logs = daemon_log();
         assert!(
             logs.contains(
-                "reconcile: complete — 1 action succeeded, 1 onChange hook ran after the plan"
+                "reconcile: complete — 2 actions succeeded, 1 onChange hook ran after the plan"
             ),
             "got: {logs}"
         );

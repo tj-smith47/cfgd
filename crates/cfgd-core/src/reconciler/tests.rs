@@ -30527,7 +30527,7 @@ fn the_conflict_refusal_and_interrupt_messages_are_pinned() {
     );
     assert_eq!(
         crate::reconciler::UNMANAGED_SKIP_REASON,
-        "skipped: target exists as unmanaged file"
+        "target exists as unmanaged file"
     );
 }
 

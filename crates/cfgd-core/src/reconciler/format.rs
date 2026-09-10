@@ -79,6 +79,46 @@ pub fn pre_skip_doubling_error(subject: &str, reason: &str) -> Option<String> {
     })
 }
 
+/// The verb [`action_display_subject`] opens a [`FileAction::Skip`] row with,
+/// read by the composer and by [`file_skip_reason_doubling_error`] so the rule
+/// and the row cannot disagree about which word the row has already said.
+pub const FILE_SKIP_VERB: &str = "skip";
+
+/// The diagnostic for a [`FileAction::Skip`] reason that opens on a restatement
+/// of the verb its own composer already spelled, or `None` when the reason adds
+/// what the row does not already say.
+///
+/// The fourth member of the doubling family, and the only ONE-slot member:
+/// [`action_display_subject`] composes this action as
+/// `skip <target>: <reason>`, a single string with the reason embedded in it, so
+/// [`pre_skip_doubling_error`] cannot judge it — that predicate asks whether the
+/// SUBJECT contains the reason's noun, which a composed subject does by
+/// construction, for every reason, correct ones included. What the row has
+/// already said by the time a reader reaches the reason is therefore just
+/// [`FILE_SKIP_VERB`], and that is the one word the reason may not repeat:
+/// `skip ~/.gitconfig: skipped: target exists as unmanaged file` spends it
+/// twice on one line. Judged on the reason's opening word alone, stemmed, so
+/// `skipped`, `skipping` and a trailing `:` are all the same offence, while a
+/// reason that merely mentions the verb later states something the row does not.
+///
+/// Enforced at both ends, as the family's other members are: the composition
+/// asserts it in debug builds, and
+/// `no_file_skip_reason_repeats_the_verb_its_row_already_spelled` derives every
+/// production mint from both crates' sources.
+pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
+    let opener = reason
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    opener.starts_with(FILE_SKIP_VERB).then(|| {
+        format!(
+            "skip reason `{reason}` opens on `{opener}`; the row is already \
+             `{FILE_SKIP_VERB} <target>: <reason>`, so the reason says why, not that"
+        )
+    })
+}
+
 /// Debug-only guard that a pre-skip reason does not double its own subject,
 /// returning the reason so every arm of [`Action::pre_skip_reason`] is checked
 /// by the shape of how it answers rather than by a test remembering to.
@@ -96,6 +136,22 @@ pub(crate) fn debug_checked_pre_skip_reason(action: &Action, reason: &'static st
         debug_assert!(false, "{message}");
     }
     reason
+}
+
+/// Debug-only guard that a skip reason does not restate the row's own verb.
+///
+/// Called from the composition itself, which is the only place that knows the
+/// verb was already spelled, so a reason reaching the row from anywhere is
+/// checked rather than only the ones a walk can read out of the sources.
+/// Debug-only like its two siblings: the row still composes, it merely says one
+/// word twice, and a release build must not panic mid-plan over a wording
+/// defect.
+fn debug_assert_file_skip_reason_undoubled(reason: &str) {
+    if cfg!(debug_assertions)
+        && let Some(message) = file_skip_reason_doubling_error(reason)
+    {
+        debug_assert!(false, "{message}");
+    }
 }
 
 /// Debug-only guard that a configurator's drift key does not repeat its name.
@@ -575,12 +631,15 @@ fn plan_item(action: &Action, arrow: &str) -> String {
                 reason,
                 origin,
                 ..
-            } => format!(
-                "skip {}: {}{}",
-                target.posix(),
-                reason,
-                provenance_suffix(origin)
-            ),
+            } => {
+                debug_assert_file_skip_reason_undoubled(reason);
+                format!(
+                    "{FILE_SKIP_VERB} {}: {}{}",
+                    target.posix(),
+                    reason,
+                    provenance_suffix(origin)
+                )
+            }
         },
         Action::Package(pa) => match pa {
             PackageAction::Install {
@@ -1337,6 +1396,159 @@ mod tests {
             withheld.len(),
             "a pre-skip arm was added without a row in this walk: {body}"
         );
+    }
+
+    /// No `FileAction::Skip` reason spends the verb its own row already spelled.
+    ///
+    /// The one-slot member of the same family: this action composes as
+    /// `skip <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s
+    /// two-slot question cannot be asked of it (see
+    /// [`super::file_skip_reason_doubling_error`], which states why) and the
+    /// golden that first rendered
+    /// `∅ skip <target>: skipped: target exists as unmanaged file` had no walk
+    /// to trip.
+    ///
+    /// The population is DERIVED rather than listed: every production mint of
+    /// the `reason` field in either crate's sources, read through
+    /// `production_slice_of` so a reason written inside a test fixture is
+    /// outside it, with the crate roots read off `crates/` so a crate added to
+    /// the workspace joins the walk with it. A reason spelled as a `const` is
+    /// resolved through the same sources, because both of today's mints state
+    /// the string somewhere other than the construction. A reason FORWARDED
+    /// from a binding (`reason.clone()`, the path-folding rebuild in
+    /// `file_action.rs`) mints nothing and is judged where it was written.
+    /// `// file-skip-reason-ok: <why>` on the field's line or the one above
+    /// hatches a genuine exception.
+    #[test]
+    fn no_file_skip_reason_repeats_the_verb_its_row_already_spelled() {
+        let crates_dir = crate::test_helpers::workspace_root().join("crates");
+        let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| panic!("the walk must read every crate: {e}"))
+                    .path()
+                    .join("src")
+            })
+            .filter(|src| src.is_dir())
+            .collect();
+        roots.sort();
+
+        let workspace = crate::test_helpers::workspace_root();
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for path in roots
+            .iter()
+            .flat_map(|root| crate::test_helpers::rust_sources_under(root))
+        {
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            let name = relative.rsplit('/').next().unwrap_or(&relative);
+            // A file that IS test scaffolding carries no `#[cfg(test)]` for the
+            // slice to cut at, so it is named out rather than read as
+            // production.
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || relative.contains("/tests/")
+            {
+                continue;
+            }
+            sources.push((
+                relative.clone(),
+                crate::test_helpers::production_slice_of(&path),
+            ));
+        }
+        assert!(
+            sources.len() > 100,
+            "the walk read only {} production sources, so it has gone blind",
+            sources.len()
+        );
+
+        // Every `const NAME: &str = "…";` the production sources declare, so a
+        // reason stated away from its construction is still judged by its
+        // bytes.
+        let mut literals: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (_, body) in &sources {
+            for line in body.lines() {
+                let Some((head, tail)) = line.split_once(": &str = \"") else {
+                    continue;
+                };
+                let Some(name) = head.rsplit(' ').next() else {
+                    continue;
+                };
+                if let Some((value, _)) = tail.split_once('"') {
+                    literals.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+
+        let mut mints: Vec<(String, String)> = Vec::new();
+        for (relative, body) in &sources {
+            let lines: Vec<&str> = body.lines().collect();
+            let mut depth: Option<usize> = None;
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if depth.is_none() && line.contains("FileAction::Skip {") {
+                    depth = Some(0);
+                }
+                let Some(open) = depth.as_mut() else { continue };
+                *open += line.matches('{').count();
+                *open = open.saturating_sub(line.matches('}').count());
+                if let Some((_, expr)) = line.split_once("reason: ") {
+                    let hatched = lines[idx.saturating_sub(1)..=idx]
+                        .iter()
+                        .any(|l| l.contains("file-skip-reason-ok:"));
+                    let expr = expr.trim_end_matches(',').trim();
+                    let reason = match expr.strip_prefix('"') {
+                        Some(rest) => rest.split('"').next().map(str::to_string),
+                        None => literals
+                            .get(
+                                expr.trim_end_matches("()")
+                                    .trim_end_matches(".to_string")
+                                    .trim_end_matches(".into")
+                                    .rsplit("::")
+                                    .next()
+                                    .unwrap_or(expr),
+                            )
+                            .cloned(),
+                    };
+                    if let Some(reason) = reason.filter(|_| !hatched) {
+                        mints.push((format!("{relative}:{}", idx + 1), reason));
+                    }
+                }
+                if *open == 0 {
+                    depth = None;
+                }
+            }
+        }
+        assert!(
+            mints.len() >= 2,
+            "the sources mint two skip reasons and the walk found {}: {mints:?}",
+            mints.len()
+        );
+
+        for (site, reason) in &mints {
+            let action = Action::File(crate::providers::FileAction::Skip {
+                target: std::path::PathBuf::from("/home/u/.gitconfig"),
+                reason: reason.clone(),
+                origin: crate::config::LOCAL_LAYER.to_string(),
+            });
+            let subject =
+                action_display_subject(&action, crate::output::theme::ICON_ARROW).to_string();
+            // The premise the predicate rests on, read off the real composer
+            // rather than assumed: the row has said the verb, and only the
+            // verb, before the reason is reached.
+            assert!(
+                subject.starts_with(&format!("{} ", super::FILE_SKIP_VERB)),
+                "{site}: the row opens on its verb: {subject}"
+            );
+            assert!(
+                super::file_skip_reason_doubling_error(reason).is_none(),
+                "{site}: {}",
+                super::file_skip_reason_doubling_error(reason).unwrap_or_default()
+            );
+        }
     }
 
     /// A subject names EVERY operand it acts on, at every width.

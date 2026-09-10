@@ -2798,7 +2798,7 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("skipped: target exists as unmanaged file"),
+        out.contains("target exists as unmanaged file"),
         "the module arm must say what the profile arm's Skip action says, got: {out}"
     );
     assert!(

@@ -47,37 +47,43 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
-/// A tempdir-backed profile whose TWO file deploys trigger one `onChange` hook:
-/// two PLANNED actions, and one item of work the plan could not name, because a
-/// hook's condition is whether anything in this very run changed.
+/// A tempdir-backed profile whose THREE file deploys trigger FOUR `onChange`
+/// hooks: three PLANNED actions, and four items of work the plan could not name,
+/// because a hook's condition is whether anything in this very run changed.
 ///
-/// The second target is pre-created holding its source's exact bytes, so that
-/// deploy runs and changes nothing. Every number the payload then states is
-/// different from every other: `total` 2, `succeeded` 1, `skipped` 1,
-/// `afterPlan` 1. A fixture whose counts coincide proves nothing about which
-/// field holds which, and a swap between two equal ones passes.
+/// The second target is pre-created holding bytes cfgd never wrote, so that one
+/// deploy settles as a conflict skip under `--on-conflict skip` while the other
+/// two create their targets: `total` 3, `succeeded` 2, `skipped` 1, `failed` 0,
+/// `afterPlan` 4. Those are the smallest numbers that differ pairwise — with no
+/// failing action the partition forces `total == succeeded + skipped` — and the
+/// consumer asserts the premise rather than reciting it, through
+/// `cfgd_core::test_helpers::assert_slots_discriminate`. Each hook carries its
+/// own argument so the report shows four rows rather than one four times.
 ///
-/// Returns `(config_dir, state_dir, [first target, second target])`.
-pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, [PathBuf; 2]) {
+/// Returns `(config_dir, state_dir, [first target, second target, third target])`.
+pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, [PathBuf; 3]) {
     let (config_dir, state_dir, target) = tiny_profile_setup();
     std::fs::write(config_dir.path().join("files").join("second.txt"), "second").unwrap();
+    std::fs::write(config_dir.path().join("files").join("third.txt"), "third").unwrap();
     let second = config_dir.path().join("out").join("second.txt");
+    let third = config_dir.path().join("out").join("third.txt");
     // Pre-created holding bytes cfgd never wrote: the deploy is planned (the
     // content differs) and then settles as a skip under `--on-conflict skip`,
     // which is what keeps `total` and `succeeded` from being the same number.
     std::fs::create_dir_all(second.parent().unwrap()).unwrap();
     std::fs::write(&second, "a stranger wrote this").unwrap();
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true 1\"\n      - \"true 2\"\n      - \"true 3\"\n      - \"true 4\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n      - source: files/third.txt\n        target: {}\n        strategy: Copy\n",
         target.display(),
-        second.display()
+        second.display(),
+        third.display()
     );
     std::fs::write(
         config_dir.path().join("profiles").join("tiny.yaml"),
         &profile,
     )
     .unwrap();
-    (config_dir, state_dir, [target, second])
+    (config_dir, state_dir, [target, second, third])
 }
 
 /// Build a tempdir-backed profile that resolves to more modules than it

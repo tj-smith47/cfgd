@@ -845,8 +845,15 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
 }
 
 /// A result for work the plan could not name, at the subject that says which
-/// class it belongs to and the RECORD that settles its state: a skip is a
-/// success that changed nothing, exactly as `merge_env_result` writes one.
+/// class it belongs to and the RECORD that settles its state.
+///
+/// Two producers write the three shapes, so both are named here: the performed
+/// and skipped records are `merge_env_result`'s (`success: true` with
+/// `skipped: !changed`, the literal it always pushes, pinned against it by
+/// `reconciler::tests::an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip`),
+/// while the FAILED record is the regeneration's own `Err(e)` arm, which is the
+/// only site that ever writes `success: false` for an env surface. An edit to
+/// either producer moves a shape this helper stands in for.
 fn after_plan_result(subject: AfterPlan, state: AfterPlanState) -> ActionResult {
     let success = state != AfterPlanState::Failed;
     let changed = state == AfterPlanState::Performed;
@@ -995,18 +1002,28 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
 /// on its own line at its own role, and the converged line counts only what
 /// converged.
 ///
-/// No two counts in this fixture are equal — 4 succeeded and 1 failed of 5
-/// planned, against 2 converged, 1 unchanged and 3 failed surfaces — so a clause
-/// built with a sibling's count, or a planned count reaching a class line, has
-/// nowhere to hide. Both grammatical numbers are exercised with them.
+/// No two counts in this fixture are equal, and the premise is EXECUTED by
+/// `assert_slots_discriminate` rather than recited here: a clause built with a
+/// sibling's count, or a planned count reaching a class line, has nowhere to
+/// hide. Both grammatical numbers are exercised with them.
 #[test]
 fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
-    let mut result = apply_result(4, 1, ApplyStatus::Partial, 5);
-    for (state, count) in [
+    let (succeeded, planned_failed, planned) = (4, 6, 10);
+    let class = [
         (AfterPlanState::Performed, 2),
         (AfterPlanState::Skipped, 1),
         (AfterPlanState::Failed, 3),
-    ] {
+    ];
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("planned", planned),
+        ("succeeded", succeeded),
+        ("planned failed", planned_failed),
+        ("converged", class[0].1),
+        ("changed nothing", class[1].1),
+        ("failed after the plan", class[2].1),
+    ]);
+    let mut result = apply_result(succeeded, planned_failed, ApplyStatus::Partial, planned);
+    for (state, count) in class {
         for _ in 0..count {
             result
                 .action_results

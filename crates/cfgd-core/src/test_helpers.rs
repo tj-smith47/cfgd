@@ -702,6 +702,37 @@ macro_rules! assert_snapshot_golden {
     };
 }
 
+/// Fail when two of the slots a fixture asserts hold one value.
+///
+/// A fixture whose asserted counts are meant to tell its slots APART proves
+/// nothing about which slot holds which the moment two of them coincide: a
+/// producer that swapped `succeeded` and `skipped`, or wired a class count to
+/// its sibling's, renders exactly the numbers the assertion expects. Carrying
+/// that premise as a sentence in a doc comment is what let four fixtures claim
+/// a distinctness their own numbers refuted, so the premise runs here instead
+/// and the doc comment points at this call.
+///
+/// Pass every slot whose value a producer could read for another, with the name
+/// a reader of the failure would recognize. A ZERO slot is left out: its clause
+/// either renders nothing or renders `0`, so two of them are no coincidence,
+/// and only a value a wrong wiring could return in another slot's place is a
+/// hole.
+pub fn assert_slots_discriminate(slots: &[(&str, usize)]) {
+    assert!(
+        slots.len() >= 2,
+        "a distinctness premise needs two slots to tell apart, got {slots:?}"
+    );
+    for (index, (name, value)) in slots.iter().enumerate() {
+        for (other, other_value) in &slots[index + 1..] {
+            assert_ne!(
+                value, other_value,
+                "`{name}` and `{other}` both hold {value}, so a producer reading \
+                 one for the other renders the number this fixture expects: {slots:?}"
+            );
+        }
+    }
+}
+
 /// Initialize a minimal git repository at `dir` with an initial commit.
 /// Useful for tests that depend on git operations (sources, modules, etc.).
 pub fn init_test_git_repo(dir: &Path) {

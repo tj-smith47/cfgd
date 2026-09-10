@@ -2,15 +2,22 @@ Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
   Phases   Files
-  Actions  2 planned
+  Actions  3 planned
 
 Phase: Files
   profile:tiny
     ✓ create <TARGET> (XXs)
-    ∅ skip <SECOND>: skipped: target exists as unmanaged file
+    ∅ skip <SECOND>: target exists as unmanaged file
+    ✓ create <THIRD> (XXs)
 
-◐ onChange: true
-✓ onChange: true (XXs)
-✓ Apply complete — 1 action succeeded (XXs wall)
+◐ onChange: true 1
+✓ onChange: true 1 (XXs)
+◐ onChange: true 2
+✓ onChange: true 2 (XXs)
+◐ onChange: true 3
+✓ onChange: true 3 (XXs)
+◐ onChange: true 4
+✓ onChange: true 4 (XXs)
+✓ Apply complete — 2 actions succeeded (XXs wall)
 ∅ 1 skipped
-✓ 1 onChange hook ran after the plan
+✓ 4 onChange hooks ran after the plan

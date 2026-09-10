@@ -33,6 +33,7 @@ use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
+use cfgd_core::test_helpers::assert_slots_discriminate;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -234,11 +235,11 @@ fn apply_nothing_to_do_human() {
 /// `-o json` payload carried the same inflated count with no total to reconcile
 /// it against.
 ///
-/// Every number the payload states is different from every other one: two planned
-/// deploys of which one settles as a conflict skip, and one hook — `total` 2,
-/// `succeeded` 1, `skipped` 1, `afterPlan` 1. A fixture whose counts coincide
-/// proves nothing about which field holds which, and a swap between two equal
-/// ones passes.
+/// Every number the payload states is different from every other one, and the
+/// premise RUNS rather than being recited here: `assert_slots_discriminate`
+/// fails the moment an edit makes two of the asserted slots coincide, because a
+/// fixture whose counts coincide proves nothing about which field holds which
+/// and a swap between two equal ones passes.
 ///
 /// The class's own split is on the wire too, and the second half of this test is
 /// what proves it: `-o json` emits no rollup, so a consumer of a lone class
@@ -260,33 +261,41 @@ fn apply_after_plan_work_human_and_json() {
     cmd_apply(&cli, &printer, &args).unwrap();
     drop(printer);
 
+    // Three planned deploys of which one settles as a conflict skip, and four
+    // hooks: the smallest shape whose every asserted number differs from every
+    // other, since `failed` 0 forces `total == succeeded + skipped`.
+    let slots = [
+        ("total", 3),
+        ("succeeded", 2),
+        ("skipped", 1),
+        ("afterPlan", 4),
+    ];
+    assert_slots_discriminate(&slots);
+
     let payload = cap.json().expect("apply emits its payload");
+    for (slot, count) in slots {
+        assert_eq!(
+            payload[slot], count,
+            "`{slot}` holds the one value no other asserted slot holds: {payload}"
+        );
+    }
     assert_eq!(
-        payload["total"], 2,
-        "`total` is what the plan promised: {payload}"
-    );
-    assert_eq!(
-        (
-            &payload["succeeded"],
-            &payload["skipped"],
-            &payload["failed"]
-        ),
-        (&json!(1), &json!(1), &json!(0)),
-        "the planned counts partition that total: {payload}"
-    );
-    assert_eq!(
-        payload["afterPlan"], 1,
-        "the hook is its own field, outside the total: {payload}"
+        payload["failed"], 0,
+        "nothing failed, so the two planned counts partition the total: {payload}"
     );
     assert!(
         payload.get("afterPlanSkipped").is_none() && payload.get("afterPlanFailed").is_none(),
-        "the hook performed work, so neither sibling reaches the wire: {payload}"
+        "every hook performed work, so neither sibling reaches the wire: {payload}"
     );
 
     let normalized = normalize_tempdir_paths(
         &cap.human(),
         config_dir.path(),
-        &[(&targets[0], "<TARGET>"), (&targets[1], "<SECOND>")],
+        &[
+            (&targets[0], "<TARGET>"),
+            (&targets[1], "<SECOND>"),
+            (&targets[2], "<THIRD>"),
+        ],
     );
     // The alignment column is measured on the REAL subjects, and the skip row's
     // reason makes this report's widest one, so the padding beside the deploy
@@ -294,18 +303,20 @@ fn apply_after_plan_work_human_and_json() {
     // goldens do.
     let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
     assert!(
-        stripped.contains("Actions  2 planned")
-            && stripped.contains("1 onChange hook ran after the plan"),
+        stripped.contains("Actions  3 planned")
+            && stripped.contains("4 onChange hooks ran after the plan"),
         "the header's promise and the class's own line: {stripped}"
     );
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/after_plan.txt", &stripped);
 
-    // The same payload slots, filled from a run whose class holds one of each
-    // outcome. The records are the shape `merge_env_result` writes, pinned
-    // against that producer by cfgd-core's
+    // The same payload slots, filled from a run whose class holds one skip and
+    // TWO failures, so the three asserted counts differ: a swapped filter pair,
+    // and either field wired to the other's count, each render a number the
+    // assertion rejects. The records are the shape `merge_env_result` writes,
+    // pinned against that producer by cfgd-core's
     // `an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip`.
-    let three_states = ApplyResult {
-        action_results: [(true, false), (true, true), (false, false)]
+    let four_states = ApplyResult {
+        action_results: [(true, false), (true, true), (false, false), (false, false)]
             .into_iter()
             .map(|(success, skipped)| ActionResult {
                 after_plan: Some(AfterPlan::EnvSurface),
@@ -327,10 +338,15 @@ fn apply_after_plan_work_human_and_json() {
         planned_total: 0,
         caveats: Vec::new(),
     };
-    let split = serde_json::to_value(AfterPlanCounts::of(&three_states)).unwrap();
+    assert_slots_discriminate(&[
+        ("afterPlan", 4),
+        ("afterPlanSkipped", 1),
+        ("afterPlanFailed", 2),
+    ]);
+    let split = serde_json::to_value(AfterPlanCounts::of(&four_states)).unwrap();
     assert_eq!(
         split,
-        json!({"afterPlan": 3, "afterPlanSkipped": 1, "afterPlanFailed": 1}),
+        json!({"afterPlan": 4, "afterPlanSkipped": 1, "afterPlanFailed": 2}),
         "a machine consumer reads the class's three outcomes, not one total"
     );
 }
