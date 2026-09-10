@@ -2,13 +2,14 @@ Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
   Phases   Files
-  Actions  1 planned
+  Actions  2 planned
 
 Phase: Files
   profile:tiny
-    ✓ create <TARGET> (XXs)
+    ✓ create <TARGET>  (XXs)
+    ✓ create <SECOND> (XXs)
 
 ◐ onChange: true
 ✓ onChange: true (XXs)
-✓ Apply complete — 1 action succeeded (XXs wall)
+✓ Apply complete — 2 actions succeeded (XXs wall)
 ✓ 1 onChange hook ran after the plan

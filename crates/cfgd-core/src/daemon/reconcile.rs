@@ -1213,7 +1213,11 @@ fn reconcile_tick(
                         // about how many actions succeeded. `outcome_counts` is
                         // silent about failures — the rollup gives them their
                         // own line — but a single-line log has no second line,
-                        // so it names them here or hides them entirely.
+                        // so it names them here or hides them entirely. That
+                        // failure clause is the ONLY one composed here: every
+                        // other outcome class, the after-plan work included,
+                        // reaches the journal through `outcome_counts`, so a
+                        // class the rollup gains is logged without an edit.
                         let tally = result.tally();
                         let counts = crate::reconciler::outcome_counts(&tally);
                         Some(match tally.failed {

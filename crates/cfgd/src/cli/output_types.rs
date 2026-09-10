@@ -101,11 +101,13 @@ pub struct ApplyOutput {
     /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
     /// outside the plan's `totalActions`, exactly as the human line prices it.
     pub not_attempted: usize,
-    /// Work the run performed that its plan could not name — an env surface a
-    /// resolved secret or a late PATH directory forced it to rewrite, an
-    /// `onChange` hook. Outside the three counts above and outside the plan's
-    /// `totalActions`, exactly as the rollup's own line prices it; absent from
-    /// the wire on a run that performed none.
+    /// How many items of work the run did that its plan could not name — an env
+    /// surface a resolved secret or a late PATH directory forced it to rewrite,
+    /// an `onChange` hook. Outside the three counts above and outside the plan's
+    /// `totalActions`, exactly as the rollup's own lines price it; absent from
+    /// the wire on a run that did none. The whole class, not its successes: an
+    /// item that failed or changed nothing is in this count, and the rollup's
+    /// after-plan lines are where the three outcomes are told apart.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_plan: usize,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /

@@ -162,18 +162,22 @@ The header's `Actions  N planned` row is what the plan promised, and the rollup'
 only the run can discover: a secret whose value resolved during the apply, the PATH
 directory a package manager reports once its install finished, an `onChange` hook
 whose condition is whether this very run changed anything. None of that is in the
-plan, so it is never folded into the promised count; it states itself on its own
-line after the planned classes.
+plan, so it is never folded into the promised count; it states itself after the
+planned classes, split the same three ways they are (changed the machine, changed
+nothing, failed), one line each at its own role.
 
 ```console
 ✓ Apply complete — 1 action succeeded (0.4s wall)
 ✓ 3 env surfaces converged after the plan
+— 1 env surface changed nothing after the plan
 ✓ 1 onChange hook ran after the plan
 ```
 
 `-o json` prices it the same way: `total` is the planned count, `succeeded`,
 `skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it,
-and `afterPlan` is absent on a run that performed none.
+and `afterPlan` is absent on a run that did none. `afterPlan` is the whole class,
+failures and no-change items included; the rollup's lines above are where the
+three outcomes are told apart.
 
 #### Unmanaged files at a managed target
 

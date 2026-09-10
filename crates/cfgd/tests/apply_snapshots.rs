@@ -225,16 +225,19 @@ fn apply_nothing_to_do_human() {
 }
 
 /// The header's `Actions N planned` and the rollup's tally are one account, on
-/// a run that performed work its plan could not name: the `onChange` hook fires
-/// on whether THIS run changed anything, so no plan holds it. Counted as a
-/// planned success it rendered `1 succeeded` under a header promising one and
-/// then `2 succeeded` once a second late surface landed, and the `-o json`
-/// payload carried the same inflated count with no total to reconcile it
-/// against.
+/// a run that did work its plan could not name: the `onChange` hook fires on
+/// whether THIS run changed anything, so no plan holds it. Counted as a planned
+/// success it rendered `3 succeeded` under a header promising two, and the
+/// `-o json` payload carried the same inflated count with no total to reconcile
+/// it against.
+///
+/// Two planned deploys and one hook, so the payload's three numbers are 2, 2 and
+/// 1: a fixture where they coincide proves nothing about which field holds which,
+/// and a swap between them would pass.
 #[test]
 #[cfg(unix)]
 fn apply_after_plan_work_human_and_json() {
-    let (config_dir, state_dir, target) = profile_with_on_change_hook_setup();
+    let (config_dir, state_dir, targets) = profile_with_on_change_hook_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -245,11 +248,11 @@ fn apply_after_plan_work_human_and_json() {
 
     let payload = cap.json().expect("apply emits its payload");
     assert_eq!(
-        payload["total"], 1,
+        payload["total"], 2,
         "`total` is what the plan promised: {payload}"
     );
     assert_eq!(
-        payload["succeeded"], 1,
+        payload["succeeded"], 2,
         "the planned counts partition that total: {payload}"
     );
     assert_eq!(
@@ -257,11 +260,14 @@ fn apply_after_plan_work_human_and_json() {
         "the hook is its own field, outside the total: {payload}"
     );
 
-    let normalized =
-        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let normalized = normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[(&targets[0], "<TARGET>"), (&targets[1], "<SECOND>")],
+    );
     let stripped = normalize_duration(&strip_ansi(&normalized));
     assert!(
-        stripped.contains("Actions  1 planned")
+        stripped.contains("Actions  2 planned")
             && stripped.contains("1 onChange hook ran after the plan"),
         "the header's promise and the class's own line: {stripped}"
     );

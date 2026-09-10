@@ -484,17 +484,28 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
     // its own failures with the same verb (a failure is a failure, and the
     // trailing `after the plan` is what says which class it belongs to), so
     // `actions failed` is the tell that names only the planned one.
-    let classes = [
-        ("succeeded", Role::Ok),
-        ("actions failed", Role::Fail),
-        ("skipped", Role::Skipped),
-        ("not attempted:", Role::Skipped),
-        ("converged after the plan", Role::Ok),
-        ("ran after the plan", Role::Ok),
-        ("failed after the plan", Role::Fail),
+    //
+    // The after-plan pairs are DERIVED from both vocabularies rather than
+    // listed: a hand list judged the member it happened to name and let a new
+    // member, or a reworded clause, render a line nobody checked.
+    let mut classes = vec![
+        ("succeeded".to_string(), Role::Ok),
+        ("actions failed".to_string(), Role::Fail),
+        ("skipped".to_string(), Role::Skipped),
+        ("not attempted:".to_string(), Role::Skipped),
     ];
+    for subject in AfterPlan::ALL {
+        for state in AfterPlanState::ALL {
+            let tell = state.clause_tell(subject);
+            // `changed nothing` and `failed` word themselves per OUTCOME, so two
+            // members claim one tell; the line still proves that state's role.
+            if !classes.iter().any(|(word, _)| *word == tell) {
+                classes.push((tell, state.clause_role()));
+            }
+        }
+    }
     let theme = crate::output::Theme::default();
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for status in [
         ApplyStatus::Success,
         ApplyStatus::Partial,
@@ -504,13 +515,13 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
     ] {
         // Every class nonzero at once, which is the shape that fused them.
         let tally = RunTally {
-            // Every member of the after-plan vocabulary, performed and failed,
-            // so the walk sees each of its clauses rather than whichever one
-            // the first member happens to produce.
+            // Every member of the after-plan vocabulary in every state, so the
+            // walk sees each of its clauses rather than whichever one the first
+            // member happens to produce.
             after_plan: AfterPlan::ALL
                 .into_iter()
                 .flat_map(|subject| {
-                    [true, false].map(|performed| AfterPlanOutcome { subject, performed })
+                    AfterPlanState::ALL.map(|state| AfterPlanOutcome { subject, state })
                 })
                 .collect(),
             succeeded: 20,
@@ -525,7 +536,7 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
         render_run_rollup(&tally, RunTitle::Apply, &printer, None);
         drop(printer);
         let out = crate::test_helpers::captured_text(&buf);
-        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+        for (index, line) in out.lines().filter(|l| !l.trim().is_empty()).enumerate() {
             // The abort line is a SENTENCE about an interrupted run, not a
             // count list: it accounts for everything on the one line a reader
             // keeps, and it is `Role::Warn`, so it paints no non-success count
@@ -538,23 +549,29 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             if line.starts_with(theme.icon_arrow.as_str()) {
                 continue;
             }
-            let named: Vec<&str> = classes
+            let named: Vec<(&str, Role)> = classes
                 .iter()
-                .map(|(word, _)| *word)
-                .filter(|word| line.contains(word))
+                .filter(|(word, _)| line.contains(word.as_str()))
+                .map(|(word, role)| (word.as_str(), *role))
                 .collect();
             assert!(
                 named.len() <= 1,
                 "{status:?}: one line states {named:?} — two outcome classes \
                  under one role: {out:?}"
             );
-            let Some(word) = named.first() else { continue };
-            seen.push(word);
-            let (_, role) = classes
-                .iter()
-                .find(|(w, _)| w == word)
-                .copied()
-                .unwrap_or(("", Role::Info));
+            let Some((word, role)) = named.first().copied() else {
+                // The rollup's FIRST line is the run's own verdict sentence,
+                // which reports the run rather than one outcome class; every
+                // line under it is a clause, so an unclaimed one is a class
+                // whose role nothing checked rather than a line to skip.
+                assert_eq!(
+                    index, 0,
+                    "{status:?}: no outcome class claims this rollup line, so \
+                     nothing checked its role: {line:?}"
+                );
+                continue;
+            };
+            seen.push(word.to_string());
             let (glyph, _) = crate::output::renderer::role_glyph(&theme, role);
             assert!(
                 glyph.is_some_and(|g| line.starts_with(g)),
@@ -563,9 +580,9 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             );
         }
     }
-    for (word, _) in classes {
+    for (word, _) in &classes {
         assert!(
-            seen.contains(&word),
+            seen.contains(word),
             "the walk never rendered a {word:?} line, so it proved nothing about it"
         );
     }
@@ -824,16 +841,19 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
 }
 
 /// A result for work the plan could not name, at the subject that says which
-/// class it belongs to.
-fn after_plan_result(subject: AfterPlan, success: bool) -> ActionResult {
+/// class it belongs to and the RECORD that settles its state: a skip is a
+/// success that changed nothing, exactly as `merge_env_result` writes one.
+fn after_plan_result(subject: AfterPlan, state: AfterPlanState) -> ActionResult {
+    let success = state != AfterPlanState::Failed;
+    let changed = state == AfterPlanState::Performed;
     ActionResult {
         after_plan: Some(subject),
         phase: "bootstrap".to_string(),
         description: "env:write:/home/me/.cfgd.env".to_string(),
         success,
         error: (!success).then(|| "permission denied".to_string()),
-        changed: true,
-        skipped: false,
+        changed,
+        skipped: success && !changed,
         not_attempted: None,
         installed: None,
         versions: Default::default(),
@@ -867,13 +887,15 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
 
     let mut result = apply_result(2, 0, ApplyStatus::Success, 2);
     for _ in 0..3 {
-        result
-            .action_results
-            .push(after_plan_result(AfterPlan::EnvSurface, true));
+        result.action_results.push(after_plan_result(
+            AfterPlan::EnvSurface,
+            AfterPlanState::Performed,
+        ));
     }
-    result
-        .action_results
-        .push(after_plan_result(AfterPlan::ChangeHook, true));
+    result.action_results.push(after_plan_result(
+        AfterPlan::ChangeHook,
+        AfterPlanState::Performed,
+    ));
 
     let tally = result.tally();
     assert_eq!(
@@ -918,9 +940,10 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
 #[test]
 fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     let mut result = apply_result(1, 0, ApplyStatus::Partial, 1);
-    result
-        .action_results
-        .push(after_plan_result(AfterPlan::EnvSurface, false));
+    result.action_results.push(after_plan_result(
+        AfterPlan::EnvSurface,
+        AfterPlanState::Failed,
+    ));
     let tally = result.tally();
     assert_eq!((tally.failed, tally.succeeded), (0, 1));
 
@@ -940,9 +963,10 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     // A run whose every planned action failed lists no clauses at all, and the
     // class is then the only news there is about what else the run did.
     let mut all_failed = apply_result(0, 1, ApplyStatus::Failed, 1);
-    all_failed
-        .action_results
-        .push(after_plan_result(AfterPlan::EnvSurface, true));
+    all_failed.action_results.push(after_plan_result(
+        AfterPlan::EnvSurface,
+        AfterPlanState::Performed,
+    ));
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(&all_failed.tally(), RunTitle::Apply, &printer, None);
     drop(printer);
@@ -950,6 +974,87 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     assert!(
         out.contains("1 action failed") && out.contains("1 env surface converged after the plan"),
         "a failed run still accounts for what it converged: {out:?}"
+    );
+}
+
+/// An after-plan surface that changed NOTHING is a skip, never a performance.
+///
+/// The class was born pricing itself by `success` alone, so the live-session
+/// refresh whose `systemctl --user set-environment` publish failed — a result
+/// `merge_env_result` records `success: true, skipped: true` because the failure
+/// travels as a note — was counted inside
+/// `6 env surfaces converged after the plan`, a green verdict standing one line
+/// under its own warning. The planned counts have obeyed the opposite rule all
+/// along: a successful action that changed nothing is skipped, not done.
+///
+/// One run, all three outcomes, through the real render path: each states itself
+/// on its own line at its own role, and the converged line counts only what
+/// converged.
+#[test]
+fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
+    let mut result = apply_result(1, 0, ApplyStatus::Partial, 1);
+    for state in [
+        AfterPlanState::Performed,
+        AfterPlanState::Skipped,
+        AfterPlanState::Failed,
+    ] {
+        result
+            .action_results
+            .push(after_plan_result(AfterPlan::EnvSurface, state));
+    }
+    let tally = result.tally();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let theme = crate::output::Theme::default();
+    // The skip leads: it is the line the defect erased, so a regression must be
+    // reported as the missing line rather than as a neighbour's wrong count.
+    for (state, clause) in [
+        (
+            AfterPlanState::Skipped,
+            "1 env surface changed nothing after the plan",
+        ),
+        (
+            AfterPlanState::Performed,
+            "1 env surface converged after the plan",
+        ),
+        (
+            AfterPlanState::Failed,
+            "1 env surface failed after the plan",
+        ),
+    ] {
+        let line = out
+            .lines()
+            .find(|l| l.contains(clause))
+            .unwrap_or_else(|| panic!("{state:?} states itself on its own line: {out:?}"));
+        let (glyph, _) = crate::output::renderer::role_glyph(&theme, state.clause_role());
+        assert!(
+            glyph.is_some_and(|g| line.starts_with(g)),
+            "{state:?} wears its own role's glyph ({glyph:?}): {line:?}"
+        );
+    }
+    assert!(
+        !out.contains("2 env surfaces converged") && !out.contains("3 env surfaces converged"),
+        "the converged line counts only what converged: {out:?}"
+    );
+    assert_eq!(
+        tally.after_plan.iter().map(|o| o.state).collect::<Vec<_>>(),
+        vec![
+            AfterPlanState::Performed,
+            AfterPlanState::Skipped,
+            AfterPlanState::Failed
+        ],
+        "each line above came from a state read off its own record, not guessed \
+         from its success flag"
+    );
+    // The daemon keeps the one account the rendered rollup does, so a skip
+    // cannot read as converged on the journal line either.
+    assert_eq!(
+        outcome_counts(&tally),
+        "1 action succeeded, 1 env surface converged after the plan, \
+         1 env surface changed nothing after the plan, \
+         1 env surface failed after the plan"
     );
 }
 
@@ -970,10 +1075,11 @@ fn the_counted_rollup_never_exceeds_what_the_header_promised() {
     ];
     for (label, mut result) in shapes {
         for subject in AfterPlan::ALL {
-            result.action_results.push(after_plan_result(subject, true));
-            result
-                .action_results
-                .push(after_plan_result(subject, false));
+            for state in AfterPlanState::ALL {
+                result
+                    .action_results
+                    .push(after_plan_result(subject, state));
+            }
         }
         let tally = result.tally();
         assert!(
@@ -982,7 +1088,7 @@ fn the_counted_rollup_never_exceeds_what_the_header_promised() {
         );
         assert_eq!(
             tally.after_plan.len(),
-            AfterPlan::ALL.len() * 2,
+            AfterPlan::ALL.len() * AfterPlanState::ALL.len(),
             "{label}: every result the plan did not name is priced by its class"
         );
     }

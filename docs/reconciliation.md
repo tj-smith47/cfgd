@@ -232,14 +232,20 @@ value resolved mid-apply, the PATH directory a package manager only reports once
 its install finished, an `onChange` hook whose condition is whether this very run
 changed anything. That work is not folded into the promised count, which would
 leave the header and the rollup reporting two different numbers; it is a class of
-its own, stated on its own line after the planned ones, and it carries its own
-failures:
+its own, stated after the planned ones, and split the same three ways they are:
+what changed the machine, what changed nothing, and what failed, one line each at
+its own role.
 
 ```console
 ✓ Apply complete — 1 action succeeded (0.4s wall)
 ✓ 3 env surfaces converged after the plan
+— 1 env surface changed nothing after the plan
 ✗ 1 onChange hook failed after the plan
 ```
+
+An env surface is one file or one rc source line your shells read, plus the live
+session itself, so one late variable reaches the machine as several surfaces: the
+count is of surfaces rewritten, not of variables resolved.
 
 The `Packages` bullets are the group order in miniature: the profile's own
 installs, then `module:nvim`. Execution reverses those two (see the note above).

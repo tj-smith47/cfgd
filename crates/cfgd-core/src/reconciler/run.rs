@@ -19,8 +19,8 @@ use crate::state::{ApplyStatus, StateStore};
 use super::apply::action_matches_phase_filter;
 use super::format::action_display_subject_within;
 use super::types::{
-    Action, AfterPlan, AfterPlanOutcome, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter,
-    PhaseName, Plan,
+    Action, AfterPlan, AfterPlanOutcome, AfterPlanState, ApplyResult, Owner, OwnerGroup, Phase,
+    PhaseFilter, PhaseName, Plan,
 };
 
 /// Heading for a hook group that runs around a reconcile but is not part of
@@ -254,12 +254,14 @@ pub struct RunTally {
     /// What the run set out to do. The `Actions  N planned` header row and the
     /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
-    /// What the run performed that its plan could not name, one entry per item
-    /// — see [`AfterPlan`]. Outside `planned_total` and outside the three counts
-    /// above, because the header printed before the run could not promise it;
-    /// the class states itself on its own line instead.
+    /// What the run did that its plan could not name, one entry per item with
+    /// the state it settled in — see [`AfterPlan`] and [`AfterPlanState`].
+    /// Outside `planned_total` and outside the three counts above, because the
+    /// header printed before the run could not promise it; the class states
+    /// itself on its own lines instead, one per outcome.
     ///
     /// [`AfterPlan`]: super::AfterPlan
+    /// [`AfterPlanState`]: super::AfterPlanState
     pub after_plan: Vec<AfterPlanOutcome>,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
@@ -1476,26 +1478,26 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
     clauses
 }
 
-/// One clause per [`AfterPlan`] member the run has something to say about: what
-/// it performed, and separately what failed, because the two wear different
-/// roles and a class states its own trouble.
+/// One clause per [`AfterPlan`] member per [`AfterPlanState`] the run has
+/// something to say about, each at its own role: the three outcomes cannot share
+/// a line, for the same reason a planned skip cannot share one with a success.
 ///
-/// Walked over [`AfterPlan::ALL`] rather than over the entries, so the render
-/// order is the vocabulary's and a member the run performed none of says
-/// nothing. Read by [`outcome_clauses`] for every verdict that lists its
-/// clauses, and directly by the `Failed` arm of [`rollup_lines`], which lists
-/// none.
+/// Walked over both vocabularies rather than over the entries, so the render
+/// order is theirs and a pair the run produced none of says nothing. Read by
+/// [`outcome_clauses`] for every verdict that lists its clauses, and directly by
+/// the `Failed` arm of [`rollup_lines`], which lists none.
 fn after_plan_clauses(tally: &RunTally) -> Vec<(Role, String)> {
     let mut clauses = Vec::new();
     for subject in AfterPlan::ALL {
-        let mine = || tally.after_plan.iter().filter(|o| o.subject == subject);
-        let performed = mine().filter(|o| o.performed).count();
-        let failed = mine().filter(|o| !o.performed).count();
-        if performed > 0 {
-            clauses.push((Role::Ok, subject.performed_clause(performed)));
-        }
-        if failed > 0 {
-            clauses.push((Role::Fail, subject.failed_clause(failed)));
+        for state in AfterPlanState::ALL {
+            let count = tally
+                .after_plan
+                .iter()
+                .filter(|o| o.subject == subject && o.state == state)
+                .count();
+            if count > 0 {
+                clauses.push(state.clause(subject, count));
+            }
         }
     }
     clauses

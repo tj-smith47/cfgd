@@ -254,10 +254,14 @@ pub enum ApplySummary {
         /// what the run attempted, and outside `skipped`, which ran.
         #[serde(default, skip_serializing_if = "is_zero")]
         not_attempted: usize,
-        /// Work the run performed that its plan could not name — an env surface
-        /// a late input forced it to rewrite, an `onChange` hook. Outside
-        /// `total`, which is what the header promised before the run began, and
-        /// outside the three counts that partition it.
+        /// How many items of work the run did that its plan could not name — an
+        /// env surface a late input forced it to rewrite, an `onChange` hook.
+        /// Outside `total`, which is what the header promised before the run
+        /// began, and outside the three counts that partition it. The whole
+        /// class, not its successes: a recalled run states one number here
+        /// because the per-outcome split (performed / changed nothing / failed)
+        /// is the live rollup's own after-plan lines, which a stored row cannot
+        /// reproduce.
         #[serde(default, skip_serializing_if = "is_zero")]
         after_plan: usize,
         /// Actions the run planned and never reached, recorded only by the

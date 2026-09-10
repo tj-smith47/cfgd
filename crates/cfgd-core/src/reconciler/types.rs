@@ -1206,7 +1206,7 @@ impl Plan {
     }
 }
 
-/// What a run performed that its plan could not name, by what it performed.
+/// Work a run did that its plan could not name, by what the work was.
 ///
 /// The header prints `Actions N planned` before the first action runs, so it can
 /// only ever promise what the plan knew. Both members below are triggered by
@@ -1214,18 +1214,25 @@ impl Plan {
 /// a manager only reports once its install finished, a declaration that
 /// changed — which is why folding them into `planned_total` cannot work: the
 /// header would still say `N`. They are a class of their own instead, counted
-/// and rendered as their own rollup clause, so the number the header promised
+/// and rendered as their own rollup clauses, so the number the header promised
 /// and the numbers the rollup reports are one account again.
 ///
 /// A member is added here with its own wording (see [`Self::counted_noun`] /
-/// [`Self::verb`]) and its own entry in [`Self::ALL`], which is what every
-/// clause walks.
+/// [`Self::performed_verb`]) and its own entry in [`Self::ALL`], which is what
+/// every clause walks. What OUTCOME each item settled as is
+/// [`AfterPlanState`]'s; this type only says what kind of thing it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AfterPlan {
     /// An env surface rewritten once a late input landed: a secret's resolved
     /// value, or the PATH directory of a manager (npm) whose global prefix is
     /// only knowable after its install finished.
+    ///
+    /// A surface is one FILE or one rc source line this host's generator
+    /// writes, plus the live session itself, so one late variable reaches the
+    /// machine as several surfaces: the count is of surfaces rewritten, never
+    /// of variables resolved, which is what lets a reader reconcile six
+    /// surfaces against one late input.
     EnvSurface,
     /// An `onChange` hook, whose condition is whether anything in this very run
     /// changed — an answer no plan can hold.
@@ -1245,43 +1252,107 @@ impl AfterPlan {
         }
     }
 
-    /// What this member DID when it went well. An env surface converges; a hook
-    /// runs.
-    fn verb(self) -> &'static str {
+    /// What this member DID when it went well and changed the machine. An env
+    /// surface converges; a hook runs.
+    fn performed_verb(self) -> &'static str {
         match self {
             Self::EnvSurface => "converged",
             Self::ChangeHook => "ran",
         }
     }
+}
 
-    /// The clause naming `count` of these that went well.
-    pub fn performed_clause(self, count: usize) -> String {
-        format!(
-            "{} {} after the plan",
-            crate::pluralize(count, self.counted_noun()),
-            self.verb()
-        )
+/// How one item of after-plan work settled: the same three-way split the planned
+/// counts use, derived at the ONE place the record is read.
+///
+/// The class was born pricing itself by `success` alone, so a surface that
+/// changed nothing — the live-session refresh whose `systemctl` publish failed
+/// and whose notes carried the failure — was counted inside
+/// `N env surfaces converged after the plan`, a verdict contradicting the warn
+/// line above it. [`ApplyResult::{succeeded, skipped, failed}`] already hold the
+/// rule it broke: a successful action that CHANGED nothing is skipped, not done,
+/// and `!failed` is not a success count. One enum, derived once, is what keeps
+/// the rollup, the stored summary and `-o json` from disagreeing about which of
+/// the three a given surface was.
+///
+/// [`ApplyResult::{succeeded, skipped, failed}`]: ApplyResult::succeeded
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterPlanState {
+    /// It did the thing and the machine changed.
+    Performed,
+    /// It ran and changed nothing: the surface already held what it had to hold,
+    /// or a best-effort publish reached nothing to change.
+    Skipped,
+    /// It could not be done, and the class states its own failures.
+    Failed,
+}
+
+impl AfterPlanState {
+    /// Every member, in the order their clauses render.
+    pub const ALL: [Self; 3] = [Self::Performed, Self::Skipped, Self::Failed];
+
+    /// The state one recorded result settled in, judged in the same order the
+    /// planned predicates judge theirs: a failure first, then a success that
+    /// changed nothing, which is a skip and never a performance.
+    fn of(success: bool, skipped: bool) -> Self {
+        if !success {
+            Self::Failed
+        } else if skipped {
+            Self::Skipped
+        } else {
+            Self::Performed
+        }
     }
 
-    /// The clause naming `count` of these that did not. Deliberately the same
-    /// word the planned failure clause uses: a failure is a failure, and the
-    /// trailing `after the plan` is what says which class it belongs to.
-    pub fn failed_clause(self, count: usize) -> String {
-        format!(
-            "{} failed after the plan",
-            crate::pluralize(count, self.counted_noun())
+    /// The role a clause of this state renders at, the same one the class's own
+    /// action rows wear; a skip is never drawn green.
+    pub fn clause_role(self) -> crate::output::Role {
+        match self {
+            Self::Performed => crate::output::Role::Ok,
+            Self::Skipped => crate::output::Role::Skipped,
+            Self::Failed => crate::output::Role::Fail,
+        }
+    }
+
+    /// Everything a clause of this state says about `subject` after its count:
+    /// the verb and the `after the plan` tail that says which class the line
+    /// belongs to. A walk claims a rendered line by this string, so no surface
+    /// hand-writes one.
+    ///
+    /// `Skipped` and `Failed` word themselves the same for every member on
+    /// purpose: a skip is the absence of change and a failure is a failure,
+    /// which are facts about the outcome, not about what kind of thing settled
+    /// it. `actions failed` stays the planned class's own tell.
+    pub fn clause_tell(self, subject: AfterPlan) -> String {
+        let verb = match self {
+            Self::Performed => subject.performed_verb(),
+            Self::Skipped => "changed nothing",
+            Self::Failed => "failed",
+        };
+        format!("{verb} after the plan")
+    }
+
+    /// The clause naming `count` of `subject` that settled in this state, with
+    /// the role it renders at. The ONE composer: the noun names the unit the
+    /// count is in, and the count comes first so the line reads as a result.
+    pub fn clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
+        (
+            self.clause_role(),
+            format!(
+                "{} {}",
+                crate::pluralize(count, subject.counted_noun()),
+                self.clause_tell(subject)
+            ),
         )
     }
 }
 
-/// One item of work a run performed after its plan settled, and whether it went
-/// well.
+/// One item of work a run did after its plan settled: what it was, and how it
+/// settled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AfterPlanOutcome {
     pub subject: AfterPlan,
-    /// The work went well — it wrote what it had to write, or it ran. `false`
-    /// is the failure the class states in its own clause, at its own role.
-    pub performed: bool,
+    pub state: AfterPlanState,
 }
 
 /// Result of applying a single action.
@@ -1424,15 +1495,17 @@ impl ApplyResult {
             .count()
     }
 
-    /// Every item of work this run performed that its plan could not name, in
-    /// result order — see [`AfterPlan`].
+    /// Every item of work this run did that its plan could not name, in result
+    /// order, each with the state it settled in — see [`AfterPlan`] and
+    /// [`AfterPlanState`]. The ONE derivation of that state, so no surface can
+    /// read a skip as a performance.
     pub fn after_plan(&self) -> Vec<AfterPlanOutcome> {
         self.action_results
             .iter()
             .filter_map(|r| {
                 r.after_plan.map(|subject| AfterPlanOutcome {
                     subject,
-                    performed: r.success,
+                    state: AfterPlanState::of(r.success, r.skipped),
                 })
             })
             .collect()
