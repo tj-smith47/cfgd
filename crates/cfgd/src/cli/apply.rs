@@ -792,7 +792,7 @@ pub fn run_apply(
         skipped: result.skipped(),
         failed: result.failed(),
         not_attempted: result.not_attempted().len(),
-        after_plan: result.after_plan().len(),
+        after_plan: AfterPlanCounts::of(&result),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its

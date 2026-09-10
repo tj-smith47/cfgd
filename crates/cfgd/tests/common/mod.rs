@@ -51,15 +51,22 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 /// two PLANNED actions, and one item of work the plan could not name, because a
 /// hook's condition is whether anything in this very run changed.
 ///
-/// Two deploys rather than one deliberately: with one, `total`, `succeeded` and
-/// `afterPlan` would all be 1 and a payload asserting the three could not tell
-/// them apart, so a field swap between them would pass.
+/// The second target is pre-created holding its source's exact bytes, so that
+/// deploy runs and changes nothing. Every number the payload then states is
+/// different from every other: `total` 2, `succeeded` 1, `skipped` 1,
+/// `afterPlan` 1. A fixture whose counts coincide proves nothing about which
+/// field holds which, and a swap between two equal ones passes.
 ///
 /// Returns `(config_dir, state_dir, [first target, second target])`.
 pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, [PathBuf; 2]) {
     let (config_dir, state_dir, target) = tiny_profile_setup();
     std::fs::write(config_dir.path().join("files").join("second.txt"), "second").unwrap();
     let second = config_dir.path().join("out").join("second.txt");
+    // Pre-created holding bytes cfgd never wrote: the deploy is planned (the
+    // content differs) and then settles as a skip under `--on-conflict skip`,
+    // which is what keeps `total` and `succeeded` from being the same number.
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&second, "a stranger wrote this").unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n",
         target.display(),

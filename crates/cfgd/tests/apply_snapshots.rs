@@ -26,12 +26,15 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cfgd::cli::ApplyArgs;
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
-use cfgd::cli::output_types::ApplyOutput;
+use cfgd::cli::output_types::{AfterPlanCounts, ApplyOutput};
 use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
 use pretty_assertions::assert_eq;
+use serde_json::json;
 
 use common::profile_with_packages_setup;
 use common::{
@@ -45,7 +48,7 @@ fn happy_output() -> ApplyOutput {
     let mut source_commits = BTreeMap::new();
     source_commits.insert("team-config".to_string(), "abc1234".to_string());
     ApplyOutput {
-        after_plan: 0,
+        after_plan: AfterPlanCounts::default(),
         status: "success".to_string(),
         apply_id: Some(42),
         total: 3,
@@ -231,9 +234,17 @@ fn apply_nothing_to_do_human() {
 /// `-o json` payload carried the same inflated count with no total to reconcile
 /// it against.
 ///
-/// Two planned deploys and one hook, so the payload's three numbers are 2, 2 and
-/// 1: a fixture where they coincide proves nothing about which field holds which,
-/// and a swap between them would pass.
+/// Every number the payload states is different from every other one: two planned
+/// deploys of which one settles as a conflict skip, and one hook — `total` 2,
+/// `succeeded` 1, `skipped` 1, `afterPlan` 1. A fixture whose counts coincide
+/// proves nothing about which field holds which, and a swap between two equal
+/// ones passes.
+///
+/// The class's own split is on the wire too, and the second half of this test is
+/// what proves it: `-o json` emits no rollup, so a consumer of a lone class
+/// total cannot tell a surface that converged from one that changed nothing or
+/// failed — the conflation this whole class exists to end, on the surface with
+/// no human reader to catch it.
 #[test]
 #[cfg(unix)]
 fn apply_after_plan_work_human_and_json() {
@@ -241,7 +252,10 @@ fn apply_after_plan_work_human_and_json() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    let args = apply_args();
+    let args = ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Skip,
+        ..apply_args()
+    };
 
     cmd_apply(&cli, &printer, &args).unwrap();
     drop(printer);
@@ -252,12 +266,21 @@ fn apply_after_plan_work_human_and_json() {
         "`total` is what the plan promised: {payload}"
     );
     assert_eq!(
-        payload["succeeded"], 2,
+        (
+            &payload["succeeded"],
+            &payload["skipped"],
+            &payload["failed"]
+        ),
+        (&json!(1), &json!(1), &json!(0)),
         "the planned counts partition that total: {payload}"
     );
     assert_eq!(
         payload["afterPlan"], 1,
         "the hook is its own field, outside the total: {payload}"
+    );
+    assert!(
+        payload.get("afterPlanSkipped").is_none() && payload.get("afterPlanFailed").is_none(),
+        "the hook performed work, so neither sibling reaches the wire: {payload}"
     );
 
     let normalized = normalize_tempdir_paths(
@@ -265,13 +288,51 @@ fn apply_after_plan_work_human_and_json() {
         config_dir.path(),
         &[(&targets[0], "<TARGET>"), (&targets[1], "<SECOND>")],
     );
-    let stripped = normalize_duration(&strip_ansi(&normalized));
+    // The alignment column is measured on the REAL subjects, and the skip row's
+    // reason makes this report's widest one, so the padding beside the deploy
+    // encodes this host's temp-dir length: collapse it, as the other apply
+    // goldens do.
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
     assert!(
         stripped.contains("Actions  2 planned")
             && stripped.contains("1 onChange hook ran after the plan"),
         "the header's promise and the class's own line: {stripped}"
     );
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/after_plan.txt", &stripped);
+
+    // The same payload slots, filled from a run whose class holds one of each
+    // outcome. The records are the shape `merge_env_result` writes, pinned
+    // against that producer by cfgd-core's
+    // `an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip`.
+    let three_states = ApplyResult {
+        action_results: [(true, false), (true, true), (false, false)]
+            .into_iter()
+            .map(|(success, skipped)| ActionResult {
+                after_plan: Some(AfterPlan::EnvSurface),
+                phase: "bootstrap".to_string(),
+                description: "env:write:/home/me/.cfgd.env".to_string(),
+                success,
+                error: (!success).then(|| "permission denied".to_string()),
+                changed: success && !skipped,
+                skipped,
+                not_attempted: None,
+                installed: None,
+                versions: Default::default(),
+                drift_rows: Vec::new(),
+            })
+            .collect(),
+        status: cfgd_core::state::ApplyStatus::Success,
+        apply_id: 1,
+        aborted: None,
+        planned_total: 0,
+        caveats: Vec::new(),
+    };
+    let split = serde_json::to_value(AfterPlanCounts::of(&three_states)).unwrap();
+    assert_eq!(
+        split,
+        json!({"afterPlan": 3, "afterPlanSkipped": 1, "afterPlanFailed": 1}),
+        "a machine consumer reads the class's three outcomes, not one total"
+    );
 }
 
 #[test]

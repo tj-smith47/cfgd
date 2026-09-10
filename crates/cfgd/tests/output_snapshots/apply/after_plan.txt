@@ -6,10 +6,11 @@ Apply
 
 Phase: Files
   profile:tiny
-    ✓ create <TARGET>  (XXs)
-    ✓ create <SECOND> (XXs)
+    ✓ create <TARGET> (XXs)
+    ∅ skip <SECOND>: skipped: target exists as unmanaged file
 
 ◐ onChange: true
 ✓ onChange: true (XXs)
-✓ Apply complete — 2 actions succeeded (XXs wall)
+✓ Apply complete — 1 action succeeded (XXs wall)
+∅ 1 skipped
 ✓ 1 onChange hook ran after the plan

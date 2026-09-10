@@ -7701,6 +7701,59 @@ fn the_post_apply_env_regeneration_heals_the_key_its_action_stands_for() {
     }
 }
 
+/// The record this producer writes for a surface that changed NOTHING reaches
+/// the rollup as a skip.
+///
+/// `run/tests.rs`'s `after_plan_result` claims it builds the record
+/// `merge_env_result` writes, and the whole after-plan pin rests on that claim,
+/// so the correspondence is checked here against the producer itself — on the
+/// one input no other test of it passes. A live-session refresh whose every
+/// `systemctl --user set-environment` failed returns the skipped suffix with its
+/// failures travelling as notes, which is exactly the shape that was being
+/// counted as converged.
+#[test]
+fn an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip() {
+    use crate::reconciler::{AfterPlan, AfterPlanState, EnvAction};
+
+    let action = Action::Env(EnvAction::RefreshLiveSession {
+        vars: vec![("A".to_string(), "1".to_string())],
+    });
+    let mut results: Vec<ActionResult> = Vec::new();
+    super::apply::merge_env_result(
+        &mut results,
+        &action,
+        &ProviderRegistry::new(),
+        crate::reconciler::format_action_description(&action),
+        false,
+    );
+    let record = &results[0];
+    assert!(
+        record.success && record.skipped && !record.changed,
+        "a regeneration that changed nothing is a successful SKIP: {record:?}"
+    );
+    assert_eq!(
+        record.after_plan,
+        Some(AfterPlan::EnvSurface),
+        "and it is work the plan could not name: {record:?}"
+    );
+
+    let result = ApplyResult {
+        action_results: results,
+        status: ApplyStatus::Success,
+        apply_id: 1,
+        aborted: None,
+        planned_total: 0,
+        caveats: Vec::new(),
+    };
+    let outcomes = result.after_plan();
+    assert_eq!(
+        outcomes.iter().map(|o| o.state).collect::<Vec<_>>(),
+        vec![AfterPlanState::Skipped],
+        "the producer's own record settles Skipped, so no rollup can count it \
+         inside a converged total"
+    );
+}
+
 /// A session publish no manager can perform leaves NO `env-session` row behind,
 /// while its attempted siblings in the same apply record theirs.
 ///

@@ -239,7 +239,7 @@ its own role.
 ```console
 ✓ Apply complete — 1 action succeeded (0.4s wall)
 ✓ 3 env surfaces converged after the plan
-— 1 env surface changed nothing after the plan
+∅ 1 env surface changed nothing after the plan
 ✗ 1 onChange hook failed after the plan
 ```
 

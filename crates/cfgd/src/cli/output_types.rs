@@ -101,15 +101,11 @@ pub struct ApplyOutput {
     /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
     /// outside the plan's `totalActions`, exactly as the human line prices it.
     pub not_attempted: usize,
-    /// How many items of work the run did that its plan could not name — an env
-    /// surface a resolved secret or a late PATH directory forced it to rewrite,
-    /// an `onChange` hook. Outside the three counts above and outside the plan's
-    /// `totalActions`, exactly as the rollup's own lines price it; absent from
-    /// the wire on a run that did none. The whole class, not its successes: an
-    /// item that failed or changed nothing is in this count, and the rollup's
-    /// after-plan lines are where the three outcomes are told apart.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub after_plan: usize,
+    /// The work the run did that its plan could not name, split by outcome.
+    /// Flattened, so its three counts are siblings of the planned ones on the
+    /// wire.
+    #[serde(flatten)]
+    pub after_plan: AfterPlanCounts,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -133,7 +129,7 @@ impl ApplyOutput {
             skipped: 0,
             failed: 0,
             not_attempted: 0,
-            after_plan: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -148,9 +144,58 @@ impl ApplyOutput {
             skipped: 0,
             failed: 0,
             not_attempted: 0,
-            after_plan: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
+        }
+    }
+}
+
+/// The `cfgd apply` payload's account of work the run did that its plan could
+/// not name — an env surface a resolved secret or a late PATH directory forced
+/// it to rewrite, an `onChange` hook whose condition is whether this very run
+/// changed anything.
+///
+/// All three counts sit outside `total` and outside the three counts that
+/// partition it, because the header promised the plan's number before the run
+/// began. They are three fields rather than one because `-o json` emits no
+/// rollup: a consumer reading a lone class total cannot tell a surface that
+/// converged from one that changed nothing or failed, which is the very
+/// conflation this class exists to end. Each is omitted at zero, so a run that
+/// did no such work, or none that failed, puts nothing on the wire.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterPlanCounts {
+    /// Every such item, whatever its outcome.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan: usize,
+    /// Those that ran and changed nothing (a live-session publish no manager
+    /// performed, an env file already holding the bytes the run would write).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_skipped: usize,
+    /// Those that failed. A run can close `status: success` with one of these:
+    /// the plan's own actions all succeeded, and this class is outside them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_failed: usize,
+}
+
+impl AfterPlanCounts {
+    /// Count a finished run's after-plan class by outcome, off the ONE
+    /// derivation of that outcome (`ApplyResult::after_plan`), so the wire
+    /// cannot disagree with the rollup the same run printed.
+    pub fn of(result: &cfgd_core::reconciler::ApplyResult) -> Self {
+        use cfgd_core::reconciler::AfterPlanState;
+        let outcomes = result.after_plan();
+        Self {
+            after_plan: outcomes.len(),
+            after_plan_skipped: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Skipped)
+                .count(),
+            after_plan_failed: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Failed)
+                .count(),
         }
     }
 }
@@ -1480,7 +1525,7 @@ mod tests {
             skipped: 0,
             failed: 0,
             not_attempted: 0,
-            after_plan: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1503,7 +1548,7 @@ mod tests {
         let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
-            after_plan: 0,
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(99),
             total: 4,
@@ -1534,7 +1579,7 @@ mod tests {
         commits.insert("alpha".to_string(), "a-sha".to_string());
         commits.insert("mid".to_string(), "m-sha".to_string());
         let v = ApplyOutput {
-            after_plan: 0,
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(1),
             total: 1,

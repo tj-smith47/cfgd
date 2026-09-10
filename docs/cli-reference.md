@@ -169,15 +169,16 @@ nothing, failed), one line each at its own role.
 ```console
 ✓ Apply complete — 1 action succeeded (0.4s wall)
 ✓ 3 env surfaces converged after the plan
-— 1 env surface changed nothing after the plan
+∅ 1 env surface changed nothing after the plan
 ✓ 1 onChange hook ran after the plan
 ```
 
 `-o json` prices it the same way: `total` is the planned count, `succeeded`,
-`skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it,
-and `afterPlan` is absent on a run that did none. `afterPlan` is the whole class,
-failures and no-change items included; the rollup's lines above are where the
-three outcomes are told apart.
+`skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it.
+`afterPlan` is the whole class, and because that mode prints no rollup the split
+travels with it as `afterPlanSkipped` and `afterPlanFailed`; the remainder
+converged. Each of the three is absent on a run that had none of that outcome, so
+a clean apply carries no after-plan field at all.
 
 #### Unmanaged files at a managed target
 

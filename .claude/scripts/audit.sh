@@ -960,6 +960,10 @@ ALLOWED_FN_PAIRS=(
     # slice of sibling fields rather than a single source; a fourth unrelated
     # `of`. `Tier::of` still keeps the budget.
     "of crates/cfgd/src/cli/explain/mod.rs"
+    # `AfterPlanCounts::of` is that convention once more, over a finished
+    # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
+    # after-plan class into its wire counts.
+    "of crates/cfgd/src/cli/output_types.rs"
     "role crates/cfgd/src/cli/status.rs"
     "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
     "report crates/cfgd-core/src/reconciler/sidecar.rs"

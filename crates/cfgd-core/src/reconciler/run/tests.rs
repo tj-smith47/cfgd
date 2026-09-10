@@ -499,6 +499,10 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             let tell = state.clause_tell(subject);
             // `changed nothing` and `failed` word themselves per OUTCOME, so two
             // members claim one tell; the line still proves that state's role.
+            // What keeps the shared tell safe is `after_plan_clauses` itself: a
+            // branchless double loop over the same two `ALL` arrays, so no
+            // member's clause can be dropped or reworded without editing the
+            // emitter, and every pair rendered below is role-checked.
             if !classes.iter().any(|(word, _)| *word == tell) {
                 classes.push((tell, state.clause_role()));
             }
@@ -990,17 +994,24 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
 /// One run, all three outcomes, through the real render path: each states itself
 /// on its own line at its own role, and the converged line counts only what
 /// converged.
+///
+/// No two counts in this fixture are equal — 4 succeeded and 1 failed of 5
+/// planned, against 2 converged, 1 unchanged and 3 failed surfaces — so a clause
+/// built with a sibling's count, or a planned count reaching a class line, has
+/// nowhere to hide. Both grammatical numbers are exercised with them.
 #[test]
 fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
-    let mut result = apply_result(1, 0, ApplyStatus::Partial, 1);
-    for state in [
-        AfterPlanState::Performed,
-        AfterPlanState::Skipped,
-        AfterPlanState::Failed,
+    let mut result = apply_result(4, 1, ApplyStatus::Partial, 5);
+    for (state, count) in [
+        (AfterPlanState::Performed, 2),
+        (AfterPlanState::Skipped, 1),
+        (AfterPlanState::Failed, 3),
     ] {
-        result
-            .action_results
-            .push(after_plan_result(AfterPlan::EnvSurface, state));
+        for _ in 0..count {
+            result
+                .action_results
+                .push(after_plan_result(AfterPlan::EnvSurface, state));
+        }
     }
     let tally = result.tally();
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -1017,11 +1028,11 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
         ),
         (
             AfterPlanState::Performed,
-            "1 env surface converged after the plan",
+            "2 env surfaces converged after the plan",
         ),
         (
             AfterPlanState::Failed,
-            "1 env surface failed after the plan",
+            "3 env surfaces failed after the plan",
         ),
     ] {
         let line = out
@@ -1035,15 +1046,23 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
         );
     }
     assert!(
-        !out.contains("2 env surfaces converged") && !out.contains("3 env surfaces converged"),
-        "the converged line counts only what converged: {out:?}"
+        !out.contains("3 env surfaces converged") && !out.contains("6 env surfaces converged"),
+        "the converged line counts what converged, not what also ran or the \
+         whole class: {out:?}"
     );
+    let mut states: Vec<(AfterPlanState, usize)> = Vec::new();
+    for state in tally.after_plan.iter().map(|o| o.state) {
+        match states.last_mut() {
+            Some((last, n)) if *last == state => *n += 1,
+            _ => states.push((state, 1)),
+        }
+    }
     assert_eq!(
-        tally.after_plan.iter().map(|o| o.state).collect::<Vec<_>>(),
+        states,
         vec![
-            AfterPlanState::Performed,
-            AfterPlanState::Skipped,
-            AfterPlanState::Failed
+            (AfterPlanState::Performed, 2),
+            (AfterPlanState::Skipped, 1),
+            (AfterPlanState::Failed, 3)
         ],
         "each line above came from a state read off its own record, not guessed \
          from its success flag"
@@ -1052,9 +1071,9 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     // cannot read as converged on the journal line either.
     assert_eq!(
         outcome_counts(&tally),
-        "1 action succeeded, 1 env surface converged after the plan, \
+        "4 actions succeeded, 2 env surfaces converged after the plan, \
          1 env surface changed nothing after the plan, \
-         1 env surface failed after the plan"
+         3 env surfaces failed after the plan"
     );
 }
 
