@@ -128,6 +128,13 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     // directory this daemon cannot traverse.
     crate::set_file_permissions_nofollow(&dir, 0o700)
         .map_err(|e| refuse(format!("chmod parent {}: {}", dir.posix(), e)))?;
+    // This read FOLLOWS, which two guards established above make safe. No
+    // untrusted account can swap a component of this path, every shape that
+    // would let one having been refused by the walk; and a symlink AT the leaf
+    // was refused either by the kind check near the top of this function (a leaf
+    // that already stood there) or by the no-follow chmod immediately above (one
+    // swapped in after this call created it), so the inode this stats is the
+    // inode that was chmodded.
     let meta = std::fs::metadata(&dir)
         .map_err(|e| refuse(format!("stat parent {}: {}", dir.posix(), e)))?;
     let mode = meta.permissions().mode() & 0o777;
@@ -215,8 +222,11 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
 ///    at every component this walk merely looks THROUGH, and refused at the one
 ///    component `ensure_owner_private_dir` goes on to chmod, where a path-based
 ///    mutation would land on the target instead of on the path as given. This
-///    walk still follows a leaf link and judges what it points at, because that
-///    verdict is what the caller's own refusal rests on.
+///    walk still follows a leaf link and judges what it points at, which the
+///    caller's blanket refusal does not depend on. What running FIRST buys is
+///    the reason that applies: a leaf link whose TARGET escapes these three
+///    rules is refused by the rule that names the escape, rather than by a kind
+///    check that would tell the operator only that their leaf is a link.
 /// 3. WRITABILITY BY OTHERS: group- or other-writable is refused unless the
 ///    sticky bit is set. `/tmp` is 1777 and is a legitimate runtime root, and the
 ///    sticky bit is precisely what makes a world-writable directory unswappable:
@@ -240,12 +250,15 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
     // rather than a string only this walk ever assembled.
     let mut composed_from: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
     // One pass per link component. The bound's only job is to terminate this
-    // walk: it sits above any chain a unix will resolve, so a real cycle is
-    // refused by the kernel's own `ELOOP` at the `mkdir` or the chmod before
-    // this counter runs out. It deliberately cites no figure, because the limit
-    // has no single value to cite: on one host the kernel's resolution cap,
-    // glibc's `MAXSYMLINKS` and POSIX's `SYMLOOP_MAX` answer three different
-    // things, and a number written here would be a fact nobody maintains.
+    // walk: it sits above any chain a unix will resolve, so a non-cyclic chain
+    // too long for the host is refused by the kernel's own `ELOOP` at the
+    // `mkdir` or the chmod, while a genuine CYCLE reaches neither mutation (this
+    // walk runs before both and follows nothing itself) and is what this counter
+    // terminates, at the refusal below it. It deliberately cites no figure,
+    // because the limit has no single value to cite: on one host the kernel's
+    // resolution cap, glibc's `MAXSYMLINKS` and POSIX's `SYMLOOP_MAX` answer
+    // three different things, and a number written here would be a fact nobody
+    // maintains.
     for _ in 0..64 {
         if path
             .components()
@@ -713,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_owner_private_dir_refuses_world_traversable_after_chmod_recovery() {
+    fn ensure_owner_private_dir_refuses_a_regular_file_standing_in_for_the_directory() {
         // A regular file standing where the socket's directory belongs is the
         // leaf, so the kind check settles it before anything is created or
         // chmodded: the no-follow chmod would open a regular file happily and
@@ -1172,15 +1185,38 @@ mod tests {
     /// unattributed tests create in parallel, several of which assert a mode.
     /// A child's umask is its own, and the directory it leaves behind on the
     /// shared filesystem is what this process asserts against.
+    ///
+    /// The residual no shape closes: libtest offers no re-entry channel that is
+    /// not ambient, so the child can only be selected by environment and a
+    /// process inheriting one by accident takes the branch. What the two
+    /// variables and the restored mask buy is that such an entry is LOUD rather
+    /// than a vacuous pass, and that the raise never outlives the one `mkdir`.
     #[test]
     fn the_leaf_chmod_survives_a_umask_that_withholds_the_owner_bits() {
         const TEST_PATH: &str = "daemon::health_ipc::tests::the_leaf_chmod_survives_a_umask_that_withholds_the_owner_bits";
         const DIR_VAR: &str = "CFGD_UMASK_PIN_DIR";
+        const TEST_VAR: &str = "CFGD_UMASK_PIN_TEST";
 
         if let Ok(dir) = std::env::var(DIR_VAR) {
-            nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o377));
-            ensure_owner_private_dir(std::path::Path::new(&dir))
-                .expect("the child must create the socket directory under the raised umask");
+            // Two variables rather than one, because this branch raises the
+            // process umask and a shell exporting a single familiar name would
+            // have the PARENT do that to every test creating a file beside it.
+            // The second carries this test's own path, which nothing but the
+            // parent's `Command::env` below writes, and a mismatch PANICS: an
+            // early return would leave the pin green having asserted nothing.
+            assert_eq!(
+                std::env::var(TEST_VAR).ok().as_deref(),
+                Some(TEST_PATH),
+                "{DIR_VAR} is set without a matching {TEST_VAR}, so this process was entered \
+                 as the umask child by something other than its own parent"
+            );
+            // `umask(2)` answers with the mask it replaced, so the raise is handed
+            // back before this branch returns and cannot reach a file another
+            // test creates.
+            let prior = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o377));
+            let created = ensure_owner_private_dir(std::path::Path::new(&dir));
+            nix::sys::stat::umask(prior);
+            created.expect("the child must create the socket directory under the raised umask");
             return;
         }
 
@@ -1192,6 +1228,7 @@ mod tests {
             // Per-child `env` rather than a process mutation: the parent's own
             // environment is never touched.
             .env(DIR_VAR, &dir)
+            .env(TEST_VAR, TEST_PATH)
             .output()
             .expect("the test binary must be re-runnable as a child");
         let stdout = String::from_utf8_lossy(&out.stdout);

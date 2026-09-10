@@ -18976,15 +18976,15 @@ mod ipc_socket_security {
     /// so root can mkdir under the `/proc` mountpoint and the negative path
     /// never fires). The test suite frequently runs as root in CI/devcontainers,
     /// so the mode-check arm (`mode & 0o077 != 0`) cannot be exercised
-    /// end-to-end — root bypasses chmod, so the helper always succeeds in
+    /// end-to-end: root bypasses chmod, so the helper always succeeds in
     /// lowering 0o755 to 0o700 before the re-stat. The create-failure arm here
     /// is the negative path that fires deterministically regardless of uid; the
-    /// owner-private predicate itself is unit-tested in the sibling
-    /// `owner_private_predicate_rejects_world_readable_modes` test.
+    /// mask that arm would have used is mirrored as arithmetic in the sibling
+    /// `owner_private_predicate_rejects_world_readable_modes`.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
-    fn bind_socket_refuses_world_readable_parent_dir() {
+    fn ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file() {
         use crate::daemon::health_ipc::ensure_owner_private_dir;
         let tmp = tempfile::tempdir().unwrap();
         let not_a_dir = tmp.path().join("not-a-dir");
@@ -19187,10 +19187,14 @@ mod ipc_socket_security {
         );
     }
 
-    /// Pure unit test of the mode-check predicate `ensure_owner_private_dir`
-    /// uses to refuse world-readable parents. Pairs with the create-failure
-    /// test above to cover the second negative arm without relying on uid-0
-    /// chmod behaviour. Mirrors the `mode & 0o077 != 0` check.
+    /// Mirrors the `mode & 0o077 != 0` mask `ensure_owner_private_dir` refuses a
+    /// world-readable parent with, over the modes a host can actually present.
+    ///
+    /// It calls the helper with nothing, so the arm itself stays unentered: under
+    /// the uid-0 the suite frequently runs as, the chmod always lowers 0o755 to
+    /// 0o700 before the re-stat reads it, and the sibling
+    /// `ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file`
+    /// is the negative arm that does fire at any uid.
     #[cfg(unix)]
     #[test]
     fn owner_private_predicate_rejects_world_readable_modes() {
