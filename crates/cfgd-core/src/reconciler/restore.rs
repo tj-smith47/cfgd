@@ -524,7 +524,9 @@ mod tests {
         let target = tmp.path().join("linked-target.txt");
         std::os::unix::fs::symlink("gone.txt", &target).unwrap();
 
-        let mut bk = record(&target, b"original", Some(0o600));
+        // Not 0o600: that is the mode the temp file already carries, so a pin
+        // asserting it stays green with the chmod deleted.
+        let mut bk = record(&target, b"original", Some(0o640));
         bk.was_symlink = true;
         bk.symlink_target = Some("gone.txt".to_string());
 
@@ -541,7 +543,7 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(
-            mode, 0o600,
+            mode, 0o640,
             "the recorded mode lands on the file the write left behind"
         );
         assert!(

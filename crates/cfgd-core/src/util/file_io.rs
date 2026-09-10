@@ -134,8 +134,11 @@ pub(crate) fn resolve_write_target(
 /// a second `stat`: canonicalization and the check are separate syscalls, and
 /// `O_NOFOLLOW` makes a final component swapped to a symlink in that window an
 /// `ELOOP` error instead of a silent hop to a third file. The rename that
-/// follows never re-traverses a link either — `rename(2)` operates on the final
-/// component itself — so the path checked here is the path written.
+/// follows reaches the same FINAL component directly — `rename(2)` does not
+/// resolve a link there — so the final component checked here is the final
+/// component written. An intermediate DIRECTORY swapped for a link in that
+/// window is re-traversed by this check's own open and by the rename alike,
+/// which is the window [`resolve_write_target`] states.
 #[cfg(unix)]
 fn guard_resolved_owner(
     link: &std::path::Path,
