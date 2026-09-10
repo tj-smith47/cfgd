@@ -158,10 +158,11 @@ pub fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Res
 /// outright (`ELOOP`), and the mode is set through that descriptor, so a swap
 /// after the open cannot move it either.
 ///
-/// A symlink at `path` is an error, never a follow. That is the point, so a
-/// caller whose target legitimately IS a symlink (a `strategy: Symlink` entry
-/// whose declared mode belongs to the file it points at) keeps
-/// [`set_file_permissions`] and says why.
+/// A symlink at `path` is an error, never a follow. That is the point: a caller
+/// whose declared mode belongs to the file a link points at names THAT file
+/// (a `strategy: Symlink` entry names its source, a rollback the destination it
+/// recorded) and still chmods it here, rather than letting the chmod resolve a
+/// link whose owner may have re-pointed it.
 ///
 /// No-op on Windows, like [`set_file_permissions`].
 #[cfg(unix)]

@@ -214,9 +214,19 @@ fn restore_through_link(
     }
     // The recorded mode is the resolved file's, and `link_target` IS that file:
     // naming it keeps the chmod off the link, which whoever owns the target's
-    // directory can re-point between the write above and this call.
+    // directory can re-point between the write above and this call. The recorded
+    // value is whatever `read_link` returned, so a relative destination (stow's
+    // default shape) resolves against the LINK's own directory; against the
+    // process cwd it would either miss or move a same-named stranger's mode.
+    let chmod_path = if link_target.is_absolute() {
+        link_target.to_path_buf()
+    } else {
+        target
+            .parent()
+            .map_or_else(|| link_target.to_path_buf(), |p| p.join(link_target))
+    };
     if let Some(mode) = bk.permissions
-        && let Err(e) = crate::set_file_permissions_nofollow(link_target, mode)
+        && let Err(e) = crate::set_file_permissions_nofollow(&chmod_path, mode)
     {
         printer.status_simple(
             Role::Warn,
@@ -422,6 +432,44 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "rollback through a link must restore the destination's mode"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_link_applies_recorded_permissions_to_a_relative_destination() {
+        // `read_link` hands back whatever the link stores, and stow's default
+        // shape is relative, so the recorded destination is too. Resolved
+        // against the process cwd it names either nothing or a same-named
+        // stranger; only the link's own directory answers.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_file = tmp.path().join("real-target.txt");
+        std::fs::write(&real_file, b"current").unwrap();
+        std::fs::set_permissions(&real_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let link = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink("real-target.txt", &link).unwrap();
+
+        let mut bk = record(&link, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some("real-target.txt".to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&link, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "rollback through a link must leave the link intact"
+        );
+        assert_eq!(std::fs::read(&link).unwrap(), b"original");
+        let mode = std::fs::metadata(&real_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a relative destination resolves against the link's directory"
         );
     }
 
