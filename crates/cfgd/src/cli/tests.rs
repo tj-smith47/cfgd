@@ -10710,7 +10710,7 @@ fn action_type_str_file_variants() {
             target: "/b".into(),
             mode: 0o644,
             origin: "local".into(),
-            follow: false,
+            chmod_path: None,
         })),
         "chmod"
     );
@@ -22310,7 +22310,7 @@ fn action_path_file_permissions() {
         target: PathBuf::from("/home/user/.ssh/config"),
         mode: 0o600,
         origin: "profile".into(),
-        follow: false,
+        chmod_path: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.ssh/config");

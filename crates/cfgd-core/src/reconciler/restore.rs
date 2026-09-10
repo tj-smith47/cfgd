@@ -212,10 +212,11 @@ fn restore_through_link(
         );
         return RestoreOutcome::Failed;
     }
-    // follow-ok: the recorded mode is the resolved file's, and a chmod through
-    // the link lands on that same resolved file.
+    // The recorded mode is the resolved file's, and `link_target` IS that file:
+    // naming it keeps the chmod off the link, which whoever owns the target's
+    // directory can re-point between the write above and this call.
     if let Some(mode) = bk.permissions
-        && let Err(e) = crate::set_file_permissions(target, mode)
+        && let Err(e) = crate::set_file_permissions_nofollow(link_target, mode)
     {
         printer.status_simple(
             Role::Warn,

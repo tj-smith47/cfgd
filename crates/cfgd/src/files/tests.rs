@@ -1715,7 +1715,13 @@ fn check_permissions_drift_detected() {
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let action = fm
-        .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
+        .check_permissions(
+            &target,
+            &managed,
+            &resolved.merged,
+            FileStrategy::Copy,
+            None,
+        )
         .unwrap();
     assert!(action.is_some());
     assert!(matches!(
@@ -1758,21 +1764,27 @@ fn check_permissions_no_drift() {
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let action = fm
-        .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
+        .check_permissions(
+            &target,
+            &managed,
+            &resolved.merged,
+            FileStrategy::Copy,
+            None,
+        )
         .unwrap();
     assert!(action.is_none());
 }
 
-/// The planned chmod follows a link for a Symlink entry and for no other
-/// strategy.
+/// The planned chmod names the source for a Symlink entry and the target for
+/// every other strategy.
 ///
-/// The decision belongs to the planner, which holds the resolved strategy; an
-/// executor probing the target at apply time would lose the race against whoever
-/// owns the directory. Every strategy but Symlink deploys a regular file, so a
-/// link found at the target is an attempt to aim the chmod elsewhere.
+/// The decision belongs to the planner, which holds the resolved strategy and
+/// the source path; an executor probing the target at apply time would lose the
+/// race against whoever owns the directory. Every strategy but Symlink deploys a
+/// regular file at the target, so the declared mode is that file's.
 #[test]
 #[cfg(unix)]
-fn a_chmod_is_planned_to_follow_a_link_for_a_symlink_entry_alone() {
+fn a_chmod_is_planned_against_the_source_for_a_symlink_entry_alone() {
     for strategy in [
         FileStrategy::Copy,
         FileStrategy::Symlink,
@@ -1809,19 +1821,23 @@ fn a_chmod_is_planned_to_follow_a_link_for_a_symlink_entry_alone() {
             },
         );
 
+        let source = config_dir.join("files/secret.txt");
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let action = fm
-            .check_permissions(&target, &managed, &resolved.merged, strategy)
+            .check_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                strategy,
+                Some(source.as_path()),
+            )
             .unwrap()
             .expect("the declared mode drifts, so a chmod is planned");
-        let FileAction::SetPermissions { follow, .. } = action else {
+        let FileAction::SetPermissions { chmod_path, .. } = action else {
             panic!("a permissions check plans a chmod, got {action:?}");
         };
-        assert_eq!(
-            follow,
-            strategy == FileStrategy::Symlink,
-            "{strategy:?} plans follow: {follow}"
-        );
+        let expected = (strategy == FileStrategy::Symlink).then(|| source.clone());
+        assert_eq!(chmod_path, expected, "{strategy:?} plans {chmod_path:?}");
     }
 }
 
@@ -1835,7 +1851,7 @@ fn set_permissions_changes_mode() {
     fs::write(&file, "data").unwrap();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
 
-    set_permissions(&file, 0o600, false).unwrap();
+    set_permissions(&file, 0o600).unwrap();
 
     let metadata = fs::metadata(&file).unwrap();
     assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
@@ -1850,7 +1866,7 @@ fn set_permissions_nonexistent_path_returns_io_err_not_permission_denied() {
     // ErrorKind::PermissionDenied, so the FileError::Io arm fires.
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nope.txt");
-    let err = set_permissions(&missing, 0o600, false).expect_err("ENOENT must error");
+    let err = set_permissions(&missing, 0o600).expect_err("ENOENT must error");
     let msg = err.to_string();
     assert!(
         !msg.contains("PermissionDenied"),
@@ -3514,7 +3530,7 @@ fn apply_set_permissions_changes_mode() {
         target: target.clone(),
         mode: 0o600,
         origin: "local".to_string(),
-        follow: false,
+        chmod_path: None,
     }];
     let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
@@ -3525,9 +3541,9 @@ fn apply_set_permissions_changes_mode() {
 
 /// A Copy entry's chmod refuses a symlink planted at its target.
 ///
-/// The planner says `follow: false` for every strategy but Symlink, so whoever
-/// owns the target's directory cannot aim an elevated `chmod` at another file by
-/// replacing what cfgd wrote.
+/// The planner leaves `chmod_path` empty for every strategy but Symlink, and the
+/// executor's only chmod refuses a link, so whoever owns the target's directory
+/// cannot aim an elevated `chmod` at another file by replacing what cfgd wrote.
 #[test]
 #[cfg(unix)]
 fn a_copy_entrys_chmod_refuses_a_symlink_planted_at_its_target() {
@@ -3545,7 +3561,7 @@ fn a_copy_entrys_chmod_refuses_a_symlink_planted_at_its_target() {
         target,
         mode: 0o644,
         origin: "local".to_string(),
-        follow: false,
+        chmod_path: None,
     }];
     let printer = test_printer();
     let result =
@@ -3556,14 +3572,16 @@ fn a_copy_entrys_chmod_refuses_a_symlink_planted_at_its_target() {
     assert_eq!(mode, 0o600, "the link's target must keep its mode");
 }
 
-/// A Symlink entry's chmod still moves the mode of the file it points at.
+/// A Symlink entry's chmod moves the mode of the source it names, never of
+/// whatever the link at its target resolves to.
 ///
-/// That is the contract: the drift check compares the declared mode against the
-/// SOURCE's mode, and Linux has no `lchmod`, so a chmod on the link itself would
-/// leave the entry drifted forever.
+/// The declared mode belongs to the source: the drift check compares against
+/// THAT file's mode, and Linux has no `lchmod`. Naming it outright is what closes
+/// the window, so a decoy planted behind the link keeps its own mode even though
+/// the link at `target` points at it.
 #[test]
 #[cfg(unix)]
-fn a_symlink_entrys_chmod_moves_the_mode_of_the_file_it_points_at() {
+fn a_symlink_entrys_chmod_moves_the_mode_of_the_source_it_names() {
     let dir = tempfile::tempdir().unwrap();
     let resolved = make_resolved_profile(vec![], FilesSpec::default());
     let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
@@ -3571,20 +3589,28 @@ fn a_symlink_entrys_chmod_moves_the_mode_of_the_file_it_points_at() {
     let source = dir.path().join("key.txt");
     fs::write(&source, "secret").unwrap();
     fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+    let decoy = dir.path().join("id_ed25519");
+    fs::write(&decoy, "private").unwrap();
+    fs::set_permissions(&decoy, fs::Permissions::from_mode(0o600)).unwrap();
     let target = dir.path().join("linked.txt");
-    std::os::unix::fs::symlink(&source, &target).unwrap();
+    std::os::unix::fs::symlink(&decoy, &target).unwrap();
 
     let actions = vec![FileAction::SetPermissions {
         target,
-        mode: 0o600,
+        mode: 0o640,
         origin: "local".to_string(),
-        follow: true,
+        chmod_path: Some(source.clone()),
     }];
     let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let mode = fs::metadata(&source).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "the source file's mode must move");
+    assert_eq!(mode, 0o640, "the named source file's mode must move");
+    let decoy_mode = fs::metadata(&decoy).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        decoy_mode, 0o600,
+        "the file the planted link resolves to must keep its mode"
+    );
 }
 
 #[test]

@@ -985,11 +985,15 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
 /// This walk judges the `cfgd` binary's system and file engines. The daemon's
 /// reconciler is judged by its twin in `cfgd-core`, because the two crates
 /// compile separately and neither walk can read the other's sources.
+///
+/// The floor counts EVERY chmod the walk read, follow-capable or not: the
+/// follow-capable sites are the ones this rule is driving to zero, so flooring
+/// on those alone would turn a fully converted engine into a failure.
 #[test]
 fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_safe() {
     let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut offenders: Vec<String> = Vec::new();
-    let mut sites = 0usize;
+    let mut chmods = 0usize;
     let mut files = 0usize;
     for dir in ["src/system", "src/files"] {
         let root = crate_root.join(dir);
@@ -1004,12 +1008,17 @@ fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_
             let rel = cfgd_core::to_posix_string(path.strip_prefix(crate_root).unwrap_or(&path));
             let lines: Vec<&str> = body.lines().collect();
             for (idx, line) in lines.iter().enumerate() {
+                if line.contains("set_file_permissions")
+                    || line.contains("widen_file_permissions")
+                    || line.contains("fs::set_permissions(")
+                {
+                    chmods += 1;
+                }
                 if !(line.contains("set_file_permissions(")
                     || line.contains("fs::set_permissions("))
                 {
                     continue;
                 }
-                sites += 1;
                 if lines[idx.saturating_sub(3)..idx]
                     .iter()
                     .any(|l| l.contains("follow-ok:"))
@@ -1027,8 +1036,8 @@ fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_
         }
     }
     assert!(
-        files >= 15 && sites >= 2,
-        "the walk read {files} files and {sites} chmods, too few to be the population"
+        files >= 15 && chmods >= 4,
+        "the walk read {files} files and {chmods} chmods, too few to be the population"
     );
     assert!(
         offenders.is_empty(),

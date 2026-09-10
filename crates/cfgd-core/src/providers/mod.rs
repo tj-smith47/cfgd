@@ -1246,17 +1246,21 @@ pub enum FileAction {
         target: PathBuf,
         mode: u32,
         origin: String,
-        /// Whether the chmod resolves a symlink at `target`.
+        /// The file whose mode moves, when it is not `target` itself.
         ///
-        /// True for a `strategy: Symlink` entry alone, where the declared mode
-        /// belongs to the source file the link points at and the drift check
-        /// compares against that file's mode, so chmodding the link would leave
-        /// the entry drifted forever (Linux has no `lchmod`). Every other
-        /// strategy deploys a regular file, and following a link there would let
-        /// whoever owns the target's directory aim an elevated chmod at any file
-        /// on the machine. The planner decides it from the resolved strategy: a
-        /// probe at apply time would lose that race.
-        follow: bool,
+        /// `Some(source)` for a `strategy: Symlink` entry, whose declared mode
+        /// belongs to the source file the link points at: the drift check
+        /// compares against that file's mode, and Linux has no `lchmod`, so a
+        /// chmod on the link would leave the entry drifted forever. `None` for
+        /// every other strategy, which deploys a regular file at `target`.
+        ///
+        /// Either way the chmod never resolves a link at `target`, because
+        /// whoever owns that directory could replace what cfgd deployed and aim
+        /// an elevated chmod at any file on the machine. The planner names the
+        /// path from the resolved strategy: a probe at apply time would lose
+        /// that race.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chmod_path: Option<PathBuf>,
     },
     Skip {
         target: PathBuf,

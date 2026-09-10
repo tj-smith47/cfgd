@@ -242,9 +242,13 @@ impl super::CfgdFileManager {
                         }
                     });
                 }
-                if let Some(action) =
-                    self.check_permissions(&target_path, managed, profile, FileStrategy::Patch)?
-                {
+                if let Some(action) = self.check_permissions(
+                    &target_path,
+                    managed,
+                    profile,
+                    FileStrategy::Patch,
+                    None,
+                )? {
                     actions.push(action);
                 }
                 continue;
@@ -305,9 +309,13 @@ impl super::CfgdFileManager {
                 let is_current = is_linked_to(&source_path, &target_path, strategy);
 
                 if is_current {
-                    if let Some(action) =
-                        self.check_permissions(&target_path, managed, profile, strategy)?
-                    {
+                    if let Some(action) = self.check_permissions(
+                        &target_path,
+                        managed,
+                        profile,
+                        strategy,
+                        Some(&source_path),
+                    )? {
                         actions.push(action);
                     }
                 } else if target_path.exists() || target_path.symlink_metadata().is_ok() {
@@ -320,6 +328,15 @@ impl super::CfgdFileManager {
                         source_hash: None,
                         patch: None,
                     });
+                    if let Some(action) = self.planned_permissions(
+                        &target_path,
+                        managed,
+                        profile,
+                        strategy,
+                        Some(&source_path),
+                    )? {
+                        actions.push(action);
+                    }
                 } else {
                     actions.push(FileAction::Create {
                         source: source_path.clone(),
@@ -329,9 +346,13 @@ impl super::CfgdFileManager {
                         source_hash: None,
                         patch: None,
                     });
-                    if let Some(action) =
-                        self.check_permissions(&target_path, managed, profile, strategy)?
-                    {
+                    if let Some(action) = self.check_permissions(
+                        &target_path,
+                        managed,
+                        profile,
+                        strategy,
+                        Some(&source_path),
+                    )? {
                         actions.push(action);
                     }
                 }
@@ -356,9 +377,13 @@ impl super::CfgdFileManager {
                     })?;
 
                 if rendered_content == target_content {
-                    if let Some(action) =
-                        self.check_permissions(&target_path, managed, profile, strategy)?
-                    {
+                    if let Some(action) = self.check_permissions(
+                        &target_path,
+                        managed,
+                        profile,
+                        strategy,
+                        Some(&source_path),
+                    )? {
                         actions.push(action);
                     }
                 } else {
@@ -379,9 +404,13 @@ impl super::CfgdFileManager {
                         patch: None,
                     });
 
-                    if let Some(action) =
-                        self.check_permissions(&target_path, managed, profile, strategy)?
-                    {
+                    if let Some(action) = self.check_permissions(
+                        &target_path,
+                        managed,
+                        profile,
+                        strategy,
+                        Some(&source_path),
+                    )? {
                         actions.push(action);
                     }
                 }
@@ -396,9 +425,13 @@ impl super::CfgdFileManager {
                     patch: None,
                 });
 
-                if let Some(action) =
-                    self.check_permissions(&target_path, managed, profile, strategy)?
-                {
+                if let Some(action) = self.check_permissions(
+                    &target_path,
+                    managed,
+                    profile,
+                    strategy,
+                    Some(&source_path),
+                )? {
                     actions.push(action);
                 }
             }
@@ -789,16 +822,84 @@ impl super::CfgdFileManager {
 
     /// Check if permissions need to be changed for a target file.
     ///
-    /// `strategy` is the entry's RESOLVED strategy, which decides whether the
-    /// chmod may follow a link at the target: see
-    /// [`cfgd_core::providers::FileAction::SetPermissions::follow`].
+    /// `strategy` and `source` name the file the declared mode is FOR: see
+    /// [`cfgd_core::providers::FileAction::SetPermissions::chmod_path`]. A target
+    /// that does not exist yet has no mode to compare against, so the chmod is
+    /// planned from the declaration alone, as [`Self::planned_permissions`] does
+    /// for a target this run is about to re-link.
     pub(super) fn check_permissions(
         &self,
         target: &Path,
         managed: &ManagedFileSpec,
         profile: &MergedProfile,
         strategy: FileStrategy,
+        source: Option<&Path>,
     ) -> Result<Option<FileAction>> {
+        let Some(desired_mode) = self.declared_mode(target, managed, profile)? else {
+            return Ok(None);
+        };
+
+        if target.exists() {
+            let metadata = fs::metadata(target).map_err(|e| FileError::Io {
+                path: target.to_path_buf(),
+                source: e,
+            })?;
+            if cfgd_core::file_permissions_mode(&metadata) == Some(desired_mode) {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(Self::set_permissions_action(
+            target,
+            desired_mode,
+            strategy,
+            source,
+        )))
+    }
+
+    /// The chmod a declared mode calls for, without reading the target's current
+    /// one.
+    ///
+    /// What sits at the target now is the OLD destination of a link this run
+    /// replaces, so its mode answers nothing about the entry: comparing against
+    /// it would enforce the declaration one run late.
+    pub(super) fn planned_permissions(
+        &self,
+        target: &Path,
+        managed: &ManagedFileSpec,
+        profile: &MergedProfile,
+        strategy: FileStrategy,
+        source: Option<&Path>,
+    ) -> Result<Option<FileAction>> {
+        Ok(self
+            .declared_mode(target, managed, profile)?
+            .map(|mode| Self::set_permissions_action(target, mode, strategy, source)))
+    }
+
+    /// The chmod action for a declared mode, naming the file that mode is for.
+    fn set_permissions_action(
+        target: &Path,
+        mode: u32,
+        strategy: FileStrategy,
+        source: Option<&Path>,
+    ) -> FileAction {
+        FileAction::SetPermissions {
+            target: target.to_path_buf(),
+            mode,
+            origin: LOCAL_LAYER.to_string(),
+            chmod_path: source
+                .filter(|_| matches!(strategy, FileStrategy::Symlink))
+                .map(Path::to_path_buf),
+        }
+    }
+
+    /// The octal mode this entry declares for `target`, parsed.
+    fn declared_mode(
+        &self,
+        target: &Path,
+        managed: &ManagedFileSpec,
+        profile: &MergedProfile,
+    ) -> Result<Option<u32>> {
         let target_str = target.display().to_string();
 
         // Per-file permissions take priority (intended for managed files).
@@ -830,38 +931,15 @@ impl super::CfgdFileManager {
             }
             #[cfg(not(windows))]
             {
-                let desired_mode = cfgd_core::parse_octal_mode(mode_str).map_err(|_| {
-                    FileError::TemplateError {
-                        path: target.to_path_buf(),
-                        message: format!("invalid permission mode: {}", mode_str),
-                    }
-                })?;
-
-                if target.exists() {
-                    let metadata = fs::metadata(target).map_err(|e| FileError::Io {
-                        path: target.to_path_buf(),
-                        source: e,
-                    })?;
-                    let current_mode = cfgd_core::file_permissions_mode(&metadata);
-
-                    if current_mode != Some(desired_mode) {
-                        return Ok(Some(FileAction::SetPermissions {
-                            target: target.to_path_buf(),
-                            mode: desired_mode,
-                            origin: LOCAL_LAYER.to_string(),
-                            follow: matches!(strategy, FileStrategy::Symlink),
-                        }));
-                    }
-                } else {
-                    // Target doesn't exist yet (will be created); emit SetPermissions
-                    // so that apply sets the correct mode after creating the file.
-                    return Ok(Some(FileAction::SetPermissions {
-                        target: target.to_path_buf(),
-                        mode: desired_mode,
-                        origin: LOCAL_LAYER.to_string(),
-                        follow: matches!(strategy, FileStrategy::Symlink),
-                    }));
-                }
+                return cfgd_core::parse_octal_mode(mode_str)
+                    .map(Some)
+                    .map_err(|_| {
+                        FileError::TemplateError {
+                            path: target.to_path_buf(),
+                            message: format!("invalid permission mode: {}", mode_str),
+                        }
+                        .into()
+                    });
             }
         }
 
@@ -1440,6 +1518,67 @@ mod tests {
         );
     }
 
+    /// A Symlink entry whose target points somewhere else plans the chmod in the
+    /// SAME run that re-links it.
+    ///
+    /// The mode the old destination happens to carry answers nothing about the
+    /// entry, so the chmod is planned from the declaration alone. Reading the
+    /// current mode here would enforce a declared `permissions:` one run late
+    /// whenever the stale destination already matched it.
+    #[test]
+    #[cfg(unix)]
+    fn plan_symlink_relink_with_declared_permissions_plans_the_chmod_in_the_same_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let src = files_dir.join("key.txt");
+        fs::write(&src, "secret").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
+
+        // The target is a link to some OTHER file whose mode already matches the
+        // declaration: the old shape planned no chmod at all here.
+        let stale = config_dir.join("stale.txt");
+        fs::write(&stale, "stale").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o600)).unwrap();
+        let target = config_dir.join("output").join("key.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&stale, &target).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/key.txt",
+                target.clone(),
+                Some(FileStrategy::Symlink),
+            )],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(
+            actions.len(),
+            2,
+            "expected Update + SetPermissions: {actions:?}"
+        );
+        assert!(
+            matches!(&actions[0], FileAction::Update { target: t, .. } if *t == target),
+            "first action should re-link the target, got: {actions:?}"
+        );
+        assert!(
+            matches!(
+                &actions[1],
+                FileAction::SetPermissions { target: t, mode: 0o600, chmod_path: Some(c), .. }
+                    if *t == target && *c == src
+            ),
+            "second action should chmod the source the link will point at, got: {actions:?}"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn plan_copy_content_match_with_permissions_mismatch_produces_set_permissions() {
@@ -1582,7 +1721,13 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let action = fm
-            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
+            .check_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                FileStrategy::Copy,
+                None,
+            )
             .unwrap();
 
         assert!(action.is_some());
@@ -1623,7 +1768,13 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let action = fm
-            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
+            .check_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                FileStrategy::Copy,
+                None,
+            )
             .unwrap();
 
         assert!(
@@ -1661,7 +1812,13 @@ mod tests {
         });
         let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
         let err = fm
-            .check_permissions(&target, &managed, &resolved.merged, FileStrategy::Copy)
+            .check_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                FileStrategy::Copy,
+                None,
+            )
             .unwrap_err();
         let msg = err.to_string();
         assert!(

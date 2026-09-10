@@ -469,16 +469,18 @@ impl<'a> super::Reconciler<'a> {
 
                     // Apply declared permissions after deployment (no-op on Windows).
                     if let Some(mode) = mode {
-                        if matches!(strategy, crate::config::FileStrategy::Symlink) {
-                            // follow-ok: a linked file's declared mode belongs to
-                            // the source it points at, the same contract
-                            // `FileAction::SetPermissions::follow` carries.
-                            crate::set_file_permissions(&target, mode)?;
+                        // A linked file's declared mode belongs to the source it
+                        // points at, so the chmod names that source instead of
+                        // resolving the link: the target often sits under a home
+                        // an elevated run does not own, whose owner could
+                        // otherwise replace the link and aim the chmod anywhere.
+                        let chmod_path = if matches!(strategy, crate::config::FileStrategy::Symlink)
+                        {
+                            file.source.as_path()
                         } else {
-                            // The target is a regular file this run just wrote,
-                            // often under a home an elevated run does not own.
-                            crate::set_file_permissions_nofollow(&target, mode)?;
-                        }
+                            target.as_path()
+                        };
+                        crate::set_file_permissions_nofollow(chmod_path, mode)?;
                     }
 
                     self.record_module_file(action, &target, strategy, apply_id)?;

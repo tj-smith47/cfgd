@@ -82,7 +82,7 @@ fn file_chmod(target: &str) -> Action {
         target: PathBuf::from(target),
         mode: 0o755,
         origin: "test".to_string(),
-        follow: false,
+        chmod_path: None,
     })
 }
 
@@ -2720,7 +2720,7 @@ fn set_permissions(target: &Path, mode: u32) -> Action {
         target: target.to_path_buf(),
         mode,
         origin: "test".to_string(),
-        follow: false,
+        chmod_path: None,
     })
 }
 

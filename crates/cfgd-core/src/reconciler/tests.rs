@@ -8303,7 +8303,7 @@ fn every_action_variant() -> Vec<Action> {
             target: PathBuf::from("/home/u/.chmodded"),
             mode: 0o600,
             origin: "profile".to_string(),
-            follow: false,
+            chmod_path: None,
         }),
         Action::File(FileAction::Skip {
             target: PathBuf::from("/home/u/.skipped"),
@@ -10838,7 +10838,7 @@ fn apply_file_set_permissions_action() {
                 target: target.clone(),
                 mode: 0o755,
                 origin: "local".to_string(),
-                follow: false,
+                chmod_path: None,
             })],
         )],
         warnings: vec![],
@@ -15033,7 +15033,7 @@ fn format_action_description_file_set_permissions() {
         target: PathBuf::from("/etc/config.yaml"),
         mode: 0o600,
         origin: "local".to_string(),
-        follow: false,
+        chmod_path: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "file:chmod:0o600:/etc/config.yaml");
@@ -16014,6 +16014,112 @@ fn apply_module_deploy_files_applies_permissions() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o750, "deployed module file should be mode 0o750");
+}
+
+/// A `Symlink` module file's declared mode lands on its source, through a chmod
+/// that resolves no link.
+///
+/// The target IS a link after the deploy, so a no-follow chmod aimed at it would
+/// be refused outright and the whole apply would fail: naming `file.source` is
+/// both the correct file and the only path that survives. Whoever owns the
+/// target's directory therefore never gets a chmod to re-point.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_module_files_declared_mode_lands_on_its_source() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("source.sh");
+    let target_file = dir.path().join("bin").join("tool");
+    std::fs::write(&source_file, "#!/bin/sh\necho hi\n").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Symlink;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let file = ResolvedFile {
+        source: source_file.clone(),
+        target: target_file.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Symlink),
+        encryption: None,
+        permissions: Some("750".to_string()),
+        patch: None,
+    };
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "linkmod".to_string(),
+                kind: {
+                    let files = vec![file.clone()];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
+                },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let modules = vec![ResolvedModule {
+        dep_pulled: false,
+        name: "linkmod".to_string(),
+        packages: vec![],
+        files: vec![file],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        target_file.is_symlink(),
+        "the deploy links rather than copies"
+    );
+    let mode = std::fs::symlink_metadata(&source_file)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o750,
+        "the declared mode belongs to the source the link points at"
+    );
 }
 
 // --- Module deploy files: directory with symlink vs copy ---
@@ -17094,7 +17200,7 @@ fn format_plan_items_file_set_permissions() {
             target: PathBuf::from("/home/user/.ssh/id_rsa"),
             mode: 0o600,
             origin: "local".into(),
-            follow: false,
+            chmod_path: None,
         })],
     );
     let items = plan_items(&phase);
@@ -17404,7 +17510,7 @@ fn clone_action_set_permissions_preserves_all_fields() {
         target: PathBuf::from("/home/user/.ssh/key"),
         mode: 0o600,
         origin: "local".into(),
-        follow: false,
+        chmod_path: None,
     };
     let cloned = action.clone_action();
     match cloned {
@@ -17412,12 +17518,12 @@ fn clone_action_set_permissions_preserves_all_fields() {
             target,
             mode,
             origin,
-            follow,
+            chmod_path,
         } => {
             assert_eq!(target, PathBuf::from("/home/user/.ssh/key"));
             assert_eq!(mode, 0o600);
             assert_eq!(origin, "local");
-            assert!(!follow);
+            assert_eq!(chmod_path, None);
         }
         other => panic!("expected SetPermissions, got: {other:?}"),
     }
@@ -17449,52 +17555,63 @@ fn clone_action_skip_preserves_all_fields() {
 // apply_file_action_direct — filesystem operations with tempdir
 // ---------------------------------------------------------------------------
 
-/// The core executor refuses a symlink at a non-Symlink entry's target.
+/// The core executor refuses a symlink at the target, whether or not the action
+/// names a `chmod_path`.
 ///
 /// `apply_file_action_direct` is the second executor of the same action, so the
-/// `follow` decision has to hold here too or the daemon path reopens the hole the
-/// CLI path closed.
+/// decision has to hold here too or the daemon path reopens the hole the CLI path
+/// closed. The decoy behind the planted link is what separates "named the source"
+/// from "followed the link": a Symlink entry's mode reaches the source it names
+/// and the decoy keeps its own.
 #[test]
 #[cfg(unix)]
-fn apply_file_action_direct_chmod_refuses_a_symlink_unless_the_entry_follows() {
+fn apply_file_action_direct_chmod_never_resolves_a_symlink_at_its_target() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("id_ed25519");
-    std::fs::write(&secret, "private").unwrap();
-    crate::set_file_permissions(&secret, 0o600).unwrap();
+    let decoy = dir.path().join("id_ed25519");
+    std::fs::write(&decoy, "private").unwrap();
+    crate::set_file_permissions(&decoy, 0o600).unwrap();
     let target = dir.path().join("perms.txt");
-    std::os::unix::fs::symlink(&secret, &target).unwrap();
+    std::os::unix::fs::symlink(&decoy, &target).unwrap();
 
     let refused = super::file_action::apply_file_action_direct(
         &FileAction::SetPermissions {
             target: target.clone(),
             mode: 0o644,
             origin: "local".into(),
-            follow: false,
+            chmod_path: None,
         },
         dir.path(),
         "test",
     );
     assert!(refused.is_err(), "a planted symlink must be refused");
-    let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    let mode = std::fs::metadata(&decoy).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "the link's target must keep its mode");
 
+    let source = dir.path().join("key.txt");
+    std::fs::write(&source, "secret").unwrap();
+    crate::set_file_permissions(&source, 0o644).unwrap();
     super::file_action::apply_file_action_direct(
         &FileAction::SetPermissions {
             target,
             mode: 0o640,
             origin: "local".into(),
-            follow: true,
+            chmod_path: Some(source.clone()),
         },
         dir.path(),
         "test",
     )
     .unwrap();
-    let followed = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    let named = std::fs::metadata(&source).unwrap().permissions().mode() & 0o777;
     assert_eq!(
-        followed, 0o640,
-        "a Symlink entry's declared mode must reach the source file"
+        named, 0o640,
+        "a Symlink entry's declared mode must reach the source it names"
+    );
+    let decoy_mode = std::fs::metadata(&decoy).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        decoy_mode, 0o600,
+        "the file the planted link resolves to must keep its mode"
     );
 }
 
@@ -30662,11 +30779,15 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
 /// This walk judges the daemon's own engine. The `cfgd` binary's system and file
 /// engines are judged by its twin there, because the two crates compile
 /// separately and neither walk can read the other's sources.
+///
+/// The floor counts EVERY chmod the walk read, follow-capable or not: the
+/// follow-capable sites are the ones this rule is driving to zero, so flooring
+/// on those alone would turn a fully converted engine into a failure.
 #[test]
 fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler");
     let mut offenders: Vec<String> = Vec::new();
-    let mut sites = 0usize;
+    let mut chmods = 0usize;
     let mut files = 0usize;
     for path in crate::test_helpers::rust_sources_under(&root) {
         if path.file_name().is_some_and(|n| n == "tests.rs")
@@ -30679,10 +30800,12 @@ fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
         let rel = crate::to_posix_string(path.strip_prefix(&root).unwrap_or(&path));
         let lines: Vec<&str> = body.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
+            if line.contains("set_file_permissions") || line.contains("fs::set_permissions(") {
+                chmods += 1;
+            }
             if !(line.contains("set_file_permissions(") || line.contains("fs::set_permissions(")) {
                 continue;
             }
-            sites += 1;
             if lines[idx.saturating_sub(3)..idx]
                 .iter()
                 .any(|l| l.contains("follow-ok:"))
@@ -30699,8 +30822,8 @@ fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
         }
     }
     assert!(
-        files >= 15 && sites >= 2,
-        "the walk read {files} files and {sites} chmods, too few to be the population"
+        files >= 15 && chmods >= 4,
+        "the walk read {files} files and {chmods} chmods, too few to be the population"
     );
     assert!(
         offenders.is_empty(),
