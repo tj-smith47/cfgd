@@ -42,18 +42,6 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// and plant a symlink there for the chmod in `run_health_server` to follow. An
 /// unprivileged user pretending to be root is a different question and stays out
 /// of the local-daemon threat model, root being trusted on the host already.
-/// Whether `mode`'s permission bits are owner-private: no group bit and no
-/// other bit set.
-///
-/// The one mask [`ensure_owner_private_dir`] refuses a socket directory with,
-/// named so a pin can ask it. The arm it guards cannot be entered end to end
-/// under uid 0, where the chmod always lowers the mode before the re-stat reads
-/// it, so this predicate is the only surface the mask is observable on.
-#[cfg(unix)]
-pub(crate) fn is_owner_private_mode(mode: u32) -> bool {
-    mode & 0o077 == 0
-}
-
 #[cfg(unix)]
 pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -168,6 +156,18 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+/// Whether `mode`'s permission bits are owner-private: no group bit and no
+/// other bit set.
+///
+/// The one mask [`ensure_owner_private_dir`] refuses a socket directory with,
+/// named so a pin can ask it. The arm it guards cannot be entered end to end
+/// under uid 0, where the chmod always lowers the mode before the re-stat reads
+/// it, so this predicate is the only surface the mask is observable on.
+#[cfg(unix)]
+pub(crate) fn is_owner_private_mode(mode: u32) -> bool {
+    mode & 0o077 == 0
 }
 
 /// Refuse a socket directory whose path some other account could re-point
@@ -378,6 +378,13 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
 
 // --- Health Server ---
 
+/// Bind the daemon's IPC socket at `ipc_path` and serve one connection per
+/// accept until the listener is dropped.
+///
+/// The socket's directory is judged and created by [`ensure_owner_private_dir`]
+/// before the bind, and the socket itself is set to 0600 after it: the
+/// directory answers for who can reach the path, the mode for who can open what
+/// is bound there.
 #[cfg(unix)]
 pub(crate) async fn run_health_server(
     ipc_path: &str,
@@ -436,6 +443,12 @@ pub(crate) async fn run_health_server(
     }
 }
 
+/// The Windows half of [`run_health_server`]: the same routes over a named pipe
+/// instead of a unix socket.
+///
+/// `first_pipe_instance` is what refuses a second daemon the name, so the pipe
+/// needs no directory judgment of its own: the namespace rather than a
+/// filesystem path decides who may create it.
 #[cfg(windows)]
 pub(crate) async fn run_health_server(
     ipc_path: &str,
@@ -475,6 +488,13 @@ pub(crate) async fn run_health_server(
     }
 }
 
+/// Answer one IPC request on `stream`, over the minimal HTTP the CLI's client
+/// speaks: `/health`, `/status`, `/drift`, and a 404 for anything else.
+///
+/// Generic over the stream so the unix-socket and named-pipe servers share one
+/// body. A request line this cannot parse a path out of is answered as
+/// `/health`, that endpoint existing to tell a supervisor the process is
+/// alive.
 pub(crate) async fn handle_health_connection<S>(
     stream: S,
     state: Arc<Mutex<DaemonState>>,

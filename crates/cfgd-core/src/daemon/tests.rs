@@ -18979,8 +18979,8 @@ mod ipc_socket_security {
     /// is creation-hostile only on Linux (FreeBSD mounts no procfs by default,
     /// so root can mkdir under the `/proc` mountpoint and the negative path
     /// never fires). The test suite frequently runs as root in CI/devcontainers,
-    /// so the mode-check arm (`mode & 0o077 != 0`) cannot be exercised
-    /// end-to-end: root bypasses chmod, so the helper always succeeds in
+    /// so the mode-check arm (the `!is_owner_private_mode(mode)` refusal) cannot be
+    /// exercised end-to-end: root bypasses chmod, so the helper always succeeds in
     /// lowering 0o755 to 0o700 before the re-stat. The create-failure arm here
     /// is the negative path that fires deterministically regardless of uid; the
     /// mask that arm would have used is pinned on its own predicate by the
@@ -19212,6 +19212,72 @@ mod ipc_socket_security {
         assert!(!is_owner_private_mode(0o701), "0o701 must be refused");
         assert!(is_owner_private_mode(0o700), "0o700 must be accepted");
         assert!(is_owner_private_mode(0o600), "0o600 must be accepted");
+    }
+
+    /// Walks `health_ipc.rs`'s production region for an exported item carrying
+    /// no `///` run of its own.
+    ///
+    /// The guard for a defect class nothing else in the tree can see: an item
+    /// inserted between an existing item's doc comment and the item itself, with
+    /// no separator, silently re-attaches that whole doc to the newcomer and
+    /// leaves its subject undocumented.
+    /// `cargo fmt` and clippy both accept the result, `#[warn(missing_docs)]`
+    /// does not reach `pub(crate)`, and rendering the docs is not available on
+    /// this host, so the victim's emptiness is the only mechanically readable
+    /// tell.
+    ///
+    /// The ceiling: it catches the swallow only while the victim is left with NO
+    /// doc at all. A newcomer inserted with a doc of its own ABOVE the victim's,
+    /// where the victim keeps a second run below, passes here, because the two
+    /// runs are indistinguishable from one item's multi-paragraph doc once they
+    /// are adjacent. Judging that shape needs a model of which paragraph
+    /// describes which item, which no byte-level walk holds.
+    ///
+    /// Top-level items only: an associated item inside an `impl` is documented
+    /// with its type, and indentation is what separates the two populations.
+    #[test]
+    fn every_exported_item_in_health_ipc_carries_its_own_doc_run() {
+        let path = crate::test_helpers::workspace_root()
+            .join("crates")
+            .join("cfgd-core")
+            .join("src")
+            .join("daemon")
+            .join("health_ipc.rs");
+        let body = crate::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        let mut judged = Vec::new();
+        let mut undocumented = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.starts_with("pub(crate) ") && !line.starts_with("pub ") {
+                continue;
+            }
+            judged.push(format!("{}: {}", i + 1, line));
+            // The item's own `#[cfg]` / attribute block sits between its doc and
+            // its signature, so the run is looked for above the block rather
+            // than immediately above the signature.
+            let mut above = i;
+            while above > 0 && lines[above - 1].starts_with("#[") {
+                above -= 1;
+            }
+            if above == 0 || !lines[above - 1].starts_with("///") {
+                undocumented.push(format!("{}: {}", i + 1, line));
+            }
+        }
+        assert!(
+            judged.len() >= 9,
+            "the walk judged {} exported items, fewer than the 9 this file carried when the \
+             walk was written, so it is reading less than it claims:\n{}",
+            judged.len(),
+            judged.join("\n")
+        );
+        // The offenders open the message so a red probe's one-line panic reason
+        // names them: a list after a long sentence is cut off before it.
+        assert!(
+            undocumented.is_empty(),
+            "{}: exported from health_ipc.rs with no `///` run of its own, so a doc comment \
+             above it has been absorbed by an item inserted beneath it",
+            undocumented.join("; ")
+        );
     }
 
     /// Drives `query_daemon_status` against a fake server that streams more
