@@ -18967,10 +18967,11 @@ mod ipc_socket_security {
     }
 
     /// Drives `ensure_owner_private_dir` against a path whose parent component
-    /// is a regular file. `create_dir_all` then fails with ENOTDIR on every
-    /// unix regardless of uid, so the helper returns a HealthSocketError naming
-    /// the offending directory. Proves the helper does not silently continue
-    /// when the parent dir cannot be made owner-private.
+    /// is a regular file. The missing tail is made one component at a time with
+    /// `mkdir(2)`, which fails with ENOTDIR on every unix regardless of uid, so
+    /// the helper returns a HealthSocketError naming the offending directory.
+    /// Proves the helper does not silently continue when the parent dir cannot
+    /// be made owner-private.
     ///
     /// A file component is the portable way to force this: a `/proc/<x>` path
     /// is creation-hostile only on Linux (FreeBSD mounts no procfs by default,
@@ -19000,16 +19001,18 @@ mod ipc_socket_security {
         );
     }
 
-    /// A symlink standing where the socket's directory belongs is refused, and
-    /// the directory it points at keeps its mode.
+    /// A symlink standing where the socket's directory belongs is refused by the
+    /// leaf's own kind check, and the directory it points at keeps its mode.
     ///
-    /// `create_dir_all` is satisfied by a link that already resolves to a
-    /// directory, so the link survives into the chmod. The daemon runs as root
-    /// under systemd while its runtime directory can sit under a HOME an
-    /// unprivileged user owns, and a path-based chmod there would hand `0o700`
-    /// to whatever that user pointed the link at, locking another user out of
-    /// their own directory. The no-follow chmod refuses it (`ELOOP`) whatever
-    /// the uid, so this pin holds as root too.
+    /// The leaf is the one component the helper MUTATES, which is where the
+    /// walk's admission of a link component stops: the daemon runs as root under
+    /// systemd while its runtime directory can sit under a HOME an unprivileged
+    /// user owns, and a path-based chmod there would hand `0o700` to whatever
+    /// that user pointed the link at, locking another user out of their own
+    /// directory. The refusal is a sentence this module words and not the
+    /// no-follow chmod's `ELOOP`, so an operator who symlinked the runtime
+    /// directory deliberately is told what cfgd will not do rather than handed a
+    /// kernel errno about a path the walk had just approved. It holds at any uid.
     #[cfg(unix)]
     #[test]
     fn the_socket_directory_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
@@ -19026,8 +19029,8 @@ mod ipc_socket_security {
         let err = ensure_owner_private_dir(&link)
             .expect_err("a symlink standing in for the socket directory must be refused");
         assert!(
-            format!("{err}").contains("chmod parent"),
-            "the refusal must be the chmod's, got {err}"
+            format!("{err}").contains("is a symlink"),
+            "the refusal must name the leaf's link-ness rather than a chmod errno, got {err}"
         );
         let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
         assert_eq!(

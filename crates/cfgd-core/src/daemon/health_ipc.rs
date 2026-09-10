@@ -23,10 +23,10 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// The ORDER is load-bearing. [`refuse_swappable_path`] runs against the
 /// deepest component that already exists, before anything is created or
 /// chmodded, because both of those mutations work by PATH and a path-based
-/// mutation resolves every ancestor through whatever stands there: a recursive
-/// create under an ancestor another account re-pointed makes a root-owned
-/// directory wherever they aimed it, and a path-based chmod under one lands
-/// 0700 on a directory that already existed, locking its own owner out.
+/// mutation resolves every ancestor through whatever stands there: a create
+/// under an ancestor another account re-pointed makes a root-owned directory
+/// wherever they aimed it, and a path-based chmod under one lands 0700 on a
+/// directory that already existed, locking its own owner out.
 /// `O_NOFOLLOW` answers for the FINAL component alone and cannot answer for
 /// either. The missing tail is then made one component at a time with
 /// `mkdir(2)`, which never follows a final symlink and answers `EEXIST` for a
@@ -65,18 +65,35 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     refuse_swappable_path(existing, euid)?;
 
     // Nothing left to create means the leaf already stood there, so its KIND is
-    // settled before the chmod: the no-follow open refuses a symlink (`ELOOP`)
-    // but opens a regular file happily, and a file standing where the directory
-    // belongs would have its own mode rewritten instead of being refused.
-    if existing == dir.as_path()
-        && !existing_meta.is_dir()
-        && !existing_meta.file_type().is_symlink()
-    {
-        return Err(refuse(format!(
-            "refusing to bind: parent directory {} is not a directory",
-            dir.posix()
-        ))
-        .into());
+    // settled here, by a decision this function words, rather than by whatever
+    // errno the chmod below happens to return for it.
+    if existing == dir.as_path() {
+        // The leaf is the one component this function MUTATES, and that is where
+        // the walk's admission of a link component stops: a path-based chmod of
+        // a link lands on the link's TARGET, so admitting a leaf link would aim
+        // the 0o700 at a directory the operator never named. The walk has
+        // already followed this link and approved where it leads, and approving
+        // a directory to bind under is not agreeing to rewrite its mode.
+        if existing_meta.file_type().is_symlink() {
+            return Err(refuse(format!(
+                "refusing to bind: parent directory {} is a symlink, and the 0700 this \
+                 needs would land on whatever it points at rather than on a directory \
+                 cfgd made",
+                dir.posix()
+            ))
+            .into());
+        }
+        // The link arm above has returned, so this asks only about a real file:
+        // the no-follow open refuses a symlink but opens a regular file happily,
+        // and a file standing where the directory belongs would have its own
+        // mode rewritten instead of being refused.
+        if !existing_meta.is_dir() {
+            return Err(refuse(format!(
+                "refusing to bind: parent directory {} is not a directory",
+                dir.posix()
+            ))
+            .into());
+        }
     }
 
     let tail = dir
@@ -88,7 +105,22 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&cursor)
-            .map_err(|e| refuse(format!("create parent {}: {}", cursor.posix(), e)))?;
+            .map_err(|e| {
+                // This loop only creates components the walk just found ABSENT,
+                // so an `EEXIST` is never an operator's pre-created directory:
+                // it is a component that appeared between the judgment and this
+                // `mkdir(2)`, which no verdict covers. Distinguishing the two
+                // needs no second syscall, only this errno.
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    return refuse(format!(
+                        "create parent {}: a component that did not exist when this path \
+                         was judged appeared before it could be created; refusing rather \
+                         than using it",
+                        cursor.posix()
+                    ));
+                }
+                refuse(format!("create parent {}: {}", cursor.posix(), e))
+            })?;
     }
 
     // The mode is still set explicitly: `mkdir(2)` masks its argument with the
@@ -178,6 +210,13 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
 ///    would reach. A `..` anywhere else in a target stays in the path and is
 ///    refused on the next pass, its prefix being components this walk has not
 ///    read.
+///
+///    The LEAF is the one exception, and its caller owns it: a link is admitted
+///    at every component this walk merely looks THROUGH, and refused at the one
+///    component `ensure_owner_private_dir` goes on to chmod, where a path-based
+///    mutation would land on the target instead of on the path as given. This
+///    walk still follows a leaf link and judges what it points at, because that
+///    verdict is what the caller's own refusal rests on.
 /// 3. WRITABILITY BY OTHERS: group- or other-writable is refused unless the
 ///    sticky bit is set. `/tmp` is 1777 and is a legitimate runtime root, and the
 ///    sticky bit is precisely what makes a world-writable directory unswappable:
@@ -195,20 +234,41 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
 
     let refuse = |message: String| DaemonError::HealthSocketError { message };
     let mut path = crate::absolutize_path(dir);
-    // One pass per link component; 64 is where every unix reports ELOOP.
+    // Provenance of the path being judged: `None` on the first pass, where the
+    // path is the one the operator wrote, and from the second pass on the link
+    // whose target composed it, so a refusal can name what they actually wrote
+    // rather than a string only this walk ever assembled.
+    let mut composed_from: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
+    // One pass per link component. The bound's only job is to terminate this
+    // walk: it sits above any chain a unix will resolve, so a real cycle is
+    // refused by the kernel's own `ELOOP` at the `mkdir` or the chmod before
+    // this counter runs out. It deliberately cites no figure, because the limit
+    // has no single value to cite: on one host the kernel's resolution cap,
+    // glibc's `MAXSYMLINKS` and POSIX's `SYMLOOP_MAX` answer three different
+    // things, and a number written here would be a fact nobody maintains.
     for _ in 0..64 {
         if path
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
+            let composed = match &composed_from {
+                Some((link, target)) => format!(
+                    " (composed from the link {} -> {})",
+                    link.posix(),
+                    target.posix()
+                ),
+                None => String::new(),
+            };
             return Err(refuse(format!(
                 "refusing to bind: path {} contains a `..` component, which no \
-                 component-by-component check can judge",
-                path.posix()
+                 component-by-component check can judge{}",
+                path.posix(),
+                composed
             ))
             .into());
         }
         let mut follow: Option<std::path::PathBuf> = None;
+        let mut followed: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
         for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
             if component.as_os_str().is_empty() {
                 continue;
@@ -232,7 +292,7 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                     .strip_prefix(component)
                     .unwrap_or(std::path::Path::new(""));
                 let base = if target.is_absolute() {
-                    target
+                    target.clone()
                 } else {
                     let mut base = component
                         .parent()
@@ -254,7 +314,14 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                     }
                     base
                 };
-                follow = Some(base.join(rest));
+                followed = Some((component.to_path_buf(), target));
+                // `join` on an empty `rest` appends a separator, so the leaf
+                // path would be refused under a name carrying a stray `/`.
+                follow = Some(if rest.as_os_str().is_empty() {
+                    base
+                } else {
+                    base.join(rest)
+                });
                 break;
             }
             let mode = meta.permissions().mode() & 0o7777;
@@ -270,7 +337,10 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
             }
         }
         match follow {
-            Some(next) => path = next,
+            Some(next) => {
+                path = next;
+                composed_from = followed;
+            }
             None => return Ok(()),
         }
     }
@@ -644,23 +714,19 @@ mod tests {
 
     #[test]
     fn ensure_owner_private_dir_refuses_world_traversable_after_chmod_recovery() {
-        // ensure_owner_private_dir attempts to chmod the dir to 0700. If the
-        // chmod fails (the path is made immutable-style via a symlink to a
-        // file), the function errors out. Cheaper alternative: feed it a path
-        // that points at a regular file — create_dir_all errors, surfacing
-        // the HealthSocketError.
+        // A regular file standing where the socket's directory belongs is the
+        // leaf, so the kind check settles it before anything is created or
+        // chmodded: the no-follow chmod would open a regular file happily and
+        // rewrite its mode instead of refusing it.
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("not-a-dir");
         std::fs::write(&file_path, "hello").unwrap();
         let err = ensure_owner_private_dir(&file_path)
-            .expect_err("create_dir_all on a file path must error");
+            .expect_err("a regular file standing in for the socket directory must be refused");
         let msg = err.to_string();
         assert!(
-            msg.contains("create parent")
-                || msg.contains("chmod parent")
-                || msg.contains("stat parent")
-                || msg.contains("refusing to bind"),
-            "error must reference the IPC parent setup, got: {msg}"
+            msg.contains("is not a directory") && msg.contains(&file_path.display().to_string()),
+            "the refusal must name the path and its kind, got: {msg}"
         );
     }
 
@@ -973,6 +1039,182 @@ mod tests {
         assert!(
             msg.contains("exceeded") && msg.contains(&MAX_RESPONSE_BYTES.to_string()),
             "oversize response must cite the byte cap, got: {msg}"
+        );
+    }
+
+    /// The `..` refusal names the link that composed the path, and the composed
+    /// path carries no separator the operator never wrote.
+    ///
+    /// A `..` that is not part of a target's LEADING run stays in the path and is
+    /// refused on the next pass, by which point the path being judged is one this
+    /// walk assembled: without the provenance clause an operator reads a string
+    /// they never typed and cannot find the link that produced it. The first pass
+    /// judges the path as given, so it carries no clause. `join` on an empty
+    /// remainder would append a separator, so the composed path is also asserted
+    /// whole rather than by a `contains` of its prefix.
+    #[test]
+    fn the_parent_dir_refusal_names_the_link_that_composed_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::create_dir(nested.join("real")).unwrap();
+        let via = nested.join("via");
+        // A `..` behind a Normal component, which the leading-run fold leaves in
+        // place by design.
+        std::os::unix::fs::symlink("real/../real", &via).unwrap();
+
+        let err = ensure_owner_private_dir(&via)
+            .expect_err("a target carrying a non-leading `..` must be refused");
+        let msg = format!("{err}");
+        let composed = nested.join("real").join("..").join("real");
+        assert!(
+            msg.contains(&format!("path {} contains", composed.display())),
+            "the refusal must name the composed path exactly, got {msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "(composed from the link {} -> real/../real)",
+                via.display()
+            )),
+            "the refusal must name the link and its target, got {msg}"
+        );
+
+        // The first pass judges the operator's own path, so it states no
+        // provenance it does not have.
+        let as_given = nested.join("..").join("nested");
+        let err = ensure_owner_private_dir(&as_given)
+            .expect_err("a `..` in the path as given must be refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("contains a `..` component") && !msg.contains("composed from"),
+            "a first-pass refusal must carry no provenance clause, got {msg}"
+        );
+    }
+
+    /// A link target's LEADING `.`/`..` run is folded against the link's own
+    /// parent, and the `..` refusal on the next pass is what makes the folded
+    /// path observable.
+    ///
+    /// The fold decides what this WALK judges and nothing else: where a
+    /// directory is created is the kernel resolving the same path, so a fixture
+    /// that reads the filesystem back cannot tell two folds apart. Each target
+    /// here therefore carries a trailing `nope/..` behind its leading run. The
+    /// `..` survives the fold by design, is refused on the next pass, and that
+    /// refusal names the composed path byte for byte.
+    #[test]
+    fn a_leading_dot_and_dot_dot_run_folds_against_the_links_own_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("nested");
+        let deep = nested.join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        // `.` is consumed without moving the base, so the composed path hangs
+        // off the link's own parent.
+        let here = deep.join("here");
+        std::os::unix::fs::symlink("./nope/..", &here).unwrap();
+        let err =
+            ensure_owner_private_dir(&here).expect_err("a target carrying `..` must be refused");
+        let composed = deep.join("nope").join("..");
+        assert!(
+            format!("{err}").contains(&format!("path {} contains", composed.display())),
+            "a `.` target must fold to the link's own parent, got {err}"
+        );
+
+        // `..` pops exactly one component off that parent.
+        let up = deep.join("up");
+        std::os::unix::fs::symlink("../nope/..", &up).unwrap();
+        let err =
+            ensure_owner_private_dir(&up).expect_err("a target carrying `..` must be refused");
+        let composed = nested.join("nope").join("..");
+        assert!(
+            format!("{err}").contains(&format!("path {} contains", composed.display())),
+            "a `..` target must fold one level above the link's parent, got {err}"
+        );
+    }
+
+    /// A leading `..` run longer than the link's parent is deep saturates at `/`
+    /// rather than walking off the top.
+    ///
+    /// `PathBuf::pop` returns false at the root and leaves the path alone, which
+    /// is the kernel's own `..`-at-root behaviour. The target carries more `..`
+    /// components than the fixture has path components, and the refusal names
+    /// the composed path, so the saturation is read off the message rather than
+    /// assumed from std's documentation.
+    #[test]
+    fn a_leading_parent_run_past_the_root_saturates_at_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("nested").join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+        let way_up = deep.join("way-up");
+        std::os::unix::fs::symlink("../../../../../../../../../nope/..", &way_up).unwrap();
+
+        let err =
+            ensure_owner_private_dir(&way_up).expect_err("a target carrying `..` must be refused");
+        assert!(
+            format!("{err}").contains("path /nope/.. contains"),
+            "the pops must saturate at the root, got {err}"
+        );
+    }
+
+    /// The explicit 0700 survives a umask that withholds the owner bits, which
+    /// is the whole reason the chmod stands beside the `mkdir`'s mode argument.
+    ///
+    /// `mkdir(2)` masks its mode with the process umask, so under `0o377` the
+    /// directory would be created `0o400`: owner-private enough to pass both of
+    /// this function's own refusals, and not traversable by the daemon that
+    /// needs to bind in it. The chmod is `fchmod(2)`, which no umask touches.
+    ///
+    /// Run in a CHILD, re-entered through this same test by name. A umask is
+    /// process-global and is NOT process environment, so neither the env-mutator
+    /// walk nor `SERIAL_PINS` governs it and `#[serial_test::serial]` would not
+    /// help: that attribute orders a test against other attributed tests, while
+    /// a raised umask changes the default mode of every file the thousands of
+    /// unattributed tests create in parallel, several of which assert a mode.
+    /// A child's umask is its own, and the directory it leaves behind on the
+    /// shared filesystem is what this process asserts against.
+    #[test]
+    fn the_leaf_chmod_survives_a_umask_that_withholds_the_owner_bits() {
+        const TEST_PATH: &str = "daemon::health_ipc::tests::the_leaf_chmod_survives_a_umask_that_withholds_the_owner_bits";
+        const DIR_VAR: &str = "CFGD_UMASK_PIN_DIR";
+
+        if let Ok(dir) = std::env::var(DIR_VAR) {
+            nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o377));
+            ensure_owner_private_dir(std::path::Path::new(&dir))
+                .expect("the child must create the socket directory under the raised umask");
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ipc-umask");
+        let exe = std::env::current_exe().expect("the test binary is a real file");
+        let out = std::process::Command::new(exe)
+            .args(["--exact", TEST_PATH, "--nocapture", "--test-threads", "1"])
+            // Per-child `env` rather than a process mutation: the parent's own
+            // environment is never touched.
+            .env(DIR_VAR, &dir)
+            .output()
+            .expect("the test binary must be re-runnable as a child");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "the child run must pass; stdout: {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // `--exact` against a renamed test matches nothing and still exits 0, so
+        // the count is asserted rather than the status alone.
+        assert!(
+            stdout.contains("1 passed"),
+            "the child must have run exactly this test; stdout: {stdout}"
+        );
+
+        let mode = std::fs::metadata(&dir)
+            .expect("the child must have created the directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the explicit chmod must restore what the umask withheld, got {mode:o}"
         );
     }
 }
