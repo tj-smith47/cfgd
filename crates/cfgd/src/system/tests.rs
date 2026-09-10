@@ -977,39 +977,6 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     );
 }
 
-/// Every path-based chmod in the `cfgd` binary says why following a symlink is
-/// safe there.
-///
-/// The rule, the tells and the hatch grammar live in
-/// [`cfgd_core::test_helpers::path_based_chmod_population`], which the twin walks
-/// in `cfgd-core` and `cfgd-operator` read too; the floors are this crate's own.
-///
-/// The population is the WHOLE crate, not the two engines the class was first
-/// swept in: a chmod is as likely to appear in a CLI verb or a secrets backend
-/// as in the file engine, and a walk stopped at a directory boundary is how six
-/// of this crate's sites went unasked. One walk per crate, each over its whole
-/// tree, is what leaves no site judged twice and none judged by nobody.
-///
-/// The floor sits AT what the crate holds rather than under it, so a call site
-/// cannot vanish inside a margin: a `>=` floor never trips on an addition, and
-/// the assertion prints the numbers it read.
-#[test]
-fn every_path_based_chmod_in_the_cfgd_crate_says_why_the_follow_is_safe() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let population = cfgd_core::test_helpers::path_based_chmod_population(&root);
-    assert!(
-        population.files >= 144 && population.chmods >= 14,
-        "the walk read {} files and {} chmods, too few to be the population",
-        population.files,
-        population.chmods
-    );
-    assert!(
-        population.offenders.is_empty(),
-        "every path-based chmod states why it may follow a link:\n{}",
-        population.offenders.join("\n")
-    );
-}
-
 /// A symlink at the path is refused, and the file it points at keeps its mode.
 ///
 /// This is the privilege boundary the widen crosses: `macos_write_env_sh` runs

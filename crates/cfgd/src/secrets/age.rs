@@ -138,7 +138,11 @@ impl SecretBackend for AgeBackend {
 
         // Restrict permissions on decrypted secret (owner-only). No-follow: the
         // mode belongs to the plaintext this function just wrote, never to a file
-        // a link at that name resolves to.
+        // a link at that name resolves to. The write above is a plain
+        // `std::fs::write`, which WOULD follow a link; what keeps one from being
+        // planted here is the `TempDir` above, 0700 under a random name owned by
+        // the running euid, which is also why no planted-link test can reach this
+        // path.
         cfgd_core::set_file_permissions_nofollow(&temp_file, 0o600).map_err(|e| {
             SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
