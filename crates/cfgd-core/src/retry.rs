@@ -31,9 +31,9 @@ impl BackoffConfig {
     /// for: the same three attempts, but measured against the quota that refused
     /// them. The gateway's enrollment bucket hands back one token every
     /// [`crate::ENROLL_RATE_LIMIT_REFILL`], so a ladder measured in milliseconds
-    /// exhausts itself before the quota has moved at all. Half that interval is
-    /// the smallest first step whose cumulative ladder (`1x` then `2x`) still
-    /// outlasts a full refill by the last attempt.
+    /// exhausts itself before the quota has moved at all. Half that interval, so
+    /// the cumulative ladder (`0`, then `1x`, then `2x`) outlasts a full refill
+    /// before the last attempt.
     pub const RATE_LIMITED: Self = Self {
         max_attempts: 3,
         initial_backoff: Duration::from_secs(crate::util::ENROLL_RATE_LIMIT_REFILL_SECS / 2),

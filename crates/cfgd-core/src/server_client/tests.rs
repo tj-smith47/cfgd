@@ -1171,6 +1171,59 @@ fn enroll_waits_on_the_rationed_ladder_when_a_429_advises_nothing() {
     admitted.assert();
 }
 
+/// The next step an exhausted ladder closes on describes its LAST refusal: a 429
+/// the server errors out of is a server problem, and pointing the reader at the
+/// enrollment quota sends them after a limit no longer refusing them.
+#[test]
+fn the_rate_limit_next_step_follows_the_refusal_the_ladder_ended_on() {
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
+    let mut rationing = mockito::Server::new();
+    let quota = rationing
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_body("rate limited")
+        .expect(3)
+        .create();
+    let printer = test_printer();
+    let rationed = ServerClient::new(&rationing.url(), None, "dev-1")
+        .enroll("bootstrap-token-429", &printer)
+        .expect_err("three 429s exhaust the ladder");
+    quota.assert();
+    assert_eq!(
+        rationed.to_string(),
+        "io error: device gateway enrollment failed: failed after 3 attempts: rate limited \
+         (HTTP 429); \
+         the gateway limits enrollment attempts per source address, so retry in a minute or \
+         enrol from another address"
+    );
+
+    let mut erroring = mockito::Server::new();
+    let limited = erroring
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_body("rate limited")
+        .expect(1)
+        .create();
+    let broken = erroring
+        .mock("POST", "/api/v1/enroll")
+        .with_status(500)
+        .with_body("boom")
+        .expect(2)
+        .create();
+    let server_error = ServerClient::new(&erroring.url(), None, "dev-1")
+        .enroll("bootstrap-token-429", &printer)
+        .expect_err("a 429 then two 500s exhausts the ladder");
+    limited.assert();
+    broken.assert();
+    assert_eq!(
+        server_error.to_string(),
+        "io error: device gateway enrollment failed: failed after 3 attempts: server error \
+         (HTTP 500)"
+    );
+}
+
 /// Every form the wait can arrive in, and every form that leaves the client on
 /// its own ladder instead.
 #[test]

@@ -15,6 +15,13 @@ use crate::providers::SystemDrift;
 /// enrollment into a hang.
 const ADVISED_WAIT_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// What a reader does about an exhausted ladder whose LAST refusal was the
+/// gateway's quota. It is derived from that last refusal rather than remembered,
+/// because a 429 followed by two server errors is a server problem: telling the
+/// reader to enrol from another address would send them after a limit that is no
+/// longer refusing them.
+const RATE_LIMIT_NEXT_STEP: &str = "; the gateway limits enrollment attempts per source address, so retry in a minute or enrol from another address";
+
 /// The wait a 429 asked for: the `Retry-After` header in its delta-seconds form,
 /// falling back to the gateway's own `retry_after_secs` body field, clamped to
 /// [`ADVISED_WAIT_CEILING`].
@@ -313,7 +320,6 @@ impl ServerClient {
         // standing still — the reader of the spinner is owed that distinction.
         let mut rationed = false;
         let mut last_err = String::new();
-        let mut next_step = "";
         let mut attempt = 0;
         while attempt < policy.max_attempts {
             if !wait.is_zero() {
@@ -375,7 +381,6 @@ impl ServerClient {
                         wait = advised_wait(advised.as_deref(), body.as_deref().unwrap_or(""))
                             .unwrap_or_else(|| next_delay(&policy));
                         last_err = "rate limited (HTTP 429)".to_string();
-                        next_step = "; the gateway limits enrollment attempts per source address, so retry in a minute or enrol from another address";
                         tracing::debug!(
                             attempt = attempt + 1,
                             max = policy.max_attempts,
@@ -424,7 +429,9 @@ impl ServerClient {
         }
         Err(format!(
             "failed after {} attempts: {}{}",
-            policy.max_attempts, last_err, next_step
+            policy.max_attempts,
+            last_err,
+            if rationed { RATE_LIMIT_NEXT_STEP } else { "" }
         ))
     }
 
