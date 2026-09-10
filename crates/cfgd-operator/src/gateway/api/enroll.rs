@@ -455,7 +455,7 @@ pub(super) fn verify_gpg_signature(
             tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to create per-key homedir");
             continue;
         }
-        if let Err(e) = cfgd_core::set_file_permissions(&gpg_home, 0o700) {
+        if let Err(e) = cfgd_core::set_file_permissions_nofollow(&gpg_home, 0o700) {
             tracing::warn!(
                 error = %e,
                 key_user = %key.username,
