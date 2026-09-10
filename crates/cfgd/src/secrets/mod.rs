@@ -225,8 +225,10 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
             .into());
         }
 
-        // Set restrictive permissions on the key file
-        cfgd_core::set_file_permissions(&key_path, 0o600).map_err(|e| {
+        // Set restrictive permissions on the key file. No-follow: `age-keygen`
+        // wrote the key into a config dir the invoking user owns, and an elevated
+        // run must not tighten whatever a link planted at that name points at.
+        cfgd_core::set_file_permissions_nofollow(&key_path, 0o600).map_err(|e| {
             SecretError::EncryptionFailed {
                 path: key_path.clone(),
                 message: format!("failed to set key permissions: {}", e),

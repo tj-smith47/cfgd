@@ -136,7 +136,10 @@ pub(super) fn export_devcontainer(
     let mut install_content = install_lines.join("\n");
     install_content.push('\n');
     cfgd_core::atomic_write_str(&install_path, &install_content)?;
-    cfgd_core::set_file_permissions(&install_path, 0o755)?;
+    // No-follow: the export directory is wherever the caller pointed it, so an
+    // elevated export must not hand `0o755` to a link standing where the script
+    // was just written.
+    cfgd_core::set_file_permissions_nofollow(&install_path, 0o755)?;
 
     // Build devcontainer-feature.json
     let mut options = serde_json::Map::new();

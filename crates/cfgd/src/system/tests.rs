@@ -977,88 +977,36 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     );
 }
 
-/// Every path-based chmod in these two modules says why following a symlink is
+/// Every path-based chmod in the `cfgd` binary says why following a symlink is
 /// safe there.
 ///
-/// `std::fs::set_permissions` resolves its path again and follows whatever link it
-/// finds. Under an elevated run inside a directory an unprivileged user owns, that
-/// is a read-anything primitive: unlink the file cfgd just wrote, plant a link at
-/// another user's private key, and root applies the mode to that instead. The
-/// no-follow pair closes it by chmodding a descriptor, so every site here either
-/// takes [`cfgd_core::set_file_permissions_nofollow`] /
-/// [`cfgd_core::widen_file_permissions_nofollow`] or carries a
-/// `// follow-ok: <why>` line stating whose directory the path sits in.
+/// The rule, the tells and the hatch grammar live in
+/// [`cfgd_core::test_helpers::path_based_chmod_population`], which the twin walks
+/// in `cfgd-core` and `cfgd-operator` read too; the floors are this crate's own.
 ///
-/// This walk judges the `cfgd` binary's system and file engines. The daemon's
-/// reconciler is judged by its twin in `cfgd-core`, because the two crates
-/// compile separately and neither walk can read the other's sources.
+/// The population is the WHOLE crate, not the two engines the class was first
+/// swept in: a chmod is as likely to appear in a CLI verb or a secrets backend
+/// as in the file engine, and a walk stopped at a directory boundary is how six
+/// of this crate's sites went unasked. One walk per crate, each over its whole
+/// tree, is what leaves no site judged twice and none judged by nobody.
 ///
-/// The floor counts EVERY chmod the walk read, follow-capable or not: the
-/// follow-capable sites are the ones this rule is driving to zero, so flooring
-/// on those alone would turn a fully converted engine into a failure. A COMMENT
-/// line counts for nothing either way: a doc sentence naming the primitive is
-/// documentation, not a call site, and a floor a rustdoc paragraph could hold up
-/// would let the real population shrink with the walk none the wiser. Each floor
-/// sits AT what the workspace holds rather than under it, so a call site cannot
-/// vanish inside a margin: a `>=` floor never trips on an addition, and the
-/// assertion prints the number it read.
+/// The floor sits AT what the crate holds rather than under it, so a call site
+/// cannot vanish inside a margin: a `>=` floor never trips on an addition, and
+/// the assertion prints the numbers it read.
 #[test]
-fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_safe() {
-    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut offenders: Vec<String> = Vec::new();
-    let mut chmods = 0usize;
-    let mut files = 0usize;
-    for dir in ["src/system", "src/files"] {
-        let root = crate_root.join(dir);
-        for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-            if path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.parent().is_some_and(|p| p.ends_with("tests"))
-            {
-                continue;
-            }
-            let body = cfgd_core::test_helpers::production_slice_of(&path);
-            files += 1;
-            let rel = cfgd_core::to_posix_string(path.strip_prefix(crate_root).unwrap_or(&path));
-            let lines: Vec<&str> = body.lines().collect();
-            for (idx, line) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
-                if line.contains("set_file_permissions")
-                    || line.contains("widen_file_permissions")
-                    || line.contains("fs::set_permissions(")
-                {
-                    chmods += 1;
-                }
-                if !(line.contains("set_file_permissions(")
-                    || line.contains("fs::set_permissions("))
-                {
-                    continue;
-                }
-                if lines[idx.saturating_sub(3)..idx]
-                    .iter()
-                    .any(|l| l.contains("follow-ok:"))
-                {
-                    continue;
-                }
-                offenders.push(format!(
-                    "{rel}:{}: chmods a path that may be a symlink, take \
-                     `set_file_permissions_nofollow` (or \
-                     `widen_file_permissions_nofollow`), else mark it \
-                     `// follow-ok: <why the directory is root-owned>`",
-                    idx + 1
-                ));
-            }
-        }
-    }
+fn every_path_based_chmod_in_the_cfgd_crate_says_why_the_follow_is_safe() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let population = cfgd_core::test_helpers::path_based_chmod_population(&root);
     assert!(
-        files >= 28 && chmods >= 5,
-        "the walk read {files} files and {chmods} chmods, too few to be the population"
+        population.files >= 144 && population.chmods >= 14,
+        "the walk read {} files and {} chmods, too few to be the population",
+        population.files,
+        population.chmods
     );
     assert!(
-        offenders.is_empty(),
+        population.offenders.is_empty(),
         "every path-based chmod states why it may follow a link:\n{}",
-        offenders.join("\n")
+        population.offenders.join("\n")
     );
 }
 

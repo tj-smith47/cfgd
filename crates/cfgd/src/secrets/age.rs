@@ -136,8 +136,10 @@ impl SecretBackend for AgeBackend {
             }
         })?;
 
-        // Restrict permissions on decrypted secret (owner-only)
-        cfgd_core::set_file_permissions(&temp_file, 0o600).map_err(|e| {
+        // Restrict permissions on decrypted secret (owner-only). No-follow: the
+        // mode belongs to the plaintext this function just wrote, never to a file
+        // a link at that name resolves to.
+        cfgd_core::set_file_permissions_nofollow(&temp_file, 0o600).map_err(|e| {
             SecretError::DecryptionFailed {
                 path: path.to_path_buf(),
                 message: format!("failed to set temp file permissions: {}", e),
