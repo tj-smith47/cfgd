@@ -627,66 +627,76 @@ mod apply_summary_tests {
         // sentence states a single count, so there is nothing to tell apart.
         assert_eq!(ApplySummary::prose(&clean.to_column()), "22 succeeded");
 
+        // Each count is bound ONCE and read by all three: the stored row, the
+        // distinctness premise and the expected sentence. A number typed a
+        // second time is a number the premise does not cover.
+        let (total, succeeded, skipped) = (13, 12, 1);
         let split = ApplySummary::Actions {
             after_plan: 0,
-            total: 13,
-            succeeded: 12,
-            skipped: 1,
+            total,
+            succeeded,
+            skipped,
             failed: 0,
             not_attempted: 0,
             not_run: None,
             aborted: false,
         };
-        assert_slots_discriminate(&[("total", 13), ("succeeded", 12), ("skipped", 1)]);
+        assert_slots_discriminate(&[
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+        ]);
         assert_eq!(
             ApplySummary::prose(&split.to_column()),
-            "12 succeeded, 1 skipped"
+            format!("{succeeded} succeeded, {skipped} skipped")
         );
 
+        let (total, succeeded, failed, not_run) = (10, 4, 1, 5);
         let aborted = ApplySummary::Actions {
             after_plan: 0,
-            total: 10,
-            succeeded: 4,
+            total,
+            succeeded,
             skipped: 0,
-            failed: 1,
+            failed,
             not_attempted: 0,
-            not_run: Some(5),
+            not_run: Some(not_run),
             aborted: true,
         };
         assert_slots_discriminate(&[
-            ("total", 10),
-            ("succeeded", 4),
-            ("failed", 1),
-            ("not run", 5),
+            ("total", total),
+            ("succeeded", succeeded),
+            ("failed", failed),
+            ("not run", not_run),
         ]);
         assert_eq!(
             ApplySummary::prose(&aborted.to_column()),
-            "4 succeeded, 1 failed, 5 not run (aborted)"
+            format!("{succeeded} succeeded, {failed} failed, {not_run} not run (aborted)")
         );
 
         // Work the run learned it had to do is outside `total` too, and the
         // recalled sentence says so in its own clause: a row whose prose folded
         // it into `succeeded` read `4 succeeded` for a run the header promised
         // one action of.
+        let (total, succeeded, skipped, after_plan_count) = (6, 1, 5, 3);
         let after_plan = ApplySummary::Actions {
-            after_plan: 3,
-            total: 6,
-            succeeded: 1,
-            skipped: 5,
+            after_plan: after_plan_count,
+            total,
+            succeeded,
+            skipped,
             failed: 0,
             not_attempted: 0,
             not_run: None,
             aborted: false,
         };
         assert_slots_discriminate(&[
-            ("total", 6),
-            ("succeeded", 1),
-            ("skipped", 5),
-            ("after the plan", 3),
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+            ("after the plan", after_plan_count),
         ]);
         assert_eq!(
             ApplySummary::prose(&after_plan.to_column()),
-            "1 succeeded, 5 skipped, 3 after the plan"
+            format!("{succeeded} succeeded, {skipped} skipped, {after_plan_count} after the plan")
         );
         assert!(
             !clean.to_column().contains("afterPlan"),
@@ -695,25 +705,26 @@ mod apply_summary_tests {
 
         // A withheld action is outside `total` and named after the counts
         // that reconcile against it; a row with none carries no field for it.
+        let (total, succeeded, skipped, not_attempted) = (5, 2, 3, 1);
         let withheld = ApplySummary::Actions {
             after_plan: 0,
-            total: 5,
-            succeeded: 2,
-            skipped: 3,
+            total,
+            succeeded,
+            skipped,
             failed: 0,
-            not_attempted: 1,
+            not_attempted,
             not_run: None,
             aborted: false,
         };
         assert_slots_discriminate(&[
-            ("total", 5),
-            ("succeeded", 2),
-            ("skipped", 3),
-            ("not attempted", 1),
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+            ("not attempted", not_attempted),
         ]);
         assert_eq!(
             ApplySummary::prose(&withheld.to_column()),
-            "2 succeeded, 3 skipped, 1 not attempted"
+            format!("{succeeded} succeeded, {skipped} skipped, {not_attempted} not attempted")
         );
         assert!(
             !clean.to_column().contains("notAttempted"),

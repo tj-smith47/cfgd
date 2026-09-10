@@ -914,6 +914,16 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
         tally.planned_total,
         "the planned classes sum to what the header promised"
     );
+    // `planned` and `succeeded` ARE one number on a clean all-success run, so
+    // that pair is outside the premise: a forced pair exempts the pair, not the
+    // whole set. The four below are forced by nothing and are read off the tally
+    // rather than retyped beside it.
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("succeeded", tally.succeeded),
+        ("class total", tally.after_plan.len()),
+        ("converged", 3),
+        ("onChange hooks", 1),
+    ]);
     assert_eq!(tally.after_plan.len(), 4, "priced as its own class");
     assert_eq!(
         outcome_counts(&tally),
@@ -950,13 +960,28 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
 /// planned action had.
 #[test]
 fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
-    let mut result = apply_result(1, 0, ApplyStatus::Partial, 1);
+    let mut result = apply_result(2, 0, ApplyStatus::Partial, 2);
     result.action_results.push(after_plan_result(
         AfterPlan::EnvSurface,
         AfterPlanState::Failed,
     ));
     let tally = result.tally();
-    assert_eq!((tally.failed, tally.succeeded), (0, 1));
+    assert_eq!((tally.failed, tally.succeeded), (0, 2));
+    // The pair the positive assertion below rests on is the class's own failure
+    // count against the PLANNED success count, not the `(failed, succeeded)`
+    // tuple above: a class clause built from the planned count renders the very
+    // number the assertion reads unless the two differ.
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("succeeded", tally.succeeded),
+        (
+            "failed after the plan",
+            tally
+                .after_plan
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Failed)
+                .count(),
+        ),
+    ]);
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(&tally, RunTitle::Apply, &printer, None);
@@ -973,17 +998,31 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
 
     // A run whose every planned action failed lists no clauses at all, and the
     // class is then the only news there is about what else the run did.
-    let mut all_failed = apply_result(0, 1, ApplyStatus::Failed, 1);
+    let mut all_failed = apply_result(0, 2, ApplyStatus::Failed, 2);
     all_failed.action_results.push(after_plan_result(
         AfterPlan::EnvSurface,
         AfterPlanState::Performed,
     ));
+    let failed_tally = all_failed.tally();
+    // Same pairing the other way round: the planned failure count against the
+    // class's converged count, which coincide at one apiece.
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("failed", failed_tally.failed),
+        (
+            "converged after the plan",
+            failed_tally
+                .after_plan
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Performed)
+                .count(),
+        ),
+    ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    render_run_rollup(&all_failed.tally(), RunTitle::Apply, &printer, None);
+    render_run_rollup(&failed_tally, RunTitle::Apply, &printer, None);
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("1 action failed") && out.contains("1 env surface converged after the plan"),
+        out.contains("2 actions failed") && out.contains("1 env surface converged after the plan"),
         "a failed run still accounts for what it converged: {out:?}"
     );
 }
@@ -2471,7 +2510,12 @@ fn sole_phase_renders_its_owner_groups_at_the_run_depth() {
 fn hooks_and_backups_labels_are_distinct_bare_names() {
     assert_eq!(HOOKS_PHASE_LABEL, "Drift Hooks");
     assert_eq!(BACKUPS_PHASE_LABEL, "Backups");
-    for label in [HOOKS_PHASE_LABEL, BACKUPS_PHASE_LABEL] {
+    assert_eq!(CHANGE_HOOKS_PHASE_LABEL, "Change Hooks");
+    for label in [
+        HOOKS_PHASE_LABEL,
+        BACKUPS_PHASE_LABEL,
+        CHANGE_HOOKS_PHASE_LABEL,
+    ] {
         assert!(
             !label.starts_with("Phase: "),
             "{label} must be the bare name PhaseLabel::new(...) takes, not a \

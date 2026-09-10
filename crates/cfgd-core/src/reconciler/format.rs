@@ -100,11 +100,20 @@ pub const FILE_SKIP_VERB: &str = "skip";
 /// twice on one line. Judged on the reason's opening word alone, stemmed, so
 /// `skipped`, `skipping` and a trailing `:` are all the same offence, while a
 /// reason that merely mentions the verb later states something the row does not.
+/// A reason whose own first word merely BEGINS with the verb (`skiplist`) is
+/// refused too: the stem cannot tell a longer word from the verb it contains,
+/// and refusing the rare honest one is the cheap direction when the expensive
+/// one is a row that says `skip` twice — `// file-skip-reason-ok: <why>` is how
+/// such a reason states that it is not a restatement.
 ///
-/// Enforced at both ends, as the family's other members are: the composition
-/// asserts it in debug builds, and
-/// `no_file_skip_reason_repeats_the_verb_its_row_already_spelled` derives every
-/// production mint from both crates' sources.
+/// Enforced at both ends, as the family's other members are, and neither end
+/// covers what the other misses: the composition asserts it in debug builds, so
+/// a reason's actual bytes are judged however they were produced, but only on a
+/// path a debug build executes — in a release build, by nothing. The static half
+/// is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`, which
+/// judges every production mint whose reason it can read as a string literal or
+/// as a `const`, and REFUSES a mint whose reason it cannot read rather than
+/// passing over it.
 pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
     let opener = reason
         .split(|c: char| !c.is_ascii_alphabetic())
@@ -1419,6 +1428,12 @@ mod tests {
     /// `file_action.rs`) mints nothing and is judged where it was written.
     /// `// file-skip-reason-ok: <why>` on the field's line or the one above
     /// hatches a genuine exception.
+    ///
+    /// Anything else a mint's `reason` field holds — a `format!`, a call, a
+    /// `match` — is REFUSED rather than dropped. A count floor cannot stand in
+    /// for that: a third mint the resolver could not read would lower no count,
+    /// so the walk would pass having judged it never, and the composer's debug
+    /// assertion only reaches what a debug build executes.
     #[test]
     fn no_file_skip_reason_repeats_the_verb_its_row_already_spelled() {
         let crates_dir = crate::test_helpers::workspace_root().join("crates");
@@ -1464,9 +1479,14 @@ mod tests {
 
         // Every `const NAME: &str = "…";` the production sources declare, so a
         // reason stated away from its construction is still judged by its
-        // bytes.
+        // bytes. Keyed by NAME alone, which nothing stops two modules from both
+        // declaring, so a name whose declarations disagree is recorded here and
+        // refused at the mint that asks for it rather than anywhere it appears:
+        // the resolution reads whichever source sorted last, and two same-named
+        // consts that no skip reason names are not this walk's business.
         let mut literals: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        let mut ambiguous: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (_, body) in &sources {
             for line in body.lines() {
                 let Some((head, tail)) = line.split_once(": &str = \"") else {
@@ -1475,13 +1495,17 @@ mod tests {
                 let Some(name) = head.rsplit(' ').next() else {
                     continue;
                 };
-                if let Some((value, _)) = tail.split_once('"') {
-                    literals.insert(name.to_string(), value.to_string());
+                if let Some((value, _)) = tail.split_once('"')
+                    && let Some(prior) = literals.insert(name.to_string(), value.to_string())
+                    && prior != value
+                {
+                    ambiguous.insert(name.to_string());
                 }
             }
         }
 
         let mut mints: Vec<(String, String)> = Vec::new();
+        let mut unjudged: Vec<(String, String)> = Vec::new();
         for (relative, body) in &sources {
             let lines: Vec<&str> = body.lines().collect();
             let mut depth: Option<usize> = None;
@@ -1500,21 +1524,35 @@ mod tests {
                         .iter()
                         .any(|l| l.contains("file-skip-reason-ok:"));
                     let expr = expr.trim_end_matches(',').trim();
+                    let name = expr
+                        .trim_end_matches("()")
+                        .trim_end_matches(".to_string")
+                        .trim_end_matches(".into")
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(expr);
                     let reason = match expr.strip_prefix('"') {
                         Some(rest) => rest.split('"').next().map(str::to_string),
-                        None => literals
-                            .get(
-                                expr.trim_end_matches("()")
-                                    .trim_end_matches(".to_string")
-                                    .trim_end_matches(".into")
-                                    .rsplit("::")
-                                    .next()
-                                    .unwrap_or(expr),
-                            )
-                            .cloned(),
+                        None => literals.get(name).cloned(),
                     };
-                    if let Some(reason) = reason.filter(|_| !hatched) {
-                        mints.push((format!("{relative}:{}", idx + 1), reason));
+                    // A bare binding, or one cloned from a binding, REBUILDS a
+                    // reason stated at some other mint and judged there, so it
+                    // is a forward rather than a mint of its own.
+                    let core = expr.trim_end_matches("()").trim_end_matches(".clone");
+                    let forwarded = !core.is_empty()
+                        && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                    let site = format!("{relative}:{}", idx + 1);
+                    if !hatched {
+                        if !expr.starts_with('"') && ambiguous.contains(name) {
+                            unjudged.push((
+                                site,
+                                format!("`{name}` is declared with two different values"),
+                            ));
+                        } else if let Some(reason) = reason {
+                            mints.push((site, reason));
+                        } else if !forwarded {
+                            unjudged.push((site, expr.to_string()));
+                        }
                     }
                 }
                 if *open == 0 {
@@ -1522,6 +1560,12 @@ mod tests {
                 }
             }
         }
+        assert!(
+            unjudged.is_empty(),
+            "a skip reason the walk cannot read is judged by no walk: {unjudged:?}; state it \
+             as a string literal or as a `const` whose name no other production const \
+             takes, or hatch it with `// file-skip-reason-ok: <why>`"
+        );
         assert!(
             mints.len() >= 2,
             "the sources mint two skip reasons and the walk found {}: {mints:?}",

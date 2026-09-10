@@ -35,7 +35,6 @@ use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
 use cfgd_core::test_helpers::assert_slots_discriminate;
 use pretty_assertions::assert_eq;
-use serde_json::json;
 
 use common::profile_with_packages_setup;
 use common::{
@@ -338,16 +337,23 @@ fn apply_after_plan_work_human_and_json() {
         planned_total: 0,
         caveats: Vec::new(),
     };
-    assert_slots_discriminate(&[
+    let slots = [
         ("afterPlan", 4),
         ("afterPlanSkipped", 1),
         ("afterPlanFailed", 2),
-    ]);
+    ];
+    assert_slots_discriminate(&slots);
     let split = serde_json::to_value(AfterPlanCounts::of(&four_states)).unwrap();
+    for (slot, count) in slots {
+        assert_eq!(
+            split[slot], count,
+            "a machine consumer reads the class's three outcomes, not one total: {split}"
+        );
+    }
     assert_eq!(
-        split,
-        json!({"afterPlan": 4, "afterPlanSkipped": 1, "afterPlanFailed": 2}),
-        "a machine consumer reads the class's three outcomes, not one total"
+        split.as_object().map(serde_json::Map::len),
+        Some(slots.len()),
+        "and reads no field beside them: {split}"
     );
 }
 

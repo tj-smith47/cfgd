@@ -54,6 +54,13 @@ pub fn nothing_to_do_verdict(pending_decisions: usize) -> (Role, String) {
     )
 }
 
+/// Heading for the `onChange` hooks an apply runs once it knows something
+/// changed. Not a [`PhaseName`] either: the hook fires on whether THIS run
+/// changed anything, so no plan can hold it, and its rows would otherwise print
+/// at the run's own depth between the phase tree and the rollup while the
+/// sibling class of unplanned hook work ([`HOOKS_PHASE_LABEL`]) opens a group.
+pub const CHANGE_HOOKS_PHASE_LABEL: &str = "Change Hooks";
+
 /// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
 /// declared work with their own hooks and record, but nothing plans them into
 /// a [`Plan`] and nothing journals them into `apply_journal`.

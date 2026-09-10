@@ -1826,6 +1826,14 @@ impl<'a> super::Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
+        // Hooks the plan could not name open their own group, the shape the repo
+        // rules for unplanned work, instead of printing at the run's own depth
+        // between the phase tree and the rollup. One group over both loops: a
+        // profile hook and a module hook are the same class of work, and two
+        // headings would read as two. Opened at the first hook that actually
+        // runs, because a heading over no rows promises work this run did not do,
+        // and held open until the last one so each status lands under it.
+        let mut change_hooks: Option<super::run::PseudoPhase<'_>> = None;
         if any_changed && !skip_scripts && !resolved.merged.scripts.on_change.is_empty() {
             let profile_name = resolved
                 .layers
@@ -1843,6 +1851,9 @@ impl<'a> super::Reconciler<'a> {
             });
             let working = script_default_workdir(config_dir);
             for entry in &resolved.merged.scripts.on_change {
+                change_hooks.get_or_insert_with(|| {
+                    super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL)
+                });
                 match execute_script(
                     entry,
                     config_dir,
@@ -1932,6 +1943,9 @@ impl<'a> super::Reconciler<'a> {
                 );
                 let working = script_default_workdir(config_dir);
                 for entry in &module.on_change_scripts {
+                    change_hooks.get_or_insert_with(|| {
+                        super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL)
+                    });
                     match execute_script(
                         entry,
                         &module.dir,
@@ -1990,6 +2004,10 @@ impl<'a> super::Reconciler<'a> {
                 }
             }
         }
+
+        // The group closes before the verdict: the rollup is the run's, not the
+        // hooks'.
+        drop(change_hooks);
 
         // The verdict is taken over everything that RAN, after-plan work
         // included: a surface this run rewrote and failed to write is a failed

@@ -23312,19 +23312,21 @@ mod log_dialect {
             .unwrap();
         }
 
-        crate::test_helpers::assert_slots_discriminate(&[
+        // The asserted sentence is built from the slots the premise proved
+        // distinct, so it cannot carry a number that premise never saw.
+        let slots = [
             ("actions succeeded", 2),
             ("onChange hooks after the plan", 1),
-        ]);
+        ];
+        crate::test_helpers::assert_slots_discriminate(&slots);
         run_tick(&config_path, &state_dir, None).await;
 
         let logs = daemon_log();
-        assert!(
-            logs.contains(
-                "reconcile: complete — 2 actions succeeded, 1 onChange hook ran after the plan"
-            ),
-            "got: {logs}"
+        let expected = format!(
+            "reconcile: complete — {} actions succeeded, {} onChange hook ran after the plan",
+            slots[0].1, slots[1].1
         );
+        assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
     }
 
     /// A per-module tick names its module: both cadences write to one log, and
