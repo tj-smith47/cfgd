@@ -1905,7 +1905,7 @@ mod tests {
             // The decision is driven directly via `resolve_npm_prefix_with`
             // with `is_writable` forced to `false`, so this runs for real at
             // any uid — a root process bypasses the real write-probe (see
-            // npm_prefix_is_writable_returns_false_for_unwritable_directory
+            // npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root
             // for the one place that genuinely needs a root guard).
             let _clear = clear_npm_env_prefix();
             let rejected = tempfile::tempdir().expect("tempdir");
@@ -2317,7 +2317,7 @@ mod tests {
         }
 
         #[test]
-        fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
+        fn npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root() {
             // The write-probe performs a real filesystem write, and root
             // bypasses Unix DAC permission checks entirely, so an unwritable
             // directory cannot be constructed under root. The ENOTDIR case

@@ -2898,7 +2898,7 @@ fn scan_profiles_tolerant_missing_dir_is_empty() {
 
 #[cfg(unix)]
 #[test]
-fn scan_profiles_tolerant_unreadable_dir_errors() {
+fn scan_profiles_tolerant_unreadable_dir_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
     if crate::is_root() {
         return; // root bypasses mode bits; the denial cannot be simulated

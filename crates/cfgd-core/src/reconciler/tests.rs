@@ -15653,7 +15653,7 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
-fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absence() {
+fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absence_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Root ignores the mode bits entirely, so the unreadable file is readable

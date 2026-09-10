@@ -2066,7 +2066,7 @@ fn test_scan_system_settings_no_launch_agents_dir_yields_empty() {
 
 #[cfg(unix)]
 #[test]
-fn test_scan_dotfiles_unreadable_config_dir_returns_home_entries() {
+fn test_scan_dotfiles_unreadable_config_dir_returns_home_entries_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Skip when running as root: root bypasses the 0000 permission and can

@@ -217,7 +217,7 @@ mod tests {
     // port 1 successfully.
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "current_thread")]
-    async fn serve_metrics_bind_failure_returns_metrics_error() {
+    async fn serve_metrics_bind_failure_returns_metrics_error_as_non_root() {
         if cfgd_core::is_root() {
             return;
         }

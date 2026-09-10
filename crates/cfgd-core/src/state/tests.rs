@@ -902,7 +902,7 @@ fn every_home_directory_unresolved_names_the_directory_it_could_not_place() {
 
 #[cfg(unix)]
 #[test]
-fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
+fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Skip under root: a 0o500 dir is still writable to uid 0, so the probe

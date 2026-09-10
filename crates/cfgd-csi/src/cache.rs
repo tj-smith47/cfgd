@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn touch_atime_errors_on_unwritable_dir() {
+    fn touch_atime_errors_on_unwritable_dir_as_non_root() {
         use std::os::unix::fs::PermissionsExt;
         // atomic_write_str creates parent dirs automatically, so the only
         // reliable failure mode is a parent that exists but is read-only.

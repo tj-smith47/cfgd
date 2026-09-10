@@ -141,7 +141,7 @@ fn scaffold_creates_structure() {
 
 #[cfg(unix)]
 #[test]
-fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint() {
+fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Root bypasses mode bits; the 0o500 dir is writable to uid 0, so the probe

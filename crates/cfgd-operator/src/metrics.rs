@@ -408,7 +408,7 @@ mod tests {
     // concept altogether. Skipped when run as root locally.
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "current_thread")]
-    async fn run_metrics_server_bind_failure_returns_metrics_error() {
+    async fn run_metrics_server_bind_failure_returns_metrics_error_as_non_root() {
         use std::sync::Arc;
         use tokio::sync::Mutex;
 

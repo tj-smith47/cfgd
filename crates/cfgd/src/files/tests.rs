@@ -3711,7 +3711,7 @@ fn ensure_target_writable_allows_readonly_existing_target_in_writable_parent() {
 
 #[test]
 #[cfg(unix)]
-fn ensure_target_writable_errors_on_readonly_parent_directory() {
+fn ensure_target_writable_errors_on_readonly_parent_directory_as_non_root() {
     // A 0555 parent has no write bit. For a non-root process that cannot create
     // an entry there, the probe must reject the target. Root bypasses DAC and
     // genuinely can write, so it is asserted by the no-write-bit test below.
