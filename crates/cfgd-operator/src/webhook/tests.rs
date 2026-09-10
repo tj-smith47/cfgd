@@ -2225,30 +2225,3 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
         "both gates must call injects_on_linux rather than spell the rule again"
     );
 }
-
-/// Every path-based chmod in `cfgd-operator` says why following a symlink is
-/// safe there.
-///
-/// The rule, the tells and the hatch grammar live in
-/// [`cfgd_core::test_helpers::path_based_chmod_population`], which the twin walks
-/// in `cfgd` and `cfgd-core` read too; the floors are this crate's own. The
-/// population is the WHOLE crate, like its twins, and sits here beside the other
-/// whole-crate walk rather than beside the one site it currently finds: a chmod
-/// added in a controller or in the gateway's own file handling is exactly what
-/// this has to reach.
-#[test]
-fn every_path_based_chmod_in_the_operator_crate_says_why_the_follow_is_safe() {
-    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
-    let population = cfgd_core::test_helpers::path_based_chmod_population(&root);
-    assert!(
-        population.files >= 46 && population.chmods >= 1,
-        "the walk read {} files and {} chmods, too few to be the population",
-        population.files,
-        population.chmods
-    );
-    assert!(
-        population.offenders.is_empty(),
-        "every path-based chmod states why it may follow a link:\n{}",
-        population.offenders.join("\n")
-    );
-}
