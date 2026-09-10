@@ -2375,6 +2375,164 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     );
 }
 
+/// Every test guard that pins a process-global seam, the serial group its
+/// rustdoc names, and the number of call sites it watches today. An empty group
+/// is `serial_test`'s unnamed lock. A guard that takes the lock itself
+/// (`GitRefreshWindowGuard`) or needs no serialization at all
+/// (`CommandPathMemoTtlGuard`) is deliberately absent.
+const SERIAL_PINS: &[(&str, &str, usize)] = &[
+    ("AvailabilityMemoTtlGuard", "", 4),
+    ("AvailableVersionMemoTtlGuard", "available_version_memo", 5),
+    ("ConfigReuseMaxAgeGuard", "tick_cache_reuse", 1),
+    ("ModuleReuseTtlGuard", "tick_cache_reuse", 1),
+    ("RateLimitedBackoffGuard", "rate_limited_backoff", 3),
+];
+
+/// Exempts one declaration from the walk below, with the reason after it.
+const SERIAL_GROUP_HATCH: &str = "serial-group-ok:";
+
+/// Whether the attribute line `line` joins the serial group `group` — the EXACT
+/// group, because `serial_test` locks per name and two groups serialize nothing
+/// against each other. An empty `group` is the unnamed lock, which is a whole
+/// attribute rather than a prefix: `#[serial_test::serial]` joins it and
+/// `#[serial_test::serial(other)]` does not.
+fn joins_serial_group(line: &str, group: &str) -> bool {
+    let attr = code_half(line);
+    let attr = attr.trim();
+    if !attr.starts_with("#[") {
+        return false;
+    }
+    if group.is_empty() {
+        return attr == "#[serial_test::serial]" || attr == "#[serial]";
+    }
+    attr.contains(&format!("serial({group})"))
+}
+
+/// A test pinning a serialized seam joins the group its pin names.
+///
+/// Each [`SERIAL_PINS`] guard overrides one process-global `AtomicU64`, saving
+/// the value it found and restoring it on drop. Two of them live at once is not
+/// a flake but a lost override: the second pin captures the FIRST one's value as
+/// the one to restore, so the seam stays pinned for the rest of the binary and
+/// every later test reads a ceiling nobody set. The group that prevents it is
+/// named in the guard's own rustdoc, which no compiler reads, and it has to be
+/// the same name every other caller wrote — a pin serialized under a group of
+/// its own serializes against nothing.
+///
+/// The walk judges the DECLARATION a pin is written in, so a pin inside a shared
+/// helper is an offender like an unserialized test: the helper's callers are not
+/// visible here, and a helper that pins is a helper every caller must serialize.
+/// A pin outside every declaration is reported per file for the same reason.
+/// `// serial-group-ok: <why>` on the declaration or in its attribute block
+/// exempts one.
+#[test]
+fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
+    let mut files_read = 0usize;
+    let mut hits: std::collections::BTreeMap<&str, usize> = SERIAL_PINS
+        .iter()
+        .map(|(guard, _, _)| (*guard, 0usize))
+        .collect();
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it, and
+        // `test_helpers.rs` is where the guards themselves are declared.
+        if path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new("test_helpers.rs"))
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !SERIAL_PINS
+            .iter()
+            .any(|(guard, _, _)| body.contains(&format!("{guard}::")))
+        {
+            continue;
+        }
+        files_read += 1;
+        let lines: Vec<&str> = body.lines().collect();
+        let relative = source_label(&path);
+
+        let mut attributed = 0usize;
+        for (open, slice) in source_functions(&relative, &body) {
+            let code: Vec<String> = crate::test_helpers::logical_source_lines(&slice)
+                .into_iter()
+                .map(|(_, line)| code_half(&line))
+                .collect();
+            let start = attribute_block_start(&lines, open - 1);
+            let attrs = &lines[start..open - 1];
+            let is_test = attrs.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+            });
+            let name = declared_fn_name(&slice).unwrap_or("<unnamed>").to_string();
+            for (guard, group, _) in SERIAL_PINS {
+                let needle = format!("{guard}::");
+                let found = code.iter().filter(|line| line.contains(&needle)).count();
+                if found == 0 {
+                    continue;
+                }
+                *hits.entry(*guard).or_insert(0) += found;
+                attributed += found;
+                if (start..open).any(|at| hatched(&lines, at, SERIAL_GROUP_HATCH)) {
+                    continue;
+                }
+                if is_test && attrs.iter().any(|l| joins_serial_group(l, group)) {
+                    continue;
+                }
+                let wanted = if group.is_empty() {
+                    "#[serial_test::serial]".to_string()
+                } else {
+                    format!("#[serial_test::serial({group})]")
+                };
+                offenders.push(format!(
+                    "{relative}:{open}: {name} pins {guard} without {wanted}"
+                ));
+            }
+        }
+        // A pin written outside every declaration is serialized by no attribute
+        // at all, and the pass above reads declarations only.
+        let loose: usize = crate::test_helpers::logical_source_lines(&body)
+            .into_iter()
+            .map(|(_, line)| code_half(&line))
+            .map(|code| {
+                SERIAL_PINS
+                    .iter()
+                    .filter(|(guard, _, _)| code.contains(&format!("{guard}::")))
+                    .count()
+            })
+            .sum();
+        if loose > attributed {
+            offenders.push(format!(
+                "{relative}: {} pin(s) outside every function declaration",
+                loose - attributed
+            ));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a declaration pinning a serialized seam must carry that pin's own \
+         `#[serial_test::serial…]` group, or `// serial-group-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    // Floors, so a walk that stopped matching anything cannot pass silently.
+    assert!(
+        files_read >= 5,
+        "the walk read {files_read} files holding a pin; it has stopped seeing them"
+    );
+    for (guard, _, floor) in SERIAL_PINS {
+        let found = hits.get(*guard).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "{guard} matched {found} call sites, under its floor of {floor} — \
+             the walk has gone blind to it"
+        );
+    }
+}
+
 /// No item outside a function body writes the process environment.
 ///
 /// The walks above are FUNCTION-scoped: they cut a file into

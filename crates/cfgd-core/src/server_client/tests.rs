@@ -1175,6 +1175,7 @@ fn enroll_waits_on_the_rationed_ladder_when_a_429_advises_nothing() {
 /// the server errors out of is a server problem, and pointing the reader at the
 /// enrollment quota sends them after a limit no longer refusing them.
 #[test]
+#[serial_test::serial(rate_limited_backoff)]
 fn the_rate_limit_next_step_follows_the_refusal_the_ladder_ended_on() {
     let _ladder =
         crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
