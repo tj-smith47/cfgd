@@ -202,14 +202,34 @@ single-source-of-truth wiring.
   it (41 kills between 2026-09-04 and 2026-09-09, every one a rustdoc or the
   rust-analyzer beside it). A broken link is a merge blocker, not a commit
   blocker — CI refuses it before it lands.
-- e2e.yml's `gateway-tests` and `cli-tests` jobs CARGO-BUILD a release `cfgd`
-  (the gateway suite's `test-device-projection.sh` drives a real binary against
-  the gateway; the CLI suite is native), so both carry the same compile-cache
-  layering as e2e-setup.yml — `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER: sccache`
-  env, `mozilla-actions/sccache-action`, and `Swatinem/rust-cache` under a
-  per-job `key:` (`e2e-gateway`, `e2e-cli`). Every other e2e job rides the setup
-  job's images and needs none of it. A cold build is what the 25-minute budget
-  cannot absorb: raising the timeout hides a missing cache rather than fixing it.
+- **Every e2e job that cargo-builds carries the compile-cache layering, under its
+  own key.** Six e2e jobs compile on the runner rather than riding the
+  setup job's images: `setup` (e2e-setup.yml, building the three images),
+  `operator-tests` (`test-oci.sh` → `ensure_cfgd_binary`), `full-stack-tests`
+  (`setup-fullstack-env.sh` → `ensure_cfgd_binary`), `crossplane-tests`
+  (`run-crossplane-tests.sh` renders the CRDs with `cargo run --release --bin
+  cfgd-gen-crds`), `gateway-tests` (`test-device-projection.sh` drives a real
+  binary against the gateway) and `cli-tests` (the suite is native). Each carries
+  four parts — `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER: sccache` in its env,
+  `mozilla-actions/sccache-action`, and `Swatinem/rust-cache` under a `key:` no
+  sibling shares (`e2e-setup`, `e2e-operator`, `e2e-full-stack`, `e2e-crossplane`,
+  `e2e-gateway`, `e2e-cli`) — because two jobs on one key is one cache their
+  different `target/` trees evict each other from. `node-tests`, `helm-tests` and
+  `server-tests` compile nothing and carry no Rust toolchain at all. A new e2e job
+  that builds joins the list with its own key; a Rust toolchain step is the tell,
+  and `.claude/scripts/audit.sh`'s "e2e compile-cache layering" gate fails any job
+  carrying one without all four parts or with a key a sibling already took. A cold
+  build is what the per-job budget cannot absorb: raising the timeout hides a
+  missing cache rather than fixing it.
+- Outside e2e.yml, the layering rides `./.github/actions/setup-rust` (toolchain +
+  sccache + rust-cache + protoc + go-task, each gated by an input), which every
+  compiling ci.yml job uses; `msrv` layers by hand because it installs a pinned
+  older toolchain. `fmt` passes `cache: 'false'` (it only runs `cargo fmt`), the
+  `audit`/`cargo-audit`/`snapshot` jobs compile nothing, and `test-freebsd` builds
+  inside a vmactions guest a runner-side cache cannot reach. release.yml,
+  nightly.yml, determinism-shards.yml and the two publish workflows run no `cargo`
+  step at all — anodizer-action owns those builds, and a determinism rebuild must
+  start from a clean `target/` by definition.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

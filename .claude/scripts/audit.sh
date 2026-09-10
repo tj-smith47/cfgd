@@ -1811,6 +1811,68 @@ else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
 fi
 
+log_section "e2e compile-cache layering (every building job carries it)"
+# A Rust toolchain step is the tell that an e2e job COMPILES: a suite needing a
+# release `cfgd` builds it on the runner (`ensure_cfgd_binary`, or `cargo run
+# --release --bin cfgd-gen-crds`), and a suite that rides the setup job's images
+# needs no toolchain at all. A cold build is what the per-job timeout cannot
+# absorb, so the toolchain step and the four-part compile cache travel together:
+# `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER` for the job, `mozilla-actions/sccache-action`,
+# and `Swatinem/rust-cache` under a `key:` no sibling job shares — one key over two
+# jobs is one cache their different `target/` trees evict each other from. Raising
+# the timeout instead hides a missing cache.
+e2e_wfs=(.github/workflows/e2e.yml .github/workflows/e2e-setup.yml)
+e2e_missing=""
+for wf in "${e2e_wfs[@]}"; do
+    if [[ ! -f "$wf" ]]; then
+        log_error "e2e compile-cache gate could not run (missing $wf)"
+        continue
+    fi
+    e2e_missing="${e2e_missing}$(awk -v wf="$wf" '
+        /^jobs:[[:space:]]*$/ { injobs = 1; next }
+        injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+            job = $0; sub(/^  /, "", job); sub(/:[[:space:]]*$/, "", job)
+            order[++n] = job
+            next
+        }
+        injobs && job != "" {
+            if ($0 ~ /dtolnay\/rust-toolchain/)         toolchain[job] = 1
+            if ($0 ~ /mozilla-actions\/sccache-action/) sccache[job]   = 1
+            if ($0 ~ /Swatinem\/rust-cache/)            rustcache[job] = 1
+            if ($0 ~ /RUSTC_WRAPPER/)                   wrapper[job]   = 1
+            if ($0 ~ /SCCACHE_GHA_ENABLED/)             gha[job]       = 1
+            if ($0 ~ /^[[:space:]]+key:[[:space:]]*[^[:space:]]/) {
+                k = $0; sub(/^[[:space:]]*key:[[:space:]]*/, "", k); cachekey[job] = k
+            }
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                j = order[i]
+                if (!(j in toolchain)) continue
+                miss = ""
+                if (!(j in gha))       miss = miss " SCCACHE_GHA_ENABLED"
+                if (!(j in wrapper))   miss = miss " RUSTC_WRAPPER"
+                if (!(j in sccache))   miss = miss " mozilla-actions/sccache-action"
+                if (!(j in rustcache)) miss = miss " Swatinem/rust-cache"
+                if (miss != "")
+                    print wf " " j ": compiles but carries no" miss
+                else if (!(j in cachekey))
+                    print wf " " j ": rust-cache carries no key:, so it shares one cache with its siblings"
+                else if (cachekey[j] in owner)
+                    print wf " " j ": rust-cache key " cachekey[j] " already belongs to " owner[cachekey[j]]
+                else
+                    owner[cachekey[j]] = j
+            }
+        }
+    ' "$wf")"$'\n'
+done
+if [[ -n "$(printf '%s' "$e2e_missing" | grep . || true)" ]]; then
+    log_error "e2e jobs that compile without the full compile-cache layering:"
+    printf '%s' "$e2e_missing" | grep . | first_lines 20
+else
+    log_ok "Every e2e job with a Rust toolchain carries sccache + rust-cache under its own key"
+fi
+
 # --- One owner comparator ---
 # `Owner::sort_key` is the single rule for which owner precedes which, and it is
 # applied exactly once — where a phase's groups are built. A second call site is
