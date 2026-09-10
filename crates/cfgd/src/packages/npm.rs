@@ -281,12 +281,15 @@ impl Drop for TestElevatedGuard {
     }
 }
 
+// serial-group-ok: the pinning helper itself, named by the seam's own roster row;
+// the declarations that CALL it are the ones that must carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
     let prev = TEST_ELEVATED_OVERRIDE.swap(i8::from(elevated), std::sync::atomic::Ordering::SeqCst);
     TestElevatedGuard { prev }
 }
 
+// serial-group-ok: forwards to the pinning helper above; its callers carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
 where

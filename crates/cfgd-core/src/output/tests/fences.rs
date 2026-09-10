@@ -2375,17 +2375,65 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     );
 }
 
-/// Every test guard that pins a process-global seam, the serial group its
-/// rustdoc names, and the number of call sites it watches today. An empty group
-/// is `serial_test`'s unnamed lock. A guard that takes the lock itself
-/// (`GitRefreshWindowGuard`) or needs no serialization at all
-/// (`CommandPathMemoTtlGuard`) is deliberately absent.
-const SERIAL_PINS: &[(&str, &str, usize)] = &[
-    ("AvailabilityMemoTtlGuard", "", 4),
-    ("AvailableVersionMemoTtlGuard", "available_version_memo", 5),
-    ("ConfigReuseMaxAgeGuard", "tick_cache_reuse", 1),
-    ("ModuleReuseTtlGuard", "tick_cache_reuse", 1),
-    ("RateLimitedBackoffGuard", "rate_limited_backoff", 3),
+/// Every test guard that pins a process-global seam: the call a pin is written
+/// as, the serial group the guard's own rustdoc names, the UNPINNED reader whose
+/// answer only holds inside that group, and the number of pin call sites it
+/// watches today. An empty group is `serial_test`'s unnamed lock.
+///
+/// The pin is a needle rather than a type name because a seam whose guard is
+/// private to one file is reached through a helper call (`with_test_elevated`)
+/// rather than a `Type::` constructor, and one column holding both shapes is
+/// what lets this table name every seam in the workspace.
+///
+/// The reader is the accessor that answers the override. A test asserting what
+/// it returns with NOTHING pinned is the designated victim of every pin on that
+/// seam, so it belongs to the same group as the pins themselves; a test reading
+/// the seam's CONSTANT is not in the class, the constant being the value an
+/// override displaces rather than the override.
+///
+/// A guard that takes the lock itself (`GitRefreshWindowGuard`) or needs no
+/// serialization at all (`CommandPathMemoTtlGuard`) is deliberately absent, as
+/// are the env-var guards, whose serialization
+/// [`every_test_mutating_the_process_environment_serializes_itself`] demands
+/// instead.
+const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
+    (
+        "AvailabilityMemoTtlGuard::",
+        "",
+        "availability_memo_ttl(",
+        4,
+    ),
+    (
+        "AvailableVersionMemoTtlGuard::",
+        "available_version_memo",
+        "available_version_memo_ttl(",
+        5,
+    ),
+    (
+        "ConfigReuseMaxAgeGuard::",
+        "tick_cache_reuse",
+        "config_reuse_max_age(",
+        1,
+    ),
+    (
+        "EnumerationMemoTtlGuard::",
+        "enumeration_memo",
+        "enumeration_memo_ttl(",
+        14,
+    ),
+    (
+        "ModuleReuseTtlGuard::",
+        "tick_cache_reuse",
+        "module_reuse_ttl(",
+        1,
+    ),
+    (
+        "RateLimitedBackoffGuard::",
+        "rate_limited_backoff",
+        "BackoffConfig::rate_limited(",
+        3,
+    ),
+    ("with_test_elevated", "", "effective_elevated(", 14),
 ];
 
 /// Exempts one declaration from the walk below, with the reason after it.
@@ -2408,16 +2456,22 @@ fn joins_serial_group(line: &str, group: &str) -> bool {
     attr.contains(&format!("serial({group})"))
 }
 
-/// A test pinning a serialized seam joins the group its pin names.
+/// A test whose verdict depends on a serialized seam joins that seam's group.
 ///
-/// Each [`SERIAL_PINS`] guard overrides one process-global `AtomicU64`, saving
-/// the value it found and restoring it on drop. Two of them live at once is not
-/// a flake but a lost override: the second pin captures the FIRST one's value as
-/// the one to restore, so the seam stays pinned for the rest of the binary and
-/// every later test reads a ceiling nobody set. The group that prevents it is
-/// named in the guard's own rustdoc, which no compiler reads, and it has to be
-/// the same name every other caller wrote — a pin serialized under a group of
-/// its own serializes against nothing.
+/// Each [`SERIAL_PINS`] seam is one process-global `AtomicU64` a guard
+/// overrides, saving the value it found and restoring it on drop. Two of them
+/// live at once is not a flake but a lost override: the second pin captures the
+/// FIRST one's value as the one to restore, so the seam stays pinned for the
+/// rest of the binary and every later test reads a ceiling nobody set. The
+/// group that prevents it is named in the guard's own rustdoc, which no
+/// compiler reads, and it has to be the same name every other caller wrote — a
+/// pin serialized under a group of its own serializes against nothing.
+///
+/// A test READING the unpinned seam is in the same class one property over: its
+/// whole claim is that nothing is pinned, which a concurrent pin displaces, so
+/// the roster's reader column is demanded of `#[test]` declarations too. A
+/// production call site is no declaration the walk can demand an attribute of
+/// and is left alone.
 ///
 /// The walk judges the DECLARATION a pin is written in, so a pin inside a shared
 /// helper is an offender like an unserialized test: the helper's callers are not
@@ -2425,12 +2479,17 @@ fn joins_serial_group(line: &str, group: &str) -> bool {
 /// A pin outside every declaration is reported per file for the same reason.
 /// `// serial-group-ok: <why>` on the declaration or in its attribute block
 /// exempts one.
+///
+/// Its subject is TEST code, so unlike a production walk it reads each file
+/// whole rather than through `production_slice_of`: the cut would drop every
+/// pin, each one living in a `#[cfg(test)]` module. A file it cannot read is a
+/// file it cannot judge, so an unreadable one fails the walk outright.
 #[test]
 fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
     let mut files_read = 0usize;
     let mut hits: std::collections::BTreeMap<&str, usize> = SERIAL_PINS
         .iter()
-        .map(|(guard, _, _)| (*guard, 0usize))
+        .map(|(pin, _, _, _)| (*pin, 0usize))
         .collect();
     let mut offenders = Vec::new();
 
@@ -2442,18 +2501,19 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let labelled = source_label(&path);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
+        });
         if !SERIAL_PINS
             .iter()
-            .any(|(guard, _, _)| body.contains(&format!("{guard}::")))
+            .any(|(pin, _, reader, _)| body.contains(pin) || body.contains(reader))
         {
             continue;
         }
         files_read += 1;
         let lines: Vec<&str> = body.lines().collect();
-        let relative = source_label(&path);
+        let relative = labelled;
 
         let mut attributed = 0usize;
         for (open, slice) in source_functions(&relative, &body) {
@@ -2468,13 +2528,13 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
                 t.starts_with("#[test]") || t.starts_with("#[tokio::test")
             });
             let name = declared_fn_name(&slice).unwrap_or("<unnamed>").to_string();
-            for (guard, group, _) in SERIAL_PINS {
-                let needle = format!("{guard}::");
-                let found = code.iter().filter(|line| line.contains(&needle)).count();
-                if found == 0 {
+            for (pin, group, reader, _) in SERIAL_PINS {
+                let found = code.iter().filter(|line| line.contains(pin)).count();
+                let reads = is_test && code.iter().any(|line| line.contains(reader));
+                if found == 0 && !reads {
                     continue;
                 }
-                *hits.entry(*guard).or_insert(0) += found;
+                *hits.entry(*pin).or_insert(0) += found;
                 attributed += found;
                 if (start..open).any(|at| hatched(&lines, at, SERIAL_GROUP_HATCH)) {
                     continue;
@@ -2487,9 +2547,16 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
                 } else {
                     format!("#[serial_test::serial({group})]")
                 };
-                offenders.push(format!(
-                    "{relative}:{open}: {name} pins {guard} without {wanted}"
-                ));
+                if found > 0 {
+                    offenders.push(format!(
+                        "{relative}:{open}: {name} pins {pin} without {wanted}"
+                    ));
+                }
+                if reads {
+                    offenders.push(format!(
+                        "{relative}:{open}: {name} reads the unpinned {reader} without {wanted}"
+                    ));
+                }
             }
         }
         // A pin written outside every declaration is serialized by no attribute
@@ -2500,7 +2567,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
             .map(|code| {
                 SERIAL_PINS
                     .iter()
-                    .filter(|(guard, _, _)| code.contains(&format!("{guard}::")))
+                    .filter(|(pin, _, _, _)| code.contains(*pin))
                     .count()
             })
             .sum();
@@ -2514,20 +2581,20 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
 
     assert!(
         offenders.is_empty(),
-        "a declaration pinning a serialized seam must carry that pin's own \
-         `#[serial_test::serial…]` group, or `// serial-group-ok: <why>`:\n{}",
+        "a declaration pinning or reading a serialized seam must carry that \
+         seam's own `#[serial_test::serial…]` group, or `// serial-group-ok: <why>`:\n{}",
         offenders.join("\n")
     );
     // Floors, so a walk that stopped matching anything cannot pass silently.
     assert!(
-        files_read >= 5,
-        "the walk read {files_read} files holding a pin; it has stopped seeing them"
+        files_read >= 15,
+        "the walk read {files_read} files holding a pin or a reader; it has stopped seeing them"
     );
-    for (guard, _, floor) in SERIAL_PINS {
-        let found = hits.get(*guard).copied().unwrap_or(0);
+    for (pin, _, _, floor) in SERIAL_PINS {
+        let found = hits.get(*pin).copied().unwrap_or(0);
         assert!(
             found >= *floor,
-            "{guard} matched {found} call sites, under its floor of {floor} — \
+            "{pin} matched {found} call sites, under its floor of {floor} — \
              the walk has gone blind to it"
         );
     }

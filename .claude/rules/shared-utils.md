@@ -455,6 +455,8 @@ Reached via `cfgd_core::test_helpers::*`, gated behind the `test-helpers` Cargo 
 - `RateLimitedBackoffGuard::pinned` — pins the rate-limited retry ladder's first step, so a test proving a 429 chose THAT ladder pays milliseconds rather than its real seconds; pair with `#[serial_test::serial(rate_limited_backoff)]`.
 - `ConfigReuseMaxAgeGuard::…` / `ModuleReuseTtlGuard::…` — the tick cache's two reuse ceilings; pair with `#[serial_test::serial(tick_cache_reuse)]`.
 - `GitRefreshWindowGuard::…` — the module git-cache refresh window; the pin SERIALIZES ITSELF.
+- `EnumerationMemoTtlGuard::…` — the same for the installed-package enumeration ceiling; pair with `#[serial_test::serial(enumeration_memo)]`.
+- **Every pin of a process-global ceiling joins its seam's own serial group, and so does a test asserting the UNPINNED reader** — `SERIAL_PINS` (`output/tests/fences.rs`) is the roster of seam, group, reader and call-site floor, and `every_test_pinning_a_serialized_seam_joins_its_own_group` walks both crates for a declaration missing the attribute (`// serial-group-ok: <why>` hatches one).
 - `measured_in_a_stable_generation(measure)` — run `measure` in a window where nothing else moved the resolution generation. REQUIRED by every memo-hit claim; the closure must be re-runnable.
 - `captured_text(&buf)` — the ONE read of a capture buffer, ANSI-stripped; a negative `!contains` goes VACUOUS the moment styling is on.
 - `Printer::for_test_split_streams(verbosity)` — the split-stream capture, the one constructor that can state a stdout-purity claim directly.

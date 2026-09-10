@@ -925,11 +925,13 @@ mod tests {
     // One question per manager for the whole module walk, however many packages
     // the modules declare under it.
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn doctor_asks_each_manager_once_for_the_whole_walk() {
         // The count is a memo-hit claim, so the memo's age ceiling is pinned out
-        // of reach — unpinned it rests on the 30s wall clock. No serialization:
-        // nothing in this crate's test binary pins the ceiling to zero, and a
-        // longer ceiling can only let another test's entries live longer.
+        // of reach — unpinned it rests on the 30s wall clock. The group is the one
+        // every other pin of this ceiling joins: two pins alive at once restore
+        // each other's saved value, leaving the seam pinned for the rest of the
+        // binary with nothing going red where the second pin was written.
         let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let apt = cfgd_core::test_helpers::MockPackageManager::new("apt")
