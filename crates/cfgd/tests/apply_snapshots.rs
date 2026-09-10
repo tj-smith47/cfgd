@@ -13,6 +13,8 @@
 //!   - `apply/dry_run.txt`      — `--dry-run` path through real
 //!     `cmd_apply` (so `display_plan_preview` drift is caught).
 //!   - `apply/nothing_to_do.txt`— plan is empty.
+//!   - `apply/change_hooks_owners.txt` — the `Change Hooks` phase over TWO
+//!     declaring owners: the profile and a module whose own work changed.
 //!   - `apply/with_failures.txt`— one file action fails (parent path is
 //!     a regular file, so `create_dir_all` errors at apply time). The
 //!     failure status renders INSIDE the phase section — the
@@ -38,7 +40,8 @@ use pretty_assertions::assert_eq;
 
 use common::profile_with_packages_setup;
 use common::{
-    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_on_change_hook_setup,
+    apply_args, apply_args_dry_run, cli_for, plan_args,
+    profile_and_module_with_on_change_hooks_setup, profile_with_on_change_hook_setup,
     profile_with_one_failure_setup, tiny_profile_setup,
 };
 
@@ -354,6 +357,45 @@ fn apply_after_plan_work_human_and_json() {
         split.as_object().map(serde_json::Map::len),
         Some(slots.len()),
         "and reads no field beside them: {split}"
+    );
+}
+
+/// The `Change Hooks` phase opens ONE owner group per declaring thing, the
+/// module half included.
+///
+/// `docs/cli-reference.md` promises each hook "under the owner that declared
+/// it", and the sibling golden renders a profile group alone, so the module arm
+/// was a documented shape no capture reached: a hook row that names no owner
+/// leaves which module declared it unstated on a surface whose job is
+/// attribution, and deleting the module owner would have regressed silently.
+#[test]
+#[cfg(unix)]
+fn apply_change_hooks_open_one_group_per_declaring_owner() {
+    let (config_dir, state_dir, target) = profile_and_module_with_on_change_hooks_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
+    // Both owners under the ONE phase, read off the phase's own region rather
+    // than the whole capture, where `module:hooked` also heads its planned work.
+    let hooks = stripped
+        .split_once("Phase: Change Hooks")
+        .expect("the run did work its plan could not name")
+        .1;
+    assert!(
+        hooks.contains("profile:tiny") && hooks.contains("module:hooked"),
+        "each hook renders under the owner that declared it: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "apply/change_hooks_owners.txt",
+        &stripped
     );
 }
 

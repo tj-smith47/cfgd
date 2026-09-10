@@ -1370,6 +1370,7 @@ mod tests {
             }
 
             fn argv_log(&self) -> String {
+                // absent-file-ok: a shim nothing ran wrote no log.
                 std::fs::read_to_string(&self.log_path).unwrap_or_default()
             }
         }

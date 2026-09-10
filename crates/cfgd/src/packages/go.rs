@@ -847,8 +847,9 @@ mod tests {
                 .expect("installed_packages_with_versions must succeed");
 
             assert_eq!(infos.len(), 3, "every binary in the bin dir is reported");
-            let argv =
-                std::fs::read_to_string(shim_dir.path().join("argv.log")).unwrap_or_default();
+            let log = shim_dir.path().join("argv.log");
+            // absent-file-ok: a shim nothing ran wrote no log.
+            let argv = std::fs::read_to_string(log).unwrap_or_default();
             let version_calls = argv.lines().filter(|l| l.contains("version -m")).count();
             assert_eq!(
                 version_calls, 1,

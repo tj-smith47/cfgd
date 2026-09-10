@@ -1545,6 +1545,7 @@ mod tests {
         for (relative, body) in &sources {
             let lines: Vec<&str> = body.lines().collect();
             let mut depth: Option<i32> = None;
+            let mut carried_literal: Option<(bool, bool)> = None;
             for (idx, line) in lines.iter().enumerate() {
                 if line.trim_start().starts_with("//") {
                     continue;
@@ -1554,6 +1555,7 @@ mod tests {
                     None => match line.find(opener) {
                         Some(at) => {
                             depth = Some(1);
+                            carried_literal = None;
                             at + opener.len()
                         }
                         None => continue,
@@ -1566,47 +1568,77 @@ mod tests {
                 // struct's braces hold another type's fields. Everything else on
                 // the line is masked to spaces, so a surviving token's byte
                 // offset is still the line's own and the brace depth carries
-                // across lines; a brace inside a string literal opens nothing.
+                // across lines.
+                //
+                // The `"`-literal guard travels with that depth, so a brace in
+                // the body of a multi-line literal opens nothing either. The two
+                // shapes it still cannot tell from a literal's delimiters are a
+                // raw string's inner `"` and a char literal (`'{'`), and the
+                // cost of one is a region masked at the wrong depth, which
+                // passes SILENTLY rather than refusing; neither shape appears in
+                // today's population, and a reason needing one says so with the
+                // hatch.
                 let mut open = depth.unwrap_or(1);
-                let mut in_str = false;
-                let mut escaped = false;
+                let (mut in_str, mut escaped) = carried_literal.unwrap_or((false, false));
                 let mut region = " ".repeat(from);
-                for ch in line[from..].chars() {
-                    let mut keep = open == 1;
-                    if in_str {
-                        if escaped {
-                            escaped = false;
-                        } else if ch == '\\' {
-                            escaped = true;
-                        } else if ch == '"' {
-                            in_str = false;
+                let mut cursor = from;
+                while cursor < line.len() {
+                    let mut closed: Option<usize> = None;
+                    for (off, ch) in line[cursor..].char_indices() {
+                        let mut keep = open == 1;
+                        if in_str {
+                            if escaped {
+                                escaped = false;
+                            } else if ch == '\\' {
+                                escaped = true;
+                            } else if ch == '"' {
+                                in_str = false;
+                            }
+                        } else {
+                            match ch {
+                                '"' => in_str = true,
+                                '{' => {
+                                    open += 1;
+                                    keep = false;
+                                }
+                                '}' => {
+                                    open -= 1;
+                                    keep = false;
+                                }
+                                _ => {}
+                            }
                         }
-                    } else {
-                        match ch {
-                            '"' => in_str = true,
-                            '{' => {
-                                open += 1;
-                                keep = false;
+                        if keep {
+                            region.push(ch);
+                        } else {
+                            for _ in 0..ch.len_utf8() {
+                                region.push(' ');
                             }
-                            '}' => {
-                                open -= 1;
-                                keep = false;
-                            }
-                            _ => {}
+                        }
+                        if open == 0 {
+                            closed = Some(cursor + off + ch.len_utf8());
+                            break;
                         }
                     }
-                    if keep {
-                        region.push(ch);
-                    } else {
-                        for _ in 0..ch.len_utf8() {
-                            region.push(' ');
-                        }
-                    }
-                    if open == 0 {
+                    // A construction can open on the very line a pattern's brace
+                    // closed (`} => FileAction::Skip {`), and its fields are what
+                    // the region exists to reach: a scan that stopped at the
+                    // close would leave every one of them judged by nothing and
+                    // the hatch that covers one silencing nothing.
+                    let Some(after) = closed else { break };
+                    let Some(reopen) = line[after..].find(opener) else {
                         break;
+                    };
+                    cursor = after + reopen + opener.len();
+                    for _ in after..cursor {
+                        region.push(' ');
                     }
+                    open = 1;
+                    in_str = false;
+                    escaped = false;
                 }
                 depth = (open > 0).then_some(open);
+                carried_literal = depth.map(|_| (in_str, escaped));
                 let line = region.as_str();
                 let hatched = lines[idx.saturating_sub(1)..=idx]
                     .iter()

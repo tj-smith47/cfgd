@@ -86,6 +86,37 @@ pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::Temp
     (config_dir, state_dir, [target, second, third])
 }
 
+/// A tempdir-backed profile whose `onChange` hooks are declared by TWO owners:
+/// the profile itself, and a module whose own planned work changed this run.
+///
+/// The module declares a `postApply` script as the work that changes, which is
+/// what makes it eligible: the hook loop admits a module only when a result
+/// whose description carries that module's own `module:<name>:` prefix changed,
+/// so a module that declares a hook and does nothing opens no group.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_and_module_with_on_change_hooks_setup()
+-> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let module_dir = config_dir.path().join("modules").join("hooked");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postApply:\n      - \"true applied\"\n    onChange:\n      - \"true module\"\n",
+    )
+    .unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - hooked\n  scripts:\n    onChange:\n      - \"true profile\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
+    (config_dir, state_dir, target)
+}
+
 /// Build a tempdir-backed profile that resolves to more modules than it
 /// declares: `editor` is the only name in `spec.modules`, and it `depends` on
 /// `core`.

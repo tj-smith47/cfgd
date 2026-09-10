@@ -4385,13 +4385,18 @@ const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", 
 /// instead, and a crate too far down the graph to reach either states the refusal
 /// inline.
 ///
-/// The population is the TEST sources of every crate — a file named `tests.rs`
-/// or `test_helpers.rs`, or one under a `tests/` directory — because that is
-/// where every walk lives. A production read whose file may legitimately be
-/// absent (`/etc/os-release`, a cached credential, a target a check is asking
-/// about) is outside it by construction, never hatched one at a time.
+/// The population is every `.rs` source of every crate, judged over its TEST
+/// region: a file that IS scaffolding (named `tests.rs` or `test_helpers.rs`, or
+/// lying under a `tests/` directory) is judged whole, and every other file only
+/// from its first column-0 `#[cfg(test)]` on, which is where the walks living in
+/// an inline test module begin. Six of them do, `reconciler/format.rs`'s among
+/// them, so a filename filter read a narrower population than the rule claims.
+/// A production read whose file may legitimately be absent
+/// (`/etc/os-release`, a cached credential, a target a check is asking about)
+/// falls outside the REGION rather than outside the filename, and is never
+/// hatched one at a time.
 ///
-/// `// absent-file-ok: <why>` hatches a read inside a test source whose absence
+/// `// absent-file-ok: <why>` hatches a read inside a test region whose absence
 /// is itself a legitimate state: the argv log a shim writes on its first
 /// invocation, which a shim nothing ran never wrote.
 #[test]
@@ -4402,13 +4407,23 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         let name = posix.rsplit('/').next().unwrap_or(&posix);
-        if !(name == "tests.rs" || name == "test_helpers.rs" || posix.contains("/tests/")) {
-            continue;
-        }
         files += 1;
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
-        for (idx, line) in lines.iter().enumerate() {
+        // Scaffolding carries no `#[cfg(test)]` to cut at and is judged whole;
+        // every other file is judged from its first one on, the anchor
+        // `production_slice` reads from the other side, so the production
+        // carve-out falls out of the REGION and a walk written in an inline test
+        // module is inside the population rather than outside it.
+        let from = if name == "tests.rs" || name == "test_helpers.rs" || posix.contains("/tests/") {
+            0
+        } else {
+            match lines.iter().position(|l| *l == "#[cfg(test)]") {
+                Some(at) => at,
+                None => continue,
+            }
+        };
+        for (idx, line) in lines.iter().enumerate().skip(from) {
             if !line.contains(WALK_FILE_READ) {
                 continue;
             }
@@ -4427,8 +4442,8 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
         }
     }
     assert!(
-        files >= 150 && hatches >= 3,
-        "the walk read {files} test sources and found {hatches} hatched absences, \
+        files >= 550 && hatches >= 5,
+        "the walk read {files} sources and found {hatches} hatched absences, \
          too few to be the population"
     );
     assert!(
