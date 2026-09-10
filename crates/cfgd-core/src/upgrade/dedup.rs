@@ -370,6 +370,7 @@ mod tests {
     /// so the best-effort `warn!`/`debug!` diagnostics in the error arms only
     /// execute their `provider.id()`/`kind.as_str()` field reads when a
     /// subscriber is active — as it is in production.
+    // serial-group-ok: the installer itself; only declarations holding the group call it.
     fn with_trace_subscriber<T>(f: impl FnOnce() -> T) -> T {
         let sub = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
@@ -380,6 +381,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     fn count_stale_skills_swallows_a_providers_list_error() {
         // One provider whose `list` errors must contribute 0 (best-effort), never
         // abort the aggregate — the other providers' stale counts still surface.
@@ -408,6 +410,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     fn ride_along_skips_a_provider_whose_list_errors() {
         // A provider whose user-scope `list` errors is skipped (warn + continue);
         // with no other present user-scope skill, nothing is refreshed and the
@@ -432,6 +435,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     fn ride_along_skips_a_skill_whose_install_errors() {
         // A present user-scope skill whose re-render `install` errors is skipped
         // (warn, leave stale) rather than aborting the post-upgrade tail. Codex

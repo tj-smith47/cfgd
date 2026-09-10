@@ -11,19 +11,26 @@ use crate::PathDisplayExt;
 pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 
 /// Create `dir` (and parents) with mode 0700, then verify the resulting
-/// directory is owner-private. Used by `run_health_server` to guarantee the
-/// IPC socket cannot be dropped into a world-traversable location. Refuses
-/// to proceed if the final mode has any group/other bits set — an attacker
-/// with `+w` on the parent could rename the socket and substitute theirs,
-/// defeating the 0600 set on the socket itself.
+/// directory is owner-private AND owned by the running euid. Used by
+/// `run_health_server` to guarantee the IPC socket cannot be dropped into a
+/// location another account can reach. Refuses to proceed if the final mode has
+/// any group/other bits set: an attacker with `+w` on the parent could rename
+/// the socket and substitute theirs, defeating the 0600 set on the socket
+/// itself.
 ///
-/// The check is mode-only: it covers the umask-leak case
-/// (mkdir under default 0o022 leaving 0755) as well as operator-pre-created
-/// directories with the wrong perms. It does not detect an unprivileged
-/// user pretending to be root — that is out of scope for the local-daemon
-/// threat model (root is already trusted on the host).
+/// The mode half covers the umask-leak case (mkdir under default 0o022 leaving
+/// 0755) as well as operator-pre-created directories with the wrong perms. The
+/// OWNER half covers what the mode alone admits: a directory at 0700 owned by an
+/// unprivileged user is fully writable BY that user, and this daemon's runtime
+/// directory resolves under `$XDG_RUNTIME_DIR` or `$HOME`, so a root daemon
+/// started in that user's session would let its owner unlink the bound socket
+/// and plant a symlink there for the chmod in `run_health_server` to follow.
+/// Both halves answer for the DIRECTORY; an unprivileged user pretending to be
+/// root is a different question and stays out of the local-daemon threat model,
+/// root being trusted on the host already.
 #[cfg(unix)]
 pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::create_dir_all(dir).map_err(|e| DaemonError::HealthSocketError {
@@ -44,6 +51,18 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
                 "refusing to bind: parent directory {} is not owner-private (mode {:o})",
                 dir.posix(),
                 mode
+            ),
+        }
+        .into());
+    }
+    let euid = nix::unistd::geteuid().as_raw();
+    if meta.uid() != euid {
+        return Err(DaemonError::HealthSocketError {
+            message: format!(
+                "refusing to bind: parent directory {} is owned by uid {} rather than uid {}",
+                dir.posix(),
+                meta.uid(),
+                euid
             ),
         }
         .into());
@@ -82,10 +101,11 @@ pub(crate) async fn run_health_server(
     // leaves it 0755 / world-readable). Done immediately after bind so the
     // window where a parallel `nc -U` could succeed is sub-millisecond. The
     // containment is the refusal above, which has just proved this socket's own
-    // directory owner-private, so no other user can put an entry in it.
-    //
-    // follow-ok: `open(2)` on a socket is ENXIO, so the no-follow primitive
-    // cannot serve this path at all.
+    // directory both owner-private and owned by this euid, so no other account
+    // can put an entry in it. A `umask` around the bind would narrow the socket
+    // without any chmod, but umask is process-global and this daemon writes
+    // files from other threads while the server binds.
+    // follow-ok: `open(2)` on a unix socket is ENXIO, so the primitive cannot serve this path.
     std::fs::set_permissions(&ipc_path_buf, std::fs::Permissions::from_mode(0o600)).map_err(
         |e| DaemonError::HealthSocketError {
             message: format!("chmod socket {}: {}", ipc_path, e),

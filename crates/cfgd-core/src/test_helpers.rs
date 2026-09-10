@@ -4124,6 +4124,7 @@ pub fn production_slice(src: &str) -> String {
 pub fn production_slice_of(path: &Path) -> String {
     let body = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
     let production = production_slice(&body);
     let before_tests = body
         .lines()
@@ -4201,15 +4202,16 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Every path-based chmod in the production sources under `root`, and the ones
-/// that do not say why following a symlink is safe there.
+/// Every path-based chmod in the production sources of every crate under
+/// `crates_dir`, and the ones that do not say why following a symlink is safe.
 ///
-/// One body for the whole class, in the crate every other crate dev-depends on:
-/// `cfgd`, `cfgd-core` and `cfgd-operator` compile separately, so each needs its
-/// own `#[test]` over its own tree, and three copies of the tells are three
-/// chances for one crate to stop asking a question its siblings still ask. The
-/// floors stay with the callers, because a floor is a claim about one crate's
-/// population.
+/// One walk for the whole WORKSPACE, not one per crate: a walk reads source
+/// TEXT, so the crate graph does not bound it, and a per-crate body is how three
+/// crates (`cfgd-csi` above all, which runs as root on every node) ended up with
+/// no walk at all. The roots are derived by reading `crates_dir` rather than
+/// listed, so a crate added to the workspace joins the population with it, and
+/// each root is a crate's `src`: a bare `crates/` root would read
+/// `cfgd/tests/common/mod.rs` as production.
 ///
 /// `std::fs::set_permissions` resolves its path again and follows whatever link
 /// it finds. Under an elevated run inside a directory an unprivileged user owns,
@@ -4217,8 +4219,10 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// link at another user's private key, and root applies the mode to that
 /// instead. So a site either takes [`crate::set_file_permissions_nofollow`] /
 /// [`crate::widen_file_permissions_nofollow`], which chmod a descriptor and
-/// refuse a symlink outright, or carries a `// follow-ok: <why>` line within
-/// three lines above it.
+/// refuse a symlink outright, or carries a `// follow-ok: <why>` line on its own
+/// line or the line immediately above it, which is where this repo binds every
+/// other hatch: a wider window lets a marker written for one site drift above a
+/// second site and silently excuse it.
 ///
 /// What counts and what offends are deliberately different sets.
 /// [`ChmodPopulation::chmods`] counts EVERY chmod-shaped call the walk read,
@@ -4229,12 +4233,18 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
 /// at a second file and is in neither set, and a `set_mode` on a `Permissions`
 /// value reaches the filesystem only through one of the calls already judged. A
+/// `.mode(0o…)` on an `OpenOptions` is outside both sets too (and outside the
+/// class): a create-with-mode that follows a planted link either writes the
+/// victim, which is `atomic_write`'s question, or creates cfgd's own file, and
+/// either way no existing file's mode moves. A
 /// COMMENT line counts for nothing either way: a doc sentence naming the
 /// primitive is documentation, not a call site, and a floor a rustdoc paragraph
 /// could hold up would let the real population shrink with the walk none the
 /// wiser. A function DECLARATION is skipped on the same grounds, and so is a
 /// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
 pub struct ChmodPopulation {
+    /// Crate `src` roots the walk read.
+    pub roots: usize,
     /// Production sources the walk read.
     pub files: usize,
     /// Chmod-shaped calls it read, no-follow ones included.
@@ -4243,9 +4253,9 @@ pub struct ChmodPopulation {
     pub offenders: Vec<String>,
 }
 
-/// Walk `root` for [`ChmodPopulation`]. Paths in the offender lines are relative
-/// to `root`.
-pub fn path_based_chmod_population(root: &Path) -> ChmodPopulation {
+/// Walk every `<crate>/src` under `crates_dir` for [`ChmodPopulation`]. Offender
+/// lines are workspace-relative, so one naming a file says which crate holds it.
+pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
     // A tell inside a string literal is a message NAMING the primitive, not a
     // call to it: `tracing::debug!("set_file_permissions is a no-op on Windows")`
     // would otherwise hold this walk's floor up and be asked for a hatch a log
@@ -4275,11 +4285,20 @@ pub fn path_based_chmod_population(root: &Path) -> ChmodPopulation {
         "carry_dir_mode(",
     ];
     let mut population = ChmodPopulation {
+        roots: 0,
         files: 0,
         chmods: 0,
         offenders: Vec::new(),
     };
-    for path in rust_sources_under(root) {
+    let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .filter_map(|entry| entry.ok().map(|e| e.path().join("src")))
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    population.roots = roots.len();
+    let workspace = workspace_root();
+    for path in roots.iter().flat_map(|root| rust_sources_under(root)) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         // A file that IS test scaffolding carries no `#[cfg(test)]` of its own
         // for the slice to cut at, so it is named out here instead.
@@ -4291,7 +4310,7 @@ pub fn path_based_chmod_population(root: &Path) -> ChmodPopulation {
         }
         let body = production_slice_of(&path);
         population.files += 1;
-        let relative = crate::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
         let lines: Vec<&str> = body.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//") {
@@ -4315,7 +4334,7 @@ pub fn path_based_chmod_population(root: &Path) -> ChmodPopulation {
             {
                 continue;
             }
-            if lines[idx.saturating_sub(3)..idx]
+            if lines[idx.saturating_sub(1)..=idx]
                 .iter()
                 .any(|l| l.contains("follow-ok:"))
             {

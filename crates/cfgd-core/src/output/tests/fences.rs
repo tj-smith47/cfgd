@@ -2396,7 +2396,23 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// are the env-var guards, whose serialization
 /// [`every_test_mutating_the_process_environment_serializes_itself`] demands
 /// instead.
+///
+/// Not every seam is a numeric ceiling. The tracing dispatcher is one as well,
+/// and it has no guard: installing a subscriber mutates the process-global
+/// dispatcher registry and the per-callsite interest caches, so a capture live
+/// while another declaration installs can come back holding that declaration's
+/// events and missing its own. Its pin is the install call, whichever of the
+/// three spellings it takes, and its reader is the capture a test reads back,
+/// including through the helper that installs for it: a test calling such a
+/// helper installs a subscriber without naming one, which is how an
+/// unserialized installer reached this binary.
 const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
+    (
+        ".with_subscriber(",
+        "daemon_log",
+        "capture_run_logs_async(",
+        1,
+    ),
     (
         "AvailabilityMemoTtlGuard::",
         "",
@@ -2433,6 +2449,25 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         "BackoffConfig::rate_limited(",
         3,
     ),
+    (
+        "fn capture_warn_logs",
+        "daemon_log",
+        "capture_warn_logs(",
+        1,
+    ),
+    (
+        "fn with_trace_subscriber",
+        "daemon_log",
+        "with_trace_subscriber(",
+        1,
+    ),
+    ("set_global_default(", "daemon_log", "daemon_log()", 1),
+    (
+        "tracing::subscriber::with_default(",
+        "daemon_log",
+        "capture_run_logs(",
+        5,
+    ),
     ("with_test_elevated", "", "effective_elevated(", 14),
 ];
 
@@ -2458,7 +2493,7 @@ fn joins_serial_group(line: &str, group: &str) -> bool {
 
 /// A test whose verdict depends on a serialized seam joins that seam's group.
 ///
-/// Each [`SERIAL_PINS`] seam is one process-global `AtomicU64` a guard
+/// Most [`SERIAL_PINS`] seams are one process-global `AtomicU64` a guard
 /// overrides, saving the value it found and restoring it on drop. Two of them
 /// live at once is not a flake but a lost override: the second pin captures the
 /// FIRST one's value as the one to restore, so the seam stays pinned for the
@@ -3036,11 +3071,19 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     let mut offenders = Vec::new();
     let mut sources = 0usize;
     for path in workspace_rust_files() {
-        if path.file_name() == Some(std::ffi::OsStr::new("test_helpers.rs")) {
-            continue;
-        }
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        // `test_helpers.rs` holds the shared walk BODIES, so exempting the file
+        // would hide the newest multi-file walk from this rule. Only its own
+        // PRODUCTION region is judged, because the unit tests of the cut below
+        // hold one body each and legitimately call the pure form, and a
+        // declaration line names the cut rather than reaching it.
+        let own_file = path.file_name() == Some(std::ffi::OsStr::new("test_helpers.rs"));
+        let body = if own_file {
+            crate::test_helpers::production_slice_of(&path)
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            })
+        };
         let lines: Vec<&str> = body.lines().collect();
         let mut spells = false;
         for (n, line) in lines.iter().enumerate() {
@@ -3048,6 +3091,9 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                 continue;
             }
             if !line.contains(needle) {
+                continue;
+            }
+            if line.contains(" fn ") {
                 continue;
             }
             spells = true;
@@ -4119,29 +4165,33 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
     );
 }
 
-/// Every path-based chmod in `cfgd-core` says why following a symlink is safe
+/// Every path-based chmod in the WORKSPACE says why following a symlink is safe
 /// there.
 ///
 /// The rule, the tells and the hatch grammar live in
-/// [`crate::test_helpers::path_based_chmod_population`], which the twin walks in
-/// `cfgd` and `cfgd-operator` read too; the floors are this crate's own.
+/// [`crate::test_helpers::path_based_chmod_population`], which derives the crate
+/// roots by reading `crates/` so a crate added to the workspace joins this
+/// population with it.
 ///
-/// The population is the WHOLE crate, not the reconciler the class was first
-/// swept in: a chmod is as likely to appear in the source cache, the backup
-/// engine, the daemon's IPC setup or the self-upgrade as in the deploy path, and
-/// every one of those held an unasked site. One walk per crate, each over its
-/// whole tree, is what leaves no site judged twice and none judged by nobody.
+/// One walk over every crate, not one per crate and not one per directory: the
+/// class was first swept in the reconciler alone, and a chmod turned out to be as
+/// likely in the source cache, the backup engine, the daemon's IPC setup, the
+/// self-upgrade, the secrets backends or the device gateway. A walk reads source
+/// TEXT, so the crate graph does not bound it, and a per-crate body left
+/// `cfgd-csi` (root on every node), `cfgd-crd` and `cfgd-schema` judged by
+/// nobody. One population also means no site is judged twice.
 ///
-/// The floor sits AT what the crate holds rather than under it, so a call site
-/// cannot vanish inside a margin: a `>=` floor never trips on an addition, and
-/// the assertion prints the numbers it read.
+/// The floor sits AT what the workspace holds rather than under it, so a call
+/// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
+/// and the assertion prints the numbers it read.
 #[test]
-fn every_path_based_chmod_in_the_core_crate_says_why_the_follow_is_safe() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let population = crate::test_helpers::path_based_chmod_population(&root);
+fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
+    let crates_dir = crate::test_helpers::workspace_root().join("crates");
+    let population = crate::test_helpers::path_based_chmod_population(&crates_dir);
     assert!(
-        population.files >= 190 && population.chmods >= 16,
-        "the walk read {} files and {} chmods, too few to be the population",
+        population.roots >= 6 && population.files >= 391 && population.chmods >= 31,
+        "the walk read {} crate roots, {} files and {} chmods, too few to be the population",
+        population.roots,
         population.files,
         population.chmods
     );

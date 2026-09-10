@@ -7144,6 +7144,7 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
 /// `sync: pull failed` on the journal on every tick, forever, for a config
 /// directory the user never put under version control.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(daemon_log)]
 async fn a_sync_tick_over_a_plain_directory_logs_no_pull_failure() {
     let tmp = tempfile::TempDir::new().unwrap();
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -12007,9 +12008,12 @@ fn build_webhook_payload_accepts_empty_strings() {
 /// output — and it emits them from tokio worker threads, which the thread-local
 /// [`capture_run_logs`] below does not reach. `set_global_default` may be
 /// called once per process, so the capture is installed once and shared;
-/// [`reset_daemon_log`] clears it and every reader holds
-/// `#[serial_test::serial(daemon_log)]`, so no two of them read each other's
-/// lines.
+/// [`reset_daemon_log`] clears it. Reading it back is not all the
+/// `daemon_log` group has to cover: installing ANY subscriber mutates the
+/// process-global dispatcher registry and the per-callsite interest caches, so
+/// every declaration in this binary that installs one holds that group too,
+/// readers and scoped captures alike. Without that, a capture can come back
+/// holding a foreign declaration's lines and missing its own.
 static DAEMON_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 #[derive(Clone, Copy)]
@@ -12036,6 +12040,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for DaemonLogWriter {
 }
 
 /// Install the global capture if it is not already installed, and empty it.
+// serial-group-ok: installs the one global capture; its readers hold the group.
 fn reset_daemon_log() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
@@ -12096,6 +12101,7 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
 /// Thread-local log capture: only events emitted on THIS thread inside `f`
 /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
 /// the calling thread.
+// serial-group-ok: the installer itself; only declarations holding the group call it.
 fn capture_run_logs<F: FnOnce()>(f: F) -> String {
     let (subscriber, buf) = log_capture();
     tracing::subscriber::with_default(subscriber, f);
@@ -12106,6 +12112,7 @@ fn capture_run_logs<F: FnOnce()>(f: F) -> String {
 /// an awaited future can leave behind the moment the runtime moves it to
 /// another worker; `with_subscriber` binds the dispatcher around every poll,
 /// wherever that poll happens.
+// serial-group-ok: the installer itself; only declarations holding the group call it.
 async fn capture_run_logs_async<F: std::future::Future<Output = ()>>(fut: F) -> String {
     use tracing::instrument::WithSubscriber;
     let (subscriber, buf) = log_capture();
@@ -13658,6 +13665,7 @@ spec:
     /// composition (a torn manifest), skipping the tick fail-closed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn a_per_module_tick_refreshes_the_subscriptions_the_config_declares() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -16510,6 +16518,7 @@ spec: {}
     /// The one thing that stays a `Printer` line is the Ctrl+C hint, and a
     /// capture printer has no interactive stdin, so it must not appear here.
     #[test]
+    #[serial_test::serial(daemon_log)]
     fn print_startup_banner_logs_health_and_cadences() {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let logs = capture_run_logs(|| {
@@ -19019,6 +19028,38 @@ mod ipc_socket_security {
         );
     }
 
+    /// A socket directory another account owns is refused, mode 0700 or not.
+    ///
+    /// 0700 is fully `rwx` to the directory's OWNER, so a root daemon whose
+    /// runtime directory resolves under an unprivileged user's session would
+    /// otherwise accept a directory that user can write, and the socket chmod
+    /// below it is path-based. Arranging a foreign owner needs the power to
+    /// `chown`, so the refusal arm runs only as root; as an ordinary user the
+    /// pin still proves the accepting arm, and the refusal arm is unexercised
+    /// there.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_refuses_an_owner_that_is_not_this_process() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mine = tmp.path().join("mine");
+        ensure_owner_private_dir(&mine).expect("a directory this euid owns must be accepted");
+
+        if !crate::is_root() {
+            return;
+        }
+        let theirs = tmp.path().join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
+        let err = ensure_owner_private_dir(&theirs)
+            .expect_err("a directory owned by another uid must be refused");
+        assert!(
+            format!("{err}").contains("owned by uid 1"),
+            "the refusal must name the owner it found, got {err}"
+        );
+    }
+
     /// Pure unit test of the mode-check predicate `ensure_owner_private_dir`
     /// uses to refuse world-readable parents. Pairs with the create-failure
     /// test above to cover the second negative arm without relying on uid-0
@@ -21021,6 +21062,7 @@ mod backup_timers {
     }
 
     #[test]
+    #[serial_test::serial(daemon_log)]
     fn sighup_reload_picks_up_added_changed_and_removed_units() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21535,6 +21577,7 @@ mod backup_timers {
     }
 
     #[test]
+    #[serial_test::serial(daemon_log)]
     fn sighup_over_a_broken_profile_keeps_the_running_schedules() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21589,6 +21632,7 @@ mod backup_timers {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn a_due_retry_re_resolves_and_restores_the_timer_set() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -21632,6 +21676,7 @@ mod backup_timers {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration() {
         // Same recovery path, but the healed profile declares zero backups.
         // "restored: 0 scheduled" reads as a broken recovery when it is really
@@ -21741,6 +21786,7 @@ mod backup_timers {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // The recovery path the startup retry opens: booted on a broken
         // profile (0 timers), profile since fixed, sources still unavailable.
@@ -21793,6 +21839,7 @@ mod backup_timers {
 
     #[test]
     #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
     fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // Same state, reached the other way: a SIGHUP arriving while nothing is
         // running adopts rather than refusing (there is nothing to protect), so
@@ -21838,6 +21885,7 @@ mod backup_timers {
     }
 
     #[test]
+    #[serial_test::serial(daemon_log)]
     fn a_fully_resolved_reload_still_reports_a_plain_all_clear() {
         // The qualifier must ride ONLY the degraded state: a healthy reload has
         // to stay a bare Ok, or the warning stops meaning anything.
@@ -22306,6 +22354,7 @@ mod backup_timers {
     /// the row it finds is whatever ran BEFORE, so a unit with any history at
     /// all would be logged as a run that completed and did not happen.
     #[test]
+    #[serial_test::serial(daemon_log)]
     fn a_busy_scheduled_unit_logs_its_holder_over_its_own_history() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
