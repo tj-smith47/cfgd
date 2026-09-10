@@ -726,8 +726,9 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
         })?;
         // Restrict parent directory to owner-only access — even if the credential file
         // briefly has permissive permissions during atomic_write, the directory ACL
-        // prevents other users from accessing it.
-        crate::set_file_permissions(parent, 0o700)?;
+        // prevents other users from accessing it. No-follow: `cfgd enroll` can be
+        // run elevated, and the state dir sits under a HOME its own user owns.
+        crate::set_file_permissions_nofollow(parent, 0o700)?;
     }
     let json = serde_json::to_string_pretty(cred).map_err(|e| {
         CfgdError::Io(std::io::Error::other(format!(
@@ -738,7 +739,7 @@ pub fn save_credential(cred: &DeviceCredential) -> Result<PathBuf> {
     crate::atomic_write_str(&path, &json)?;
 
     // Restrict file permissions (no-op on Windows)
-    crate::set_file_permissions(&path, 0o600)?;
+    crate::set_file_permissions_nofollow(&path, 0o600)?;
 
     Ok(path)
 }

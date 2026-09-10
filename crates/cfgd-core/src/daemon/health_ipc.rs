@@ -29,7 +29,7 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|e| DaemonError::HealthSocketError {
         message: format!("create parent {}: {}", dir.posix(), e),
     })?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+    crate::set_file_permissions_nofollow(dir, 0o700).map_err(|e| {
         DaemonError::HealthSocketError {
             message: format!("chmod parent {}: {}", dir.posix(), e),
         }
@@ -80,7 +80,12 @@ pub(crate) async fn run_health_server(
 
     // Tighten the freshly-bound socket to 0600 (default Linux umask 0022
     // leaves it 0755 / world-readable). Done immediately after bind so the
-    // window where a parallel `nc -U` could succeed is sub-millisecond.
+    // window where a parallel `nc -U` could succeed is sub-millisecond. The
+    // containment is the refusal above, which has just proved this socket's own
+    // directory owner-private, so no other user can put an entry in it.
+    //
+    // follow-ok: `open(2)` on a socket is ENXIO, so the no-follow primitive
+    // cannot serve this path at all.
     std::fs::set_permissions(&ipc_path_buf, std::fs::Permissions::from_mode(0o600)).map_err(
         |e| DaemonError::HealthSocketError {
             message: format!("chmod socket {}: {}", ipc_path, e),

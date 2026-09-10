@@ -947,7 +947,7 @@ fn is_snapshot_within(path: &Path, destination: &Path) -> bool {
 /// Best-effort `0700` on a directory cfgd owns. No-op on Windows, and a failure
 /// is logged rather than raised — the snapshot itself is unaffected.
 fn restrict_to_owner(dir: &Path) {
-    if let Err(e) = crate::set_file_permissions(dir, 0o700) {
+    if let Err(e) = crate::set_file_permissions_nofollow(dir, 0o700) {
         tracing::warn!(
             dir = %dir.posix(),
             error = %e,

@@ -4118,3 +4118,36 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
         unfloored.into_iter().collect::<Vec<_>>().join("\n")
     );
 }
+
+/// Every path-based chmod in `cfgd-core` says why following a symlink is safe
+/// there.
+///
+/// The rule, the tells and the hatch grammar live in
+/// [`crate::test_helpers::path_based_chmod_population`], which the twin walks in
+/// `cfgd` and `cfgd-operator` read too; the floors are this crate's own.
+///
+/// The population is the WHOLE crate, not the reconciler the class was first
+/// swept in: a chmod is as likely to appear in the source cache, the backup
+/// engine, the daemon's IPC setup or the self-upgrade as in the deploy path, and
+/// every one of those held an unasked site. One walk per crate, each over its
+/// whole tree, is what leaves no site judged twice and none judged by nobody.
+///
+/// The floor sits AT what the crate holds rather than under it, so a call site
+/// cannot vanish inside a margin: a `>=` floor never trips on an addition, and
+/// the assertion prints the numbers it read.
+#[test]
+fn every_path_based_chmod_in_the_core_crate_says_why_the_follow_is_safe() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let population = crate::test_helpers::path_based_chmod_population(&root);
+    assert!(
+        population.files >= 190 && population.chmods >= 16,
+        "the walk read {} files and {} chmods, too few to be the population",
+        population.files,
+        population.chmods
+    );
+    assert!(
+        population.offenders.is_empty(),
+        "every path-based chmod states why it may follow a link:\n{}",
+        population.offenders.join("\n")
+    );
+}

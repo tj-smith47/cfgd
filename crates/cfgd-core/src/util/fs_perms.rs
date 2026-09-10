@@ -137,6 +137,11 @@ pub fn parse_octal_mode(s: &str) -> Result<u32, crate::errors::ConfigError> {
 #[cfg(unix)]
 pub fn set_file_permissions(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    // A caller whose declared mode belongs to the file a link points at reaches
+    // the filesystem here; every other site takes the no-follow pair below.
+    // follow-ok: this IS the following primitive, and it resolves the path its
+    // caller named, which is the whole of what the caller asked for. The
+    // per-crate chmod walks are what ask each of those callers the question.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 

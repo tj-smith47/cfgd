@@ -18983,6 +18983,42 @@ mod ipc_socket_security {
         );
     }
 
+    /// A symlink standing where the socket's directory belongs is refused, and
+    /// the directory it points at keeps its mode.
+    ///
+    /// `create_dir_all` is satisfied by a link that already resolves to a
+    /// directory, so the link survives into the chmod. The daemon runs as root
+    /// under systemd while its runtime directory can sit under a HOME an
+    /// unprivileged user owns, and a path-based chmod there would hand `0o700`
+    /// to whatever that user pointed the link at, locking another user out of
+    /// their own directory. The no-follow chmod refuses it (`ELOOP`) whatever
+    /// the uid, so this pin holds as root too.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        crate::set_file_permissions(&victim, 0o755).unwrap();
+        let link = tmp.path().join("run");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let err = ensure_owner_private_dir(&link)
+            .expect_err("a symlink standing in for the socket directory must be refused");
+        assert!(
+            format!("{err}").contains("chmod parent"),
+            "the refusal must be the chmod's, got {err}"
+        );
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "the directory the planted link points at must keep its own mode"
+        );
+    }
+
     /// Pure unit test of the mode-check predicate `ensure_owner_private_dir`
     /// uses to refuse world-readable parents. Pairs with the create-failure
     /// test above to cover the second negative arm without relying on uid-0

@@ -1211,10 +1211,17 @@ fn copy_dir_into(
 ///
 /// Apply it *after* populating `dst`: a restrictive source mode (`0500`,
 /// `0300`) set on the way in blocks writing the very children being copied.
+///
+/// `dst` is chmodded through [`crate::set_file_permissions_nofollow`], so a
+/// symlink standing where the copy put a directory is refused rather than
+/// handed `src`'s mode: an elevated copy into a tree an unprivileged user owns
+/// would otherwise let them aim it at a directory of their choosing. The read
+/// of `src` still resolves, because a misread mode grants nothing.
 #[cfg(unix)]
 pub fn carry_dir_mode(src: &std::path::Path, dst: &std::path::Path) {
-    let applied =
-        std::fs::metadata(src).and_then(|meta| std::fs::set_permissions(dst, meta.permissions()));
+    use std::os::unix::fs::PermissionsExt;
+    let applied = std::fs::metadata(src)
+        .and_then(|meta| crate::set_file_permissions_nofollow(dst, meta.permissions().mode()));
     if let Err(e) = applied {
         tracing::warn!(
             src = %src.posix(),

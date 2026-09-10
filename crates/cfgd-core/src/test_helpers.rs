@@ -4201,6 +4201,138 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Every path-based chmod in the production sources under `root`, and the ones
+/// that do not say why following a symlink is safe there.
+///
+/// One body for the whole class, in the crate every other crate dev-depends on:
+/// `cfgd`, `cfgd-core` and `cfgd-operator` compile separately, so each needs its
+/// own `#[test]` over its own tree, and three copies of the tells are three
+/// chances for one crate to stop asking a question its siblings still ask. The
+/// floors stay with the callers, because a floor is a claim about one crate's
+/// population.
+///
+/// `std::fs::set_permissions` resolves its path again and follows whatever link
+/// it finds. Under an elevated run inside a directory an unprivileged user owns,
+/// that is a read-anything primitive: unlink the file cfgd just wrote, plant a
+/// link at another user's private key, and root applies the mode to that
+/// instead. So a site either takes [`crate::set_file_permissions_nofollow`] /
+/// [`crate::widen_file_permissions_nofollow`], which chmod a descriptor and
+/// refuse a symlink outright, or carries a `// follow-ok: <why>` line within
+/// three lines above it.
+///
+/// What counts and what offends are deliberately different sets.
+/// [`ChmodPopulation::chmods`] counts EVERY chmod-shaped call the walk read,
+/// no-follow ones included, because the follow-capable sites are the ones this
+/// rule drives to zero and flooring on those alone would turn a fully converted
+/// crate into a failure. Only the two path-based spellings can be misdirected,
+/// so only they are asked the question. A chmod through a descriptor
+/// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
+/// at a second file and is in neither set, and a `set_mode` on a `Permissions`
+/// value reaches the filesystem only through one of the calls already judged. A
+/// COMMENT line counts for nothing either way: a doc sentence naming the
+/// primitive is documentation, not a call site, and a floor a rustdoc paragraph
+/// could hold up would let the real population shrink with the walk none the
+/// wiser. A function DECLARATION is skipped on the same grounds, and so is a
+/// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
+pub struct ChmodPopulation {
+    /// Production sources the walk read.
+    pub files: usize,
+    /// Chmod-shaped calls it read, no-follow ones included.
+    pub chmods: usize,
+    /// Path-based chmods with no `// follow-ok:` above them, `<rel>:<line>` first.
+    pub offenders: Vec<String>,
+}
+
+/// Walk `root` for [`ChmodPopulation`]. Paths in the offender lines are relative
+/// to `root`.
+pub fn path_based_chmod_population(root: &Path) -> ChmodPopulation {
+    // A tell inside a string literal is a message NAMING the primitive, not a
+    // call to it: `tracing::debug!("set_file_permissions is a no-op on Windows")`
+    // would otherwise hold this walk's floor up and be asked for a hatch a log
+    // line cannot carry.
+    fn names_outside_a_literal(line: &str, tell: &str) -> bool {
+        let mut quoted = false;
+        let mut chars = line.char_indices();
+        while let Some((idx, ch)) = chars.next() {
+            if !quoted && line[idx..].starts_with(tell) {
+                return true;
+            }
+            match ch {
+                '\\' if quoted => {
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                _ => {}
+            }
+        }
+        false
+    }
+    const COUNTED: &[&str] = &[
+        "set_file_permissions",
+        "widen_file_permissions",
+        "fs::set_permissions(",
+        "widen_world_readable(",
+        "carry_dir_mode(",
+    ];
+    let mut population = ChmodPopulation {
+        files: 0,
+        chmods: 0,
+        offenders: Vec::new(),
+    };
+    for path in rust_sources_under(root) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // A file that IS test scaffolding carries no `#[cfg(test)]` of its own
+        // for the slice to cut at, so it is named out here instead.
+        if name.starts_with("tests")
+            || name == "test_helpers.rs"
+            || path.parent().is_some_and(|p| p.ends_with("tests"))
+        {
+            continue;
+        }
+        let body = production_slice_of(&path);
+        population.files += 1;
+        let relative = crate::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            // A function DECLARATION carries the name of the primitive it is,
+            // not a call to it: `pub fn set_file_permissions(` is the chmod
+            // every judged site reaches, and asking it the question would ask
+            // the rule of itself.
+            if line.contains(" fn ") || line.trim_start().starts_with("fn ") {
+                continue;
+            }
+            if COUNTED
+                .iter()
+                .any(|tell| names_outside_a_literal(line, tell))
+            {
+                population.chmods += 1;
+            }
+            if !(names_outside_a_literal(line, "set_file_permissions(")
+                || names_outside_a_literal(line, "fs::set_permissions("))
+            {
+                continue;
+            }
+            if lines[idx.saturating_sub(3)..idx]
+                .iter()
+                .any(|l| l.contains("follow-ok:"))
+            {
+                continue;
+            }
+            population.offenders.push(format!(
+                "{relative}:{}: chmods a path that may be a symlink, take \
+                 `set_file_permissions_nofollow` (or \
+                 `widen_file_permissions_nofollow`), else mark it \
+                 `// follow-ok: <the ownership fact that makes the follow safe>`",
+                idx + 1
+            ));
+        }
+    }
+    population
+}
+
 /// Every snapshot-golden root in the workspace, workspace-relative.
 ///
 /// Named rather than only derived: a derivation alone shrinks in silence when
