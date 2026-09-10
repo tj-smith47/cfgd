@@ -4236,3 +4236,76 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
         population.offenders.join("\n")
     );
 }
+
+/// A distinctness premise proves the numbers its fixture ASSERTS, never a
+/// second set written beside them.
+///
+/// [`crate::test_helpers::assert_slots_discriminate`] can only judge the array
+/// it is handed, so an array of literals typed next to an assertion that retypes
+/// the same numbers guards nothing: the mis-wiring the premise exists to catch
+/// edits the fixture, and the literals stay where they were. Six call sites were
+/// in exactly that shape.
+///
+/// Two shapes are welded and both pass here: an array BOUND to a name, which the
+/// assertion below it reads back (`for (slot, count) in slots`, `format!` off
+/// `slots[0].1`), and an inline array whose every value is read off the product
+/// under test (`tally.succeeded`, `class[0].1`). An inline array holding a bare
+/// integer is the unwelded shape, because nothing connects that integer to the
+/// bytes asserted. `// slots-literal-ok: <why>` on the call's line or the one
+/// above hatches a genuine exception.
+#[test]
+fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
+    let mut offenders = Vec::new();
+    let mut sites = 0usize;
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        // The helper's own file declares it; this one quotes the call shape.
+        if posix.ends_with("cfgd-core/src/test_helpers.rs")
+            || posix.ends_with("cfgd-core/src/output/tests/fences.rs")
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            let Some((_, after)) = line.split_once("assert_slots_discriminate(") else {
+                continue;
+            };
+            sites += 1;
+            if hatched(&lines, idx, "slots-literal-ok:") || !after.trim_start().starts_with("&[") {
+                continue;
+            }
+            let mut arg = after.to_string();
+            let mut at = idx;
+            while !arg.contains(']') && at + 1 < lines.len() {
+                at += 1;
+                arg.push_str(lines[at]);
+            }
+            for entry in arg.split("(\"").skip(1) {
+                let Some((name, value)) = entry.split_once("\",") else {
+                    continue;
+                };
+                if value
+                    .trim()
+                    .trim_end_matches([')', ',', ' '])
+                    .parse::<usize>()
+                    .is_ok()
+                {
+                    offenders.push(format!("{posix}:{}: `{name}`", idx + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        sites >= 11,
+        "the walk found {sites} distinctness premises, too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a distinctness premise states the value the fixture asserts, read off \
+         the product or bound to a name the assertion reads back:\n{}",
+        offenders.join("\n")
+    );
+}

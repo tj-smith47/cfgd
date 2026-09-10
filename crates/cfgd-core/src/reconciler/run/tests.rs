@@ -914,21 +914,36 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
         tally.planned_total,
         "the planned classes sum to what the header promised"
     );
+    let class_count = |subject| {
+        tally
+            .after_plan
+            .iter()
+            .filter(|outcome| outcome.subject == subject)
+            .count()
+    };
+    let (converged, hooks) = (
+        class_count(AfterPlan::EnvSurface),
+        class_count(AfterPlan::ChangeHook),
+    );
     // `planned` and `succeeded` ARE one number on a clean all-success run, so
     // that pair is outside the premise: a forced pair exempts the pair, not the
-    // whole set. The four below are forced by nothing and are read off the tally
-    // rather than retyped beside it.
+    // whole set. The four below are forced by nothing, every one is read off the
+    // tally, and every sentence asserted below states those same values, so the
+    // set proved distinct is the set asserted.
     crate::test_helpers::assert_slots_discriminate(&[
         ("succeeded", tally.succeeded),
         ("class total", tally.after_plan.len()),
-        ("converged", 3),
-        ("onChange hooks", 1),
+        ("converged", converged),
+        ("onChange hooks", hooks),
     ]);
     assert_eq!(tally.after_plan.len(), 4, "priced as its own class");
     assert_eq!(
         outcome_counts(&tally),
-        "2 actions succeeded, 3 env surfaces converged after the plan, \
-         1 onChange hook ran after the plan",
+        format!(
+            "{} actions succeeded, {converged} env surfaces converged after the \
+             plan, {hooks} onChange hook ran after the plan",
+            tally.succeeded
+        ),
         "the daemon's one-line account names the class too"
     );
 
@@ -944,11 +959,15 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
     assert_eq!(
         out.lines()
             .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
             .collect::<Vec<_>>(),
         vec![
-            "\u{2713} Apply complete — 2 actions succeeded (278.2s wall)",
-            "\u{2713} 3 env surfaces converged after the plan",
-            "\u{2713} 1 onChange hook ran after the plan",
+            format!(
+                "\u{2713} Apply complete — {} actions succeeded (278.2s wall)",
+                tally.succeeded
+            ),
+            format!("\u{2713} {converged} env surfaces converged after the plan"),
+            format!("\u{2713} {hooks} onChange hook ran after the plan"),
         ],
         "each class states itself on its own line: {out:?}"
     );
@@ -971,16 +990,14 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     // count against the PLANNED success count, not the `(failed, succeeded)`
     // tuple above: a class clause built from the planned count renders the very
     // number the assertion reads unless the two differ.
+    let failed_after = tally
+        .after_plan
+        .iter()
+        .filter(|outcome| outcome.state == AfterPlanState::Failed)
+        .count();
     crate::test_helpers::assert_slots_discriminate(&[
         ("succeeded", tally.succeeded),
-        (
-            "failed after the plan",
-            tally
-                .after_plan
-                .iter()
-                .filter(|o| o.state == AfterPlanState::Failed)
-                .count(),
-        ),
+        ("failed after the plan", failed_after),
     ]);
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -988,7 +1005,7 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("1 env surface failed after the plan"),
+        out.contains(&format!("{failed_after} env surface failed after the plan")),
         "the class names its own failure: {out:?}"
     );
     assert!(
@@ -1006,23 +1023,24 @@ fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
     let failed_tally = all_failed.tally();
     // Same pairing the other way round: the planned failure count against the
     // class's converged count, which coincide at one apiece.
+    let converged_after = failed_tally
+        .after_plan
+        .iter()
+        .filter(|outcome| outcome.state == AfterPlanState::Performed)
+        .count();
     crate::test_helpers::assert_slots_discriminate(&[
         ("failed", failed_tally.failed),
-        (
-            "converged after the plan",
-            failed_tally
-                .after_plan
-                .iter()
-                .filter(|o| o.state == AfterPlanState::Performed)
-                .count(),
-        ),
+        ("converged after the plan", converged_after),
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(&failed_tally, RunTitle::Apply, &printer, None);
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("2 actions failed") && out.contains("1 env surface converged after the plan"),
+        out.contains(&format!("{} actions failed", failed_tally.failed))
+            && out.contains(&format!(
+                "{converged_after} env surface converged after the plan"
+            )),
         "a failed run still accounts for what it converged: {out:?}"
     );
 }
@@ -1080,20 +1098,20 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     for (state, clause) in [
         (
             AfterPlanState::Skipped,
-            "1 env surface changed nothing after the plan",
+            format!("{} env surface changed nothing after the plan", class[1].1),
         ),
         (
             AfterPlanState::Performed,
-            "2 env surfaces converged after the plan",
+            format!("{} env surfaces converged after the plan", class[0].1),
         ),
         (
             AfterPlanState::Failed,
-            "3 env surfaces failed after the plan",
+            format!("{} env surfaces failed after the plan", class[2].1),
         ),
     ] {
         let line = out
             .lines()
-            .find(|l| l.contains(clause))
+            .find(|l| l.contains(&clause))
             .unwrap_or_else(|| panic!("{state:?} states itself on its own line: {out:?}"));
         let (glyph, _) = crate::output::renderer::role_glyph(&theme, state.clause_role());
         assert!(
@@ -1101,8 +1119,10 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
             "{state:?} wears its own role's glyph ({glyph:?}): {line:?}"
         );
     }
+    let whole_class: usize = class.iter().map(|(_, count)| count).sum();
     assert!(
-        !out.contains("3 env surfaces converged") && !out.contains("6 env surfaces converged"),
+        !out.contains(&format!("{} env surfaces converged", class[2].1))
+            && !out.contains(&format!("{whole_class} env surfaces converged")),
         "the converged line counts what converged, not what also ran or the \
          whole class: {out:?}"
     );
@@ -1115,11 +1135,7 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     }
     assert_eq!(
         states,
-        vec![
-            (AfterPlanState::Performed, 2),
-            (AfterPlanState::Skipped, 1),
-            (AfterPlanState::Failed, 3)
-        ],
+        class.to_vec(),
         "each line above came from a state read off its own record, not guessed \
          from its success flag"
     );
@@ -1127,9 +1143,12 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     // cannot read as converged on the journal line either.
     assert_eq!(
         outcome_counts(&tally),
-        "4 actions succeeded, 2 env surfaces converged after the plan, \
-         1 env surface changed nothing after the plan, \
-         3 env surfaces failed after the plan"
+        format!(
+            "{succeeded} actions succeeded, {} env surfaces converged after the \
+             plan, {} env surface changed nothing after the plan, {} env surfaces \
+             failed after the plan",
+            class[0].1, class[1].1, class[2].1
+        )
     );
 }
 
