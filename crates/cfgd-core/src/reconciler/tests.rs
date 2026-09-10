@@ -30785,7 +30785,10 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
 /// on those alone would turn a fully converted engine into a failure. A COMMENT
 /// line counts for nothing either way: a doc sentence naming the primitive is
 /// documentation, not a call site, and a floor a rustdoc paragraph could hold up
-/// would let the real population shrink with the walk none the wiser.
+/// would let the real population shrink with the walk none the wiser. Each floor
+/// sits AT what the workspace holds rather than under it, so a call site cannot
+/// vanish inside a margin: a `>=` floor never trips on an addition, and the
+/// assertion prints the number it read.
 #[test]
 fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler");
@@ -30828,7 +30831,7 @@ fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
         }
     }
     assert!(
-        files >= 15 && chmods >= 4,
+        files >= 27 && chmods >= 5,
         "the walk read {files} files and {chmods} chmods, too few to be the population"
     );
     assert!(

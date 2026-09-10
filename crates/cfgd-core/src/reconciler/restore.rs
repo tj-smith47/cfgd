@@ -216,10 +216,12 @@ fn restore_through_link(
     // write above landed on, through the same resolution that write used: one
     // recorded hop is not the file where the chain is longer than one link, and a
     // relative destination (stow's default shape) belongs to the link's own
-    // directory rather than the process cwd. Resolved AFTER the write, because a
-    // dangling link the write just replaced reads back as a regular file. Naming
-    // the resolved file is also what keeps the chmod off the link, which whoever
-    // owns the target's directory can re-point between the two calls.
+    // directory rather than the process cwd. The whole step runs AFTER the write
+    // because where the recorded destination is gone the write lands at the link
+    // path itself: only then is there a regular file to chmod, and a live symlink
+    // is what the no-follow chmod refuses. Naming the resolved file is also what
+    // keeps the chmod off the link, which whoever owns the target's directory can
+    // re-point between the two calls.
     if let Some(mode) = bk.permissions
         && let Err(e) = crate::resolve_write_target(target)
             .and_then(|resolved| crate::set_file_permissions_nofollow(&resolved, mode))
@@ -506,6 +508,45 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "the recorded mode lands on the file at the end of the chain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_a_dangling_link_applies_the_mode_to_the_file_that_replaced_it() {
+        // The recorded destination is gone, so the write lands at the link path
+        // itself and severs the link (`atomic_write_resolved`'s dangling rule).
+        // Only after that write is there a regular file to carry the mode:
+        // chmodded first, the path is still a live symlink, which the no-follow
+        // chmod refuses, failing a rollback whose content already landed.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink("gone.txt", &target).unwrap();
+
+        let mut bk = record(&target, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some("gone.txt".to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&target, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            target.symlink_metadata().unwrap().file_type().is_file(),
+            "a write through a dangling link lands at the link path itself"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the recorded mode lands on the file the write left behind"
+        );
+        assert!(
+            !tmp.path().join("gone.txt").exists(),
+            "a dangling destination is never created to satisfy the mode"
         );
     }
 

@@ -879,7 +879,11 @@ fn read_command_output_multiline_output() {
 /// clobbered while `/etc/profile.d/cfgd-env.sh` kept 0600.
 ///
 /// Test modules are not in the population: a fixture writing into a tempdir
-/// answers to nobody's login shell.
+/// answers to nobody's login shell, and neither is a COMMENT line: a doc
+/// sentence naming a writer is documentation, not a call site, and one reported
+/// as an offender or counted toward the floor is a walk lying in both
+/// directions. The floor sits AT what this module holds rather than under it, so
+/// a writer cannot vanish inside a margin.
 #[test]
 fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     let system_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system");
@@ -913,6 +917,9 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
             .map(|(i, _)| i)
             .collect();
         for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
             let where_ = format!("{rel}:{}", idx + 1);
             // A literal mode passed to the permission setter is the widen the
             // helper owns; a tightening mode (ssh keys) or a declared one (a
@@ -960,7 +967,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
         }
     }
     assert!(
-        files >= 20 && writers >= 12,
+        files >= 24 && writers >= 16,
         "the walk read {files} files and {writers} writers, too few to be the population"
     );
     assert!(
@@ -991,7 +998,10 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
 /// on those alone would turn a fully converted engine into a failure. A COMMENT
 /// line counts for nothing either way: a doc sentence naming the primitive is
 /// documentation, not a call site, and a floor a rustdoc paragraph could hold up
-/// would let the real population shrink with the walk none the wiser.
+/// would let the real population shrink with the walk none the wiser. Each floor
+/// sits AT what the workspace holds rather than under it, so a call site cannot
+/// vanish inside a margin: a `>=` floor never trips on an addition, and the
+/// assertion prints the number it read.
 #[test]
 fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_safe() {
     let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1042,7 +1052,7 @@ fn every_path_based_chmod_in_the_system_and_file_engines_says_why_the_follow_is_
         }
     }
     assert!(
-        files >= 15 && chmods >= 4,
+        files >= 28 && chmods >= 5,
         "the walk read {files} files and {chmods} chmods, too few to be the population"
     );
     assert!(

@@ -2594,7 +2594,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
         let found = hits.get(*pin).copied().unwrap_or(0);
         assert!(
             found >= *floor,
-            "{pin} matched {found} call sites, under its floor of {floor} — \
+            "{pin} matched {found} lines, under its floor of {floor} — \
              the walk has gone blind to it"
         );
     }
