@@ -18997,6 +18997,7 @@ mod ipc_socket_security {
         let err = ensure_owner_private_dir(&bogus)
             .expect_err("expected refusal when parent dir cannot be made owner-private");
         let msg = format!("{err}");
+        // unfolded-path-ok: the create refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains(&bogus.display().to_string()),
             "error must name the offending directory, got {msg:?}"
@@ -19056,6 +19057,12 @@ mod ipc_socket_security {
     /// `chown`, so both refusal arms run only as root; as an ordinary user the
     /// pin still proves the accepting arm, and the refusals are unexercised
     /// there.
+    ///
+    /// The refusals name a component of the path the WALK judges, which it folds
+    /// every link out of as it descends, so the fixture is rooted on
+    /// [`crate::test_helpers::folded_temp_root`]: a host whose `$TMPDIR` is
+    /// reached through a link would otherwise be compared against a prefix the
+    /// walk has already recomposed.
     #[cfg(unix)]
     #[test]
     fn the_socket_directory_refuses_an_owner_that_is_not_this_process() {
@@ -19063,13 +19070,14 @@ mod ipc_socket_security {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let mine = tmp.path().join("mine");
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let mine = root.join("mine");
         ensure_owner_private_dir(&mine).expect("a directory this euid owns must be accepted");
 
         if !crate::is_root() {
             return;
         }
-        let theirs = tmp.path().join("theirs");
+        let theirs = root.join("theirs");
         std::fs::create_dir(&theirs).unwrap();
         std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
         let err = ensure_owner_private_dir(&theirs)
@@ -19079,7 +19087,7 @@ mod ipc_socket_security {
             "the refusal must name the owner it found, got {err}"
         );
 
-        let outer = tmp.path().join("outer");
+        let outer = root.join("outer");
         let inner = outer.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
         std::os::unix::fs::chown(&outer, Some(1), Some(1)).unwrap();
@@ -19091,11 +19099,11 @@ mod ipc_socket_security {
             "the refusal must name the offending component rather than the leaf, got {msg}"
         );
 
-        let victim = tmp.path().join("victim-tree");
+        let victim = root.join("victim-tree");
         let standing = victim.join("standing");
         std::fs::create_dir_all(&standing).unwrap();
         crate::set_file_permissions(&standing, 0o755).unwrap();
-        let aimed = tmp.path().join("aimed");
+        let aimed = root.join("aimed");
         std::fs::create_dir(&aimed).unwrap();
         std::os::unix::fs::symlink(&victim, aimed.join("link")).unwrap();
         std::os::unix::fs::chown(&aimed, Some(1), Some(1)).unwrap();
@@ -19277,6 +19285,123 @@ mod ipc_socket_security {
             "{}: exported from health_ipc.rs with no `///` run of its own, so a doc comment \
              above it has been absorbed by an item inserted beneath it",
             undocumented.join("; ")
+        );
+    }
+
+    /// Walks every pin that compares a rendered path against a refusal from
+    /// `ensure_owner_private_dir`, for one whose expectation is built from a
+    /// fixture root the ancestor walk has already folded.
+    ///
+    /// That walk resolves each symlink it crosses and recomposes the path under
+    /// the target, so every refusal it raises past its first pass names a string
+    /// the operator never typed. `$TMPDIR` is itself reached through a symlink on
+    /// macOS, where `/var` is a link to `private/var`, so a pin building its
+    /// expectation out of `tempfile::tempdir()`'s own path compares against a
+    /// prefix carrying no `/private` and fails there while passing on Linux. Two
+    /// of these pins did exactly that, and no Linux run could see it.
+    ///
+    /// Two remedies, and which one applies is a judgment the pin records rather
+    /// than one this walk can make: a pin asserting a path the walk FOLDED
+    /// rebases its fixture on [`crate::test_helpers::folded_temp_root`], while a
+    /// pin asserting a path as `ensure_owner_private_dir` was HANDED it keeps
+    /// comparing against the unfolded path and says so with
+    /// `// unfolded-path-ok: <why>`.
+    ///
+    /// The ceiling: both tells are read over the whole function, so a pin holding
+    /// assertions of both kinds counts as answered by either one. The population
+    /// is small enough that the hatch's own sentence is the real check, and a pin
+    /// needing both answers at once is better split in two.
+    #[cfg(unix)]
+    #[test]
+    fn every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root() {
+        // This walk's own body spells every tell it looks for, so it is not a
+        // member of the population it judges.
+        const THIS_WALK: &str =
+            "every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root";
+        const SOURCES: [&str; 2] = ["health_ipc.rs", "tests.rs"];
+
+        let dir = crate::test_helpers::workspace_root()
+            .join("crates")
+            .join("cfgd-core")
+            .join("src")
+            .join("daemon");
+        let mut candidates: Vec<String> = Vec::new();
+        let mut judged: Vec<String> = Vec::new();
+        let mut offenders: Vec<String> = Vec::new();
+        for source in SOURCES {
+            let path = dir.join(source);
+            let body = crate::test_helpers::walked_file_body(&path);
+            let lines = crate::test_helpers::logical_source_lines(&body);
+            let mut i = 0;
+            while i < lines.len() {
+                let text = lines[i].1.as_str();
+                let bare = text.trim_start();
+                if !bare.starts_with("fn ") && !bare.starts_with("async fn ") {
+                    i += 1;
+                    continue;
+                }
+                // The extent is taken to the closing brace at the declaration's
+                // own indentation rather than to the next declaration: the doc
+                // comment of the NEXT pin sits between the two, and reading it as
+                // part of this one would let a neighbour's remedy answer for it.
+                let close = format!("{}}}", &text[..text.len() - bare.len()]);
+                let mut end = i + 1;
+                while end < lines.len() && lines[end].1 != close {
+                    end += 1;
+                }
+                let name = bare
+                    .trim_start_matches("async ")
+                    .trim_start_matches("fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let fn_lines: Vec<&str> = lines[i..end].iter().map(|(_, l)| l.as_str()).collect();
+                let whole = fn_lines.join("\n");
+                let reads_a_refusal =
+                    whole.contains("ensure_owner_private_dir(") && whole.contains("expect_err");
+                if name != THIS_WALK && reads_a_refusal {
+                    let at = format!("{source}:{}: {name}", lines[i].0);
+                    candidates.push(at.clone());
+                    // A path reaches an expectation rendered, so a `contains(`
+                    // and a `display()` on ONE logical line is the tell that this
+                    // pin's verdict turns on the path the message carries.
+                    if fn_lines
+                        .iter()
+                        .any(|l| l.contains("contains(") && l.contains("display()"))
+                    {
+                        judged.push(at.clone());
+                        if !whole.contains("folded_temp_root")
+                            && !whole.contains("unfolded-path-ok")
+                        {
+                            offenders.push(at);
+                        }
+                    }
+                }
+                i = end + 1;
+            }
+        }
+        assert!(
+            candidates.len() >= 10,
+            "the walk found {} pins reading a refusal from this helper, fewer than the 10 it was \
+             written against, so it is reading less than it claims:\n{}",
+            candidates.len(),
+            candidates.join("\n")
+        );
+        assert!(
+            judged.len() >= 7,
+            "the walk judged {} pins comparing a rendered path against a refusal, fewer than the \
+             7 it was written against, so it is reading less than it claims:\n{}",
+            judged.len(),
+            judged.join("\n")
+        );
+        assert!(
+            offenders.is_empty(),
+            "{}: compares a rendered path against a refusal from this helper's ancestor walk \
+             without rebasing its fixture on `folded_temp_root`, so it asserts a prefix the walk \
+             has already folded away; rebase it, or state why the path it asserts is the one the \
+             helper was handed with `// unfolded-path-ok: <why>`",
+            offenders.join("; ")
         );
     }
 

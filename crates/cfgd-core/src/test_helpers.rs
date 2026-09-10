@@ -639,6 +639,29 @@ pub fn file_url(path: &Path) -> String {
     crate::to_file_url(path)
 }
 
+/// A fixture root as code that FOLDS symlinks will judge it.
+///
+/// `std::env::temp_dir()` is itself reached through a symlink on macOS, where
+/// `/var` is a link to `private/var` and `$TMPDIR` lives under it, so the first
+/// link any ancestor walk meets under `tempfile::tempdir()` is that one and every
+/// path it goes on to compose carries a `/private` prefix. A fixture building its
+/// expectation out of the tempdir's own path is then comparing against a prefix
+/// the code under test cannot produce. Rebase the whole fixture on this root once
+/// and build every directory, link and expectation from it.
+///
+/// For the root only. A path that IS a symlink must not be passed: resolving it
+/// answers where it points, which is not what a fold of its own ancestors
+/// composes. A test asserting a path as the operator GAVE it keeps comparing
+/// against the unfolded path, that being the string its subject renders.
+pub fn folded_temp_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|e| {
+        panic!(
+            "{}: a fixture root must exist before it can be folded: {e}",
+            root.display()
+        )
+    })
+}
+
 /// Shared snapshot-golden assertion for output snapshot tests.
 ///
 /// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when

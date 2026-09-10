@@ -249,6 +249,12 @@ pub(crate) fn is_owner_private_mode(mode: u32) -> bool {
 /// A `..` component in the path as given is refused outright: every `stat` of a
 /// prefix ending in one resolves the links above it, which is exactly what this
 /// walk is written not to do, so its verdict would be about paths it never read.
+///
+/// Every refusal raised after the first pass names the folds that assembled the
+/// string being judged, in the order they were applied. The path the operator
+/// wrote is the first pass's own, so that pass names no fold; past it the string
+/// is one only this walk assembled, and a path commonly crosses more than one
+/// link before reaching the component that is refused.
 #[cfg(unix)]
 fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -256,11 +262,31 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
 
     let refuse = |message: String| DaemonError::HealthSocketError { message };
     let mut path = crate::absolutize_path(dir);
-    // Provenance of the path being judged: `None` on the first pass, where the
-    // path is the one the operator wrote, and from the second pass on the link
-    // whose target composed it, so a refusal can name what they actually wrote
-    // rather than a string only this walk ever assembled.
-    let mut composed_from: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
+    // Provenance of the path being judged: empty on the first pass, where the
+    // path is the one the operator wrote, and one entry per fold from the second
+    // pass on, so a refusal can name what they actually wrote rather than a
+    // string only this walk ever assembled.
+    //
+    // EVERY fold is kept rather than only the latest, because a path is commonly
+    // assembled by more than one: on macOS `/var` is a link to `private/var` and
+    // every per-user and temporary path crosses it, so the walk has already
+    // recomposed the whole path under `/private` before it reaches any link an
+    // operator planted. Naming the latest alone hands them a string they never
+    // typed beside a link that did not produce its prefix.
+    let mut composed_from: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    // The one rendering of that provenance, so the three refusals below cannot
+    // word it differently. A chain of one renders as it always has.
+    let provenance = |folds: &[(std::path::PathBuf, std::path::PathBuf)]| -> String {
+        if folds.is_empty() {
+            return String::new();
+        }
+        let links = folds
+            .iter()
+            .map(|(link, target)| format!("the link {} -> {}", link.posix(), target.posix()))
+            .collect::<Vec<_>>()
+            .join(", then ");
+        format!(" (composed from {links})")
+    };
     // One pass per link component. The bound's only job is to terminate this
     // walk: it sits above any chain a unix will resolve, so a non-cyclic chain
     // too long for the host is refused by the kernel's own `ELOOP` at the
@@ -276,19 +302,11 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
-            let composed = match &composed_from {
-                Some((link, target)) => format!(
-                    " (composed from the link {} -> {})",
-                    link.posix(),
-                    target.posix()
-                ),
-                None => String::new(),
-            };
             return Err(refuse(format!(
                 "refusing to bind: path {} contains a `..` component, which no \
                  component-by-component check can judge{}",
                 path.posix(),
-                composed
+                provenance(&composed_from)
             ))
             .into());
         }
@@ -303,10 +321,11 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
             let uid = meta.uid();
             if uid != euid && uid != 0 {
                 return Err(refuse(format!(
-                    "refusing to bind: path component {} is owned by uid {} rather than uid {} or root",
+                    "refusing to bind: path component {} is owned by uid {} rather than uid {} or root{}",
                     component.posix(),
                     uid,
-                    euid
+                    euid,
+                    provenance(&composed_from)
                 ))
                 .into());
             }
@@ -354,9 +373,10 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
                 return Err(refuse(format!(
                     "refusing to bind: path component {} is writable by other accounts \
                      (mode {:o}) without the sticky bit that would keep them from \
-                     replacing it",
+                     replacing it{}",
                     component.posix(),
-                    mode
+                    mode,
+                    provenance(&composed_from)
                 ))
                 .into());
             }
@@ -364,7 +384,9 @@ fn refuse_swappable_path(dir: &std::path::Path, euid: u32) -> Result<()> {
         match follow {
             Some(next) => {
                 path = next;
-                composed_from = followed;
+                if let Some(fold) = followed {
+                    composed_from.push(fold);
+                }
             }
             None => return Ok(()),
         }
@@ -769,6 +791,7 @@ mod tests {
         let err = ensure_owner_private_dir(&file_path)
             .expect_err("a regular file standing in for the socket directory must be refused");
         let msg = err.to_string();
+        // unfolded-path-ok: the kind refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains("is not a directory") && msg.contains(&file_path.display().to_string()),
             "the refusal must name the path and its kind, got: {msg}"
@@ -1097,10 +1120,18 @@ mod tests {
     /// judges the path as given, so it carries no clause. `join` on an empty
     /// remainder would append a separator, so the composed path is also asserted
     /// whole rather than by a `contains` of its prefix.
+    ///
+    /// The fixture is rooted on [`crate::test_helpers::folded_temp_root`]: the
+    /// walk folds every link above the planted one first, and on a host whose
+    /// `$TMPDIR` is reached through one there is such a link, so an expectation
+    /// built from the tempdir's own path names a prefix the walk has already
+    /// recomposed. Folding the root also makes the planted link the ONE fold on
+    /// every host, which is what this pin's single-clause wording is about.
     #[test]
     fn the_parent_dir_refusal_names_the_link_that_composed_the_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let nested = tmp.path().join("nested");
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let nested = root.join("nested");
         std::fs::create_dir(&nested).unwrap();
         std::fs::create_dir(nested.join("real")).unwrap();
         let via = nested.join("via");
@@ -1146,10 +1177,16 @@ mod tests {
     /// here therefore carries a trailing `nope/..` behind its leading run. The
     /// `..` survives the fold by design, is refused on the next pass, and that
     /// refusal names the composed path byte for byte.
+    ///
+    /// Rooted on [`crate::test_helpers::folded_temp_root`] for the reason its
+    /// sibling `the_parent_dir_refusal_names_the_link_that_composed_the_path`
+    /// states: the expectation is a path this walk composed, so it is built from
+    /// the root the walk judges rather than the one the tempdir reports.
     #[test]
     fn a_leading_dot_and_dot_dot_run_folds_against_the_links_own_parent() {
         let tmp = tempfile::tempdir().unwrap();
-        let nested = tmp.path().join("nested");
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let nested = root.join("nested");
         let deep = nested.join("deep");
         std::fs::create_dir_all(&deep).unwrap();
 
@@ -1198,6 +1235,86 @@ mod tests {
         assert!(
             format!("{err}").contains("path /nope/.. contains"),
             "the pops must saturate at the root, got {err}"
+        );
+    }
+
+    /// A refusal reached after several folds names every link that contributed
+    /// to the string being judged, in the order they were applied.
+    ///
+    /// One fold per refusal is what a path crossing a single link needs, and it
+    /// is not the common shape: on macOS `/var` is a link to `private/var` and
+    /// every per-user and temporary path crosses it, so the walk has recomposed
+    /// the whole path under `/private` before it reaches anything an operator
+    /// planted. Keeping only the latest fold shows them a prefix they never typed
+    /// beside a link that did not produce it, which is the exact gap the clause
+    /// exists to close.
+    ///
+    /// Two links rather than one, the second carrying a non-leading `..` so the
+    /// third pass refuses and the assembled string is observable. The first
+    /// target is relative, so the clause is also proven to render a target as the
+    /// link spells it rather than as the walk resolved it.
+    #[test]
+    fn a_refusal_after_several_folds_names_every_link_that_composed_the_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        std::fs::create_dir(root.join("one")).unwrap();
+        std::os::unix::fs::symlink("one", root.join("first")).unwrap();
+        std::os::unix::fs::symlink("real/../real", root.join("one").join("second")).unwrap();
+
+        let err = ensure_owner_private_dir(&root.join("first").join("second"))
+            .expect_err("a target carrying a non-leading `..` must be refused");
+        let msg = format!("{err}");
+        let composed = root.join("one").join("real").join("..").join("real");
+        assert!(
+            msg.contains(&format!("path {} contains", composed.display())),
+            "the refusal must name the path both folds assembled, got {msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "(composed from the link {} -> one, then the link {} -> real/../real)",
+                root.join("first").display(),
+                root.join("one").join("second").display()
+            )),
+            "the refusal must name both folds in the order they were applied, got {msg}"
+        );
+    }
+
+    /// A refusal about a path COMPONENT names the fold that put that component
+    /// in the path, not the `..` refusal alone.
+    ///
+    /// All three refusals this walk raises past its first pass judge a string it
+    /// assembled, and all three read the one provenance composer. Without the
+    /// clause an operator is told a directory of theirs is world-writable under a
+    /// name they never wrote: the path asked about here is `<root>/via/cfgd`, and
+    /// what the refusal names is `<root>/open`.
+    ///
+    /// The writability rule is the one of the three a test can arrange at any
+    /// uid. Its sibling ownership rule needs the power to `chown`, and reads the
+    /// same composer.
+    #[test]
+    fn a_refusal_on_a_component_the_walk_folded_to_names_the_link_that_composed_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let open = root.join("open");
+        std::fs::create_dir(&open).unwrap();
+        // Group- and other-writable without the sticky bit is the one shape the
+        // walk's writability rule refuses.
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::os::unix::fs::symlink("open", root.join("via")).unwrap();
+
+        let err = ensure_owner_private_dir(&root.join("via").join("cfgd"))
+            .expect_err("a component other accounts can write must be refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(&format!("path component {} is writable", open.display())),
+            "the refusal must name the component the fold reached, got {msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "(composed from the link {} -> open)",
+                root.join("via").display()
+            )),
+            "the refusal must name the fold that put that component in the path, got {msg}"
         );
     }
 
