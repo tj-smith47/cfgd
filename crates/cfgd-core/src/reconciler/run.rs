@@ -18,7 +18,10 @@ use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
 use super::format::action_display_subject_within;
-use super::types::{Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan};
+use super::types::{
+    Action, AfterPlan, AfterPlanOutcome, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter,
+    PhaseName, Plan,
+};
 
 /// Heading for a hook group that runs around a reconcile but is not part of
 /// the plan. Rendered through the same section primitive as a phase so the
@@ -251,6 +254,13 @@ pub struct RunTally {
     /// What the run set out to do. The `Actions  N planned` header row and the
     /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
+    /// What the run performed that its plan could not name, one entry per item
+    /// — see [`AfterPlan`]. Outside `planned_total` and outside the three counts
+    /// above, because the header printed before the run could not promise it;
+    /// the class states itself on its own line instead.
+    ///
+    /// [`AfterPlan`]: super::AfterPlan
+    pub after_plan: Vec<AfterPlanOutcome>,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
 }
@@ -264,6 +274,7 @@ impl RunTally {
             not_attempted: Vec::new(),
             failed: 0,
             planned_total: 0,
+            after_plan: Vec::new(),
             status: ApplyStatus::Success,
             aborted: None,
         }
@@ -279,6 +290,7 @@ impl RunTally {
         self.failed += other.failed;
         self.not_attempted.extend(other.not_attempted);
         self.planned_total += other.planned_total;
+        self.after_plan.extend(other.after_plan);
         if status_severity(&other.status) > status_severity(&self.status) {
             self.status = other.status;
         }
@@ -302,7 +314,14 @@ impl RunTally {
     /// two things on screen that could tell the user what happened — the ✓ and
     /// the exit code — disagreed.
     fn nothing_attempted(&self) -> bool {
-        self.planned_total > 0 && self.succeeded == 0 && self.skipped == 0 && self.failed == 0
+        self.planned_total > 0
+            && self.succeeded == 0
+            && self.skipped == 0
+            && self.failed == 0
+            // A run that converged an env surface its plan could not name DID
+            // something, and `did not run` over a line saying so is two
+            // answers to one question.
+            && self.after_plan.is_empty()
     }
 }
 
@@ -321,15 +340,31 @@ fn status_severity(status: &ApplyStatus) -> u8 {
 
 impl ApplyResult {
     /// The rollup's view of an apply. The ONE place the conversion happens:
-    /// every `ActionResult` lands in exactly one of the two counts, so the
-    /// tally's shortfall is arithmetically `planned_total - action_results.len()`.
+    /// every `ActionResult` lands in exactly one of the counts, so the tally's
+    /// shortfall is arithmetically `planned_total` less the planned results.
     pub fn tally(&self) -> RunTally {
+        let succeeded = self.succeeded();
+        let skipped = self.skipped();
+        let failed = self.failed();
+        // The header printed `Actions {planned_total} planned` before the first
+        // action ran, so the three counts may come UNDER it (an abort, a
+        // pre-script stop) and may never go over it. Work the run learned it had
+        // to do is priced by `after_plan` instead; counted here, it put four
+        // succeeded actions under a header promising one.
+        debug_assert!(
+            succeeded + skipped + failed <= self.planned_total,
+            "the rollup counts {succeeded}+{skipped}+{failed} exceed the \
+             {} the header promised: a result the plan did not name is \
+             missing its `after_plan` subject",
+            self.planned_total
+        );
         RunTally {
-            succeeded: self.succeeded(),
-            skipped: self.skipped(),
+            succeeded,
+            skipped,
             not_attempted: self.not_attempted(),
-            failed: self.failed(),
+            failed,
             planned_total: self.planned_total,
+            after_plan: self.after_plan(),
             status: self.status.clone(),
             aborted: self.aborted,
         }
@@ -1087,6 +1122,7 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
         not_attempted: Vec::new(),
         failed: report.items.len() - succeeded,
         planned_total: planned,
+        after_plan: Vec::new(),
         // A skip is not a partial run of this unit; it is no run of it, so it
         // leaves the run's status alone.
         status: match (&report.skipped, report.is_clean()) {
@@ -1413,6 +1449,10 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
     }
+    // After the planned classes and before the withheld footnote: this work
+    // HAPPENED, so it belongs with the outcomes, while the withheld clause
+    // names reasons after a colon and closes the account.
+    clauses.extend(after_plan_clauses(tally));
     // The withheld actions are OUTSIDE the counted rollup — the header never
     // promised them, and they never reconcile against `planned_total` — and
     // they close the list with the reason the row above already gave, after a
@@ -1432,6 +1472,31 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
                 reasons.join(", ")
             ),
         ));
+    }
+    clauses
+}
+
+/// One clause per [`AfterPlan`] member the run has something to say about: what
+/// it performed, and separately what failed, because the two wear different
+/// roles and a class states its own trouble.
+///
+/// Walked over [`AfterPlan::ALL`] rather than over the entries, so the render
+/// order is the vocabulary's and a member the run performed none of says
+/// nothing. Read by [`outcome_clauses`] for every verdict that lists its
+/// clauses, and directly by the `Failed` arm of [`rollup_lines`], which lists
+/// none.
+fn after_plan_clauses(tally: &RunTally) -> Vec<(Role, String)> {
+    let mut clauses = Vec::new();
+    for subject in AfterPlan::ALL {
+        let mine = || tally.after_plan.iter().filter(|o| o.subject == subject);
+        let performed = mine().filter(|o| o.performed).count();
+        let failed = mine().filter(|o| !o.performed).count();
+        if performed > 0 {
+            clauses.push((Role::Ok, subject.performed_clause(performed)));
+        }
+        if failed > 0 {
+            clauses.push((Role::Fail, subject.failed_clause(failed)));
+        }
     }
     clauses
 }
@@ -1484,12 +1549,18 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
             // green line above it.
             //
             // It sits above the withheld clauses because a failure is what the
-            // reader acts on, and what did not happen is the footnote.
-            lines.push((
-                Role::Fail,
-                format!("{} failed", pluralize(tally.failed, "action")),
-                None,
-            ));
+            // reader acts on, and what did not happen is the footnote. Drawn
+            // only when a PLANNED action failed: a run turned partial by an
+            // after-plan failure alone has that failure stated by the class's
+            // own clause below, and `0 actions failed` over it names a failure
+            // nothing had.
+            if tally.failed > 0 {
+                lines.push((
+                    Role::Fail,
+                    format!("{} failed", pluralize(tally.failed, "action")),
+                    None,
+                ));
+            }
             lines.extend(trailing(1));
             lines
         }
@@ -1518,11 +1589,23 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
             lines.extend(trailing(usize::from(head)));
             lines
         }
-        ApplyStatus::Failed => vec![(
-            Role::Fail,
-            format!("{} failed", title.as_str()),
-            Some(format!("{} failed", pluralize(tally.failed, "action"))),
-        )],
+        // Every attempted action failed, so there is no success count to split
+        // out and the clause list is dropped — except the after-plan class,
+        // whose members the plan never named and which is the only news on a
+        // run whose planned actions were all withheld.
+        ApplyStatus::Failed => {
+            let mut lines = vec![(
+                Role::Fail,
+                format!("{} failed", title.as_str()),
+                (tally.failed > 0).then(|| format!("{} failed", pluralize(tally.failed, "action"))),
+            )];
+            lines.extend(
+                after_plan_clauses(tally)
+                    .into_iter()
+                    .map(|(role, clause)| (role, clause, None)),
+            );
+            lines
+        }
         ApplyStatus::InProgress => vec![(
             Role::Warn,
             format!("{} still in progress (unexpected state)", title.as_str()),

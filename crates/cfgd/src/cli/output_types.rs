@@ -87,6 +87,12 @@ pub struct ApplyOutput {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_id: Option<i64>,
+    /// What the run's plan promised, which is the number the header printed
+    /// before the first action ran: the three counts below partition it, and
+    /// `afterPlan` sits outside it. A consumer differencing the counts against
+    /// a total derived from the result list read work the plan never named as
+    /// part of the plan.
+    pub total: usize,
     pub succeeded: usize,
     /// Actions that ran and changed nothing — the rollup's `N skipped`.
     pub skipped: usize,
@@ -95,6 +101,13 @@ pub struct ApplyOutput {
     /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
     /// outside the plan's `totalActions`, exactly as the human line prices it.
     pub not_attempted: usize,
+    /// Work the run performed that its plan could not name — an env surface a
+    /// resolved secret or a late PATH directory forced it to rewrite, an
+    /// `onChange` hook. Outside the three counts above and outside the plan's
+    /// `totalActions`, exactly as the rollup's own line prices it; absent from
+    /// the wire on a run that performed none.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan: usize,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -113,10 +126,12 @@ impl ApplyOutput {
         Self {
             status: "nothingToDo".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -126,10 +141,12 @@ impl ApplyOutput {
         Self {
             status: "aborted".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: 0,
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -1456,10 +1473,12 @@ mod tests {
         let v = ApplyOutput {
             status: "partial".to_string(),
             apply_id: Some(7),
+            total: 2,
             succeeded: 2,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: 0,
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1482,8 +1501,10 @@ mod tests {
         let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
+            after_plan: 0,
             status: "success".to_string(),
             apply_id: Some(99),
+            total: 4,
             succeeded: 3,
             skipped: 0,
             failed: 1,
@@ -1511,8 +1532,10 @@ mod tests {
         commits.insert("alpha".to_string(), "a-sha".to_string());
         commits.insert("mid".to_string(), "m-sha".to_string());
         let v = ApplyOutput {
+            after_plan: 0,
             status: "success".to_string(),
             apply_id: Some(1),
+            total: 1,
             succeeded: 1,
             skipped: 0,
             failed: 0,

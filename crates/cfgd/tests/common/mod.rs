@@ -47,6 +47,25 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// A tempdir-backed profile whose one file deploy triggers an `onChange` hook:
+/// one PLANNED action, and one item of work the plan could not name, because a
+/// hook's condition is whether anything in this very run changed.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
+    (config_dir, state_dir, target)
+}
+
 /// Build a tempdir-backed profile that resolves to more modules than it
 /// declares: `editor` is the only name in `spec.modules`, and it `depends` on
 /// `core`.

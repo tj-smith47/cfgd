@@ -1206,6 +1206,84 @@ impl Plan {
     }
 }
 
+/// What a run performed that its plan could not name, by what it performed.
+///
+/// The header prints `Actions N planned` before the first action runs, so it can
+/// only ever promise what the plan knew. Both members below are triggered by
+/// something the run itself observes — a secret that resolved, a PATH directory
+/// a manager only reports once its install finished, a declaration that
+/// changed — which is why folding them into `planned_total` cannot work: the
+/// header would still say `N`. They are a class of their own instead, counted
+/// and rendered as their own rollup clause, so the number the header promised
+/// and the numbers the rollup reports are one account again.
+///
+/// A member is added here with its own wording (see [`Self::counted_noun`] /
+/// [`Self::verb`]) and its own entry in [`Self::ALL`], which is what every
+/// clause walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AfterPlan {
+    /// An env surface rewritten once a late input landed: a secret's resolved
+    /// value, or the PATH directory of a manager (npm) whose global prefix is
+    /// only knowable after its install finished.
+    EnvSurface,
+    /// An `onChange` hook, whose condition is whether anything in this very run
+    /// changed — an answer no plan can hold.
+    ChangeHook,
+}
+
+impl AfterPlan {
+    /// Every member, in the order their clauses render. A new variant joins it
+    /// or no surface counts one.
+    pub const ALL: [Self; 2] = [Self::EnvSurface, Self::ChangeHook];
+
+    /// The unit a count of these is IN, for the counted-clause rule.
+    fn counted_noun(self) -> &'static str {
+        match self {
+            Self::EnvSurface => "env surface",
+            Self::ChangeHook => "onChange hook",
+        }
+    }
+
+    /// What this member DID when it went well. An env surface converges; a hook
+    /// runs.
+    fn verb(self) -> &'static str {
+        match self {
+            Self::EnvSurface => "converged",
+            Self::ChangeHook => "ran",
+        }
+    }
+
+    /// The clause naming `count` of these that went well.
+    pub fn performed_clause(self, count: usize) -> String {
+        format!(
+            "{} {} after the plan",
+            crate::pluralize(count, self.counted_noun()),
+            self.verb()
+        )
+    }
+
+    /// The clause naming `count` of these that did not. Deliberately the same
+    /// word the planned failure clause uses: a failure is a failure, and the
+    /// trailing `after the plan` is what says which class it belongs to.
+    pub fn failed_clause(self, count: usize) -> String {
+        format!(
+            "{} failed after the plan",
+            crate::pluralize(count, self.counted_noun())
+        )
+    }
+}
+
+/// One item of work a run performed after its plan settled, and whether it went
+/// well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterPlanOutcome {
+    pub subject: AfterPlan,
+    /// The work went well — it wrote what it had to write, or it ran. `false`
+    /// is the failure the class states in its own clause, at its own role.
+    pub performed: bool,
+}
+
 /// Result of applying a single action.
 #[derive(Debug, Serialize)]
 pub struct ActionResult {
@@ -1251,6 +1329,12 @@ pub struct ActionResult {
     /// `-o json` shape.
     #[serde(skip)]
     pub drift_rows: Vec<(String, String)>,
+    /// What this result is, when the plan never named it — see [`AfterPlan`].
+    /// `None` for every planned action, and the ONE thing that keeps such a
+    /// result out of the three counts the header's `Actions N planned` is
+    /// reconciled against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_plan: Option<AfterPlan>,
 }
 
 /// Result of an entire apply operation.
@@ -1297,11 +1381,14 @@ pub struct RollbackResult {
 impl ApplyResult {
     /// Actions that ran and did something. A skipped action is NOT one of
     /// these — it settled a skip dash on screen, and a count claiming it as a
-    /// success contradicts the line the reader kept.
+    /// success contradicts the line the reader kept. Neither is work the plan
+    /// never named ([`Self::after_plan`]), which the header never promised.
     pub fn succeeded(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
+            .filter(|r| {
+                r.success && !r.skipped && r.not_attempted.is_none() && r.after_plan.is_none()
+            })
             .count()
     }
 
@@ -1311,7 +1398,9 @@ impl ApplyResult {
     pub fn skipped(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && r.skipped && r.not_attempted.is_none())
+            .filter(|r| {
+                r.success && r.skipped && r.not_attempted.is_none() && r.after_plan.is_none()
+            })
             .count()
     }
 
@@ -1324,8 +1413,29 @@ impl ApplyResult {
             .collect()
     }
 
+    /// Planned actions that failed. An after-plan failure is NOT one of these:
+    /// it belongs to the class that states its own failures, and counting it
+    /// here is what made `succeeded + skipped + failed` exceed the
+    /// `planned_total` the header promised.
     pub fn failed(&self) -> usize {
-        self.action_results.iter().filter(|r| !r.success).count()
+        self.action_results
+            .iter()
+            .filter(|r| !r.success && r.after_plan.is_none())
+            .count()
+    }
+
+    /// Every item of work this run performed that its plan could not name, in
+    /// result order — see [`AfterPlan`].
+    pub fn after_plan(&self) -> Vec<AfterPlanOutcome> {
+        self.action_results
+            .iter()
+            .filter_map(|r| {
+                r.after_plan.map(|subject| AfterPlanOutcome {
+                    subject,
+                    performed: r.success,
+                })
+            })
+            .collect()
     }
 }
 

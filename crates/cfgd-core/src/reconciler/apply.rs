@@ -19,8 +19,8 @@ use super::scripts::{
 };
 use super::sidecar::SidecarOutcome;
 use super::types::{
-    Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
-    ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
+    Action, ActionResult, AfterPlan, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE,
+    ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
     ReconcileContext, ScriptAction, ScriptPhase, SystemAction, module_skipped_whole,
 };
 use crate::providers::{
@@ -987,6 +987,7 @@ pub(super) fn merge_env_result(
         installed: None,
         versions: Default::default(),
         drift_rows,
+        after_plan: Some(AfterPlan::EnvSurface),
     });
 }
 
@@ -1703,12 +1704,14 @@ impl<'a> super::Reconciler<'a> {
         if let Some(code) = aborted_code {
             self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
-            let not_attempted = not_attempted_count(&results);
-            let succeeded = results
-                .iter()
-                .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
-                .count();
-            let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+            let result = ApplyResult {
+                action_results: results,
+                status: ApplyStatus::Aborted,
+                apply_id,
+                aborted: Some(code),
+                planned_total,
+                caveats,
+            };
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
             // record whose total is the reached count reads as a clean sweep
@@ -1716,27 +1719,23 @@ impl<'a> super::Reconciler<'a> {
             // and it is the only place the actions the abort stopped are
             // accounted for — the dispatcher deliberately reports none of them
             // action by action.
-            let not_run = planned_total.saturating_sub(results.len() - not_attempted);
+            let after_plan = result.after_plan().len();
+            let not_run = planned_total
+                .saturating_sub(result.succeeded() + result.skipped() + result.failed());
             let summary = crate::state::ApplySummary::Actions {
                 total: planned_total,
-                succeeded,
-                skipped,
-                failed: results.len() - not_attempted - succeeded - skipped,
-                not_attempted,
+                succeeded: result.succeeded(),
+                skipped: result.skipped(),
+                failed: result.failed(),
+                not_attempted: result.not_attempted().len(),
+                after_plan,
                 not_run: Some(not_run),
                 aborted: true,
             }
             .to_column();
             self.state
                 .update_apply_status(apply_id, ApplyStatus::Aborted, Some(&summary))?;
-            return Ok(ApplyResult {
-                action_results: results,
-                status: ApplyStatus::Aborted,
-                apply_id,
-                aborted: Some(code),
-                planned_total,
-                caveats,
-            });
+            return Ok(result);
         }
 
         // --- Env regeneration: fold in inputs that only exist once the phases ran ---
@@ -1817,6 +1816,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                after_plan: Some(AfterPlan::EnvSurface),
                             });
                         }
                     }
@@ -1872,6 +1872,7 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            after_plan: Some(AfterPlan::ChangeHook),
                         });
                     }
                     Err(e) => {
@@ -1888,6 +1889,7 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            after_plan: Some(AfterPlan::ChangeHook),
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1957,6 +1959,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                after_plan: Some(AfterPlan::ChangeHook),
                             });
                         }
                         Err(e) => {
@@ -1977,6 +1980,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                after_plan: Some(AfterPlan::ChangeHook),
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1987,27 +1991,38 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // `total` is what the run ATTEMPTED: a pre-skipped action has a result
-        // row (its reason) and no place in the count the header promised.
-        let not_attempted = not_attempted_count(&results);
-        let total = results.len() - not_attempted;
-        let failed = results.iter().filter(|r| !r.success).count();
-        let status = if failed == 0 {
+        // The verdict is taken over everything that RAN, after-plan work
+        // included: a surface this run rewrote and failed to write is a failed
+        // apply, whatever the plan happened to name.
+        let attempted = results.len() - not_attempted_count(&results);
+        let failed_all = results.iter().filter(|r| !r.success).count();
+        let status = if failed_all == 0 {
             ApplyStatus::Success
-        } else if failed == total {
+        } else if failed_all == attempted {
             ApplyStatus::Failed
         } else {
             ApplyStatus::Partial
         };
 
-        // Update apply status from "in-progress" placeholder to final
-        let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+        let result = ApplyResult {
+            action_results: results,
+            status,
+            apply_id,
+            aborted: None,
+            planned_total,
+            caveats,
+        };
+        // The stored row is priced by the SAME predicates the rollup and the
+        // `-o json` payload read, so the three cannot disagree: `total` is what
+        // the header promised, the three counts partition the PLANNED results
+        // under it, and `after_plan` holds what the run learned it had to do.
         let summary = crate::state::ApplySummary::Actions {
-            total,
-            succeeded: total - failed - skipped,
-            skipped,
-            failed,
-            not_attempted,
+            total: result.planned_total,
+            succeeded: result.succeeded(),
+            skipped: result.skipped(),
+            failed: result.failed(),
+            not_attempted: result.not_attempted().len(),
+            after_plan: result.after_plan().len(),
             not_run: None,
             aborted: false,
         }
@@ -2027,21 +2042,19 @@ impl<'a> super::Reconciler<'a> {
         // which is what a run that did not finish its bookkeeping actually is.
         self.state.in_transaction(|| {
             self.state
-                .update_apply_status(apply_id, status.clone(), Some(&summary))?;
-            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+                .update_apply_status(apply_id, result.status.clone(), Some(&summary))?;
+            self.record_managed_resources(
+                apply_id,
+                &result.action_results,
+                resolved,
+                module_actions,
+            )?;
             // Update module state and file manifests for successfully applied modules
-            self.update_module_state(module_actions, Some(apply_id), &results)?;
+            self.update_module_state(module_actions, Some(apply_id), &result.action_results)?;
             self.snapshot_touched_files(apply_id, resolved, module_actions)
         })?;
 
-        Ok(ApplyResult {
-            action_results: results,
-            status,
-            apply_id,
-            aborted: None,
-            planned_total,
-            caveats,
-        })
+        Ok(result)
     }
 
     /// Post-apply snapshot: capture the resolved content (following symlinks)
@@ -2501,6 +2514,8 @@ impl<'a> super::Reconciler<'a> {
             } else {
                 Vec::new()
             },
+            // The plan named this action, so the header already promised it.
+            after_plan: None,
         });
 
         if action_reports_its_own_status(action) {

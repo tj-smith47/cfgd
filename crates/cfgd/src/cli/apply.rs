@@ -784,10 +784,15 @@ pub fn run_apply(
     let output = ApplyOutput {
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
+        // The PLANNED total, the same number the header printed: the three
+        // counts below partition it and `after_plan` sits outside it, so a
+        // consumer can reconcile the payload against the run it watched.
+        total: result.planned_total,
         succeeded: result.succeeded(),
         skipped: result.skipped(),
         failed: result.failed(),
         not_attempted: result.not_attempted().len(),
+        after_plan: result.after_plan().len(),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its

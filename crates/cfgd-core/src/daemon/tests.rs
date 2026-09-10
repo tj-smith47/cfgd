@@ -23061,6 +23061,47 @@ mod log_dialect {
         );
     }
 
+    /// The log line accounts for work the tick's plan could not name too: an
+    /// `onChange` hook fires on whether this very tick changed anything. Folded
+    /// into `succeeded` it reported two actions for a plan of one, on the one
+    /// line a reader of the journal keeps.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    #[serial_test::serial(daemon_log)]
+    async fn an_applying_tick_logs_the_work_its_plan_could_not_name() {
+        reset_daemon_log();
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  scripts:\n    onChange:\n      - \"true\"\n  modules:\n    - mymod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("app.conf");
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        run_tick(&config_path, &state_dir, None).await;
+
+        let logs = daemon_log();
+        assert!(
+            logs.contains(
+                "reconcile: complete — 1 action succeeded, 1 onChange hook ran after the plan"
+            ),
+            "got: {logs}"
+        );
+    }
+
     /// A per-module tick names its module: both cadences write to one log, and
     /// a bare completion cannot say which of them converged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

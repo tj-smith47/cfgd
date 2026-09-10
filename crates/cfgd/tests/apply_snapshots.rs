@@ -35,8 +35,8 @@ use pretty_assertions::assert_eq;
 
 use common::profile_with_packages_setup;
 use common::{
-    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
-    tiny_profile_setup,
+    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_on_change_hook_setup,
+    profile_with_one_failure_setup, tiny_profile_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -45,8 +45,10 @@ fn happy_output() -> ApplyOutput {
     let mut source_commits = BTreeMap::new();
     source_commits.insert("team-config".to_string(), "abc1234".to_string());
     ApplyOutput {
+        after_plan: 0,
         status: "success".to_string(),
         apply_id: Some(42),
+        total: 3,
         succeeded: 3,
         skipped: 0,
         failed: 0,
@@ -220,6 +222,50 @@ fn apply_nothing_to_do_human() {
     drop(printer);
 
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/nothing_to_do.txt");
+}
+
+/// The header's `Actions N planned` and the rollup's tally are one account, on
+/// a run that performed work its plan could not name: the `onChange` hook fires
+/// on whether THIS run changed anything, so no plan holds it. Counted as a
+/// planned success it rendered `1 succeeded` under a header promising one and
+/// then `2 succeeded` once a second late surface landed, and the `-o json`
+/// payload carried the same inflated count with no total to reconcile it
+/// against.
+#[test]
+#[cfg(unix)]
+fn apply_after_plan_work_human_and_json() {
+    let (config_dir, state_dir, target) = profile_with_on_change_hook_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    let args = apply_args();
+
+    cmd_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("apply emits its payload");
+    assert_eq!(
+        payload["total"], 1,
+        "`total` is what the plan promised: {payload}"
+    );
+    assert_eq!(
+        payload["succeeded"], 1,
+        "the planned counts partition that total: {payload}"
+    );
+    assert_eq!(
+        payload["afterPlan"], 1,
+        "the hook is its own field, outside the total: {payload}"
+    );
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = normalize_duration(&strip_ansi(&normalized));
+    assert!(
+        stripped.contains("Actions  1 planned")
+            && stripped.contains("1 onChange hook ran after the plan"),
+        "the header's promise and the class's own line: {stripped}"
+    );
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/after_plan.txt", &stripped);
 }
 
 #[test]

@@ -7,5 +7,6 @@
     "team-config": "abc1234"
   },
   "status": "success",
-  "succeeded": 3
+  "succeeded": 3,
+  "total": 3
 }

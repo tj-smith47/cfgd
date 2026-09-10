@@ -254,6 +254,12 @@ pub enum ApplySummary {
         /// what the run attempted, and outside `skipped`, which ran.
         #[serde(default, skip_serializing_if = "is_zero")]
         not_attempted: usize,
+        /// Work the run performed that its plan could not name — an env surface
+        /// a late input forced it to rewrite, an `onChange` hook. Outside
+        /// `total`, which is what the header promised before the run began, and
+        /// outside the three counts that partition it.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        after_plan: usize,
         /// Actions the run planned and never reached, recorded only by the
         /// cooperative-abort close.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +311,7 @@ impl std::fmt::Display for ApplySummary {
                 skipped,
                 failed,
                 not_attempted,
+                after_plan,
                 not_run,
                 aborted,
                 ..
@@ -322,6 +329,9 @@ impl std::fmt::Display for ApplySummary {
                 }
                 if *not_attempted > 0 {
                     write!(f, ", {not_attempted} not attempted")?;
+                }
+                if *after_plan > 0 {
+                    write!(f, ", {after_plan} after the plan")?;
                 }
                 if let Some(not_run) = not_run.filter(|n| *n > 0) {
                     write!(f, ", {not_run} not run")?;
@@ -594,6 +604,7 @@ mod apply_summary_tests {
     #[test]
     fn a_stored_summary_reads_back_as_prose_on_a_human_surface() {
         let clean = ApplySummary::Actions {
+            after_plan: 0,
             total: 22,
             succeeded: 22,
             skipped: 0,
@@ -605,6 +616,7 @@ mod apply_summary_tests {
         assert_eq!(ApplySummary::prose(&clean.to_column()), "22 succeeded");
 
         let split = ApplySummary::Actions {
+            after_plan: 0,
             total: 13,
             succeeded: 12,
             skipped: 1,
@@ -619,6 +631,7 @@ mod apply_summary_tests {
         );
 
         let aborted = ApplySummary::Actions {
+            after_plan: 0,
             total: 9,
             succeeded: 4,
             skipped: 0,
@@ -632,9 +645,33 @@ mod apply_summary_tests {
             "4 succeeded, 1 failed, 4 not run (aborted)"
         );
 
+        // Work the run learned it had to do is outside `total` too, and the
+        // recalled sentence says so in its own clause: a row whose prose folded
+        // it into `succeeded` read `4 succeeded` for a run the header promised
+        // one action of.
+        let after_plan = ApplySummary::Actions {
+            after_plan: 3,
+            total: 1,
+            succeeded: 1,
+            skipped: 0,
+            failed: 0,
+            not_attempted: 0,
+            not_run: None,
+            aborted: false,
+        };
+        assert_eq!(
+            ApplySummary::prose(&after_plan.to_column()),
+            "1 succeeded, 3 after the plan"
+        );
+        assert!(
+            !clean.to_column().contains("afterPlan"),
+            "a run that learned nothing extra carries no field for it"
+        );
+
         // A withheld action is outside `total` and named after the counts
         // that reconcile against it; a row with none carries no field for it.
         let withheld = ApplySummary::Actions {
+            after_plan: 0,
             total: 2,
             succeeded: 2,
             skipped: 0,
@@ -695,9 +732,11 @@ mod apply_summary_tests {
             ("not_attempted", "not attempted"),
             ("not_run", "not run"),
             ("aborted", "(aborted)"),
+            ("after_plan", "after the plan"),
         ];
 
         let build = |slot: &str| ApplySummary::Actions {
+            after_plan: (slot == "after_plan") as usize,
             total: 4,
             succeeded: 4,
             skipped: (slot == "skipped") as usize,
@@ -725,6 +764,7 @@ mod apply_summary_tests {
         assert_eq!(build("none").to_string(), "4 succeeded");
         assert_eq!(
             ApplySummary::Actions {
+                after_plan: 0,
                 total: 2,
                 succeeded: 0,
                 skipped: 0,

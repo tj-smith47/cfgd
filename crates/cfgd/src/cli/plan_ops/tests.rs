@@ -2927,6 +2927,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
         action_results: descriptions
             .iter()
             .map(|d| ActionResult {
+                after_plan: None,
                 phase: "env".to_string(),
                 description: (*d).to_string(),
                 success: true,

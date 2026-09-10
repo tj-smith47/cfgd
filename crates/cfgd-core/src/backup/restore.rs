@@ -138,6 +138,7 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         group.hint(super::safety_copy_hint(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
+        after_plan: Vec::new(),
         succeeded: usize::from(outcome.restored),
         skipped: 0,
         not_attempted: Vec::new(),

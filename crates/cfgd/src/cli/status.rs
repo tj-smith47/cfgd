@@ -5461,6 +5461,7 @@ mod tests {
             status: ApplyStatus::Success,
             summary: Some(
                 cfgd_core::state::ApplySummary::Actions {
+                    after_plan: 0,
                     total: 22,
                     succeeded: 21,
                     skipped: 1,

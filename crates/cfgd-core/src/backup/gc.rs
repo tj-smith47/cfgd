@@ -98,6 +98,7 @@ impl CollectOutcome {
             ApplyStatus::Success
         };
         RunTally {
+            after_plan: Vec::new(),
             succeeded: self.collected.len(),
             skipped: self.skipped.len(),
             not_attempted: Vec::new(),

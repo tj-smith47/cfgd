@@ -800,6 +800,7 @@ fn apply_result_counts() {
     let result = ApplyResult {
         action_results: vec![
             ActionResult {
+                after_plan: None,
                 phase: "files".to_string(),
                 description: "test".to_string(),
                 success: true,
@@ -812,6 +813,7 @@ fn apply_result_counts() {
                 drift_rows: Vec::new(),
             },
             ActionResult {
+                after_plan: None,
                 phase: "files".to_string(),
                 description: "test2".to_string(),
                 success: false,
@@ -6895,6 +6897,21 @@ fn apply_on_change_script_runs_when_changes_occur() {
 
     assert_eq!(result.status, ApplyStatus::Success);
 
+    // An `onChange` hook's condition is whether anything in THIS run changed,
+    // so no plan can hold it and the header never promised it. Counted as a
+    // success it put two succeeded actions under a header promising one.
+    assert_eq!(result.planned_total, 1);
+    assert_eq!(
+        result.succeeded() + result.skipped() + result.failed(),
+        result.planned_total,
+        "the planned counts partition what the header promised"
+    );
+    assert_eq!(
+        result.after_plan().len(),
+        1,
+        "the hook is priced by the class the plan could not name"
+    );
+
     // The file action should have triggered the onChange script
     assert!(
         marker.exists(),
@@ -7744,6 +7761,7 @@ fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_recor
                   phase: PhaseName,
                   rows: Vec<(String, String)>,
                   not_attempted: Option<String>| ActionResult {
+        after_plan: None,
         phase: phase.as_str().to_string(),
         description: crate::reconciler::format_action_description(action),
         success: true,
@@ -7832,6 +7850,7 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
         .record_managed_resources(
             apply_id,
             &[ActionResult {
+                after_plan: None,
                 phase: PhaseName::Files.as_str().to_string(),
                 description: crate::reconciler::format_action_description(&action),
                 success: true,

@@ -226,6 +226,21 @@ config and profile produced the plan, which modules are in play, which phases
 hold in-scope work, and, on an executing run (`cfgd apply`), an
 `Actions  N planned` row in place of the closing count.
 
+That row is a promise made before the first action runs, so it can only ever
+state what the plan knew. A run may discover work on the way: a secret whose
+value resolved mid-apply, the PATH directory a package manager only reports once
+its install finished, an `onChange` hook whose condition is whether this very run
+changed anything. That work is not folded into the promised count, which would
+leave the header and the rollup reporting two different numbers; it is a class of
+its own, stated on its own line after the planned ones, and it carries its own
+failures:
+
+```console
+✓ Apply complete — 1 action succeeded (0.4s wall)
+✓ 3 env surfaces converged after the plan
+✗ 1 onChange hook failed after the plan
+```
+
 The `Packages` bullets are the group order in miniature: the profile's own
 installs, then `module:nvim`. Execution reverses those two (see the note above).
 

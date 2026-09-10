@@ -155,6 +155,26 @@ cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrot
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
 
+#### What the closing rollup accounts for
+
+The header's `Actions  N planned` row is what the plan promised, and the rollup's
+`succeeded` / `skipped` / `failed` counts partition exactly that number. Some work
+only the run can discover: a secret whose value resolved during the apply, the PATH
+directory a package manager reports once its install finished, an `onChange` hook
+whose condition is whether this very run changed anything. None of that is in the
+plan, so it is never folded into the promised count; it states itself on its own
+line after the planned classes.
+
+```console
+✓ Apply complete — 1 action succeeded (0.4s wall)
+✓ 3 env surfaces converged after the plan
+✓ 1 onChange hook ran after the plan
+```
+
+`-o json` prices it the same way: `total` is the planned count, `succeeded`,
+`skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it,
+and `afterPlan` is absent on a run that performed none.
+
 #### Unmanaged files at a managed target
 
 A target that already exists but that cfgd has never written (your own `.zshrc`,
