@@ -30782,7 +30782,10 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
 ///
 /// The floor counts EVERY chmod the walk read, follow-capable or not: the
 /// follow-capable sites are the ones this rule is driving to zero, so flooring
-/// on those alone would turn a fully converted engine into a failure.
+/// on those alone would turn a fully converted engine into a failure. A COMMENT
+/// line counts for nothing either way: a doc sentence naming the primitive is
+/// documentation, not a call site, and a floor a rustdoc paragraph could hold up
+/// would let the real population shrink with the walk none the wiser.
 #[test]
 fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler");
@@ -30800,6 +30803,9 @@ fn every_path_based_chmod_in_the_reconciler_says_why_the_follow_is_safe() {
         let rel = crate::to_posix_string(path.strip_prefix(&root).unwrap_or(&path));
         let lines: Vec<&str> = body.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
             if line.contains("set_file_permissions") || line.contains("fs::set_permissions(") {
                 chmods += 1;
             }
