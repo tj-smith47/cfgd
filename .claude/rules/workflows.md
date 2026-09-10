@@ -216,11 +216,21 @@ single-source-of-truth wiring.
   `e2e-gateway`, `e2e-cli`) — because two jobs on one key is one cache their
   different `target/` trees evict each other from. `node-tests`, `helm-tests` and
   `server-tests` compile nothing and carry no Rust toolchain at all. A new e2e job
-  that builds joins the list with its own key; a Rust toolchain step is the tell,
-  and `.claude/scripts/audit.sh`'s "e2e compile-cache layering" gate fails any job
-  carrying one without all four parts or with a key a sibling already took. A cold
-  build is what the per-job budget cannot absorb: raising the timeout hides a
-  missing cache rather than fixing it.
+  that builds joins the list with its own key. A cold build is what the per-job
+  budget cannot absorb: raising the timeout hides a missing cache rather than
+  fixing it.
+- **What `.claude/scripts/audit.sh`'s "e2e compile-cache layering" gate judges.**
+  Its population is the `.github/workflows/e2e*.yml` glob, and a glob matching
+  nothing fails the gate rather than passing an unwatched tree. Inside each file it
+  cuts the `jobs:` map at every two-space job key, a trailing `# comment` on that
+  key included, and for every job carrying a `dtolnay/rust-toolchain` step it
+  demands all four parts plus a `key:`; the key map is judged over every scanned
+  workflow at once, so two files cannot hand GitHub one key either. The toolchain
+  step is the whole of the tell, and that is the gate's ceiling: the real build is
+  three indirections away (job → task target → `run-all.sh` → `ensure_cfgd_binary`),
+  so a job that compiles inside a container already shipping `rustc`, or through an
+  action that installs its own toolchain, carries no tell and is NOT caught. Such a
+  job layers the cache by hand and says so in a comment beside its `env:`.
 - Outside e2e.yml, the layering rides `./.github/actions/setup-rust` (toolchain +
   sccache + rust-cache + protoc + go-task, each gated by an input), which every
   compiling ci.yml job uses; `msrv` layers by hand because it installs a pinned
