@@ -11,14 +11,15 @@ Phase: Files
     ✓ create <THIRD> (XXs)
 
 Phase: Change Hooks
-  ◐ onChange: true 1
-  ✓ onChange: true 1 (XXs)
-  ◐ onChange: true 2
-  ✓ onChange: true 2 (XXs)
-  ◐ onChange: true 3
-  ✓ onChange: true 3 (XXs)
-  ◐ onChange: true 4
-  ✓ onChange: true 4 (XXs)
+  profile:tiny
+    ◐ onChange: true 1
+    ✓ onChange: true 1 (XXs)
+    ◐ onChange: true 2
+    ✓ onChange: true 2 (XXs)
+    ◐ onChange: true 3
+    ✓ onChange: true 3 (XXs)
+    ◐ onChange: true 4
+    ✓ onChange: true 4 (XXs)
 
 ✓ Apply complete — 2 actions succeeded (XXs wall)
 ∅ 1 skipped

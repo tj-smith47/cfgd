@@ -1193,7 +1193,8 @@ pub fn sole_phase(printer: &Printer) -> PseudoPhase<'_> {
     }
 }
 
-/// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
+/// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`],
+/// [`CHANGE_HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
 /// as a section, for work that surrounds a run without being planned. Styled
 /// exactly like a real reconciler phase (`Phase: <name>`, via [`PhaseLabel`])
 /// so the two are visually one family — a reader should not be able to tell

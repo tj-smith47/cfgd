@@ -4518,9 +4518,7 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let mut upserts = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = crate::test_helpers::walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (at, _) in body.match_indices("ON CONFLICT") {
             upserts += 1;

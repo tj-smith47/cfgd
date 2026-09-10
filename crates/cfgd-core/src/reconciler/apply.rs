@@ -1826,20 +1826,70 @@ impl<'a> super::Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
+        let profile_name = resolved
+            .layers
+            .last()
+            .map(|l| l.profile_name.as_str())
+            .unwrap_or("unknown");
         // Hooks the plan could not name open their own group, the shape the repo
         // rules for unplanned work, instead of printing at the run's own depth
-        // between the phase tree and the rollup. One group over both loops: a
+        // between the phase tree and the rollup. One phase over both loops: a
         // profile hook and a module hook are the same class of work, and two
-        // headings would read as two. Opened at the first hook that actually
-        // runs, because a heading over no rows promises work this run did not do,
-        // and held open until the last one so each status lands under it.
-        let mut change_hooks: Option<super::run::PseudoPhase<'_>> = None;
-        if any_changed && !skip_scripts && !resolved.merged.scripts.on_change.is_empty() {
-            let profile_name = resolved
-                .layers
-                .last()
-                .map(|l| l.profile_name.as_str())
-                .unwrap_or("unknown");
+        // headings would read as two. Inside it each declaring thing opens its
+        // own owner group, the shape the daemon's `Drift Hooks` already holds,
+        // because a hook row that names no owner leaves which module declared it
+        // unstated on a surface whose job is attribution.
+        let run_change_hooks = any_changed && !skip_scripts;
+        let profile_change_hooks: &[crate::config::ScriptEntry] = if run_change_hooks {
+            &resolved.merged.scripts.on_change
+        } else {
+            &[]
+        };
+        // Which modules will run a hook is settled HERE rather than inside the
+        // loop, because the phase's alignment column is derived from every row it
+        // will print and the column has to exist before the first script streams
+        // its own status. The predicate is the one the loop asked: nothing the
+        // profile hooks record can start with another module's `module:<name>:`
+        // prefix.
+        let change_hook_modules: Vec<&ResolvedModule> = if run_change_hooks {
+            module_actions
+                .iter()
+                .filter(|module| {
+                    !module.on_change_scripts.is_empty() && {
+                        let prefix = format!("module:{}:", module.name);
+                        results
+                            .iter()
+                            .any(|r| r.changed && r.description.starts_with(&prefix))
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let hook_labels: Vec<String> = profile_change_hooks
+            .iter()
+            .chain(
+                change_hook_modules
+                    .iter()
+                    .flat_map(|module| module.on_change_scripts.iter()),
+            )
+            .map(|entry| {
+                super::format::hook_script_subject(
+                    ScriptPhase::OnChange.display_name(),
+                    entry.run_str(),
+                )
+                .to_string()
+            })
+            .collect();
+        // A heading over no rows promises work this run did not do, so the phase
+        // opens only once the labels say a hook will actually run.
+        let hook_width = super::run::align_width_of(hook_labels.iter().map(String::as_str));
+        let change_hooks = (!hook_labels.is_empty())
+            .then(|| super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL));
+        if let Some(phase) = &change_hooks
+            && !profile_change_hooks.is_empty()
+        {
+            let _group = phase.owner(&Owner::profile(profile_name), hook_width);
             let env_vars = build_script_env(&ScriptEnvContext {
                 config_dir,
                 profile_name,
@@ -1850,10 +1900,7 @@ impl<'a> super::Reconciler<'a> {
                 path_dirs: &super::all_recorded_path_dirs(self.state),
             });
             let working = script_default_workdir(config_dir);
-            for entry in &resolved.merged.scripts.on_change {
-                change_hooks.get_or_insert_with(|| {
-                    super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL)
-                });
+            for entry in profile_change_hooks {
                 match execute_script(
                     entry,
                     config_dir,
@@ -1911,24 +1958,10 @@ impl<'a> super::Reconciler<'a> {
         }
 
         // --- Module-level onChange: run per-module onChange scripts if that module had changes ---
-        if any_changed && !skip_scripts {
-            let profile_name = resolved
-                .layers
-                .last()
-                .map(|l| l.profile_name.as_str())
-                .unwrap_or("unknown");
+        if let Some(phase) = &change_hooks {
             let path_dirs = super::all_recorded_path_dirs(self.state);
-            for module in module_actions {
-                if module.on_change_scripts.is_empty() {
-                    continue;
-                }
-                let prefix = format!("module:{}:", module.name);
-                let module_changed = results
-                    .iter()
-                    .any(|r| r.changed && r.description.starts_with(&prefix));
-                if !module_changed {
-                    continue;
-                }
+            for module in &change_hook_modules {
+                let _group = phase.owner(&Owner::module(&module.name), hook_width);
                 let env_vars = build_module_script_env(
                     &ScriptEnvContext {
                         config_dir,
@@ -1943,9 +1976,6 @@ impl<'a> super::Reconciler<'a> {
                 );
                 let working = script_default_workdir(config_dir);
                 for entry in &module.on_change_scripts {
-                    change_hooks.get_or_insert_with(|| {
-                        super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL)
-                    });
                     match execute_script(
                         entry,
                         &module.dir,

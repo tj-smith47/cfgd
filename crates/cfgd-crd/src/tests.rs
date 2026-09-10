@@ -469,7 +469,12 @@ fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
         .expect("the operator's controllers directory is checked out")
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
-        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .map(|e| {
+            let path = e.path();
+            std::fs::read_to_string(&path).unwrap_or_else(|err| {
+                panic!("{}: the walk must read every file: {err}", path.display())
+            })
+        })
         .collect();
 
     let crds = [

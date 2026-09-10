@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
     KNOWN_GOLDEN_ROOTS, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
-    snapshot_root_files, workspace_root,
+    snapshot_root_files, walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
@@ -26,9 +26,7 @@ fn suspend_is_never_called() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains(".suspend(") {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
@@ -80,9 +78,7 @@ fn every_subscriber_writes_through_a_folding_writer() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (line_no, why) in unfolded_subscriber_offenders(&body) {
             let line = body.lines().nth(line_no).unwrap_or_default();
             offenders.push(format!(
@@ -127,9 +123,7 @@ fn no_subscriber_drops_its_timestamp() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if code_half(line).contains("without_time(") && !hatched(&lines, i, UNSTAMPED_HATCH) {
@@ -545,6 +539,27 @@ fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
 }
 
+/// The index of the `]` closing the bracket `text` opens on, or `None` while it
+/// is still open, so an accumulation runs to the BALANCED close: a value holding
+/// a bracket of its own (`class[0].1`) ends the scan at the first `]` character
+/// and leaves every later entry unread.
+fn balanced_close(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (at, ch) in text.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The argument text of the `with_writer(` opened at `from` on `lines[at]`, up
 /// to its matching close paren — across lines, because rustfmt splits a long
 /// call and a line-scoped read would see `with_writer(` and `std::io::stderr`
@@ -701,9 +716,7 @@ fn package_context_is_only_built_through_its_constructors() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains("PackageContext {") {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
@@ -759,9 +772,7 @@ fn no_decision_row_renderer_reads_the_stored_summary() {
             continue;
         }
         scanned += 1;
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
@@ -869,9 +880,7 @@ fn every_daemon_info_event_names_its_subsystem() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         // `service/` installs and uninstalls the unit from a one-shot command
         // the user is watching, so those DO report through the printer. The
         // loop itself has no terminal to report to.
@@ -1486,9 +1495,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         // The dialect-alone tells' one path-based hatch: the file that OWNS
         // the dialect (`env_engine.rs`, home of `path_line`/`fold_path_line`)
         // pins the raw assignment syntax through helpers with no `generate_*`
@@ -2192,9 +2199,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         if !body.contains("#[test]") && !body.contains("#[tokio::test") {
             continue;
         }
@@ -2773,9 +2778,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         for (open, item) in const_items_outside_functions(&relative, &body) {
@@ -3560,9 +3563,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         if !posix.contains("/tests/") || posix.contains("/src/") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
 
@@ -3715,9 +3716,7 @@ fn every_golden_root_is_named() {
 /// under it is the `─` rule the renderer emits immediately after it, which is
 /// why nothing can be interposed between the two.
 fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (0, Vec::new());
-    };
+    let text = walked_file_body(path);
     // `str::lines` drops a trailing `\r` only where the line ended in `\n`, so
     // a CRLF checkout does not read every line as whitespace-terminated, and it
     // borrows rather than minting a second copy of every file. A file whose
@@ -4246,17 +4245,29 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
 /// edits the fixture, and the literals stay where they were. Six call sites were
 /// in exactly that shape.
 ///
-/// Two shapes are welded and both pass here: an array BOUND to a name, which the
-/// assertion below it reads back (`for (slot, count) in slots`, `format!` off
-/// `slots[0].1`), and an inline array whose every value is read off the product
-/// under test (`tally.succeeded`, `class[0].1`). An inline array holding a bare
-/// integer is the unwelded shape, because nothing connects that integer to the
-/// bytes asserted. `// slots-literal-ok: <why>` on the call's line or the one
-/// above hatches a genuine exception.
+/// Two shapes are welded and both are CHECKED here, each by the thing that welds
+/// it. An array BOUND to a name is welded by the assertion reading that name back
+/// (`for (slot, count) in slots`, `format!` off `slots[0].1`), so the name is
+/// required to appear again below the call, inside the same function body and
+/// before any later `let` rebinds it: bound and then asserted against retyped
+/// bytes, the binding guards nothing an array of literals does not. An INLINE array is welded by every value being read off
+/// the product under test (`tally.succeeded`, `class[0].1`), so every entry is
+/// parsed and a bare integer is the offence, because nothing connects that
+/// integer to the bytes asserted.
+///
+/// Both readings judge the WHOLE argument: the accumulation runs to the balanced
+/// `]` rather than the first `]` CHARACTER, since a value may hold a bracket of
+/// its own, and the array's own brackets are stripped before the entries are
+/// split, since a closing `]);` left on the last entry's value makes it parse as
+/// no integer and reads as a product. An argument shape neither reading covers is
+/// refused rather than passed over. `// slots-literal-ok: <why>` on the call's
+/// line or the one above hatches a genuine exception.
 #[test]
 fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
     let mut offenders = Vec::new();
     let mut sites = 0usize;
+    let mut slots = 0usize;
+    let mut bound = 0usize;
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         // The helper's own file declares it; this one quotes the call shape.
@@ -4265,28 +4276,74 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
             let Some((_, after)) = line.split_once("assert_slots_discriminate(") else {
                 continue;
             };
             sites += 1;
-            if hatched(&lines, idx, "slots-literal-ok:") || !after.trim_start().starts_with("&[") {
+            if hatched(&lines, idx, "slots-literal-ok:") {
                 continue;
             }
-            let mut arg = after.to_string();
+            let after = after.trim_start();
+            let inline = after.strip_prefix('&').unwrap_or(after);
+            if !inline.starts_with('[') {
+                bound += 1;
+                let name = inline.trim_end_matches([')', ';', ' ']);
+                let indent = line.len() - line.trim_start().len();
+                // The scan ends at the function's closing brace, and at a
+                // REBINDING of the same name before it: a later `let slots = …`
+                // answers for its own call, so counting it would let the call
+                // above pass on a read-back that never reads the array it was
+                // handed. A COMMENT naming the array is not a read either, so a
+                // line that is one is passed over rather than counted.
+                let rebound = format!("let {name} ");
+                let rebound_mut = format!("let mut {name} ");
+                let read_back = lines[idx + 1..]
+                    .iter()
+                    .take_while(|below| {
+                        let trimmed = below.trim_start();
+                        !(trimmed == "}" && below.len() - trimmed.len() < indent)
+                            && !trimmed.starts_with(&rebound)
+                            && !trimmed.starts_with(&rebound_mut)
+                    })
+                    .any(|below| !below.trim_start().starts_with("//") && below.contains(name));
+                if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    offenders.push(format!(
+                        "{posix}:{}: the walk cannot read `{name}` as a bound name",
+                        idx + 1
+                    ));
+                } else if !read_back {
+                    offenders.push(format!(
+                        "{posix}:{}: `{name}` is never read back below the call",
+                        idx + 1
+                    ));
+                }
+                continue;
+            }
+            let mut arg = inline.to_string();
             let mut at = idx;
-            while !arg.contains(']') && at + 1 < lines.len() {
+            while balanced_close(&arg).is_none() && at + 1 < lines.len() {
                 at += 1;
                 arg.push_str(lines[at]);
             }
-            for entry in arg.split("(\"").skip(1) {
+            let Some(close) = balanced_close(&arg) else {
+                offenders.push(format!(
+                    "{posix}:{}: the walk cannot find the end of the slot array",
+                    idx + 1
+                ));
+                continue;
+            };
+            for entry in arg[1..close].split("(\"").skip(1) {
                 let Some((name, value)) = entry.split_once("\",") else {
+                    offenders.push(format!(
+                        "{posix}:{}: the walk cannot read a slot's name and value",
+                        idx + 1
+                    ));
                     continue;
                 };
+                slots += 1;
                 if value
                     .trim()
                     .trim_end_matches([')', ',', ' '])
@@ -4299,13 +4356,87 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
         }
     }
     assert!(
-        sites >= 11,
-        "the walk found {sites} distinctness premises, too few to be the population"
+        sites >= 11 && slots >= 29 && bound >= 3,
+        "the walk found {sites} distinctness premises, judged {slots} inline slots \
+         and read back {bound} bound arrays; too few to be the population"
     );
     assert!(
         offenders.is_empty(),
         "a distinctness premise states the value the fixture asserts, read off \
          the product or bound to a name the assertion reads back:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The call a walk reads an enumerated file with.
+const WALK_FILE_READ: &str = "read_to_string";
+
+/// Spellings that drop that call's failure instead of reporting it.
+const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", "unwrap_or("];
+
+/// A walk that cannot read a file it enumerated FAILS, rather than reading less
+/// than its floor promises.
+///
+/// A walk's floor counts the population it found on disk, not the members it
+/// managed to open, so a file whose read failed is indistinguishable from a file
+/// holding nothing: no rule judges it, no offender is reported, and the walk
+/// passes. [`crate::test_helpers::walked_file_body`] and
+/// [`crate::test_helpers::production_slice_of`] are the two readers that refuse
+/// instead, and a crate too far down the graph to reach either states the refusal
+/// inline.
+///
+/// The population is the TEST sources of every crate — a file named `tests.rs`
+/// or `test_helpers.rs`, or one under a `tests/` directory — because that is
+/// where every walk lives. A production read whose file may legitimately be
+/// absent (`/etc/os-release`, a cached credential, a target a check is asking
+/// about) is outside it by construction, never hatched one at a time.
+///
+/// `// absent-file-ok: <why>` hatches a read inside a test source whose absence
+/// is itself a legitimate state: the argv log a shim writes on its first
+/// invocation, which a shim nothing ran never wrote.
+#[test]
+fn no_walk_silently_drops_a_file_it_enumerated() {
+    let mut files = 0usize;
+    let mut hatches = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        let name = posix.rsplit('/').next().unwrap_or(&posix);
+        if !(name == "tests.rs" || name == "test_helpers.rs" || posix.contains("/tests/")) {
+            continue;
+        }
+        files += 1;
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if !line.contains(WALK_FILE_READ) {
+                continue;
+            }
+            // rustfmt breaks a long read onto its own line and leaves the
+            // combinator on the next one, so the tell is looked for across the
+            // pair rather than on the call's line alone.
+            let window = format!("{line}{}", lines.get(idx + 1).copied().unwrap_or_default());
+            if !SILENT_READ_TELLS.iter().any(|tell| window.contains(tell)) {
+                continue;
+            }
+            if hatched(&lines, idx, "absent-file-ok:") {
+                hatches += 1;
+                continue;
+            }
+            offenders.push(format!("{posix}:{}: {}", idx + 1, line.trim()));
+        }
+    }
+    assert!(
+        files >= 150 && hatches >= 3,
+        "the walk read {files} test sources and found {hatches} hatched absences, \
+         too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a walk that cannot read a file it enumerated reads less than its floor \
+         promises; read it through `walked_file_body` / `production_slice_of`, or \
+         say why the absence is a legitimate state with \
+         `// absent-file-ok: <why>`:\n{}",
         offenders.join("\n")
     );
 }

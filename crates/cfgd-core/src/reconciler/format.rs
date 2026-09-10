@@ -112,8 +112,9 @@ pub const FILE_SKIP_VERB: &str = "skip";
 /// path a debug build executes — in a release build, by nothing. The static half
 /// is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`, which
 /// judges every production mint whose reason it can read as a string literal or
-/// as a `const`, and REFUSES a mint whose reason it cannot read rather than
-/// passing over it.
+/// as a one-line `const`, and REFUSES a mint whose reason it cannot read rather
+/// than passing over it — by the RULE and not by a shape, so a local binding and
+/// a `reason` field-init shorthand are refused exactly as a `format!` is.
 pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
     let opener = reason
         .split(|c: char| !c.is_ascii_alphabetic())
@@ -1407,6 +1408,33 @@ mod tests {
         );
     }
 
+    /// Whether the `reason` binding at `lines[idx][from..]` belongs to a match
+    /// PATTERN rather than to a construction.
+    ///
+    /// A pattern binds the field with the same shorthand spelling a construction
+    /// uses, and the arm's `=>` sits straight after the brace that closes the
+    /// pattern, so that is what the two are told apart by. A pattern READS the
+    /// field; it mints no reason for the walk to judge.
+    fn binds_in_a_pattern(lines: &[&str], idx: usize, from: usize) -> bool {
+        let mut depth = 1i32;
+        for (n, line) in lines[idx..].iter().enumerate() {
+            let text = if n == 0 { &line[from..] } else { line };
+            for (pos, ch) in text.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return text[pos + 1..].trim_start().starts_with("=>");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     /// No `FileAction::Skip` reason spends the verb its own row already spelled.
     ///
     /// The one-slot member of the same family: this action composes as
@@ -1423,17 +1451,19 @@ mod tests {
     /// outside it, with the crate roots read off `crates/` so a crate added to
     /// the workspace joins the walk with it. A reason spelled as a `const` is
     /// resolved through the same sources, because both of today's mints state
-    /// the string somewhere other than the construction. A reason FORWARDED
-    /// from a binding (`reason.clone()`, the path-folding rebuild in
-    /// `file_action.rs`) mints nothing and is judged where it was written.
-    /// `// file-skip-reason-ok: <why>` on the field's line or the one above
-    /// hatches a genuine exception.
+    /// the string somewhere other than the construction.
     ///
     /// Anything else a mint's `reason` field holds — a `format!`, a call, a
-    /// `match` — is REFUSED rather than dropped. A count floor cannot stand in
-    /// for that: a third mint the resolver could not read would lower no count,
-    /// so the walk would pass having judged it never, and the composer's debug
-    /// assertion only reaches what a debug build executes.
+    /// `match`, a local binding, or the `reason` field-init shorthand clippy's
+    /// `redundant_field_names` asks for — is REFUSED rather than dropped, and
+    /// refused by the RULE rather than by the expression's shape: a bare
+    /// identifier is exempted nowhere, so a structural rebuild of a reason
+    /// judged at the mint that stated it says so with
+    /// `// file-skip-reason-ok: <why>` on the field's line or the one above.
+    /// A count floor cannot stand in for the refusal: a third mint the resolver
+    /// could not read would lower no count, so the walk would pass having judged
+    /// it never, and the composer's debug assertion only reaches what a debug
+    /// build executes.
     #[test]
     fn no_file_skip_reason_repeats_the_verb_its_row_already_spelled() {
         let crates_dir = crate::test_helpers::workspace_root().join("crates");
@@ -1477,13 +1507,18 @@ mod tests {
             sources.len()
         );
 
-        // Every `const NAME: &str = "…";` the production sources declare, so a
-        // reason stated away from its construction is still judged by its
-        // bytes. Keyed by NAME alone, which nothing stops two modules from both
-        // declaring, so a name whose declarations disagree is recorded here and
-        // refused at the mint that asks for it rather than anywhere it appears:
-        // the resolution reads whichever source sorted last, and two same-named
-        // consts that no skip reason names are not this walk's business.
+        // Every ONE-LINE `const NAME: &str = "…";` the production sources
+        // declare, so a reason stated away from its construction is still judged
+        // by its bytes. A declaration the one-line match cannot read — one that
+        // wraps, or one built with `concat!` — enters neither map, so it is
+        // invisible to the ambiguity check below and its mint lands in the
+        // unresolvable arm, which is the honest answer: the walk did not see it.
+        // Keyed by NAME alone, which nothing stops two modules from both
+        // declaring, so a name whose one-line declarations disagree is recorded
+        // here and refused at the mint that asks for it rather than anywhere it
+        // appears: the resolution reads whichever source sorted last, and two
+        // same-named consts that no skip reason names are not this walk's
+        // business.
         let mut literals: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         let mut ambiguous: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1504,25 +1539,98 @@ mod tests {
             }
         }
 
+        let opener = "FileAction::Skip {";
         let mut mints: Vec<(String, String)> = Vec::new();
         let mut unjudged: Vec<(String, String)> = Vec::new();
         for (relative, body) in &sources {
             let lines: Vec<&str> = body.lines().collect();
-            let mut depth: Option<usize> = None;
+            let mut depth: Option<i32> = None;
             for (idx, line) in lines.iter().enumerate() {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                if depth.is_none() && line.contains("FileAction::Skip {") {
-                    depth = Some(0);
+                let from = match depth {
+                    Some(_) => 0,
+                    None => match line.find(opener) {
+                        Some(at) => {
+                            depth = Some(1);
+                            at + opener.len()
+                        }
+                        None => continue,
+                    },
+                };
+                // Only the text lying DIRECTLY inside the braces the
+                // construction or pattern opened names its fields: the arm body
+                // under a pattern reads `reason` as an ordinary expression
+                // (`format!("{FILE_SKIP_VERB} …", reason)`), and a nested
+                // struct's braces hold another type's fields. Everything else on
+                // the line is masked to spaces, so a surviving token's byte
+                // offset is still the line's own and the brace depth carries
+                // across lines; a brace inside a string literal opens nothing.
+                let mut open = depth.unwrap_or(1);
+                let mut in_str = false;
+                let mut escaped = false;
+                let mut region = " ".repeat(from);
+                for ch in line[from..].chars() {
+                    let mut keep = open == 1;
+                    if in_str {
+                        if escaped {
+                            escaped = false;
+                        } else if ch == '\\' {
+                            escaped = true;
+                        } else if ch == '"' {
+                            in_str = false;
+                        }
+                    } else {
+                        match ch {
+                            '"' => in_str = true,
+                            '{' => {
+                                open += 1;
+                                keep = false;
+                            }
+                            '}' => {
+                                open -= 1;
+                                keep = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if keep {
+                        region.push(ch);
+                    } else {
+                        for _ in 0..ch.len_utf8() {
+                            region.push(' ');
+                        }
+                    }
+                    if open == 0 {
+                        break;
+                    }
                 }
-                let Some(open) = depth.as_mut() else { continue };
-                *open += line.matches('{').count();
-                *open = open.saturating_sub(line.matches('}').count());
+                depth = (open > 0).then_some(open);
+                let line = region.as_str();
+                let hatched = lines[idx.saturating_sub(1)..=idx]
+                    .iter()
+                    .any(|l| l.contains("file-skip-reason-ok:"));
+                // The `reason` field-init SHORTHAND, which the `reason: ` scan
+                // cannot see at all and which clippy's `redundant_field_names`
+                // is what pushes an author toward. A match PATTERN binds the
+                // field by the same spelling, and the arm's `=>` after the
+                // pattern's own closing brace is what tells the two apart: a
+                // pattern READS the field and mints nothing.
+                if let Some((at, _)) = line.match_indices("reason").find(|(at, _)| {
+                    let before = line[..*at].chars().next_back();
+                    let after = line[at + "reason".len()..].trim_start();
+                    before.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '.')
+                        && (after.is_empty() || after.starts_with(','))
+                }) && !hatched
+                    && !binds_in_a_pattern(&lines, idx, at + "reason".len())
+                {
+                    unjudged.push((
+                        format!("{relative}:{}", idx + 1),
+                        "the `reason` field-init shorthand".to_string(),
+                    ));
+                }
                 if let Some((_, expr)) = line.split_once("reason: ") {
-                    let hatched = lines[idx.saturating_sub(1)..=idx]
-                        .iter()
-                        .any(|l| l.contains("file-skip-reason-ok:"));
                     let expr = expr.trim_end_matches(',').trim();
                     let name = expr
                         .trim_end_matches("()")
@@ -1535,12 +1643,6 @@ mod tests {
                         Some(rest) => rest.split('"').next().map(str::to_string),
                         None => literals.get(name).cloned(),
                     };
-                    // A bare binding, or one cloned from a binding, REBUILDS a
-                    // reason stated at some other mint and judged there, so it
-                    // is a forward rather than a mint of its own.
-                    let core = expr.trim_end_matches("()").trim_end_matches(".clone");
-                    let forwarded = !core.is_empty()
-                        && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
                     let site = format!("{relative}:{}", idx + 1);
                     if !hatched {
                         if !expr.starts_with('"') && ambiguous.contains(name) {
@@ -1550,13 +1652,10 @@ mod tests {
                             ));
                         } else if let Some(reason) = reason {
                             mints.push((site, reason));
-                        } else if !forwarded {
+                        } else {
                             unjudged.push((site, expr.to_string()));
                         }
                     }
-                }
-                if *open == 0 {
-                    depth = None;
                 }
             }
         }

@@ -1872,6 +1872,7 @@ impl ToolShim {
     /// Windows log is stripped of `"` to read as the same unquoted join
     /// `"$*"` gives on Unix.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log, so an empty argv is honest.
         let raw = std::fs::read_to_string(&self.log_path).unwrap_or_default();
         #[cfg(windows)]
         return raw.replace('"', "");
@@ -1983,6 +1984,7 @@ impl PathShimLog {
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log.
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
     }
 
@@ -3127,6 +3129,7 @@ impl CosignTestShim {
     /// disabled or the shim was never invoked.
     pub fn argv_log(&self) -> String {
         match (&self.argv_logging, &self.log_path) {
+            // absent-file-ok: a shim nothing ran wrote no log.
             (true, Some(path)) => std::fs::read_to_string(path).unwrap_or_default(),
             _ => String::new(),
         }
@@ -4143,6 +4146,21 @@ pub fn production_slice(src: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The whole text of a file a walk ENUMERATED, read here so the read failure
+/// cannot be separated from the population's floor.
+///
+/// A file a walk cannot open is otherwise indistinguishable from one holding
+/// nothing: the walk judges it by no rule, reports no offender and passes having
+/// read less than its floor promised. The WHOLE-file twin of
+/// [`production_slice_of`], for a walk whose subject is a source's test region,
+/// a golden or a markdown page rather than a source's production region. A read
+/// whose absence is a legitimate state — an artifact the test itself decided not
+/// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
+pub fn walked_file_body(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
 }
 
 /// The production region of the Rust source at `path`, read here so the two

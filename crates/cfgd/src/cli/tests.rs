@@ -3,7 +3,7 @@ use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::test_helpers::rust_sources_under;
+use cfgd_core::test_helpers::{rust_sources_under, walked_file_body};
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -14802,7 +14802,7 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
     let mut offenders = Vec::new();
     let mut judged = 0usize;
     for path in &goldens {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let text = walked_file_body(path);
         let text = text.replace("\r\n", "\n");
         if text.trim().is_empty() {
             continue;
@@ -14906,7 +14906,7 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
     let mut offenders = Vec::new();
     let mut judged = 0usize;
     for path in cfgd_core::test_helpers::snapshot_goldens(&["txt"]) {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = walked_file_body(&path);
         let text = text.replace("\r\n", "\n");
         let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
         // A heading owns rows, so the golden's first line names a surface only
@@ -15116,7 +15116,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     let root = cfgd_core::test_helpers::workspace_root();
     let mut found: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::snapshot_goldens(&["txt", "json"]) {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = walked_file_body(&path);
         let carries = text.lines().any(|line| {
             ROW_MARKERS.iter().any(|m| match *m {
                 "write " => {
@@ -15805,9 +15805,9 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect()
 }
@@ -16294,9 +16294,7 @@ fn every_reconciler_the_binary_builds_names_its_recording_scope() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -16348,9 +16346,7 @@ fn every_single_subject_source_title_uses_the_owner_spelling() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         for (n, line) in production.lines().enumerate() {
             owner_titles += line.matches("heading_owner_prefixed(").count();
@@ -18266,9 +18262,9 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
             p.file_name()
                 .is_none_or(|n| n != "tests_snapshot_bridge.rs")
         })
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect();
 
@@ -18408,9 +18404,9 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect()
 }
@@ -18502,9 +18498,9 @@ fn no_apply_path_warn_restates_a_printer_line() {
                 .into_iter()
                 .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
                 .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-                .filter_map(|path| {
-                    let body = std::fs::read_to_string(&path).ok()?;
-                    Some((path, production_body(&body)))
+                .map(|path| {
+                    let body = walked_file_body(&path);
+                    (path, production_body(&body))
                 }),
         )
         .collect();
@@ -31093,9 +31089,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
@@ -34125,9 +34119,7 @@ fn no_journal_line_folds_the_home_directory() {
         {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let raw = walked_file_body(&path);
         let body = production_body(&raw);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -35563,9 +35555,7 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -36423,10 +36413,8 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         if path.components().any(|c| c.as_os_str() == "tests") {
             continue;
         }
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            let production = production_body(&body);
-            sources.push((path, production));
-        }
+        let production = production_body(&walked_file_body(&path));
+        sources.push((path, production));
     }
     let mut found: Vec<(String, String)> = Vec::new();
     for (path, body) in &sources {

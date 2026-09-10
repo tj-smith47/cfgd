@@ -4379,9 +4379,7 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     };
     let mut offenders = Vec::new();
     for path in &files {
-        let Ok(body) = std::fs::read_to_string(path) else {
-            continue;
-        };
+        let body = crate::test_helpers::walked_file_body(path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !positional_write(line) {

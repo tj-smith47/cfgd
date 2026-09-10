@@ -168,7 +168,8 @@ nothing, failed), one line each at its own role.
 
 ```console
 Phase: Change Hooks
-  ✓ onChange: scripts/reload.sh (0.1s)
+  profile:work
+    ✓ onChange: scripts/reload.sh (0.1s)
 
 ✓ Apply complete — 1 action succeeded (0.4s wall)
 ✓ 3 env surfaces converged after the plan
@@ -177,8 +178,8 @@ Phase: Change Hooks
 ```
 
 The hooks themselves render in a `Change Hooks` group between the planned phases and
-the rollup, styled as a phase even though no plan holds them, the same way the daemon's
-`onDrift` hooks open a `Drift Hooks` group.
+the rollup, styled as a phase even though no plan holds them, each under the owner
+that declared it, the same way the daemon's `onDrift` hooks open a `Drift Hooks` group.
 
 `-o json` prices it the same way: `total` is the planned count, `succeeded`,
 `skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it.
