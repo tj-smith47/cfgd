@@ -18826,9 +18826,13 @@ async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one
 //   - default umask 0022 leaving the socket world-readable
 //   - unbounded client read OOMing the CLI from a hijacked peer
 //
-// All tests mutate process-global env vars so they MUST be serial. The
-// EnvVarGuard / with_test_home_guard helpers restore prior state on drop
-// (even on panic) so a failed test cannot poison the next.
+// The five `resolve_default_ipc_path` tests and `query_daemon_status_caps_response_at_max_bytes`
+// mutate process-global env vars, so THOSE must be serial; the EnvVarGuard /
+// with_test_home_guard helpers restore prior state on drop (even on panic) so a failed test
+// cannot poison the next. The rest drive a tempdir and mutate no env var, so that rule demands
+// nothing of them: the unnamed `serial` on `bind_socket_sets_0600_permissions` and on
+// `ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file` is not its doing,
+// and the four tests after them carry none.
 
 mod ipc_socket_security {
     use super::*;
@@ -18979,8 +18983,8 @@ mod ipc_socket_security {
     /// end-to-end: root bypasses chmod, so the helper always succeeds in
     /// lowering 0o755 to 0o700 before the re-stat. The create-failure arm here
     /// is the negative path that fires deterministically regardless of uid; the
-    /// mask that arm would have used is mirrored as arithmetic in the sibling
-    /// `owner_private_predicate_rejects_world_readable_modes`.
+    /// mask that arm would have used is pinned on its own predicate by the
+    /// sibling `is_owner_private_mode_rejects_any_group_or_other_bit`.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
@@ -19187,22 +19191,27 @@ mod ipc_socket_security {
         );
     }
 
-    /// Mirrors the `mode & 0o077 != 0` mask `ensure_owner_private_dir` refuses a
-    /// world-readable parent with, over the modes a host can actually present.
+    /// Drives `is_owner_private_mode`, the mask `ensure_owner_private_dir`
+    /// refuses a non-owner-private parent with, over the modes a host can
+    /// actually present.
     ///
-    /// It calls the helper with nothing, so the arm itself stays unentered: under
-    /// the uid-0 the suite frequently runs as, the chmod always lowers 0o755 to
-    /// 0o700 before the re-stat reads it, and the sibling
+    /// The predicate is the only surface this mask is observable on: the arm
+    /// that reads it stays unentered end to end because under the uid 0 the
+    /// suite frequently runs as, the chmod always lowers 0o755 to 0o700 before
+    /// the re-stat, and the sibling
     /// `ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file`
-    /// is the negative arm that does fire at any uid.
+    /// is the negative arm that does fire at any uid. Asserting the mask
+    /// arithmetic inline instead would pin Rust's `&` operator and stay green
+    /// if the mask in `health_ipc` changed.
     #[cfg(unix)]
     #[test]
-    fn owner_private_predicate_rejects_world_readable_modes() {
-        assert_ne!(0o755 & 0o077, 0, "0o755 must trip the predicate");
-        assert_ne!(0o750 & 0o077, 0, "0o750 must trip the predicate");
-        assert_ne!(0o701 & 0o077, 0, "0o701 must trip the predicate");
-        assert_eq!(0o700 & 0o077, 0, "0o700 must pass the predicate");
-        assert_eq!(0o600 & 0o077, 0, "0o600 must pass the predicate");
+    fn is_owner_private_mode_rejects_any_group_or_other_bit() {
+        use crate::daemon::health_ipc::is_owner_private_mode;
+        assert!(!is_owner_private_mode(0o755), "0o755 must be refused");
+        assert!(!is_owner_private_mode(0o750), "0o750 must be refused");
+        assert!(!is_owner_private_mode(0o701), "0o701 must be refused");
+        assert!(is_owner_private_mode(0o700), "0o700 must be accepted");
+        assert!(is_owner_private_mode(0o600), "0o600 must be accepted");
     }
 
     /// Drives `query_daemon_status` against a fake server that streams more

@@ -42,6 +42,18 @@ pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 /// and plant a symlink there for the chmod in `run_health_server` to follow. An
 /// unprivileged user pretending to be root is a different question and stays out
 /// of the local-daemon threat model, root being trusted on the host already.
+/// Whether `mode`'s permission bits are owner-private: no group bit and no
+/// other bit set.
+///
+/// The one mask [`ensure_owner_private_dir`] refuses a socket directory with,
+/// named so a pin can ask it. The arm it guards cannot be entered end to end
+/// under uid 0, where the chmod always lowers the mode before the re-stat reads
+/// it, so this predicate is the only surface the mask is observable on.
+#[cfg(unix)]
+pub(crate) fn is_owner_private_mode(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
 #[cfg(unix)]
 pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -138,7 +150,7 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     let meta = std::fs::metadata(&dir)
         .map_err(|e| refuse(format!("stat parent {}: {}", dir.posix(), e)))?;
     let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
+    if !is_owner_private_mode(mode) {
         return Err(refuse(format!(
             "refusing to bind: parent directory {} is not owner-private (mode {:o})",
             dir.posix(),
@@ -1210,9 +1222,9 @@ mod tests {
                 "{DIR_VAR} is set without a matching {TEST_VAR}, so this process was entered \
                  as the umask child by something other than its own parent"
             );
-            // `umask(2)` answers with the mask it replaced, so the raise is handed
-            // back before this branch returns and cannot reach a file another
-            // test creates.
+            // `umask(2)` answers with the mask it replaced, so the raise is
+            // scoped to the one `mkdir` below rather than to the rest of the
+            // process: it is handed back on the next statement.
             let prior = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o377));
             let created = ensure_owner_private_dir(std::path::Path::new(&dir));
             nix::sys::stat::umask(prior);
