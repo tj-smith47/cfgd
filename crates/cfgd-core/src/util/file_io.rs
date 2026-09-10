@@ -100,8 +100,14 @@ pub struct FileState {
 /// which the no-follow chmod refuses outright. Resolving the chain for a chmod
 /// does not re-open the elevated-chmod hazard, because the uid guard refuses a
 /// destination another user owns and both that guard's own read-back and the
-/// chmod open with `O_NOFOLLOW`: a component swapped after the canonicalization
-/// is an error, never a hop onto a third file.
+/// chmod open with `O_NOFOLLOW`: a FINAL component swapped to a link after the
+/// canonicalization is an `ELOOP` error rather than a hop onto a third file. An
+/// intermediate DIRECTORY swapped for a link in that window is re-traversed, the
+/// same window `guard_resolved_owner` already documents for the `rename(2)`
+/// the write path ends on. An elevated run reaches the chmod at all because
+/// `preserve_target_ownership` gives the written file back to the
+/// destination's own owner before that rename, so the uid guard's second pass
+/// still sees the link's uid rather than root's.
 pub(crate) fn resolve_write_target(
     path: &std::path::Path,
 ) -> std::result::Result<std::path::PathBuf, std::io::Error> {
