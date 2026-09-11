@@ -162,7 +162,6 @@ jobs:
           # rustc compiling cfgd-core's test crate was SIGKILLed on the default
           # guest memory (run 34063783806); the 16 GB runner can spare 10.
           mem: 10240
-          usesh: "true"
           # Nothing on the runner reads guest files after the run, and the
           # default copy-back rsyncs the guest's whole `target/` tree home: the
           # connection died 3.3 GB in (run 34556958882) and failed the job on

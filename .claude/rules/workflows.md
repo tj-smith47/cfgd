@@ -244,8 +244,10 @@ single-source-of-truth wiring.
   workflow-level `RUSTC_WRAPPER: sccache` applies to every job, so a cargo
   subcommand that only reads metadata still cannot start without the wrapper
   binary on PATH (`task audit`'s `cargo tree -p cfgd-csi` failed exactly that
-  way in run 34556958882). A new job that runs any `cargo` subcommand without
-  `setup-rust` installs sccache the same way. release.yml,
+  way in run 34556958882). A new job that runs any `cargo` subcommand with no
+  sccache on PATH installs it the same way, and that covers two shapes: a job
+  with no `setup-rust` step at all, and one passing `cache: 'false'`, which
+  skips the action's own sccache step. release.yml,
   nightly.yml, determinism-shards.yml and the two publish workflows run no `cargo`
   step at all — anodizer-action owns those builds, and a determinism rebuild must
   start from a clean `target/` by definition.

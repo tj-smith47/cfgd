@@ -29,14 +29,7 @@ const MODULE_CRD_SELECTOR: &str = "module-crd";
 pub struct ResourceSchema {
     /// Display name (the `kind`, except the CRD `Module` shown as `Module (CRD)`).
     pub name: String,
-    /// The token `cfgd explain` accepts for this kind, as [`find_schema`]
-    /// resolves it.
-    ///
-    /// Every command a hint spells has to re-parse, and the display name does
-    /// not: the CRD `Module` is shown as `Module (CRD)`, whose lowercase form
-    /// carries a space and parentheses no shell hands through as one word. The
-    /// CLI selector for it is `module-crd`; every other kind is selected by its
-    /// own lowercased name.
+    /// The token `cfgd explain` accepts for this kind.
     selector: String,
     /// apiVersion value.
     pub api_version: String,
@@ -65,8 +58,13 @@ impl ResourceSchema {
     }
 
     /// The token `cfgd explain` accepts for this kind, which is not always its
-    /// display name: the CRD `Module` is shown as `Module (CRD)`, whose lowercase
-    /// form no shell hands through as one word, and is selected by `module-crd`.
+    /// display name.
+    ///
+    /// Every command a hint spells has to re-parse, and the display name does
+    /// not: the CRD `Module` is shown as `Module (CRD)`, whose lowercase form
+    /// carries a space and parentheses no shell hands through as one word. The
+    /// CLI selector for it is `module-crd`; every other kind is selected by its
+    /// own lowercased name.
     pub fn selector_token(&self) -> &str {
         &self.selector
     }
