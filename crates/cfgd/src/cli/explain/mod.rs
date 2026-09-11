@@ -64,7 +64,9 @@ impl ResourceSchema {
         self.fields.clone()
     }
 
-    /// The token `cfgd explain` accepts for this kind (see [`Self::selector`]).
+    /// The token `cfgd explain` accepts for this kind, which is not always its
+    /// display name: the CRD `Module` is shown as `Module (CRD)`, whose lowercase
+    /// form no shell hands through as one word, and is selected by `module-crd`.
     pub fn selector_token(&self) -> &str {
         &self.selector
     }

@@ -1265,7 +1265,7 @@ fn recorded_row_method(
 /// The split is the reconciler's own, and asked of the reconciler rather than
 /// re-derived: an `env` row is a file cfgd authored, a source line cfgd
 /// planted in a file the user owns, or a session cfgd published, and each
-/// carries the same group suffix [`cfgd_core::reconciler::owner_of`] heads its
+/// carries the same group suffix `reconciler::owner_of` heads its
 /// tree group with. The write-vs-inject half of that question has exactly one
 /// answerer, [`cfgd_core::reconciler::recorded_env_method`], because the
 /// recorded id drops the verb; asking it a second way here is how a table and
@@ -1294,7 +1294,7 @@ fn recorded_env_group(r: &cfgd_core::state::ManagedResource) -> &'static str {
 }
 
 /// The cfgd group an env verb's output belongs to — the same split
-/// [`cfgd_core::reconciler::owner_of`] makes over the ACTIONS, made here over
+/// `reconciler::owner_of` makes over the ACTIONS, made here over
 /// the verb a recorded row survives with.
 fn env_method_group(method: &str) -> &'static str {
     if method == cfgd_core::reconciler::ENV_VERB_INJECT {
