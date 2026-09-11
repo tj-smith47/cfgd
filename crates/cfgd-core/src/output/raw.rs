@@ -28,7 +28,6 @@
 
 use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
-use syntect::highlighting::Style as SynStyle;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
@@ -87,8 +86,8 @@ impl Renderer {
     /// of a CRLF, so only a LONE return is left to escape.
     ///
     /// The palette is the printer's own theme (`Theme::syntect_theme`), so a
-    /// `--theme dracula` run highlights in Dracula rather than in a syntect
-    /// default nothing else on the screen is drawn in.
+    /// `--theme dracula` run highlights in Dracula, the palette the rest of the
+    /// screen is drawn in.
     pub fn render_syntax_highlight(
         &self,
         w: &dyn Writer,
@@ -97,39 +96,45 @@ impl Renderer {
         lang: &str,
         syntax_set: &SyntaxSet,
     ) {
+        let unstyled = || {
+            code.lines()
+                .map(escape_control_chars)
+                .collect::<Vec<String>>()
+        };
         // syntect writes its truecolor escapes itself, without passing through
         // `ThemedStyle::apply_to`, so a colour decision enforced only at style
         // lookup does not reach it and `cfgd diff --no-color` / `NO_COLOR=1`
-        // still wrote escapes into the reader's pipe. Same fallback as the
-        // no-syntect-theme arm below.
+        // still wrote escapes into the reader's pipe.
         if !self.theme.colors() {
-            let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
-            self.emit_raw_block(w, depth, &plain);
+            self.emit_raw_block(w, depth, &unstyled());
             return;
         }
         let syntax = syntax_set
             .find_syntax_by_token(lang)
             .or_else(|| syntax_set.find_syntax_by_extension(lang))
             .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+        // The preset renders a body plain (`minimal`), or its asset did not
+        // parse; either way the lines still have to be shown.
         let Some(theme) = self.theme.syntect_theme() else {
-            // The preset renders a body plain (`minimal`), or its asset did not
-            // parse; either way the lines still have to be shown.
-            let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
-            self.emit_raw_block(w, depth, &plain);
+            self.emit_raw_block(w, depth, &unstyled());
             return;
         };
         let mut h = HighlightLines::new(syntax, theme);
         let mut lines = Vec::new();
         for line in code.lines() {
             let line = escape_control_chars(line);
-            let ranges: Vec<(SynStyle, &str)> =
-                h.highlight_line(&line, syntax_set).unwrap_or_default();
-            // A line that did not close its last foreground run leaves it in
-            // force over whatever the command prints next.
-            lines.push(format!(
-                "{}{SYNTECT_RESET}",
-                as_24_bit_terminal_escaped(&ranges, false)
-            ));
+            lines.push(match h.highlight_line(&line, syntax_set) {
+                // A line that did not close its last foreground run leaves it in
+                // force over whatever the command prints next.
+                Ok(ranges) => format!(
+                    "{}{SYNTECT_RESET}",
+                    as_24_bit_terminal_escaped(&ranges, false)
+                ),
+                // The highlighter gave up on this one line. Its TEXT is what an
+                // operator approves from, so the line stands unstyled; empty
+                // ranges would have printed a reset and dropped the content.
+                Err(_) => line,
+            });
         }
         // Built outside the guard: highlighting is expensive and touches no
         // render state, so the lock is taken only around the emission.

@@ -353,8 +353,8 @@ fn syntax_themes() -> &'static HashMap<&'static str, syntect::highlighting::Them
         }
         for (name, body) in SYNTAX_THEME_BUNDLED {
             // An asset that does not parse leaves its preset with no syntect
-            // theme, which renders the body plain rather than failing the
-            // command the body was printed under.
+            // theme, so the body renders plain and the command it was printed
+            // under still succeeds.
             if let Ok(theme) =
                 syntect::highlighting::ThemeSet::load_from_reader(&mut std::io::Cursor::new(*body))
             {
@@ -562,7 +562,7 @@ impl Theme {
     /// answer to that question: a renderer never picks a syntect theme by name,
     /// or a themed run highlights in somebody else's palette. See the table on
     /// [`Theme`] for the preset mapping.
-    pub fn syntect_theme(&self) -> Option<&'static syntect::highlighting::Theme> {
+    pub(crate) fn syntect_theme(&self) -> Option<&'static syntect::highlighting::Theme> {
         syntax_themes().get(self.syntax_theme?)
     }
 
@@ -603,8 +603,8 @@ impl Theme {
             "minimal" => Self::minimal(),
             _ => return None,
         };
-        // Stamped here rather than in each preset body, which all carry
-        // `..Self::default()` and would silently inherit the default's.
+        // Stamped at the one site every preset passes through: a preset body
+        // carrying `..Self::default()` would silently inherit the default's.
         theme.syntax_theme = preset_syntax_theme(name);
         Some(theme)
     }
