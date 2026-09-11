@@ -447,8 +447,9 @@ fn paired_flag(set: bool, unset: bool) -> Option<bool> {
 /// values in full, and the form its declared scripts render in.
 ///
 /// Both verbs that list a module's inventories read their three flags through
-/// `of`, so one spelling cannot mean a different view on the other verb.
-#[derive(Debug, Clone, Copy)]
+/// `of`, so one spelling cannot mean a different view on the other verb. The
+/// default is the view an invocation that passed none of the three asks for.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct InventoryDetail {
     /// Whether a declared env value renders in full rather than masked.
     pub values: bool,

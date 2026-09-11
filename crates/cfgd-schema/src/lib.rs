@@ -365,6 +365,36 @@ impl ScriptSpec {
     }
 }
 
+/// Why a declared script step was refused, as a complete sentence naming the
+/// hook and the step it judged.
+///
+/// The message is the whole error: a caller with its own error type wraps this
+/// one's `Display` (or its field) rather than re-wording the refusal, so every
+/// surface that parses `spec.scripts` states a rejection identically.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ScriptShapeError(pub String);
+
+/// Refuse a declared step whose `run` is empty or holds only whitespace.
+///
+/// Such a step runs nothing, and every surface listing a module's hooks gives
+/// it a row with no body in it, so the declaration is an authoring mistake
+/// rather than a deliberate no-op. The hooks are read through
+/// [`ScriptSpec::hooks`], so the refusal names the hook and the step's position
+/// the way the YAML spells them.
+pub fn validate_script_bodies(subject: &str, spec: &ScriptSpec) -> Result<(), ScriptShapeError> {
+    for (hook, entries) in spec.hooks() {
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.run_str().trim().is_empty() {
+                return Err(ScriptShapeError(format!(
+                    "{subject}: scripts.{hook}[{index}] has an empty 'run'"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Which layer owns a backup unit's schedule.
 ///
 /// `Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`,

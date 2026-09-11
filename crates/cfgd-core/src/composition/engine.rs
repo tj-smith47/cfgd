@@ -132,6 +132,8 @@ pub fn compose(
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
     validate_backup_specs(&merged.backups)?;
+    cfgd_schema::validate_script_bodies("profile", &merged.scripts)
+        .map_err(|e| crate::errors::ConfigError::Invalid { message: e.0 })?;
 
     Ok(CompositionResult {
         resolved: ResolvedProfile {

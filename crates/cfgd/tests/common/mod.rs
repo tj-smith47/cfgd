@@ -1722,3 +1722,15 @@ pub fn strand_a_snapshot(
     drop(printer);
     (stranded, cfgd_core::output::strip_ansi(&cap.human()))
 }
+
+/// The four lines of the approved pitch the script pins (panel 1, lines
+/// 63-66), byte for byte less one zero-width span: the pitch's body line
+/// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
+/// styling the line's own newline. The renderer highlights each line without
+/// its terminator, so it emits no escape for a span holding no text.
+pub const PITCH_SCRIPTS_LINES: [&str; 4] = [
+    "\x1b[38;2;189;147;249mScripts\x1b[0m",
+    "  \x1b[38;2;255;121;198mpostApply\x1b[0m\x1b[38;2;98;114;164m (7)\x1b[0m",
+    "    \x1b[38;2;98;114;164m1/7 \u{b7} timeout 120s \u{b7} continueOnError\x1b[0m",
+    "    \x1b[38;2;255;121;198mif\x1b[38;2;248;248;242m \x1b[38;2;139;233;253mcommand\x1b[38;2;248;248;242m \x1b[38;2;255;184;108m-\x1b[38;2;255;184;108mv\x1b[38;2;248;248;242m pipx \x1b[38;2;255;121;198m>\x1b[38;2;248;248;242m/dev/null \x1b[38;2;189;147;249m2\x1b[38;2;255;121;198m>&\x1b[38;2;189;147;249m1\x1b[38;2;255;121;198m;\x1b[38;2;248;248;242m \x1b[38;2;255;121;198mthen\x1b[0m",
+];

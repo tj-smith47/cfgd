@@ -591,8 +591,8 @@ cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 cfgd status --module nvim -o wide           # itemized inventories instead of counts
 cfgd status --module nvim --show-values     # inventories with declared env values (implies -o wide)
-cfgd status --module nvim -s               # inventories with each script's full body
-cfgd status --module nvim -a               # both: declared env values and full script bodies
+cfgd status --module nvim --show-scripts    # inventories with each script's full body
+cfgd status --module nvim --show-all        # both: declared env values and full script bodies
 cfgd status --scan                          # live scan of this machine right now
 cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
@@ -822,16 +822,16 @@ Scripts
 ```
 
 Packages, files, aliases and env vars list alphabetically; scripts stay in
-execution order, because that order is the fact. No drift engine ever watches
-a hook body, so a Scripts row is always a bare declaration — no verdict glyph —
-regardless of `--scan`. Aliases precede env vars
-wherever the pair is named — the counts, these inventories, `cfgd module
-show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
-and `cfgd source add` render, and `-o json`'s field order alike. `--show-values` renders the
-same inventories with each declared env value (`EDITOR="nvim"`, quoted the way
-the generated env file writes it), `--show-scripts` / `-s` with each script's
-whole body instead of its condensed first line, and `--show-all` / `-a` with
-both; each implies `-o wide`.
+execution order, because that order is the fact. No drift engine ever watches a
+hook body, so a Scripts row is always a bare declaration — no verdict glyph —
+regardless of `--scan`. Aliases precede env vars wherever the pair is named —
+the counts, these inventories, `cfgd module show`'s sections, the profile
+inventory `cfgd profile show`, `cfgd source show` and `cfgd source add` render,
+and `-o json`'s field order alike. `--show-values` renders the same inventories
+with each declared env value (`EDITOR="nvim"`, quoted the way the generated env
+file writes it), `--show-scripts` / `-s` with each script's whole body instead
+of its condensed first line, and `--show-all` / `-a` with both; each implies
+`-o wide`.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`

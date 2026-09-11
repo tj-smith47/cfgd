@@ -340,6 +340,10 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
     }
     super::parse::validate_api_version(&doc.api_version)?;
     validate_module_file_entries(&doc.spec.files)?;
+    if let Some(scripts) = &doc.spec.scripts {
+        cfgd_schema::validate_script_bodies(&format!("module '{}'", doc.metadata.name), scripts)
+            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+    }
 
     Ok(doc)
 }
@@ -385,6 +389,45 @@ spec: {}
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
         );
+    }
+
+    #[test]
+    fn a_script_step_with_a_blank_run_is_refused_by_name() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  scripts:
+    postApply:
+      - echo setup
+      - "   "
+"#;
+        let err = parse_module(yaml)
+            .expect_err("a step with nothing to run is a declaration error")
+            .to_string();
+        assert!(
+            err.contains("module 'nvim'")
+                && err.contains("scripts.postApply[1]")
+                && err.contains("empty 'run'"),
+            "the refusal must name the module, the hook and the step: {err}"
+        );
+    }
+
+    #[test]
+    fn a_script_step_carrying_a_command_parses() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  scripts:
+    preApply:
+      - run: "echo one"
+    postApply:
+      - echo two
+"#;
+        parse_module(yaml).expect("steps with commands parse");
     }
 
     fn module_yaml_with_version(version_line: &str) -> String {

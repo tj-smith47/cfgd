@@ -4324,10 +4324,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -4382,10 +4379,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -4455,10 +4449,7 @@ mod tests {
                 None,
                 false,
                 false,
-                crate::cli::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                crate::cli::InventoryDetail::default(),
             )
             .unwrap()
         });
@@ -4475,10 +4466,7 @@ mod tests {
                 None,
                 false,
                 false,
-                crate::cli::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                crate::cli::InventoryDetail::default(),
             )
             .unwrap()
         });
@@ -6118,10 +6106,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6196,10 +6181,7 @@ mod tests {
             Some("test-mod"),
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6228,10 +6210,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap_err();
         let msg = err.to_string().to_lowercase();
@@ -6253,10 +6232,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6305,10 +6281,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6355,10 +6328,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6407,10 +6377,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6442,10 +6409,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6484,10 +6448,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6521,10 +6482,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6558,10 +6516,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         );
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
@@ -6581,10 +6536,7 @@ mod tests {
             None,
             true,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         );
         assert!(
             res.is_ok(),
@@ -6618,10 +6570,7 @@ mod tests {
             None,
             false,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6712,10 +6661,7 @@ mod tests {
             None,
             false,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -6750,10 +6696,7 @@ mod tests {
             None,
             false,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(human_printer);
@@ -6858,10 +6801,7 @@ mod tests {
                 None,
                 false,
                 scan,
-                crate::cli::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                crate::cli::InventoryDetail::default(),
             )
             .unwrap();
             drop(printer);
@@ -6887,10 +6827,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -7000,10 +6937,7 @@ mod tests {
                 None,
                 false,
                 scan,
-                crate::cli::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                crate::cli::InventoryDetail::default(),
             )
             .unwrap();
             drop(printer);
@@ -7034,10 +6968,7 @@ mod tests {
                 None,
                 false,
                 scan,
-                crate::cli::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                crate::cli::InventoryDetail::default(),
             )
             .unwrap();
             drop(printer);
@@ -7121,10 +7052,7 @@ mod tests {
             None,
             false,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -7144,10 +7072,7 @@ mod tests {
             None,
             false,
             true,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -7201,10 +7126,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -7245,10 +7167,7 @@ mod tests {
             Some("test-mod"),
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -8399,10 +8318,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -8459,10 +8375,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);
@@ -8746,10 +8659,7 @@ mod tests {
             None,
             false,
             false,
-            crate::cli::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::InventoryDetail::default(),
         )
         .unwrap();
         drop(printer);

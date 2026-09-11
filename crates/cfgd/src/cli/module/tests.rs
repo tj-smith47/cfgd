@@ -493,16 +493,7 @@ fn rendered_list(cli: &super::Cli) -> String {
 fn rendered_show(cli: &super::Cli, name: &str) -> String {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_show(
-        cli,
-        &printer,
-        name,
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
-    )
-    .unwrap();
+    cmd_module_show(cli, &printer, name, crate::cli::InventoryDetail::default()).unwrap();
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
 }
@@ -651,10 +642,7 @@ fn cmd_module_show_not_found() {
         &cli,
         &printer,
         "ghost",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap_err();
     assert!(
@@ -682,10 +670,7 @@ fn cmd_module_show_displays_details() {
         &cli,
         &printer,
         "devtools",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -738,10 +723,7 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
         &cli,
         &printer,
         "local-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -773,10 +755,7 @@ fn cmd_module_show_falls_through_to_locked_modules() {
         &cli,
         &printer,
         "private-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap_err();
     assert!(
@@ -802,10 +781,7 @@ fn cmd_module_show_with_available_hint() {
         &cli,
         &printer,
         "missing",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap_err();
     drop(printer);
@@ -845,10 +821,7 @@ fn cmd_module_show_env_masking() {
         &cli,
         &printer,
         "secrets-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -908,10 +881,7 @@ fn cmd_module_show_json_schema() {
         &cli,
         &printer,
         "jmod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -2286,10 +2256,7 @@ fn cmd_module_show_json_with_lockfile_entry() {
         &cli,
         &printer,
         "remote-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -2335,10 +2302,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
         &cli,
         &printer,
         "locked-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -2378,10 +2342,7 @@ fn cmd_module_show_aliases() {
         &cli,
         &printer,
         "alias-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -2417,10 +2378,7 @@ fn cmd_module_show_scripts() {
         &cli,
         &printer,
         "script-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -2460,10 +2418,7 @@ fn cmd_module_show_files_with_git_source() {
         &cli,
         &printer,
         "git-file-mod",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -3894,10 +3849,7 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
         &cli,
         &printer,
         "rich",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -4312,10 +4264,7 @@ fn cmd_module_show_json_depends() {
         &cli,
         &printer,
         "dep-show",
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -7783,10 +7732,7 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         &show,
         None,
         &[],
-        crate::cli::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        crate::cli::InventoryDetail::default(),
         true,
         "->",
         now,

@@ -38,6 +38,8 @@ use cfgd_core::state::{
 };
 use pretty_assertions::assert_eq;
 
+mod common;
+
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 /// Pinned "now" for every status render: the header's last-scan age is a
@@ -775,20 +777,12 @@ fn status_per_module_show_scripts_renders_the_approved_dracula_bytes() {
         .skip_while(|l| !l.contains("Scripts"))
         .take(4)
         .collect();
-    assert_eq!(rendered, PITCH_SCRIPTS_LINES, "the approved bytes: {out:?}");
+    assert_eq!(
+        rendered,
+        common::PITCH_SCRIPTS_LINES,
+        "the approved bytes: {out:?}"
+    );
 }
-
-/// The four lines of the approved pitch these tests pin (panel 1, lines
-/// 63-66), byte for byte less one zero-width span: the pitch's body line
-/// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
-/// styling the line's own newline. The renderer highlights each line without
-/// its terminator, so it emits no escape for a span holding no text.
-const PITCH_SCRIPTS_LINES: [&str; 4] = [
-    "\x1b[38;2;189;147;249mScripts\x1b[0m",
-    "  \x1b[38;2;255;121;198mpostApply\x1b[0m\x1b[38;2;98;114;164m (7)\x1b[0m",
-    "    \x1b[38;2;98;114;164m1/7 \u{b7} timeout 120s \u{b7} continueOnError\x1b[0m",
-    "    \x1b[38;2;255;121;198mif\x1b[38;2;248;248;242m \x1b[38;2;139;233;253mcommand\x1b[38;2;248;248;242m \x1b[38;2;255;184;108m-\x1b[38;2;255;184;108mv\x1b[38;2;248;248;242m pipx \x1b[38;2;255;121;198m>\x1b[38;2;248;248;242m/dev/null \x1b[38;2;189;147;249m2\x1b[38;2;255;121;198m>&\x1b[38;2;189;147;249m1\x1b[38;2;255;121;198m;\x1b[38;2;248;248;242m \x1b[38;2;255;121;198mthen\x1b[0m",
-];
 
 /// The human render and the `-o json` payload state the same per-file and
 /// per-package verdicts: a consumer reading `deployedFiles[].state` must not

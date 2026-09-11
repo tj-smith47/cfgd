@@ -519,6 +519,132 @@ fn both_module_inventory_verbs_carry_the_same_show_flags() {
     }
 }
 
+/// The module both inventory verbs are driven over below: one env value worth
+/// masking, and a `postApply` hook whose first step has a second line only a
+/// full body shows.
+const INVENTORY_FLAG_MODULE: &str = "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: flags-mod
+spec:
+  env:
+    - name: EDITOR
+      value: supersecretvalue
+  scripts:
+    postApply:
+      - run: |
+          echo first
+          echo second
+      - echo third
+";
+
+/// Run one invocation the way a terminal does: the real clap parse, then
+/// `execute`'s own dispatch, against a config dir holding
+/// [`INVENTORY_FLAG_MODULE`]. Returns the captured text with colour off.
+///
+/// The fold from three flags to one `InventoryDetail` lives in `execute`'s two
+/// arms, so a test calling `cmd_module_show` or `cmd_status` directly asserts
+/// about its own argument rather than about what the flag does.
+fn inventory_flag_output(args: &[&str]) -> String {
+    let tmp_home = tempfile::tempdir().expect("a test home");
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+    let h = CliTestHarness::builder()
+        .module("flags-mod", INVENTORY_FLAG_MODULE)
+        .build();
+    let mut argv: Vec<String> = vec![
+        "cfgd".to_string(),
+        "--config".to_string(),
+        h.config_path().join("cfgd.yaml").display().to_string(),
+        "--state-dir".to_string(),
+        h.state_path().display().to_string(),
+        "--no-color".to_string(),
+    ];
+    argv.extend(args.iter().map(|a| (*a).to_string()));
+    let cli = Cli::try_parse_from(&argv).expect("the inventory flags parse");
+    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
+        .expect("the invocation runs");
+    h.output()
+}
+
+/// `-a` is both halves on `cfgd module show`: the declared env value in full
+/// and every line of every script.
+#[test]
+fn module_show_all_renders_the_env_values_and_the_full_script_bodies() {
+    let out = inventory_flag_output(&["module", "show", "flags-mod", "-a"]);
+    assert!(
+        out.contains("supersecretvalue"),
+        "-a renders the declared env value in full, got: {out}"
+    );
+    assert!(
+        out.contains("postApply (2)") && out.contains("echo second"),
+        "-a renders each step's whole body under its hook, got: {out}"
+    );
+}
+
+/// `-s` is the script half alone: whole bodies, and the env value still masked.
+#[test]
+fn module_show_scripts_renders_full_bodies_with_the_env_value_still_masked() {
+    let out = inventory_flag_output(&["module", "show", "flags-mod", "-s"]);
+    assert!(
+        out.contains("echo second"),
+        "-s renders each step's whole body, got: {out}"
+    );
+    assert!(
+        out.contains("***lue") && !out.contains("supersecretvalue"),
+        "-s asked for scripts, so the env value stays masked, got: {out}"
+    );
+}
+
+/// `--show-values` alone names the env value and leaves every script row
+/// condensed to its first line, on both verbs.
+#[test]
+fn show_values_alone_renders_condensed_script_rows_on_both_verbs() {
+    let shown = inventory_flag_output(&["module", "show", "flags-mod", "--show-values"]);
+    assert!(
+        shown.contains("supersecretvalue") && shown.contains("echo first"),
+        "--show-values renders the value and still lists the hook's steps, got: {shown}"
+    );
+    assert!(
+        !shown.contains("echo second"),
+        "a condensed row stops at the body's first line, got: {shown}"
+    );
+    let status = inventory_flag_output(&["status", "--module", "flags-mod", "--show-values"]);
+    assert!(
+        status.contains(r#"EDITOR="supersecretvalue""#) && status.contains("echo first"),
+        "--show-values itemizes the inventories with the value beside the name, got: {status}"
+    );
+    assert!(
+        !status.contains("echo second"),
+        "a condensed row stops at the body's first line on this verb too, got: {status}"
+    );
+}
+
+/// On `cfgd status --module`, either script flag selects the itemized view the
+/// rows live on, and each one carries the form it asked for. Without them the
+/// same module reads as counts.
+#[test]
+fn status_per_module_script_flags_itemize_the_inventories() {
+    let compact = inventory_flag_output(&["status", "--module", "flags-mod"]);
+    assert!(
+        !compact.contains("postApply (2)") && !compact.contains("echo first"),
+        "with neither flag the report states counts, got: {compact}"
+    );
+    let scripts = inventory_flag_output(&["status", "--module", "flags-mod", "-s"]);
+    assert!(
+        scripts.contains("postApply (2)") && scripts.contains("echo second"),
+        "-s itemizes the inventories and renders each whole body, got: {scripts}"
+    );
+    assert!(
+        scripts.contains("EDITOR") && !scripts.contains("supersecretvalue"),
+        "-s names the env var and leaves its value out, got: {scripts}"
+    );
+    let all = inventory_flag_output(&["status", "--module", "flags-mod", "-a"]);
+    assert!(
+        all.contains(r#"EDITOR="supersecretvalue""#) && all.contains("echo second"),
+        "-a itemizes the inventories with both halves, got: {all}"
+    );
+}
+
 /// Every `cfgd backup` verb that OVERWRITES live data mirrors the global
 /// `--yes`, so the operator can always answer the prompt without one.
 ///
@@ -5207,10 +5333,7 @@ fn cmd_status_with_empty_state() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     h.assert_header("Status");
@@ -5226,10 +5349,7 @@ fn cmd_status_module_not_found() {
         Some("nonexistent"),
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     h.assert_output_contains("nonexistent");
@@ -5246,10 +5366,7 @@ fn cmd_status_module_found() {
         Some("test-mod"),
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     h.assert_output_contains("test-mod");
@@ -5627,10 +5744,7 @@ fn cmd_status_after_apply() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -5929,10 +6043,7 @@ fn cmd_status_structured_output() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let parsed = h.json_output();
@@ -6608,10 +6719,7 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6649,10 +6757,7 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6707,10 +6812,7 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6799,10 +6901,7 @@ fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6883,10 +6982,7 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6914,10 +7010,7 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -6957,10 +7050,7 @@ fn cmd_status_with_modules() {
             None,
             false,
             false,
-            super::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            super::InventoryDetail::default(),
         )
         .is_ok(),
         "status should succeed when profile references modules"
@@ -7029,10 +7119,7 @@ fn cmd_status_with_drift_events() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -8985,10 +9072,7 @@ fn module_show_not_found() {
         &cli,
         &printer,
         "nonexistent",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
@@ -9054,10 +9138,7 @@ spec:
         &cli,
         &printer,
         "dev-tools",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -9104,10 +9185,7 @@ spec:
         &cli,
         &printer,
         "secrets-mod",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     {
@@ -9147,15 +9225,8 @@ fn module_show_suggests_available_modules() {
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let printer = test_printer();
 
-    let result = module::cmd_module_show(
-        &cli,
-        &printer,
-        "emacs",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
-    );
+    let result =
+        module::cmd_module_show(&cli, &printer, "emacs", super::InventoryDetail::default());
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9188,10 +9259,7 @@ spec:
         &cli,
         &printer,
         "scripted",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -10528,10 +10596,7 @@ fn module_show_structured_output() {
         &cli,
         &printer,
         "json-mod",
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -12610,10 +12675,7 @@ fn cmd_status_module_structured_output() {
         Some("json-mod"),
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     drop(printer);
@@ -20208,10 +20270,7 @@ fn json_schema_status() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let parsed = h.json_output();
@@ -22537,10 +22596,7 @@ fn cmd_status_with_sources_shows_source_section() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     );
     assert!(
         result.is_ok(),
@@ -29262,10 +29318,7 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
@@ -29421,10 +29474,7 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     printer.flush();
@@ -29870,10 +29920,7 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
@@ -29946,10 +29993,7 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let json = f.h.json_output();
@@ -29985,10 +30029,7 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
@@ -30099,10 +30140,7 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
@@ -30138,10 +30176,7 @@ fn a_degraded_status_json_payload_says_so_structurally() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .expect("a read-only dashboard renders through a classification failure");
     let json = f.h.json_output();
@@ -30177,10 +30212,7 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .expect("a clean classification renders");
     let json = f.h.json_output();
@@ -30314,10 +30346,7 @@ fn a_sourceless_status_skips_source_classification_entirely() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .expect("no sources, no classification, no failure");
     printer.flush();
@@ -30494,10 +30523,7 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
         None,
         false,
         false,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let json = f.h.json_output();
@@ -35594,10 +35620,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 &module_show,
                 None,
                 &[],
-                super::InventoryDetail {
-                    values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                super::InventoryDetail::default(),
                 true,
                 "->",
                 now,
@@ -36060,10 +36083,7 @@ fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
         None,
         false,
         true,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     h.assert_output_contains("gpgKeys");
@@ -36091,10 +36111,7 @@ fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
         None,
         false,
         true,
-        super::InventoryDetail {
-            values: false,
-            scripts: cfgd_core::output::ScriptsForm::Condensed,
-        },
+        super::InventoryDetail::default(),
     )
     .unwrap();
     let parsed = h.json_output();
@@ -36160,10 +36177,7 @@ fn diff_and_scan_agree_on_the_findings() {
             None,
             false,
             true,
-            super::InventoryDetail {
-                values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            super::InventoryDetail::default(),
         )
         .unwrap();
     });
@@ -37401,18 +37415,26 @@ fn every_backup_unit_the_cli_builds_is_projected() {
     );
 }
 
-/// A module's declared script body reaches a human surface through ONE
-/// composer, `cfgd_core::modules::scripts_section`: the marker line, the
-/// highlighting, the per-step blank and the hook heading are all decided there,
-/// so `cfgd module show` and `cfgd status --module` cannot show one module two
-/// shapes. Outside `output/` (which owns the slots themselves), nothing paints
-/// a block of text for itself without being classified here, and a site whose
-/// block IS a script body says why it is not the composer's.
+/// A module's declared hooks reach a human surface as a `Scripts` section
+/// through ONE composer, `cfgd_core::modules::scripts_section`: the marker
+/// line, the highlighting, the per-step blank and the hook heading are all
+/// decided there, so `cfgd module show` and `cfgd status --module` cannot show
+/// one module two shapes.
 ///
-/// The table is the judgment: a new block-painting site fails this walk until
-/// it carries a row, which is where the question gets asked.
+/// Three things are judged. Outside `output/` (which owns the slots
+/// themselves), nothing paints a block of text for itself without being
+/// classified in this walk's table, and a site whose block IS a script body
+/// says why it is not the composer's. Outside the composer's own file, nothing
+/// reads the declared inventory (`HookScripts`, `DeclaredScript`, a hook's
+/// `steps`) at all, which is what a hand-rolled `hook — body` list would have
+/// to do. And outside that file, nothing names `Scripts` as a section either.
+///
+/// A condensed body in some other slot is a different thing and outside all
+/// three: `module update --add-post-apply-script` and its profile twin confirm
+/// ONE script the invocation handed them, which is no inventory of a module's
+/// hooks.
 #[test]
-fn every_declared_script_body_a_surface_renders_comes_from_the_one_composer() {
+fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
     /// Each production site painting a block of text, and whether the block is
     /// a module's declared script body.
     const SITES: &[(&str, &str, bool)] = &[
@@ -37437,11 +37459,29 @@ fn every_declared_script_body_a_surface_renders_comes_from_the_one_composer() {
     // Far under the real counts, so a deletion does not trip the floor and a
     // re-rooted walk does.
     const FLOOR_FILES: [usize; 2] = [80, 90];
+    /// The one file that may read a module's declared script inventory.
+    const COMPOSER: &str = "cfgd-core/src/modules/surfaces.rs";
+    /// Reading any of these is reading the inventory itself.
+    const INVENTORY_TELLS: &[&str] =
+        &["HookScripts", "DeclaredScript", "SCRIPTS_SECTION", ".steps"];
+    /// The slots that open a named section or heading, where `Scripts` would
+    /// name a second inventory. A `Scripts` kv KEY is the compact count row and
+    /// is not one of these.
+    const SECTION_SLOTS: &[&str] = &[
+        ".section(",
+        ".subsection(",
+        ".section_annotated(",
+        ".subsection_annotated(",
+        ".heading(",
+        "section_owner(",
+    ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [root.join("src"), root.join("../cfgd-core/src")];
     let mut unclassified = Vec::new();
     let mut unhatched = Vec::new();
+    let mut stray_inventory = Vec::new();
+    let mut stray_section = Vec::new();
     let mut matched = vec![false; SITES.len()];
     for (r, walk_root) in roots.iter().enumerate() {
         let mut seen = 0usize;
@@ -37466,6 +37506,20 @@ fn every_declared_script_body_a_surface_renders_comes_from_the_one_composer() {
             let lines: Vec<&str> = body.lines().collect();
             for (n, line) in lines.iter().enumerate() {
                 let code = line.split("//").next().unwrap_or(line);
+                // The cfgd-core root is reached through `..`, so the walked
+                // path carries that hop and the match is on the tail.
+                if !rel.ends_with(COMPOSER) {
+                    // A re-export names the types without reading one.
+                    let exporting = code.trim_start().starts_with("pub use");
+                    if !exporting && INVENTORY_TELLS.iter().any(|t| code.contains(t)) {
+                        stray_inventory.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+                    }
+                    if code.contains("\"Scripts\"")
+                        && SECTION_SLOTS.iter().any(|s| code.contains(s))
+                    {
+                        stray_section.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+                    }
+                }
                 if !code.contains(".code_block(") && !code.contains(".syntax_highlight(") {
                     continue;
                 }
@@ -37510,6 +37564,19 @@ fn every_declared_script_body_a_surface_renders_comes_from_the_one_composer() {
         "a site painting a declared script body itself says why it is not the composer's, \
          with `{HATCH} <why>`:\n{}",
         unhatched.join("\n")
+    );
+    assert!(
+        stray_inventory.is_empty(),
+        "a module's declared script inventory is read in `{COMPOSER}` and nowhere else: a \
+         surface listing a module's hooks calls `cfgd_core::modules::scripts_section` and \
+         renders what it returns:\n{}",
+        stray_inventory.join("\n")
+    );
+    assert!(
+        stray_section.is_empty(),
+        "the `Scripts` section is named in `{COMPOSER}` and nowhere else, so two surfaces \
+         cannot head one inventory differently:\n{}",
+        stray_section.join("\n")
     );
     let missing: Vec<String> = SITES
         .iter()
