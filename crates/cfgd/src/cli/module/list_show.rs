@@ -159,7 +159,7 @@ pub fn build_module_show_doc(
     output: &ModuleShowOutput,
     lock_entry: Option<&ModuleLockEntry>,
     packages: &[PackageDisplay],
-    show_values: bool,
+    detail: crate::cli::InventoryDetail,
     checked: bool,
     arrow: &str,
     now: &str,
@@ -276,7 +276,7 @@ pub fn build_module_show_doc(
 
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
-            let display = if show_values {
+            let display = if detail.values {
                 ev.value.clone()
             } else {
                 mask_value(&ev.value)
@@ -287,28 +287,10 @@ pub fn build_module_show_doc(
 
     // Every hook the module declares, in execution order — read through the
     // one tally so this section and `cfgd status <module>`'s cannot disagree
-    // about what the module declares. No drift engine ever watches a hook
-    // body, so this is always a bare declaration, the same `command_list`
-    // shape `cfgd status <module>`'s Scripts section uses: the hook name is
-    // the key, never a `status` row borrowing a verdict no check gave it.
+    // about what the module declares, and rendered through the one composer so
+    // the two cannot disagree about its shape either.
     let declared = cfgd_core::modules::ModuleSurfaces::of(&output.spec);
-    doc = doc.section_if_nonempty("Scripts", &declared.scripts, |s, hooks| {
-        let pairs: Vec<(String, String)> = hooks
-            .iter()
-            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
-            .map(|(hook, body)| {
-                // `--show-values` is the only way to read a whole body; the
-                // default row condenses it, exactly as the status inventory does.
-                let value = if show_values {
-                    body.clone()
-                } else {
-                    cfgd_core::output::condense_script_label(body)
-                };
-                (hook.to_string(), value)
-            })
-            .collect();
-        s.command_list(pairs)
-    });
+    doc = cfgd_core::modules::scripts_section(doc, &declared.scripts, detail.scripts);
 
     doc.with_data(output)
 }
@@ -387,7 +369,7 @@ pub(crate) fn cmd_module_show(
     cli: &Cli,
     printer: &Printer,
     name: &str,
-    show_values: bool,
+    detail: crate::cli::InventoryDetail,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
 
@@ -519,7 +501,7 @@ pub(crate) fn cmd_module_show(
         &output,
         lock_entry,
         &packages,
-        show_values,
+        detail,
         checked,
         printer.arrow(),
         &cfgd_core::utc_now_iso8601(),

@@ -1031,7 +1031,12 @@ impl Printer {
     /// Used by tests; production code should call `emit`, which routes by
     /// `OutputFormat` and falls back to this for human formats.
     pub fn render(&self, doc: super::doc::Doc) {
-        super::render_doc::render_doc(&self.renderer, self.sink_stderr.as_ref(), &doc);
+        super::render_doc::render_doc(
+            &self.renderer,
+            self.sink_stderr.as_ref(),
+            &doc,
+            &self.syntax_set,
+        );
     }
 
     /// Routed emit: structured formats go to stdout as JSON/YAML/etc.; Table/Wide

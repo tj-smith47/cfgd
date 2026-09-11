@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use syntect::parsing::SyntaxSet;
+
 use super::component::Component;
 use super::doc::{Doc, HeadingKind};
 use super::renderer::{
@@ -14,7 +16,12 @@ use super::renderer::{
 };
 use super::theme::ThemedStyle;
 
-pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
+pub(crate) fn render_doc(
+    renderer: &Renderer,
+    sink: &dyn Writer,
+    doc: &Doc,
+    syntax_set: &SyntaxSet,
+) {
     renderer.enter_doc();
     match &doc.heading {
         Some(HeadingKind::Plain(text)) => renderer.render_heading(sink, text),
@@ -29,13 +36,19 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
         None => {}
     }
     for child in &doc.children {
-        render_component(renderer, sink, child, /*depth=*/ 0);
+        render_component(renderer, sink, child, /*depth=*/ 0, syntax_set);
     }
     renderer.flush_kv_buffer(sink);
     renderer.exit_doc();
 }
 
-fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth: usize) {
+fn render_component(
+    renderer: &Renderer,
+    sink: &dyn Writer,
+    c: &Component,
+    depth: usize,
+    syntax_set: &SyntaxSet,
+) {
     match c {
         Component::Heading { text } => {
             renderer.render_heading(sink, text);
@@ -116,6 +129,9 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
         Component::CodeBlock { lines } => {
             renderer.render_code_block(sink, depth, lines);
         }
+        Component::ScriptSteps { steps, form } => {
+            renderer.render_script_steps(sink, depth, steps, *form, syntax_set);
+        }
         Component::Table {
             headers,
             rows,
@@ -161,7 +177,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                 renderer.render_section_empty_state(es);
             }
             for child in children {
-                render_component(renderer, sink, child, depth + 1);
+                render_component(renderer, sink, child, depth + 1, syntax_set);
             }
             renderer.render_section_close(sink);
         }
@@ -204,7 +220,7 @@ mod row_roles_round_trip_tests {
                 ("pending".to_string(), Some(Role::Accent)),
             ]);
         let doc = Doc::new().table(t);
-        render_doc(&renderer, &sink, &doc);
+        render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
         // raw-capture-ok: asserting on the raw truecolor SGR bytes themselves — captured_text would strip the ANSI this test exists to check
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -247,7 +263,7 @@ mod heading_title_tests {
         let sink = StringSink(buf.clone());
 
         let doc = Doc::new().heading_title("Status", "dev-tools");
-        render_doc(&renderer, &sink, &doc);
+        render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
         // raw-capture-ok: comparing against TitleLabel's own styled() output, which carries ANSI — captured_text would strip exactly what this test compares
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -293,7 +309,7 @@ mod owner_section_restyle_tests {
         let doc = Doc::new().section("Phase: Files", |s| {
             s.subsection_owner(&label, |sub| sub.bullet("wrote init.lua"))
         });
-        render_doc(&renderer, &sink, &doc);
+        render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
         // raw-capture-ok: comparing against OwnerLabel's own styled() output, which carries ANSI — stripping it first would hide exactly what this test checks
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();

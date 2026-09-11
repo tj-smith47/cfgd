@@ -44,7 +44,7 @@ pub use resolve::{
     resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
-pub use surfaces::{HookScripts, ModuleSurfaces};
+pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section};
 
 // ---------------------------------------------------------------------------
 // Resolved types — output of module resolution

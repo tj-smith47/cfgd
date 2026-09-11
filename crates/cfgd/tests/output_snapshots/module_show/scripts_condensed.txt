@@ -1,0 +1,30 @@
+Module: dev-tools
+  Version        1.4.0
+  Dependencies   base
+  Directory      /etc/cfgd/modules/dev-tools
+  Source         local
+  Status         Synced
+  Last Applied   2h ago
+  Packages Hash  abc123def456
+  Files Hash     789ghi012jkl
+
+Files
+  vimrc                     ~/.vimrc
+  git@example.com:org/dotfiles.git//tmux.conf (git)
+    ~/.tmux.conf
+
+Aliases
+  gs  git status
+  ll  ls -la
+
+Env
+  EDITOR    ***vim
+  GH_TOKEN  ***lue
+
+Scripts
+  preApply (1)
+    mkdir -p ~/.config/dev-tools
+  postApply (3)
+    if command -v pipx >/dev/null 2>&1; then …
+    nvim --headless "+Lazy! restore" +qa!
+    echo done

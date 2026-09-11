@@ -443,6 +443,34 @@ fn paired_flag(set: bool, unset: bool) -> Option<bool> {
     }
 }
 
+/// What an invocation asked a module's inventories to reveal: the declared env
+/// values in full, and the form its declared scripts render in.
+///
+/// Both verbs that list a module's inventories read their three flags through
+/// `of`, so one spelling cannot mean a different view on the other verb.
+#[derive(Debug, Clone, Copy)]
+pub struct InventoryDetail {
+    /// Whether a declared env value renders in full rather than masked.
+    pub values: bool,
+    /// The form the `Scripts` section takes.
+    pub scripts: cfgd_core::output::ScriptsForm,
+}
+
+impl InventoryDetail {
+    /// The view the `--show-values` / `--show-scripts` / `--show-all` trio asks
+    /// for; `--show-all` is each of the other two.
+    pub fn of(values: bool, scripts: bool, all: bool) -> Self {
+        Self {
+            values: values || all,
+            scripts: if scripts || all {
+                cfgd_core::output::ScriptsForm::Full
+            } else {
+                cfgd_core::output::ScriptsForm::Condensed
+            },
+        }
+    }
+}
+
 pub fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
 }
@@ -1104,7 +1132,7 @@ pub enum Command {
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases, scripts),\neach row carrying its own verdict. --show-values renders those same inventories with\nthe declared values (and each script's full body), so it implies `-o wide`.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases, scripts),\neach row carrying its own verdict. --show-values renders those same inventories with\nthe declared env values, --show-scripts with each script's full body, --show-all with\nboth; each implies `-o wide`.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --module nettools --show-scripts\n  cfgd status --module nettools --show-all\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
@@ -1116,9 +1144,15 @@ pub enum Command {
         /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
-        /// With --module: itemize the inventories and show declared values and full script bodies (implies -o wide)
+        /// With --module: itemize the inventories and show full env variable values (implies -o wide)
         #[arg(long)]
         show_values: bool,
+        /// With --module: itemize the inventories and show each script's full body (implies -o wide)
+        #[arg(long = "show-scripts", short = 's')]
+        show_scripts: bool,
+        /// With --module: both --show-values and --show-scripts
+        #[arg(long = "show-all", short = 'a')]
+        show_all: bool,
     },
 
     /// Show detailed diffs
@@ -2157,6 +2191,12 @@ pub enum ModuleCommand {
         /// Show full env variable values (default: masked)
         #[arg(long)]
         show_values: bool,
+        /// Show each script's full body (default: its first line)
+        #[arg(long = "show-scripts", short = 's')]
+        show_scripts: bool,
+        /// Both --show-values and --show-scripts
+        #[arg(long = "show-all", short = 'a')]
+        show_all: bool,
     },
     /// Create a new local module
     Create(Box<ModuleCreateArgs>),
@@ -2829,13 +2869,15 @@ pub fn execute(
             scan,
             exit_code,
             show_values,
+            show_scripts,
+            show_all,
         } => status::cmd_status(
             cli,
             printer,
             module.as_deref(),
             *exit_code,
             *scan,
-            *show_values,
+            InventoryDetail::of(*show_values, *show_scripts, *show_all),
         ),
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
@@ -2913,9 +2955,17 @@ pub fn execute(
         ),
         Command::Module { command } => match command {
             ModuleCommand::List => module::cmd_module_list(cli, printer),
-            ModuleCommand::Show { name, show_values } => {
-                module::cmd_module_show(cli, printer, name, *show_values)
-            }
+            ModuleCommand::Show {
+                name,
+                show_values,
+                show_scripts,
+                show_all,
+            } => module::cmd_module_show(
+                cli,
+                printer,
+                name,
+                InventoryDetail::of(*show_values, *show_scripts, *show_all),
+            ),
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),

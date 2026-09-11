@@ -33,7 +33,13 @@ use syntect::util::as_24_bit_terminal_escaped;
 
 use crate::escape_control_chars;
 
+use super::component::{ScriptStep, ScriptsForm};
 use super::renderer::{Renderer, Writer};
+use super::{Verbosity, cursor_safe};
+
+/// The syntax a declared script body is highlighted as. Every lifecycle hook
+/// runs through a shell, so one language covers the whole population.
+const SCRIPT_BODY_LANG: &str = "bash";
 
 // style-gate-ok: syntect writes its own foreground runs, which the gate never
 // wrote and so cannot close; this is the reset that closes them, appended only
@@ -96,6 +102,20 @@ impl Renderer {
         lang: &str,
         syntax_set: &SyntaxSet,
     ) {
+        // One block per render, so a highlighted body is never split across
+        // two of indicatif's clear/redraw cycles.
+        self.emit_raw_block(w, depth, &self.highlight_lines(code, lang, syntax_set));
+    }
+
+    /// The rows [`Self::render_syntax_highlight`] emits, without emitting them
+    /// — for a caller composing them into a larger block whose other rows it
+    /// also owns (a script step's marker line above its body).
+    pub(crate) fn highlight_lines(
+        &self,
+        code: &str,
+        lang: &str,
+        syntax_set: &SyntaxSet,
+    ) -> Vec<String> {
         let unstyled = || {
             code.lines()
                 .map(escape_control_chars)
@@ -106,8 +126,7 @@ impl Renderer {
         // lookup does not reach it and `cfgd diff --no-color` / `NO_COLOR=1`
         // still wrote escapes into the reader's pipe.
         if !self.theme.colors() {
-            self.emit_raw_block(w, depth, &unstyled());
-            return;
+            return unstyled();
         }
         let syntax = syntax_set
             .find_syntax_by_token(lang)
@@ -116,8 +135,7 @@ impl Renderer {
         // The preset renders a body plain (`minimal`), or its asset did not
         // parse; either way the lines still have to be shown.
         let Some(theme) = self.theme.syntect_theme() else {
-            self.emit_raw_block(w, depth, &unstyled());
-            return;
+            return unstyled();
         };
         let mut h = HighlightLines::new(syntax, theme);
         let mut lines = Vec::new();
@@ -136,8 +154,51 @@ impl Renderer {
                 Err(_) => line,
             });
         }
-        // Built outside the guard: highlighting is expensive and touches no
-        // render state, so the lock is taken only around the emission.
+        // Returned rather than emitted: highlighting is expensive and touches
+        // no render state, so the lock is taken only around the emission.
+        lines
+    }
+
+    /// Render the script steps one lifecycle hook declares.
+    ///
+    /// The whole hook is one emission, which is what lets the renderer own the
+    /// blank line between steps: a composer that wrote the separator itself
+    /// would be painting layout, and a per-step emission could not tell a
+    /// first step from a later one.
+    ///
+    /// Under [`ScriptsForm::Full`] each step is its muted marker line and then
+    /// its body, highlighted in the printer's own preset. Under
+    /// [`ScriptsForm::Condensed`] each step is one plain row: the body is a
+    /// lossy one-line label its composer already cut, and a coat on it would
+    /// read as a verdict no check gave it.
+    pub fn render_script_steps(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        steps: &[ScriptStep],
+        form: ScriptsForm,
+        syntax_set: &SyntaxSet,
+    ) {
+        if self.verbosity == Verbosity::Quiet || steps.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        for (index, step) in steps.iter().enumerate() {
+            if form == ScriptsForm::Full && index > 0 {
+                lines.push(String::new());
+            }
+            if let Some(marker) = &step.marker {
+                lines.push(self.theme.muted.apply_to(cursor_safe(marker)).to_string());
+            }
+            match form {
+                ScriptsForm::Full => {
+                    lines.extend(self.highlight_lines(&step.body, SCRIPT_BODY_LANG, syntax_set));
+                }
+                // Escaped, not folded: this is the body that will run, and a
+                // reader has to see the bytes it holds.
+                ScriptsForm::Condensed => lines.push(escape_control_chars(&step.body)),
+            }
+        }
         self.emit_raw_block(w, depth, &lines);
     }
 }

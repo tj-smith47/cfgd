@@ -74,8 +74,8 @@ pub use theme::{ICON_ARROW, Theme};
 
 pub mod component;
 pub use component::{
-    CommandPair, Component, ConfigHeader, HeaderModule, HintCommands, KvPair, config_header_rows,
-    modules_header_row_for,
+    CommandPair, Component, ConfigHeader, HeaderModule, HintCommands, KvPair, ScriptStep,
+    ScriptsForm, config_header_rows, modules_header_row_for,
 };
 
 pub mod renderer;

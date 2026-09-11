@@ -13,15 +13,17 @@
 
 use std::path::Path;
 
+use cfgd::cli::InventoryDetail;
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module::list_show::{
     PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
 use cfgd_core::config::{
-    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias,
+    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptCommand, ScriptEntry, ScriptSpec,
+    ShellAlias,
 };
-use cfgd_core::output::Printer;
+use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
 use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
 
@@ -198,7 +200,10 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
         &output,
         None,
         &[],
-        false,
+        InventoryDetail {
+            values: false,
+            scripts: ScriptsForm::Condensed,
+        },
         true,
         printer.arrow(),
         NOW,
@@ -215,17 +220,152 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     assert_eq!(
         rows,
         vec![
-            "preApply  — mkdir -p ~/.config/dev-tools",
-            "postApply — echo 'post-apply hook ran'",
-            "postApply — systemctl --user daemon-reload",
-            "onDrift   — notify-send 'dev-tools drifted'",
+            "preApply (1)",
+            "mkdir -p ~/.config/dev-tools",
+            "postApply (2)",
+            "echo 'post-apply hook ran'",
+            "systemctl --user daemon-reload",
+            "onDrift (1)",
+            "notify-send 'dev-tools drifted'",
         ],
-        "every declaring hook, in execution order, as a bare declaration: {human}"
+        "every declaring hook, in execution order, each step under its own hook: {human}"
     );
     assert!(
         !rows.iter().any(|r| r.contains('◉') || r.contains('✓')),
         "a hook body has no check standing behind it and must not wear a verdict glyph: {rows:?}"
     );
+}
+
+/// A module whose `postApply` steps declare the three knobs the full Scripts
+/// form states above each body, plus one bare-string step, which states its
+/// position alone.
+fn knobbed_show_output() -> ModuleShowOutput {
+    let mut output = happy_show_output();
+    output.spec.scripts = Some(ScriptSpec {
+        pre_apply: vec![ScriptEntry::Simple("mkdir -p ~/.config/dev-tools".into())],
+        post_apply: vec![
+            ScriptEntry::Full(ScriptCommand {
+                run: "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim\nfi"
+                    .into(),
+                timeout: Some("120s".into()),
+                idle_timeout: None,
+                continue_on_error: Some(true),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Full(ScriptCommand {
+                run: "nvim --headless \"+Lazy! restore\" +qa!".into(),
+                timeout: Some("900s".into()),
+                idle_timeout: Some("30s".into()),
+                continue_on_error: Some(false),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Simple("echo done".into()),
+        ],
+        ..Default::default()
+    });
+    output
+}
+
+fn emit_knobbed_show(form: ScriptsForm, golden: &str) {
+    let output = knobbed_show_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        &[],
+        InventoryDetail {
+            values: false,
+            scripts: form,
+        },
+        true,
+        printer.arrow(),
+        NOW,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
+}
+
+/// The default form: one row per step carrying its first line, whatever knobs
+/// the step declares — they have no home in a one-line row.
+#[test]
+fn module_show_scripts_condensed_human() {
+    emit_knobbed_show(ScriptsForm::Condensed, "module_show/scripts_condensed.txt");
+}
+
+/// `-s` / `-a`: each step states its position and the knobs it declares, then
+/// its whole body. The bare-string step states its position alone, and a
+/// declared `continueOnError: false` is the default, so no marker names it.
+#[test]
+fn module_show_scripts_full_human() {
+    emit_knobbed_show(ScriptsForm::Full, "module_show/scripts_full.txt");
+}
+
+/// The bytes the approved pitch settled, from the real renderer: the Scripts
+/// heading, the hook heading with its muted count, the first step's muted
+/// marker line and the first highlighted row of its body (panel 1, lines
+/// 63-66 of `pitch-nvim-out.txt`). Colour off, these four lines say nothing
+/// about the coat each span carries.
+#[test]
+fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
+    let output = pitch_show_output();
+    let (printer, buf) = Printer::for_test_with_theme_colored(
+        Theme::preset("dracula").expect("dracula is a registered preset"),
+        Verbosity::Normal,
+    );
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        &[],
+        InventoryDetail {
+            values: false,
+            scripts: ScriptsForm::Full,
+        },
+        true,
+        printer.arrow(),
+        NOW,
+    ));
+    drop(printer);
+    // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
+    let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let rendered: Vec<&str> = out
+        .lines()
+        .skip_while(|l| !l.contains("Scripts"))
+        .take(4)
+        .collect();
+    assert_eq!(rendered, PITCH_SCRIPTS_LINES, "the approved bytes: {out:?}");
+}
+
+/// The four lines of the approved pitch these tests pin (panel 1, lines
+/// 63-66), byte for byte less one zero-width span: the pitch's body line
+/// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
+/// styling the line's own newline. The renderer highlights each line without
+/// its terminator, so it emits no escape for a span holding no text.
+const PITCH_SCRIPTS_LINES: [&str; 4] = [
+    "\x1b[38;2;189;147;249mScripts\x1b[0m",
+    "  \x1b[38;2;255;121;198mpostApply\x1b[0m\x1b[38;2;98;114;164m (7)\x1b[0m",
+    "    \x1b[38;2;98;114;164m1/7 \u{b7} timeout 120s \u{b7} continueOnError\x1b[0m",
+    "    \x1b[38;2;255;121;198mif\x1b[38;2;248;248;242m \x1b[38;2;139;233;253mcommand\x1b[38;2;248;248;242m \x1b[38;2;255;184;108m-\x1b[38;2;255;184;108mv\x1b[38;2;248;248;242m pipx \x1b[38;2;255;121;198m>\x1b[38;2;248;248;242m/dev/null \x1b[38;2;189;147;249m2\x1b[38;2;255;121;198m>&\x1b[38;2;189;147;249m1\x1b[38;2;255;121;198m;\x1b[38;2;248;248;242m \x1b[38;2;255;121;198mthen\x1b[0m",
+];
+
+/// The module the pitch was captured from, as far as those four lines reach:
+/// one `postApply` hook of seven steps whose first declares `timeout: 120s`
+/// and `continueOnError`. The six steps after it carry the count the hook
+/// heading states.
+fn pitch_show_output() -> ModuleShowOutput {
+    let mut output = happy_show_output();
+    let mut post_apply = vec![ScriptEntry::Full(ScriptCommand {
+        run: "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim 2>&1 | tail -5 || true\nfi".into(),
+        timeout: Some("120s".into()),
+        idle_timeout: None,
+        continue_on_error: Some(true),
+        ..ScriptCommand::default()
+    })];
+    post_apply.extend((2..=7).map(|n| ScriptEntry::Simple(format!("echo step {n}"))));
+    output.spec.scripts = Some(ScriptSpec {
+        post_apply,
+        ..Default::default()
+    });
+    output
 }
 
 #[test]
@@ -273,7 +413,10 @@ fn module_show_happy_human() {
         &output,
         Some(&lock),
         &pkgs,
-        false,
+        InventoryDetail {
+            values: false,
+            scripts: ScriptsForm::Condensed,
+        },
         true,
         printer.arrow(),
         NOW,
@@ -292,7 +435,10 @@ fn module_show_happy_json() {
         &output,
         Some(&lock),
         &pkgs,
-        false,
+        InventoryDetail {
+            values: false,
+            scripts: ScriptsForm::Condensed,
+        },
         true,
         printer.arrow(),
         NOW,

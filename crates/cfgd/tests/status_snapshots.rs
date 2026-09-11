@@ -31,8 +31,8 @@ use cfgd::cli::status::{
     build_module_status_not_found_doc,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
-use cfgd_core::modules::{HookScripts, ModuleSurfaces};
-use cfgd_core::output::Printer;
+use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
+use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
 };
@@ -249,6 +249,22 @@ fn drift_output() -> StatusOutput {
 /// hooks, declared out of run order on purpose: the Scripts row and the wide
 /// Scripts section both report `preApply` before `postApply` because that is
 /// the order they run in, never the order they were written.
+/// One declared script step for the fixtures below: the body plus whichever
+/// knobs the step sets, which is what the full Scripts form states above it.
+fn declared_step(
+    body: &str,
+    timeout: Option<&str>,
+    idle_timeout: Option<&str>,
+    continue_on_error: bool,
+) -> DeclaredScript {
+    DeclaredScript {
+        body: body.into(),
+        timeout: timeout.map(Into::into),
+        idle_timeout: idle_timeout.map(Into::into),
+        continue_on_error,
+    }
+}
+
 fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
     ModuleSurfaces {
         packages,
@@ -273,13 +289,25 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
         scripts: vec![
             HookScripts {
                 hook: "preApply",
-                bodies: vec!["set -euo pipefail\nmkdir -p ~/.config/nvim".into()],
+                // A bare-string step: it declares no knob, so its marker
+                // states its position alone.
+                steps: vec![declared_step(
+                    "set -euo pipefail\nmkdir -p ~/.config/nvim",
+                    None,
+                    None,
+                    false,
+                )],
             },
             HookScripts {
                 hook: "postApply",
-                bodies: vec![
-                    "nvim --headless '+Lazy! sync' +qa".into(),
-                    "echo done".into(),
+                steps: vec![
+                    declared_step(
+                        "nvim --headless '+Lazy! sync' +qa",
+                        Some("900s"),
+                        Some("30s"),
+                        true,
+                    ),
+                    declared_step("echo done", Some("120s"), None, false),
                 ],
             },
         ],
@@ -657,21 +685,110 @@ fn status_per_module_clean_human() {
 fn status_per_module_wide_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: false },
+        ModuleStatusView::Inventory {
+            show_values: false,
+            scripts: ScriptsForm::Condensed,
+        },
         "status/per_module_wide.txt",
     );
 }
 
 /// `--show-values`: the same inventories with the declared value beside each
-/// name and each script's whole body in place of its condensed label.
+/// name. The Scripts rows stay condensed — env values are what the flag names.
 #[test]
 fn status_per_module_show_values_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: true },
+        ModuleStatusView::Inventory {
+            show_values: true,
+            scripts: ScriptsForm::Condensed,
+        },
         "status/per_module_show_values.txt",
     );
 }
+
+/// `--show-scripts`: each step states its position and the knobs it declares,
+/// then its whole body. Env values stay masked — scripts are what the flag
+/// names.
+#[test]
+fn status_per_module_show_scripts_human() {
+    emit_module(
+        &per_module_scanned_output(),
+        ModuleStatusView::Inventory {
+            show_values: false,
+            scripts: ScriptsForm::Full,
+        },
+        "status/per_module_show_scripts.txt",
+    );
+}
+
+/// `--show-all`: both halves of the pair at once.
+#[test]
+fn status_per_module_show_all_human() {
+    emit_module(
+        &per_module_scanned_output(),
+        ModuleStatusView::Inventory {
+            show_values: true,
+            scripts: ScriptsForm::Full,
+        },
+        "status/per_module_show_all.txt",
+    );
+}
+
+/// The bytes the approved pitch settled, from the real renderer, on the verb
+/// the pitch captured them from second: the Scripts heading, the hook heading
+/// with its muted count, the first step's muted marker line and the first
+/// highlighted row of its body (panel 2, which repeats panel 1's Scripts
+/// section). `cfgd module show` pins the same four lines, so the two verbs
+/// cannot render one module's scripts as two different shapes.
+#[test]
+fn status_per_module_show_scripts_renders_the_approved_dracula_bytes() {
+    let mut output = per_module_scanned_output();
+    output.declared.scripts = vec![HookScripts {
+        hook: "postApply",
+        steps: std::iter::once(declared_step(
+            "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim 2>&1 | tail -5 || true\nfi",
+            Some("120s"),
+            None,
+            true,
+        ))
+        .chain((2..=7).map(|n| declared_step(&format!("echo step {n}"), None, None, false)))
+        .collect(),
+    }];
+    let (printer, buf) = Printer::for_test_with_theme_colored(
+        Theme::preset("dracula").expect("dracula is a registered preset"),
+        Verbosity::Normal,
+    );
+    printer.emit(build_module_status_doc(
+        &output,
+        ModuleStatusView::Inventory {
+            show_values: false,
+            scripts: ScriptsForm::Full,
+        },
+        NOW,
+    ));
+    drop(printer);
+    // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
+    let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let rendered: Vec<&str> = out
+        .lines()
+        .skip_while(|l| !l.contains("Scripts"))
+        .take(4)
+        .collect();
+    assert_eq!(rendered, PITCH_SCRIPTS_LINES, "the approved bytes: {out:?}");
+}
+
+/// The four lines of the approved pitch these tests pin (panel 1, lines
+/// 63-66), byte for byte less one zero-width span: the pitch's body line
+/// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
+/// styling the line's own newline. The renderer highlights each line without
+/// its terminator, so it emits no escape for a span holding no text.
+const PITCH_SCRIPTS_LINES: [&str; 4] = [
+    "\x1b[38;2;189;147;249mScripts\x1b[0m",
+    "  \x1b[38;2;255;121;198mpostApply\x1b[0m\x1b[38;2;98;114;164m (7)\x1b[0m",
+    "    \x1b[38;2;98;114;164m1/7 \u{b7} timeout 120s \u{b7} continueOnError\x1b[0m",
+    "    \x1b[38;2;255;121;198mif\x1b[38;2;248;248;242m \x1b[38;2;139;233;253mcommand\x1b[38;2;248;248;242m \x1b[38;2;255;184;108m-\x1b[38;2;255;184;108mv\x1b[38;2;248;248;242m pipx \x1b[38;2;255;121;198m>\x1b[38;2;248;248;242m/dev/null \x1b[38;2;189;147;249m2\x1b[38;2;255;121;198m>&\x1b[38;2;189;147;249m1\x1b[38;2;255;121;198m;\x1b[38;2;248;248;242m \x1b[38;2;255;121;198mthen\x1b[0m",
+];
 
 /// The human render and the `-o json` payload state the same per-file and
 /// per-package verdicts: a consumer reading `deployedFiles[].state` must not

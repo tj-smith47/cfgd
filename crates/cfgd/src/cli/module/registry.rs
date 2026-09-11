@@ -555,6 +555,9 @@ fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, bo
     let raw = body.strip_suffix('\n').unwrap_or(body).split('\n');
     let decorate = |l: &str| format!("{prefix}{}", cfgd_core::escape_control_chars(l));
     if has_second_non_empty_line(body) {
+        // script-body-ok: the operator approves these exact bytes, so every
+        // line shows escaped and unstyled; the composer's highlighting would
+        // put colour between the reader and what is about to run.
         section.code_block(raw.map(decorate));
     } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
         match role {

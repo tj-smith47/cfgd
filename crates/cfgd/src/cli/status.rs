@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{
-    Doc, KvPair, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
+    Doc, KvPair, Printer, Role, ScriptsForm, SectionBuilder, condense_script_label, renderer::Table,
 };
 
 #[derive(Serialize)]
@@ -2278,9 +2278,10 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
         // would let one report state a verdict twice.
-        ModuleStatusView::Inventory { show_values } => {
-            render_module_inventories(doc, output, show_values)
-        }
+        ModuleStatusView::Inventory {
+            show_values,
+            scripts,
+        } => render_module_inventories(doc, output, show_values, scripts),
     };
 
     // Same rule as the fleet report, same staleness gate, and it belongs to
@@ -2315,14 +2316,22 @@ pub enum ModuleStatusView {
     /// Counts, then the drift the scan found (the default).
     Compact,
     /// One row per declared item, with each one's verdict inline (`-o wide`).
-    /// `show_values` renders the declared value beside a name and a script's
-    /// whole body in place of its condensed label.
-    Inventory { show_values: bool },
+    /// `show_values` renders the declared value beside a name; `scripts` is
+    /// the form the Scripts section takes.
+    Inventory {
+        show_values: bool,
+        scripts: ScriptsForm,
+    },
 }
 
 /// The wide view's inventories: one section per declared surface, each row
 /// carrying its own verdict.
-fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool) -> Doc {
+fn render_module_inventories(
+    doc: Doc,
+    output: &ModuleStatus,
+    show_values: bool,
+    scripts: ScriptsForm,
+) -> Doc {
     let mut doc =
         doc.section_if_nonempty("Installed Packages", &output.package_state, |s, pkgs| {
             let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
@@ -2489,27 +2498,10 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
     // Execution order, never alphabetical: the order is the fact — a
     // `postApply` that runs after a `preApply` is the only thing the list says
     // about when either one happens. Nothing here is ever checked (no drift
-    // engine watches a hook body), so every row is a declaration — the hook
-    // name and its body, `command_list`'s "name — description" shape, never
-    // a `status` row borrowing a verdict no check gave it.
-    doc.section_if_nonempty("Scripts", &output.declared.scripts, |s, hooks| {
-        let pairs: Vec<(String, String)> = hooks
-            .iter()
-            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
-            .map(|(hook, body)| {
-                // The whole body under `--show-values`, line breaks intact;
-                // otherwise the condensed one-line label `hook_script_subject`
-                // used to compose into its marker.
-                let value = if show_values {
-                    body.clone()
-                } else {
-                    cfgd_core::output::condense_script_label(body)
-                };
-                (hook.to_string(), value)
-            })
-            .collect();
-        s.command_list(pairs)
-    })
+    // engine watches a hook body), so every row is a declaration, which is
+    // also why it goes through the same composer `cfgd module show` renders:
+    // one module's scripts read the same on either report.
+    cfgd_core::modules::scripts_section(doc, &output.declared.scripts, scripts)
 }
 
 /// Doc for the `cfgd status <module>` not-found path. Renders the module
@@ -2556,7 +2548,7 @@ pub(super) fn cmd_status(
     module_filter: Option<&str>,
     exit_code: bool,
     scan: bool,
-    show_values: bool,
+    detail: crate::cli::InventoryDetail,
 ) -> anyhow::Result<()> {
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
@@ -2565,11 +2557,15 @@ pub(super) fn cmd_status(
     let do_scan = exit_code || scan;
     let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
-        // `--show-values` is a request to see the declared items themselves,
-        // which only the itemized view has rows for — so it implies it rather
-        // than silently doing nothing beside the counts.
-        let view = if printer.is_wide() || show_values {
-            ModuleStatusView::Inventory { show_values }
+        // `--show-values` and `--show-scripts` are requests to see the
+        // declared items themselves, which only the itemized view has rows for
+        // — so either implies it rather than silently doing nothing beside the
+        // counts.
+        let view = if printer.is_wide() || detail.values || detail.scripts == ScriptsForm::Full {
+            ModuleStatusView::Inventory {
+                show_values: detail.values,
+                scripts: detail.scripts,
+            }
         } else {
             ModuleStatusView::Compact
         };
@@ -4322,7 +4318,18 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -4369,7 +4376,18 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -4430,14 +4448,40 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let cold = render(&|p| {
+            cmd_status(
+                &cli,
+                p,
+                None,
+                false,
+                false,
+                crate::cli::InventoryDetail {
+                    values: false,
+                    scripts: cfgd_core::output::ScriptsForm::Condensed,
+                },
+            )
+            .unwrap()
+        });
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let status = render(&|p| {
+            cmd_status(
+                &cli,
+                p,
+                None,
+                false,
+                false,
+                crate::cli::InventoryDetail {
+                    values: false,
+                    scripts: cfgd_core::output::ScriptsForm::Condensed,
+                },
+            )
+            .unwrap()
+        });
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
         // The two verbs that build a `Plan`: their header reads its module
@@ -5253,7 +5297,10 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &output,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -6065,7 +6112,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6096,7 +6154,18 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, true).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            Some("test-mod"),
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: true,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -6121,7 +6190,18 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            Some("test-mod"),
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cap.human();
@@ -6142,7 +6222,18 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false, false, false).unwrap_err();
+        let err = cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -6156,7 +6247,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6197,7 +6299,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6236,7 +6349,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6277,7 +6401,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6301,7 +6436,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6332,7 +6478,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6358,7 +6515,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6384,7 +6552,17 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false, false, false);
+        let res = cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        );
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -6397,7 +6575,17 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true, true, false);
+        let res = cmd_status(
+            &cli,
+            &printer,
+            None,
+            true,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        );
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -6424,7 +6612,18 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6507,7 +6706,18 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6534,7 +6744,18 @@ mod tests {
         // up there too — a reader healing drift needs the declared value in
         // front of them, not only the terse absence word.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &human_printer,
+            None,
+            false,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
@@ -6631,7 +6852,18 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                false,
+                scan,
+                crate::cli::InventoryDetail {
+                    values: false,
+                    scripts: cfgd_core::output::ScriptsForm::Condensed,
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             let editor_line = human
@@ -6649,7 +6881,18 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6751,7 +6994,18 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                false,
+                scan,
+                crate::cli::InventoryDetail {
+                    values: false,
+                    scripts: cfgd_core::output::ScriptsForm::Condensed,
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
@@ -6774,7 +7028,18 @@ mod tests {
             let mut cli = test_cli_for(config_path.clone(), &state_dir);
             cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
             let (printer, buf) = test_printers_json();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                false,
+                scan,
+                crate::cli::InventoryDetail {
+                    values: false,
+                    scripts: cfgd_core::output::ScriptsForm::Condensed,
+                },
+            )
+            .unwrap();
             drop(printer);
             let captured = cfgd_core::test_helpers::captured_text(&buf);
             let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6850,7 +7115,18 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), &state_dir);
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let human = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
@@ -6862,7 +7138,18 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            true,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6908,7 +7195,18 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6941,7 +7239,18 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            Some("test-mod"),
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7206,7 +7515,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7440,7 +7752,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7613,7 +7928,10 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7649,7 +7967,10 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7684,7 +8005,10 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7720,7 +8044,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -7769,7 +8096,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -8063,7 +8393,18 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8112,7 +8453,18 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8388,7 +8740,18 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            false,
+            false,
+            crate::cli::InventoryDetail {
+                values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
+        )
+        .unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8648,7 +9011,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);
@@ -8739,7 +9105,10 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: ScriptsForm::Condensed,
+            },
         )
         .unwrap();
         drop(printer);

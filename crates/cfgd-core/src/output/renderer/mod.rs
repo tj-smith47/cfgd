@@ -862,6 +862,12 @@ impl Emitting<'_> {
         self.state.top_heading_scope = false;
         let prefix = indent_prefix(depth);
         for line in lines {
+            // An indented blank row is trailing whitespace with nothing under
+            // it, the same reason `render_paragraph` leaves its own bare.
+            if line.is_empty() {
+                self.out.push(String::new());
+                continue;
+            }
             self.out.push(format!("{prefix}{line}"));
         }
         self.mark_top_level_group(TopGroup::CodeBlock);

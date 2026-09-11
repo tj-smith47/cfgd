@@ -617,8 +617,9 @@ The `-o json` payload's `status` field carries the stored token instead
 (`installed`, `error`, `not applied`).
 
 `cfgd status --module <name>` reports the declared counts and the drift a scan
-found; `-o wide` itemizes each surface instead, and `--show-values` adds the
-declared values and full script bodies (see
+found; `-o wide` itemizes each surface instead, `--show-values` adds the
+declared env values, `--show-scripts` / `-s` each script's full body, and
+`--show-all` / `-a` both (see
 [`cfgd status`](cli-reference.md#cfgd-status)).
 
 Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
@@ -751,6 +752,8 @@ A source that delivers only modules (no profiles) is valid; see [Source-Delivere
 cfgd module list                    # list modules and their status
 cfgd module show nvim               # show details: packages, files, deps, resolved managers
 cfgd module show nvim --show-values # reveal full env variable values (masked by default)
+cfgd module show nvim -s            # print each script's full body
+cfgd module show nvim -a            # both of the above
 cfgd module create my-tool          # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
 cfgd module edit nvim               # open in $EDITOR

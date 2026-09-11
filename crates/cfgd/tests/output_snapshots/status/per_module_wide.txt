@@ -19,8 +19,10 @@ Shell
     ✓ PAGER
 
 Scripts
-  preApply  — set -euo pipefail …
-  postApply — nvim --headless '+Lazy! sync' +qa
-  postApply — echo done
+  preApply (1)
+    set -euo pipefail …
+  postApply (2)
+    nvim --headless '+Lazy! sync' +qa
+    echo done
 
 → Run `cfgd apply --module dev-tools` to reconcile

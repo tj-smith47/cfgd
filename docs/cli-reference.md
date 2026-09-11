@@ -590,7 +590,9 @@ cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 cfgd status --module nvim -o wide           # itemized inventories instead of counts
-cfgd status --module nvim --show-values     # inventories with declared values (implies -o wide)
+cfgd status --module nvim --show-values     # inventories with declared env values (implies -o wide)
+cfgd status --module nvim -s               # inventories with each script's full body
+cfgd status --module nvim -a               # both: declared env values and full script bodies
 cfgd status --scan                          # live scan of this machine right now
 cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
@@ -812,20 +814,24 @@ Shell
     ✓ PAGER
 
 Scripts
-  preApply  — set -euo pipefail …
-  postApply — nvim --headless '+Lazy! sync' +qa
+  preApply (1)
+    set -euo pipefail …
+  postApply (2)
+    nvim --headless '+Lazy! sync' +qa
+    echo done
 ```
 
 Packages, files, aliases and env vars list alphabetically; scripts stay in
 execution order, because that order is the fact. No drift engine ever watches
-a hook body, so a Scripts row is always a bare declaration — name and
-condensed body, no verdict glyph — regardless of `--scan`. Aliases precede env vars
+a hook body, so a Scripts row is always a bare declaration — no verdict glyph —
+regardless of `--scan`. Aliases precede env vars
 wherever the pair is named — the counts, these inventories, `cfgd module
 show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
 and `cfgd source add` render, and `-o json`'s field order alike. `--show-values` renders the
-same inventories with each declared value (`EDITOR="nvim"`, quoted the way the
-generated env file writes it) and each script's whole body instead of its
-condensed first line, and implies `-o wide`.
+same inventories with each declared env value (`EDITOR="nvim"`, quoted the way
+the generated env file writes it), `--show-scripts` / `-s` with each script's
+whole body instead of its condensed first line, and `--show-all` / `-a` with
+both; each implies `-o wide`.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
@@ -836,8 +842,8 @@ module show` uses for it: nothing was ever going to install it, scan or no
 scan. `-o json` carries the same verdicts as `packageState[].state`
 (`installed`, `notInstalled`, `notScanned`, `platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
-is identical under every view: `-o wide` and `--show-values` change the human
-render only.
+is identical under every view: `-o wide`, `--show-values`, `--show-scripts` and
+`--show-all` change the human render only.
 
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).
@@ -1643,24 +1649,43 @@ payload's `status` field carries the stored token instead (`installed`,
 Show module details: packages, files, dependencies, resolved managers. Env variable values are masked by default (shows `***` with last 3 chars).
 
 ```sh
-cfgd module show my-tool                # env values masked
+cfgd module show my-tool                # env values masked, scripts condensed
 cfgd module show my-tool --show-values  # reveal full env values
+cfgd module show my-tool -s             # each script's full body
+cfgd module show my-tool -a             # both
 ```
 
-The `Scripts` section lists every lifecycle hook the module declares, one row
-per entry labelled with its hook, in the order the hooks run. No drift engine
-ever watches a hook body, so every row is a bare declaration — hook name,
-`" — "`, condensed body — never a verdict glyph:
+The `Scripts` section lists every lifecycle hook the module declares, in the
+order the hooks run, each heading carrying how many steps it holds and each
+step one row of its own. No drift engine ever watches a hook body, so every row
+is a bare declaration, never a verdict glyph:
 
 ```
 Scripts
-  preApply  — mkdir -p ~/.config/dev-tools
-  postApply — echo 'post-apply hook ran'
-  onDrift   — notify-send 'dev-tools drifted'
+  preApply (1)
+    mkdir -p ~/.config/dev-tools
+  postApply (2)
+    echo 'post-apply hook ran'
+    systemctl --user daemon-reload
+  onDrift (1)
+    notify-send 'dev-tools drifted'
 ```
 
-`--show-values` renders each script's whole body instead of its condensed
-first line.
+`--show-scripts` / `-s` renders each step's whole body, highlighted, under a
+line stating the step's position and the knobs it declares; `--show-all` / `-a`
+adds the full env values `--show-values` reveals:
+
+```
+Scripts
+  postApply (2)
+    1/2 · timeout 120s · continueOnError
+    if command -v pipx >/dev/null 2>&1; then
+      pipx install --force pynvim
+    fi
+
+    2/2
+    echo done
+```
 
 ### `cfgd module export <name>`
 

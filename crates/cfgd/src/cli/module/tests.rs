@@ -272,6 +272,8 @@ spec:
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
         config: config_dir.path().join("cfgd.yaml"),
         config_explicit: false,
@@ -327,6 +329,8 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
         config: dir.join("cfgd.yaml"),
         config_explicit: false,
@@ -489,7 +493,16 @@ fn rendered_list(cli: &super::Cli) -> String {
 fn rendered_show(cli: &super::Cli, name: &str) -> String {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_show(cli, &printer, name, false).unwrap();
+    cmd_module_show(
+        cli,
+        &printer,
+        name,
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
 }
@@ -634,7 +647,16 @@ fn cmd_module_show_not_found() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &printer, "ghost", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "ghost",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -656,7 +678,16 @@ fn cmd_module_show_displays_details() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "devtools", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "devtools",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -703,7 +734,16 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "local-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "local-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -729,7 +769,16 @@ fn cmd_module_show_falls_through_to_locked_modules() {
 
     // A name that is not local must still consult the full loader — proven by
     // the locked entry's own failure surfacing instead of "not found".
-    let err = cmd_module_show(&cli, &printer, "private-mod", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "private-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not a git URL"),
         "a non-local name must reach the locked-module loader, got: {err}"
@@ -749,7 +798,16 @@ fn cmd_module_show_with_available_hint() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &printer, "missing", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "missing",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap_err();
     drop(printer);
     let meta = err
         .downcast_ref::<crate::cli::CliErrorMeta>()
@@ -783,7 +841,16 @@ fn cmd_module_show_env_masking() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "secrets-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -806,7 +873,16 @@ fn cmd_module_show_env_unmasked() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "env-mod", true).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "env-mod",
+        crate::cli::InventoryDetail {
+            values: true,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -828,7 +904,16 @@ fn cmd_module_show_json_schema() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "jmod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "jmod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2197,7 +2282,16 @@ fn cmd_module_show_json_with_lockfile_entry() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "remote-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "remote-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2237,7 +2331,16 @@ fn cmd_module_show_table_with_lockfile_entry() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "locked-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "locked-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2271,7 +2374,16 @@ fn cmd_module_show_aliases() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "alias-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "alias-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2301,7 +2413,16 @@ fn cmd_module_show_scripts() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "script-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "script-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2310,8 +2431,12 @@ fn cmd_module_show_scripts() {
         "should have a scripts section, got: {output}"
     );
     assert!(
-        output.contains("postApply — echo setup"),
-        "each row names the hook it runs under, got: {output}"
+        output.contains("postApply (2)"),
+        "the hook heads its steps and states how many it holds, got: {output}"
+    );
+    assert!(
+        output.contains("echo setup"),
+        "each step is a row of its own, got: {output}"
     );
     assert!(
         output.contains("make install"),
@@ -2331,7 +2456,16 @@ fn cmd_module_show_files_with_git_source() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "git-file-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "git-file-mod",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3756,7 +3890,16 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "rich", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "rich",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -4165,7 +4308,16 @@ fn cmd_module_show_json_depends() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "dep-show", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "dep-show",
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7592,11 +7744,17 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         ),
         (
             "cfgd status <module> -o wide",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: false },
+            crate::cli::status::ModuleStatusView::Inventory {
+                show_values: false,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
         ),
         (
             "cfgd status <module> --show-values",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: true },
+            crate::cli::status::ModuleStatusView::Inventory {
+                show_values: true,
+                scripts: cfgd_core::output::ScriptsForm::Condensed,
+            },
         ),
     ] {
         let (printer, buf) =
@@ -7625,7 +7783,10 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         &show,
         None,
         &[],
-        false,
+        crate::cli::InventoryDetail {
+            values: false,
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
         true,
         "->",
         now,
