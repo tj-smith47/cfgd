@@ -1271,9 +1271,9 @@ fn recorded_row_method(
 /// drops the verb; asking it a second way here is how a table and a tree came
 /// to disagree about which group owns `~/.bashrc`.
 ///
-/// Everything else in this branch — a package, a managed file, a profile
-/// script, a system setting, a secret — is work a user document declared,
-/// which is the profile's.
+/// Everything else in this branch (a package, a managed file, a profile script,
+/// a system setting, a secret) is work a user document declared, which is the
+/// profile's.
 fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
     if r.resource_type != ENV_RESOURCE_TYPE {
         return profile_owner.to_string();

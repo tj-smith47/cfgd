@@ -236,21 +236,26 @@ single-source-of-truth wiring.
 - Outside e2e.yml, the layering rides `./.github/actions/setup-rust` (toolchain +
   sccache + rust-cache + protoc + go-task, each gated by an input), which every
   compiling ci.yml job uses; `msrv` layers by hand because it installs a pinned
-  older toolchain. `fmt` passes `cache: 'false'` (it only runs `cargo fmt`), the
+  older toolchain. `fmt` passes `cache: 'false'`, so it gets no sccache either,
+  and that is correct: rustfmt parses the sources itself and never invokes
+  rustc, so the workflow-level `RUSTC_WRAPPER` is never spawned for it. The
   `snapshot` job compiles nothing and runs no `cargo` step, and `test-freebsd`
-  builds inside a vmactions guest a runner-side cache cannot reach. The
-  `audit` and `cargo-audit` jobs compile nothing either, yet each installs
+  builds inside a vmactions guest a runner-side cache cannot reach. The `audit`
+  and `cargo-audit` jobs compile nothing either, yet each installs
   `mozilla-actions/sccache-action` on its own and no `rust-cache`: the
   workflow-level `RUSTC_WRAPPER: sccache` applies to every job, so a cargo
   subcommand that only reads metadata still cannot start without the wrapper
   binary on PATH (`task audit`'s `cargo tree -p cfgd-csi` failed exactly that
-  way in run 34556958882). A new job that runs any `cargo` subcommand with no
-  sccache on PATH installs it the same way, and that covers two shapes: a job
-  with no `setup-rust` step at all, and one passing `cache: 'false'`, which
-  skips the action's own sccache step. release.yml,
-  nightly.yml, determinism-shards.yml and the two publish workflows run no `cargo`
-  step at all — anodizer-action owns those builds, and a determinism rebuild must
-  start from a clean `target/` by definition.
+  way in run 34556958882). The question a new job answers is whether sccache is
+  on PATH at all, and two shapes answer no: a job with no `setup-rust` step,
+  and a job passing `cache: 'false'`, which skips the action's own sccache
+  step. Either one installs sccache itself the moment it runs a cargo
+  subcommand that resolves dependencies or compiles (`cargo tree`, `cargo
+  audit`, any build or test run). `cargo fmt` on its own is the one exemption,
+  for the rustfmt reason above. release.yml, nightly.yml,
+  determinism-shards.yml and the two publish workflows run no `cargo` step at
+  all: anodizer-action owns those builds, and a determinism rebuild must start
+  from a clean `target/` by definition.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after
