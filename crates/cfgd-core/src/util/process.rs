@@ -58,20 +58,23 @@ const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_mil
 /// that same file in this thread fails for as long as the descriptor lives
 /// (`ETXTBSY`). Cargo's own process builder retries for this reason. Every other
 /// error comes straight back, unretried.
+///
+/// The spawn count travels beside the outcome so a test can state that the
+/// ladder really ran, a claim the spawned child alone cannot support.
 fn spawn_past_a_busy_program_file(
     cmd: &mut std::process::Command,
-) -> std::io::Result<std::process::Child> {
+) -> (std::io::Result<std::process::Child>, u32) {
     let mut wait = BUSY_PROGRAM_FIRST_WAIT;
-    for _ in 1..BUSY_PROGRAM_ATTEMPTS {
+    for attempt in 1..BUSY_PROGRAM_ATTEMPTS {
         match cmd.spawn() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 std::thread::sleep(wait);
                 wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
             }
-            outcome => return outcome,
+            outcome => return (outcome, attempt),
         }
     }
-    cmd.spawn()
+    (cmd.spawn(), BUSY_PROGRAM_ATTEMPTS)
 }
 
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
@@ -114,7 +117,8 @@ pub fn command_output_with_timeout_outcome(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = spawn_past_a_busy_program_file(cmd)?;
+    let (spawned, _attempts) = spawn_past_a_busy_program_file(cmd);
+    let mut child = spawned?;
     let id = child.id();
 
     let abandoned = Arc::new(AtomicBool::new(false));
@@ -1591,14 +1595,14 @@ mod tests {
     }
 
     // A writable descriptor on the program file is what makes the exec fail
-    // with ETXTBSY, so the probe holds one open to prove the refusal is real
-    // before the ladder is given a chance to wait it out.
+    // with ETXTBSY, so the probe holds one open to prove the refusal is real,
+    // and the attempt count is what says the ladder waited it out.
     #[cfg(unix)]
     #[test]
     fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
         let tmp = tempfile::TempDir::new().unwrap();
         let program = tmp.path().join("busy");
-        std::fs::write(&program, "#!/bin/sh\necho ran\n").unwrap();
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
         crate::set_file_permissions(&program, 0o755).unwrap();
         let writer = std::fs::OpenOptions::new()
             .write(true)
@@ -1618,12 +1622,19 @@ mod tests {
             drop(writer);
         });
         let mut cmd = std::process::Command::new(&program);
-        let outcome =
-            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_secs(5))
-                .expect("the ladder must wait the writer out");
+        let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
+        let status = spawned
+            .expect("the ladder must wait the writer out")
+            .wait()
+            .unwrap();
         releasing.join().unwrap();
 
-        assert_eq!(stdout_lossy_trimmed(&outcome.output), "ran");
+        assert!(status.success());
+        assert!(
+            attempts >= 2,
+            "the first spawn was refused, so the child came from a retry; \
+             {attempts} attempt(s) means the ladder was never exercised"
+        );
     }
 
     /// The separator is the platform's, so the assertions build their
