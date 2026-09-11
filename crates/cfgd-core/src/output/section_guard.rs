@@ -193,6 +193,29 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// The script steps one lifecycle hook declares, nested at this section's
+    /// depth (see [`Component::ScriptSteps`]). The `Doc` counterpart of the
+    /// same slot, for a Printer-driven surface that renders its tree as it
+    /// goes; reach it through `cfgd_core::modules::scripts_section` or its
+    /// guard-shaped twin, which are the one composer that builds the steps.
+    ///
+    /// [`Component::ScriptSteps`]: crate::output::Component::ScriptSteps
+    pub fn script_steps(
+        &self,
+        steps: impl IntoIterator<Item = super::ScriptStep>,
+        form: super::ScriptsForm,
+    ) -> &Self {
+        let steps: Vec<super::ScriptStep> = steps.into_iter().collect();
+        self.renderer.render_script_steps(
+            self.sink.as_ref(),
+            self.depth,
+            &steps,
+            form,
+            &self.printer.syntax_set,
+        );
+        self
+    }
+
     /// Set the empty-state placeholder for this section (overrides the default
     /// "(none)"). Only meaningful for sections opened with `section()` (not
     /// `section_or_collapse()`).

@@ -1776,6 +1776,10 @@ cfgd module upgrade tmux --yes               # skip confirmation
 cfgd module upgrade tmux --allow-unsigned    # allow unsigned modules
 ```
 
+The confirmation screen lists the spec changes, each one in full: a changed or
+added post-apply script shows every line of its body, so you approve the exact
+text that will run.
+
 ### `cfgd module search <query>`
 
 Search configured registries for modules matching a query.

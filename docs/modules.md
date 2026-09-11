@@ -788,6 +788,27 @@ cfgd profile update --module community/tmux@tmux/v2.0   # registry module, pinne
 cfgd profile update --module https://github.com/jane/cfgd-tmux@v2.0   # git URL
 ```
 
+Before the prompt, cfgd prints what it is about to add: the commit and integrity hash, then the packages, files, aliases and environment variables the module declares. A module declaring post-apply scripts gets a warning row counting them, the hook name, and every step in full, in the same form `cfgd module show --show-scripts` uses: a line stating the step's position and the knobs it declares, then the body itself, highlighted.
+
+```
+module:nvim
+  Commit     c0ffee
+  Integrity  sha256:dec0
+  ⚠ Post-apply scripts (2) — these will execute on your machine:
+  postApply
+    1/2 · timeout 120s · continueOnError
+    set -eu
+    if ! command -v jq >/dev/null; then
+      echo "jq missing" >&2
+      exit 1
+    fi
+
+    2/2
+    jq --version\x0d
+```
+
+Nothing is shortened or re-indented, and a control character in a body shows as visible text (the `\x0d` above is a carriage return), so what you read is what will run.
+
 The remote-module install prompts for confirmation before writing the lockfile. In non-interactive contexts (CI, Dockerfiles, scripts, `-o json`) pass `-y` / `--yes` (or set `CFGD_YES`) to skip the prompt, and `--allow-unsigned` to install a module without a valid signature when `requireSignatures` is enabled:
 
 ```sh

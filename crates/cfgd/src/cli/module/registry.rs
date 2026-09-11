@@ -442,10 +442,9 @@ pub fn cmd_module_upgrade(
         let changes_sec = printer.section("Changes");
         for (role, change) in &changes {
             // A diff entry embeds the unmodified body of whatever changed — a
-            // multi-line script, or an env value carrying a newline — so it
-            // goes through the same full-fidelity renderer as the add-time
-            // review rather than being condensed at the moment of approval.
-            review_entry(&changes_sec, Some(*role), "", change);
+            // multi-line script, or an env value carrying a newline — so every
+            // line of it shows, condensed at no point in the approval.
+            review_entry(&changes_sec, Some(*role), change);
         }
     }
 
@@ -500,21 +499,24 @@ pub fn cmd_module_upgrade(
     Ok(())
 }
 
-/// True when `body` has a second non-empty logical line — the shared gate
-/// for rendering a review-surface entry (an upgrade diff line, a post-apply
-/// script) as a multi-line `code_block()` instead of a single `bullet()`.
+/// True when `body` has a second non-empty logical line — the gate for
+/// rendering a review entry (an upgrade diff line, an alias command, an env
+/// value) as a multi-line `code_block()` instead of a single `bullet()`.
 /// Deciding on LINE COUNT alone (rather than raw `contains('\n')`) is
-/// necessary because a `run: |` YAML block-scalar's trailing newline
-/// survives `run_str()` even for a single logical line of script — a raw
-/// `contains('\n')` check would flip that single line into a code block in
-/// one review surface while `bullet()`-rendering it in the other.
+/// necessary because a `run: |` YAML block-scalar's trailing newline survives
+/// `run_str()` even for a single logical line of script, and a diff entry
+/// embeds that body verbatim — a raw `contains('\n')` check would flip such a
+/// single line into a code block while `bullet()`-rendering the identical body
+/// elsewhere.
 pub(super) fn has_second_non_empty_line(body: &str) -> bool {
     let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
     non_empty.next();
     non_empty.next().is_some()
 }
 
-/// Render one review-surface entry in full, each line carrying `prefix`.
+/// Render one review entry in full: an alias command, an env value, or one
+/// line of an upgrade diff. A module's declared hooks reach the screen through
+/// `cfgd_core::modules::post_apply_scripts_section` instead.
 ///
 /// `bullet()` cannot carry a body containing `\n` (the `write_line`
 /// debug_assert), and this is the pre-install security review of a remote
@@ -547,22 +549,19 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 /// multi-line body always renders as a `code_block`, which carries no
 /// per-line icon — the caller spells "added"/"removed" into that body's own
 /// label instead of relying on `role` to convey it there.
-fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, body: &str) {
+fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, body: &str) {
     // Split by hand rather than with `lines()`, which silently drops a `\r`
     // sitting before a `\n` — on a surface whose contract is "this is exactly
     // what will be written", a byte may not disappear just because it happens
     // to be invisible in that position.
     let raw = body.strip_suffix('\n').unwrap_or(body).split('\n');
-    let decorate = |l: &str| format!("{prefix}{}", cfgd_core::escape_control_chars(l));
     if has_second_non_empty_line(body) {
-        // script-body-ok: the operator approves these exact bytes, so every
-        // line shows escaped and unstyled; the composer's highlighting would
-        // put colour between the reader and what is about to run.
-        section.code_block(raw.map(decorate));
+        section.code_block(raw.map(cfgd_core::escape_control_chars));
     } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
+        let line = cfgd_core::escape_control_chars(line);
         match role {
-            Some(role) => section.status_simple(role, decorate(line)),
-            None => section.bullet(decorate(line)),
+            Some(role) => section.status_simple(role, line),
+            None => section.bullet(line),
         };
     }
 }
@@ -647,7 +646,6 @@ pub(super) fn print_module_review_summary(
             review_entry(
                 &alias_sec,
                 None,
-                "",
                 &format!("{}={}", alias.name, alias.command),
             );
         }
@@ -656,7 +654,7 @@ pub(super) fn print_module_review_summary(
     if !module.spec.env.is_empty() {
         let env_sec = mod_sec.section("Environment");
         for ev in &module.spec.env {
-            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
+            review_entry(&env_sec, None, &format!("{}={}", ev.name, ev.value));
         }
     }
 
@@ -669,17 +667,12 @@ pub(super) fn print_module_review_summary(
                 format!("Post-apply scripts ({})", scripts.post_apply.len()),
             )
             .detail("these will execute on your machine:");
-        let scripts_sec = mod_sec.section("Post-apply");
-        for script in &scripts.post_apply {
-            let body = script.run_str();
-            if body.trim().is_empty() {
-                // The count in the warning above already promised this entry,
-                // so rendering nothing would leave it unaccounted for.
-                scripts_sec.bullet("(empty script)");
-            } else {
-                review_entry(&scripts_sec, None, "$ ", body);
-            }
-        }
+        // The same render `cfgd module show --scripts` gives these steps: the
+        // hook heading, each step's knobs, then its whole body highlighted. A
+        // reader who inspected the module before approving it sees one shape,
+        // and the composer escapes every body for this screen's sake, so the
+        // bytes on it are the bytes that will run.
+        cfgd_core::modules::post_apply_scripts_section(&mod_sec, scripts);
     }
 }
 

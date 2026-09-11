@@ -1,7 +1,7 @@
 //! What a module DECLARES, tallied once per report.
 
-use crate::config::{EnvVar, ModuleSpec, ScriptEntry, ShellAlias};
-use crate::output::{Doc, ScriptStep, ScriptsForm};
+use crate::config::{EnvVar, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias};
+use crate::output::{Doc, ScriptStep, ScriptsForm, SectionGuard};
 
 /// One lifecycle hook and the script steps declared under it.
 #[derive(Debug, Clone)]
@@ -94,30 +94,79 @@ pub fn scripts_section(doc: Doc, scripts: &[HookScripts], form: ScriptsForm) -> 
     }
     doc.section(SCRIPTS_SECTION, |section| {
         scripts.iter().fold(section, |section, hook| {
-            let total = hook.steps.len();
             section.subsection(hook.hook, |sub| {
-                sub.script_steps(
-                    hook.steps.iter().enumerate().map(|(index, step)| {
-                        let body = match form {
-                            ScriptsForm::Full => step.body.clone(),
-                            ScriptsForm::Condensed => {
-                                crate::output::condense_script_label(&step.body)
-                            }
-                        };
-                        ScriptStep {
-                            marker: match form {
-                                ScriptsForm::Full => Some(step.marker(index + 1, total)),
-                                ScriptsForm::Condensed => None,
-                            },
-                            body,
-                        }
-                    }),
-                    form,
-                )
+                sub.script_steps(hook_steps(hook, form), form)
             })
         })
     })
 }
+
+/// The step rows one hook's entries render as — the ONE producer of them, read
+/// by both shapes of the Scripts render, so a surface holding a `SectionGuard`
+/// and one building a [`Doc`] cannot word a marker or cut a body differently.
+///
+/// A full body is escaped here rather than left to the renderer's own per-line
+/// escaping: the renderer splits on `\n`, which drops a `\r` sitting in front
+/// of one, and the module-approval screen this feeds promises the operator the
+/// exact bytes that will run. Escaped first, the `\r` is already the visible
+/// text `\x0d` and nothing can swallow it. The renderer's escaping then finds
+/// no control character left to act on, so the two agree. A condensed body is
+/// cut to a one-line label whose budget is counted in columns, so it keeps the
+/// renderer's escaping and is not widened here.
+fn hook_steps(hook: &HookScripts, form: ScriptsForm) -> Vec<ScriptStep> {
+    let total = hook.steps.len();
+    hook.steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| match form {
+            ScriptsForm::Full => ScriptStep {
+                marker: Some(step.marker(index + 1, total)),
+                body: crate::escape_control_chars_except_newline(&step.body),
+            },
+            ScriptsForm::Condensed => ScriptStep {
+                marker: None,
+                body: crate::output::condense_script_label(&step.body),
+            },
+        })
+        .collect()
+}
+
+/// The post-apply steps a module declares, in the full form, under a section a
+/// Printer-driven surface has already opened: the pre-install review of a
+/// remote module, where an operator approves what an apply will run on their
+/// machine.
+///
+/// The same hook heading and the same marker-then-body steps
+/// [`scripts_section`] renders, through the one step producer both read, so the
+/// screen a module is approved on and the one it is inspected on cannot show
+/// one body two ways. No `Scripts` heading above the hook: the caller's own
+/// warning row already says what follows and how much of it.
+///
+/// Renders nothing when the module declares no post-apply step. The hook name
+/// comes from [`ScriptSpec::hooks`], so it is spelled the way the YAML spells
+/// it and in one place.
+pub fn post_apply_scripts_section(section: &SectionGuard<'_>, scripts: &ScriptSpec) {
+    let Some((name, entries)) = scripts
+        .hooks()
+        .into_iter()
+        .find(|(name, entries)| *name == POST_APPLY_HOOK && !entries.is_empty())
+    else {
+        return;
+    };
+    let hook = HookScripts {
+        hook: name,
+        steps: entries.iter().map(DeclaredScript::of).collect(),
+    };
+    let sub = section.section(hook.hook);
+    sub.script_steps(hook_steps(&hook, ScriptsForm::Full), ScriptsForm::Full);
+}
+
+/// The hook whose steps the module-approval screen reviews, as
+/// [`ScriptSpec::hooks`] names it. A spelling that stopped matching would
+/// render an approval screen with no bodies on it, which
+/// `a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_composer`
+/// is what refuses.
+const POST_APPLY_HOOK: &str = "postApply";
 
 /// The declared surfaces of one module: the counts a summary line reports and
 /// the items an inventory lists.

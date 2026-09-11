@@ -44,6 +44,7 @@ pub use resolve::{
     resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
+pub use surfaces::post_apply_scripts_section;
 pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section};
 
 // ---------------------------------------------------------------------------

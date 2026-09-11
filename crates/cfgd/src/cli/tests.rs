@@ -37444,12 +37444,13 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         ("cfgd/src/cli/log.rs", "entry_sec.code_block(", false),
         // The YAML `cfgd generate` wrote.
         ("cfgd/src/cli/generate/mod.rs", "&req.content", false),
-        // The pre-install review of a remote module, whose entries include its
-        // post-apply scripts.
+        // The pre-install review of a remote module: an alias command, an env
+        // value, or one line of an upgrade diff. The module's declared hooks
+        // render through the composer's `post_apply_scripts_section`.
         (
             "cfgd/src/cli/module/registry.rs",
             "section.code_block(",
-            true,
+            false,
         ),
         // A managed file's rendered content, and the result of patching it.
         ("cfgd/src/files/plan.rs", "&rendered_content", false),
