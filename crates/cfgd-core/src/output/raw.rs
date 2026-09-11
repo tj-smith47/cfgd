@@ -36,6 +36,11 @@ use crate::escape_control_chars;
 
 use super::renderer::{Renderer, Writer};
 
+// style-gate-ok: syntect writes its own foreground runs, which the gate never
+// wrote and so cannot close; this is the reset that closes them, appended only
+// under `render_syntax_highlight`'s colour check.
+const SYNTECT_RESET: &str = "\x1b[0m";
+
 impl Renderer {
     /// Render a unified diff using `theme.diff_*` styles. Lines starting with
     /// `+` are themed diff_add, `-` themed diff_remove, others diff_context.
@@ -80,6 +85,10 @@ impl Renderer {
     /// unescaped line hands its control bytes straight to the terminal
     /// between syntect's own SGR runs. `str::lines` already drops the return
     /// of a CRLF, so only a LONE return is left to escape.
+    ///
+    /// The palette is the printer's own theme (`Theme::syntect_theme`), so a
+    /// `--theme dracula` run highlights in Dracula rather than in a syntect
+    /// default nothing else on the screen is drawn in.
     pub fn render_syntax_highlight(
         &self,
         w: &dyn Writer,
@@ -87,13 +96,12 @@ impl Renderer {
         code: &str,
         lang: &str,
         syntax_set: &SyntaxSet,
-        theme_set: &syntect::highlighting::ThemeSet,
     ) {
-        // syntect emits truecolor escapes of its own, from its own theme —
-        // nothing about this path passes through `Theme`, so a colour decision
-        // enforced only at style lookup does not reach it, and `cfgd diff
-        // --no-color` / `NO_COLOR=1` still wrote escapes into the reader's
-        // pipe. Same fallback as the missing-theme arm below.
+        // syntect writes its truecolor escapes itself, without passing through
+        // `ThemedStyle::apply_to`, so a colour decision enforced only at style
+        // lookup does not reach it and `cfgd diff --no-color` / `NO_COLOR=1`
+        // still wrote escapes into the reader's pipe. Same fallback as the
+        // no-syntect-theme arm below.
         if !self.theme.colors() {
             let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
             self.emit_raw_block(w, depth, &plain);
@@ -103,12 +111,9 @@ impl Renderer {
             .find_syntax_by_token(lang)
             .or_else(|| syntax_set.find_syntax_by_extension(lang))
             .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
-        let Some(theme) = theme_set
-            .themes
-            .get("base16-ocean.dark")
-            .or_else(|| theme_set.themes.values().next())
-        else {
-            // No syntect themes available; emit unstyled lines.
+        let Some(theme) = self.theme.syntect_theme() else {
+            // The preset renders a body plain (`minimal`), or its asset did not
+            // parse; either way the lines still have to be shown.
             let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
             self.emit_raw_block(w, depth, &plain);
             return;
@@ -119,7 +124,12 @@ impl Renderer {
             let line = escape_control_chars(line);
             let ranges: Vec<(SynStyle, &str)> =
                 h.highlight_line(&line, syntax_set).unwrap_or_default();
-            lines.push(as_24_bit_terminal_escaped(&ranges, false));
+            // A line that did not close its last foreground run leaves it in
+            // force over whatever the command prints next.
+            lines.push(format!(
+                "{}{SYNTECT_RESET}",
+                as_24_bit_terminal_escaped(&ranges, false)
+            ));
         }
         // Built outside the guard: highlighting is expensive and touches no
         // render state, so the lock is taken only around the emission.
@@ -152,7 +162,6 @@ impl super::Printer {
             code,
             lang,
             &self.syntax_set,
-            &self.theme_set,
         );
     }
 
@@ -275,8 +284,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         let ss = SyntaxSet::load_defaults_newlines();
-        let ts = syntect::highlighting::ThemeSet::load_defaults();
-        r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+        r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss);
         let out = crate::test_helpers::captured_text(&buf);
         let stripped = strip_ansi(&out);
         assert!(
@@ -295,13 +303,12 @@ mod tests {
     #[test]
     fn syntax_highlight_spends_no_colour_when_the_printer_has_none() {
         let ss = SyntaxSet::load_defaults_newlines();
-        let ts = syntect::highlighting::ThemeSet::load_defaults();
 
         let render = |colors: bool| {
             let buf = Arc::new(Mutex::new(String::new()));
             let sink = StringSink(buf.clone());
             let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
-            r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+            r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss);
             // raw-capture-ok: asserting on the presence/absence of raw ANSI escapes themselves — captured_text would strip them
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
@@ -335,14 +342,12 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default().with_colors(true), Verbosity::Normal);
         let ss = SyntaxSet::load_defaults_newlines();
-        let ts = syntect::highlighting::ThemeSet::load_defaults();
         r.render_syntax_highlight(
             &sink,
             0,
             "packages: [ripgrep]\r\u{1b}[2Krepainted\n",
             "yaml",
             &ss,
-            &ts,
         );
         // raw-capture-ok: the claim is about which escapes survive, and captured_text strips exactly what this test looks for
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -360,6 +365,42 @@ mod tests {
             "syntect emitted no styling, so the assertion above proves \
              nothing about the highlighted arm: {out:?}"
         );
+    }
+
+    /// The approved Dracula bytes for a script body, to the escape.
+    ///
+    /// The palette is the preset's, not a syntect default, and each line closes
+    /// on a reset: without one the last foreground run of a body stays in force
+    /// over whatever the command prints next. The expected line is the third
+    /// line of the approved render, carrying the state the two lines above it
+    /// left the highlighter in.
+    #[test]
+    fn a_script_body_under_dracula_renders_the_approved_bytes() {
+        let script = "set -eu\n\
+                      if ! command -v rg >/dev/null; then\n  \
+                        echo \"ripgrep missing\" >&2\n  \
+                        exit 1\n\
+                      fi\n\
+                      rg --version | head -1\n";
+        let expected = "\u{1b}[38;2;248;248;242m  \u{1b}[38;2;139;233;253mecho\
+                        \u{1b}[38;2;248;248;242m \u{1b}[38;2;241;250;140m\"\
+                        \u{1b}[38;2;241;250;140mripgrep missing\
+                        \u{1b}[38;2;241;250;140m\"\u{1b}[38;2;248;248;242m \
+                        \u{1b}[38;2;255;121;198m>&\u{1b}[38;2;189;147;249m2\u{1b}[0m";
+
+        let dracula =
+            Theme::preset("dracula").unwrap_or_else(|| panic!("the dracula preset must exist"));
+        let (printer, buf) =
+            super::super::Printer::for_test_with_theme_colored(dracula, Verbosity::Normal);
+        printer.syntax_highlight(script, "bash");
+        // raw-capture-ok: the claim IS the escapes, which captured_text strips
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+        let echoed = out
+            .lines()
+            .nth(2)
+            .unwrap_or_else(|| panic!("the body rendered fewer than three lines: {out:?}"));
+        assert_eq!(echoed, expected);
     }
 
     #[test]

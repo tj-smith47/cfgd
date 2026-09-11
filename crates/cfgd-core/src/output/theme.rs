@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::fmt::{self, Display};
+use std::sync::OnceLock;
 
 use console::{Color, Style};
 
@@ -310,10 +312,90 @@ impl<D: Display> Display for StyledText<'_, D> {
     }
 }
 
+/// The syntect theme a preset highlights a code block with. A built-in comes
+/// from `ThemeSet::load_defaults()`; every other preset bundles the upstream
+/// `.tmTheme` under `output/tmthemes/` (see the `THIRD_PARTY.md` beside them).
+const SYNTAX_THEME_DEFAULT: &str = "base16-ocean.dark";
+const SYNTAX_THEME_BUILTINS: &[&str] = &[
+    SYNTAX_THEME_DEFAULT,
+    "Solarized (dark)",
+    "Solarized (light)",
+];
+const SYNTAX_THEME_BUNDLED: &[(&str, &str)] = &[
+    ("dracula", include_str!("tmthemes/dracula.tmTheme")),
+    ("nord", include_str!("tmthemes/nord.tmTheme")),
+    ("monokai", include_str!("tmthemes/monokai-extended.tmTheme")),
+    (
+        "gruvbox-dark",
+        include_str!("tmthemes/gruvbox-dark.tmTheme"),
+    ),
+    ("tokyo-night", include_str!("tmthemes/tokyo-night.tmTheme")),
+    ("one-dark", include_str!("tmthemes/one-dark.tmTheme")),
+    (
+        "catppuccin-mocha",
+        include_str!("tmthemes/catppuccin-mocha.tmTheme"),
+    ),
+];
+
+/// Parsing a `.tmTheme` is plist work, and a long `cfgd module show` prints
+/// several bodies, so the whole set is parsed once and borrowed from then on.
+static SYNTAX_THEMES: OnceLock<HashMap<&'static str, syntect::highlighting::Theme>> =
+    OnceLock::new();
+
+fn syntax_themes() -> &'static HashMap<&'static str, syntect::highlighting::Theme> {
+    SYNTAX_THEMES.get_or_init(|| {
+        let mut parsed = HashMap::new();
+        let mut defaults = syntect::highlighting::ThemeSet::load_defaults();
+        for name in SYNTAX_THEME_BUILTINS {
+            if let Some(theme) = defaults.themes.remove(*name) {
+                parsed.insert(*name, theme);
+            }
+        }
+        for (name, body) in SYNTAX_THEME_BUNDLED {
+            // An asset that does not parse leaves its preset with no syntect
+            // theme, which renders the body plain rather than failing the
+            // command the body was printed under.
+            if let Ok(theme) =
+                syntect::highlighting::ThemeSet::load_from_reader(&mut std::io::Cursor::new(*body))
+            {
+                parsed.insert(*name, theme);
+            }
+        }
+        parsed
+    })
+}
+
+fn preset_syntax_theme(preset: &str) -> Option<&'static str> {
+    match preset {
+        // The one preset that spends no colour of its own: a highlighted body
+        // would be the only coloured thing on its screen.
+        "minimal" => None,
+        "solarized-dark" => Some("Solarized (dark)"),
+        "solarized-light" => Some("Solarized (light)"),
+        name => SYNTAX_THEME_BUNDLED
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(key, _)| *key)
+            .or(Some(SYNTAX_THEME_DEFAULT)),
+    }
+}
+
 /// `Clone` so a printer derived from another (`Printer::at_verbosity`) inherits
 /// the theme it was actually rendering with — presets, config overrides and the
 /// colour stamp together — instead of rebuilding a preset from a name and
 /// silently dropping `spec.theme.overrides`.
+///
+/// A theme also carries the syntect theme a highlighted code block is painted
+/// with, so `Printer::syntax_highlight` paints in the preset the rest of the
+/// screen is drawn in ([`Theme::syntect_theme`]):
+///
+/// | Preset | syntect theme | Where it comes from |
+/// |---|---|---|
+/// | `default`, `adventure-time` | `base16-ocean.dark` | syntect built-in |
+/// | `solarized-dark` | `Solarized (dark)` | syntect built-in |
+/// | `solarized-light` | `Solarized (light)` | syntect built-in |
+/// | `dracula`, `nord`, `monokai`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `catppuccin-mocha` | the preset's own palette | bundled `.tmTheme` |
+/// | `minimal` | none | the body renders plain |
 #[derive(Clone)]
 pub struct Theme {
     /// Whether this theme's styles may emit colour, stamped by
@@ -328,6 +410,11 @@ pub struct Theme {
     /// `colors` is — a preset cannot be assembled with the slots and the
     /// decision disagreeing.
     hyperlinks: bool,
+    /// Which entry of the syntect registry a code block is highlighted with,
+    /// stamped by [`Theme::preset`] and read through [`Theme::syntect_theme`].
+    /// `None` renders the block plain. Private for the same reason the two
+    /// stamps above are: the choice belongs to the preset, not to a caller.
+    syntax_theme: Option<&'static str>,
 
     // Style slots (14)
     /// Style for an action subject at the deepest level of the run tree.
@@ -379,6 +466,7 @@ impl Default for Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            syntax_theme: Some(SYNTAX_THEME_DEFAULT),
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
             // the subject keeps its role style.
@@ -469,6 +557,15 @@ impl Theme {
         &self.icon_arrow
     }
 
+    /// The syntect theme a code block rendered under this theme is highlighted
+    /// with, or `None` for a preset that renders one plain (`minimal`). The ONE
+    /// answer to that question: a renderer never picks a syntect theme by name,
+    /// or a themed run highlights in somebody else's palette. See the table on
+    /// [`Theme`] for the preset mapping.
+    pub fn syntect_theme(&self) -> Option<&'static syntect::highlighting::Theme> {
+        syntax_themes().get(self.syntax_theme?)
+    }
+
     /// Every preset name [`Theme::preset`] answers, in the order `--help`
     /// lists them. The ONE list: `--theme` / `cfgd init --theme` take their
     /// clap value parser from it, so an unknown name is refused at the flag
@@ -491,7 +588,7 @@ impl Theme {
     /// The preset called `name`, or `None` for a name not in
     /// [`Theme::PRESET_NAMES`].
     pub fn preset(name: &str) -> Option<Self> {
-        Some(match name {
+        let mut theme = match name {
             "default" => Self::default(),
             "dracula" => Self::dracula(),
             "solarized-dark" => Self::solarized_dark(),
@@ -505,7 +602,11 @@ impl Theme {
             "one-dark" => Self::one_dark(),
             "minimal" => Self::minimal(),
             _ => return None,
-        })
+        };
+        // Stamped here rather than in each preset body, which all carry
+        // `..Self::default()` and would silently inherit the default's.
+        theme.syntax_theme = preset_syntax_theme(name);
+        Some(theme)
     }
 
     /// [`Theme::preset`] for a name read out of a config file, where an
@@ -888,6 +989,7 @@ impl Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            syntax_theme: None,
             // minimal spends no colour at all.
             primary: None,
             header: ThemedStyle::plain().bold(),
@@ -1126,6 +1228,35 @@ mod tests {
         // and the renderer silently ignores.
         for name in Theme::PRESET_NAMES {
             assert!(Theme::preset(name).is_some(), "{name} has no preset arm");
+        }
+    }
+
+    /// A preset whose `.tmTheme` failed to parse, or whose registry key nothing
+    /// answers, highlights a script body in plain text while the rest of the
+    /// screen is painted — so every preset either resolves a usable syntect
+    /// theme or is the one that renders a body plain on purpose.
+    #[test]
+    fn every_preset_resolves_the_syntect_theme_it_names() {
+        for name in Theme::PRESET_NAMES {
+            let Some(theme) = Theme::preset(name) else {
+                panic!("{name} has no preset arm");
+            };
+            if *name == "minimal" {
+                assert!(
+                    theme.syntect_theme().is_none(),
+                    "minimal spends no colour, so it highlights nothing"
+                );
+                continue;
+            }
+            let resolved = theme
+                .syntect_theme()
+                .unwrap_or_else(|| panic!("{name} resolved no syntect theme"));
+            // A theme that parsed but carries no scope rules paints every token
+            // the same, which is the plain render with escapes added.
+            assert!(
+                !resolved.scopes.is_empty(),
+                "{name} resolved a syntect theme with no scope rules"
+            );
         }
     }
 

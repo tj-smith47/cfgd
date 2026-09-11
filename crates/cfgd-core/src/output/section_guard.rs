@@ -189,7 +189,6 @@ impl<'p> SectionGuard<'p> {
             code,
             lang,
             &self.printer.syntax_set,
-            &self.printer.theme_set,
         );
         self
     }

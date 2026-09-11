@@ -2,7 +2,8 @@
 //! active OutputFormat, and the writers for stderr (status output) +
 //! stdout (structured/data output). Sinks: `sink_stderr` for status,
 //! `sink_stdout` for `data_line`, `multi_progress` for spinners and progress
-//! bars, `syntax_set` / `theme_set` for `syntax_highlight`. The
+//! bars, `syntax_set` for `syntax_highlight` (whose palette comes from the
+//! renderer's own `Theme`). The
 //! `test_doc_capture` and `prompt_queue` fields are populated by test
 //! helpers (gated on the `test-helpers` feature).
 
@@ -51,7 +52,6 @@ pub struct Printer {
     pub(crate) sink_stdout: Arc<dyn Writer>,
     pub(crate) multi_progress: indicatif::MultiProgress,
     pub(crate) syntax_set: syntect::parsing::SyntaxSet,
-    pub(crate) theme_set: syntect::highlighting::ThemeSet,
     /// Set under `test-helpers` when `for_test_doc` is used.
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
@@ -272,7 +272,6 @@ impl Printer {
             sink_stdout: Arc::new(Term::stdout()),
             multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
             prompt_queue: None,
             output_error: AtomicBool::new(false),
@@ -381,7 +380,6 @@ impl Printer {
             sink_stdout: self.sink_stdout.clone(),
             multi_progress: self.multi_progress.clone(),
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: self.test_doc_capture.clone(),
             prompt_queue: self.prompt_queue.clone(),
             output_error: AtomicBool::new(false),
