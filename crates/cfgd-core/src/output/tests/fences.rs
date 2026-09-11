@@ -4381,17 +4381,72 @@ const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", 
 /// a cfg flag a composite predicate may carry (`#[cfg(all(test, feature =
 /// "crd"))]`, `#[cfg(any(test, feature = "test-helpers"))]`), and an exact match
 /// against `#[cfg(test)]` read every composite one as production and dropped its
-/// file whole. A `not(` anywhere in the predicate disqualifies it, because
-/// `#[cfg(not(test))]` opens the opposite region, and `test` is matched as a
-/// whole word with `-` counted into it so `feature = "test-helpers"` — a gate the
-/// compiler honours outside a test build — is not mistaken for the flag.
+/// file whole. A `not(` WRAPPING the flag disqualifies it, because
+/// `#[cfg(not(test))]` and `#[cfg(not(any(test, …)))]` open the opposite
+/// region, while `#[cfg(all(test, not(windows)))]` negates a different flag and
+/// still opens a test region; and `test` is matched as a whole word with `-`
+/// counted into it so `feature = "test-helpers"` — a gate the compiler honours
+/// outside a test build — is not mistaken for the flag.
 fn opens_a_test_region(line: &str) -> bool {
     let attribute = line.split_once("//").map_or(line, |(code, _)| code);
     attribute.starts_with("#[cfg(")
-        && !attribute.contains("not(")
-        && attribute
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
-            .any(|word| word == "test")
+        && !negates_the_test_flag(attribute)
+        && carries_the_test_flag(attribute)
+}
+
+fn carries_the_test_flag(predicate: &str) -> bool {
+    predicate
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        .any(|word| word == "test")
+}
+
+/// Whether any `not(…)` in the predicate carries the test flag inside its own
+/// parentheses.
+fn negates_the_test_flag(predicate: &str) -> bool {
+    let mut rest = predicate;
+    while let Some(at) = rest.find("not(") {
+        let inner = &rest[at + "not(".len()..];
+        let mut depth = 1usize;
+        let mut end = inner.len();
+        for (i, c) in inner.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if carries_the_test_flag(&inner[..end]) {
+            return true;
+        }
+        rest = &inner[end..];
+    }
+    false
+}
+
+#[test]
+fn a_negation_closes_a_test_region_only_when_it_wraps_the_flag() {
+    for opener in [
+        "#[cfg(test)]",
+        "#[cfg(all(test, feature = \"crd\"))]",
+        "#[cfg(any(test, feature = \"test-helpers\"))]",
+        "#[cfg(all(test, not(windows)))]",
+    ] {
+        assert!(opens_a_test_region(opener), "{opener} opens a test region");
+    }
+    for other in [
+        "#[cfg(not(test))]",
+        "#[cfg(not(any(test, feature = \"test-helpers\")))]",
+        "#[cfg(feature = \"test-helpers\")]",
+        "#[cfg(unix)]",
+    ] {
+        assert!(!opens_a_test_region(other), "{other} opens no test region");
+    }
 }
 
 /// A walk that cannot read a file it enumerated FAILS, rather than reading less
@@ -4490,4 +4545,139 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
          `// absent-file-ok: <why>`:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The pins whose body runs at one uid only, per suffix: floor = what the
+/// workspace holds today, `>=` so an addition never trips it and a member
+/// falling out of the walk's reach does.
+const UID_GATED_PINS: [(&str, usize); 4] = [
+    ("_as_root", 2),
+    ("_as_non_root", 14),
+    ("_as_linux_root", 3),
+    ("_as_non_linux_root", 2),
+];
+
+/// The first statement of a function body, comments dropped and whitespace
+/// collapsed, read from the line after the body's opening brace to the first
+/// line that closes the statement at depth zero. A leading `use` item executes
+/// nothing and is passed over, so a gate that follows the imports is still the
+/// first thing the body DOES.
+fn first_statement(slice: &str) -> String {
+    let body = slice.split_once('{').map_or("", |(_, rest)| rest);
+    let mut out = String::new();
+    let mut depth = 0usize;
+    let mut in_use_item = false;
+    for line in body.lines() {
+        let code = line.split(" //").next().unwrap_or("").trim();
+        if code.is_empty() || code.starts_with("//") {
+            continue;
+        }
+        if out.is_empty() && (in_use_item || code.starts_with("use ")) {
+            in_use_item = !code.ends_with(';');
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(code);
+        depth += code.matches('{').count();
+        depth = depth.saturating_sub(code.matches('}').count());
+        if depth == 0 && (code.ends_with(';') || code.ends_with('}')) {
+            break;
+        }
+    }
+    out
+}
+
+/// The suffix a uid gate demands of its pin's name, or `None` when the
+/// statement is not an empty-bodied early return on `is_root()`.
+///
+/// A leading `!` names the arm that RUNS as the privileged one; a
+/// `target_os = "linux"` in the condition narrows either arm to Linux, which is
+/// the only platform where root owns a separate Homebrew account.
+fn uid_gate_suffix(statement: &str) -> Option<&'static str> {
+    let cond = statement.strip_prefix("if ")?;
+    let (cond, block) = cond.split_once('{')?;
+    if block.trim() != "return; }" || !cond.contains("is_root()") {
+        return None;
+    }
+    let negated = cond.trim_start().starts_with('!');
+    let linux = cond.contains("target_os = \"linux\"");
+    Some(match (negated, linux) {
+        (true, false) => "_as_root",
+        (false, false) => "_as_non_root",
+        (true, true) => "_as_linux_root",
+        (false, true) => "_as_non_linux_root",
+    })
+}
+
+/// Every test that returns early on `is_root()` before asserting anything names
+/// the uid its body runs at, and every name claiming a uid opens on that gate.
+///
+/// A pin whose first statement is `if !is_root() { return; }` proves nothing
+/// off root, and its green line under an unprivileged run is indistinguishable
+/// from a pin that ran. The name is the only place a reader of the run can see
+/// which half executed, so the suffix is mechanical: `_as_root` for the
+/// privileged arm, `_as_non_root` for the unprivileged one, and the
+/// `_linux_` forms when the gate also asks `cfg!(target_os = "linux")`. A pin
+/// that asserts in BOTH arms (`if is_root() { assert A } else { assert B }`)
+/// carries no suffix, because every run executes it. The reverse direction
+/// holds too, or a suffix could outlive the gate it describes.
+#[test]
+fn every_pin_that_runs_at_one_uid_says_so_in_its_name() {
+    let mut found: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        let relative = source_label(&path);
+        let body = crate::test_helpers::walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (open, slice) in source_functions(&relative, &body) {
+            let attrs = &lines[attribute_block_start(&lines, open - 1)..open - 1];
+            let is_test = attrs.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+            });
+            if !is_test {
+                continue;
+            }
+            let name = declared_fn_name(&slice).unwrap_or("<unnamed>");
+            let at = format!("{relative}:{open}: {name}");
+            let statement = first_statement(&slice);
+            let gate = uid_gate_suffix(&statement);
+            let claimed = UID_GATED_PINS
+                .iter()
+                .map(|(suffix, _)| *suffix)
+                .find(|suffix| name.ends_with(suffix));
+            match (gate, claimed) {
+                (Some(gate), Some(claimed)) if gate == claimed => {
+                    found.entry(gate).or_default().push(at);
+                }
+                (Some(gate), _) => offenders.push(format!(
+                    "{at}: opens on `{statement}`, so its body runs only {}; the name \
+                     must end `{gate}`",
+                    gate.trim_start_matches("_as_").replace('_', " ")
+                )),
+                (None, Some(claimed)) => offenders.push(format!(
+                    "{at}: is named `{claimed}` but does not open on the uid gate that \
+                     suffix states (first statement: `{statement}`)"
+                )),
+                (None, None) => {}
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a pin that returns early on `is_root()` names the uid its body runs at, \
+         and only such a pin carries that suffix:\n{}",
+        offenders.join("\n")
+    );
+    for (suffix, floor) in UID_GATED_PINS {
+        let pins = found.get(suffix).map_or(0, Vec::len);
+        assert!(
+            pins >= floor,
+            "{pins} pins end `{suffix}`, under the floor of {floor}; a member has \
+             fallen out of the walk's reach:\n{}",
+            found.get(suffix).map(|v| v.join("\n")).unwrap_or_default()
+        );
+    }
 }

@@ -630,7 +630,7 @@ fn sudo_cmd_builds_correct_command_structure() {
 }
 
 #[test]
-fn sudo_cmd_hands_the_program_to_sudo_off_root_and_runs_it_bare_as_root() {
+fn sudo_cmd_hands_the_program_to_sudo_off_root_and_runs_it_bare_under_root() {
     let cmd = sudo_cmd("dnf");
     let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
     if cfgd_core::is_root() {

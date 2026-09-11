@@ -19059,9 +19059,9 @@ mod ipc_socket_security {
     /// runs as root and the pin proves nothing at any other uid. That is what
     /// its name carries: arms like these sharing a pin with ones that do run
     /// unprivileged report a single green line for both, and a reader of the run
-    /// cannot tell which half it executed. The accepting arm this pin used to
-    /// open on is `health_ipc`'s own
-    /// `ensure_owner_private_dir_creates_with_mode_700`, which holds at any uid.
+    /// cannot tell which half it executed. The accepting arm is `health_ipc`'s
+    /// own `ensure_owner_private_dir_creates_with_mode_700`, which holds at any
+    /// uid.
     ///
     /// The refusals name a component of the path the WALK judges, which it folds
     /// every link out of as it descends, so the fixture is rooted on

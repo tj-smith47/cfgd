@@ -1101,7 +1101,7 @@ mod brew_shim {
     /// by the linuxbrew tests below).
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_runs_bash_install_pipeline_ok() {
+    fn brew_manager_bootstrap_runs_bash_install_pipeline_ok_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
@@ -1114,7 +1114,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_propagates_bash_failure() {
+    fn brew_manager_bootstrap_propagates_bash_failure_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
