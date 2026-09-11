@@ -74,24 +74,20 @@ single-source-of-truth wiring.
   `publish-crate.yml` legs run `--skip cargo` (the exact complement). The
   Trusted-Publisher configs on crates.io therefore name `publish-oidc.yml` (the
   file that runs cargo publish), NOT `release.yml`.
-- Deferred-branch release topology (anodizer >= v0.16.0, uniform-local
-  `tag`): the tag step runs `tag --changelog --push-tags-only` (tags only —
-  the bump commit is reachable ONLY via the tags until publish completes),
-  and the `advance-master` job fast-forwards master post-publish
-  (`gh api PATCH`, `force=false`, GH_PAT). Its `if:` is the drift-proof
-  collapsed form `!cancelled() && needs.tag.result == 'success' &&
-  !contains(needs.*.result, 'failure') && !contains(needs.*.result,
-  'cancelled')` — semantically "tag succeeded AND no needed job failed or
-  was cancelled; skips allowed", with the `needs.*` sweeps automatically
-  gating any job later added to the needs list. Never weaken it to a
-  per-leg `!= 'failure'` enumeration, and keep EVERY publish leg in the
-  job's `needs:` — a leg absent from needs is invisible to the gate. A
-  failed release must advance neither master nor a release. The tag job
-  also carries a pre-tag stranded-bump guard (highest `v[0-9]*` tag must
-  be an ancestor of the release ref, else fail with the
-  `git push origin <tag-sha>:refs/heads/master` reconcile command) —
-  keep it before the anodizer tag step.
-- Preflight's bump-message guard breaks the advance-master→CI→Release
+- Atomic release topology: the tag step runs `tag --changelog --push`, which
+  pushes the bump commit and the tags to master through ONE atomic refspec
+  push, so neither an orphan tag nor a bump commit stranded off master is
+  representable; a push racing master is rejected before anything is
+  published. Never `--push-tags-only`, and never an `advance-master` job
+  (the post-publish fast-forward it did is the window the 2026-07-28 422
+  race lived in). The tag job's checkout and action step both take GH_PAT:
+  master protection grants the push bypass to the repository admin alone.
+  The pre-tag guard (highest `vX.Y.Z` release tag, prereleases excluded,
+  must be an ancestor of master, else fail with the
+  `git push origin <tag-sha>:refs/heads/master` reconcile command) stays
+  before the anodizer tag step: it now catches only a tag pushed outside
+  the workflow.
+- Preflight's bump-message guard breaks the tag-push→CI→Release
   self-retrigger loop (GH_PAT pushes DO retrigger CI — deliberately, for
   master-badge health); don't loosen it.
 - Nightly is sharded per-OS via anodizer split/merge (`partial.by: os` in

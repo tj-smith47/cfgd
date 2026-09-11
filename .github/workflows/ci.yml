@@ -289,10 +289,11 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+  # Runs on every PR so the floor blocks the change that breaches it instead
+  # of breaking master after the merge; only the master run publishes the badge.
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
     permissions:
       # publish-coverage.sh pushes the badge update to the badges branch.
       contents: write
@@ -320,7 +321,12 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
+      - name: Run coverage
+        if: github.ref != 'refs/heads/master'
+        run: task coverage:check
+
       - name: Run coverage and update badge
+        if: github.ref == 'refs/heads/master'
         run: task coverage:publish
 
       # Preserved so a floor failure can be diffed per-file against a local
@@ -354,9 +360,11 @@ jobs:
       - name: Package all crates
         run: task package
 
+  # The only job that proves .anodizer.yaml still parses and plans, so it runs
+  # on every PR as well as master: gated to master it could only fail after the
+  # merge that broke the release pipeline.
   snapshot:
     name: Snapshot (dry-run)
-    if: github.ref == 'refs/heads/master'
     needs: [test]
     runs-on: ubuntu-latest
     steps:

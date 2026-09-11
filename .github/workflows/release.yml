@@ -40,12 +40,12 @@ jobs:
   # push on a deterministic secret-presence check across every publisher.
   preflight:
     name: Preflight secrets
-    # The bump-message guard breaks a self-retrigger loop: advance-master
-    # fast-forwards master onto the bump commit with GH_PAT (PAT pushes DO
-    # trigger workflows), CI runs on it, and its success would fire a second
-    # Release run whose tag job always dies on a non-fast-forward push (tags
-    # already exist). CI itself still runs on the bump commit for
-    # master-badge health; only the spurious Release is culled.
+    # The bump-message guard breaks a self-retrigger loop: the tag job lands
+    # the bump commit on master with GH_PAT (PAT pushes DO trigger workflows),
+    # CI runs on it, and its success would fire a second Release run whose tag
+    # job always dies on a non-fast-forward push (tags already exist). CI
+    # itself still runs on the bump commit for master-badge health; only the
+    # spurious Release is culled.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -138,25 +138,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # A run cancelled (or runner lost) after the tag push but before
-      # advance-master leaves the bump commit reachable ONLY via the tags;
-      # the next release then wedges on a non-fast-forward tag push with
-      # nothing naming the cause. Detect the stranded state up front and
-      # fail with the exact reconcile command.
-      #
-      # Requiring the tag itself to be an ancestor is unsatisfiable once
-      # master protects against force-push and non-linear history: the
-      # stranded writeback can then be neither merged nor reconciled, and
-      # re-applying it (cherry-pick) yields a DIFFERENT sha that never
-      # satisfies the check. Master advancing past the tag's parent is the
-      # state that actually matters — the tag's feature commits are already
-      # present and only the mechanical writeback is missing, which the next
-      # cut regenerates at a higher version. Block only the true pre-bump
-      # stranding, where master still sits exactly at the tag's parent.
-      - name: Guard against a stranded bump commit
+      # The atomic branch+tag push makes an orphan tag unrepresentable, so a
+      # release tag that is not an ancestor of master can only come from an
+      # out-of-band tag push. Cutting forward on top of that would publish
+      # artifacts against history master does not contain, so stop and make
+      # the operator reconcile. Prerelease tags are excluded: a nightly tag
+      # names a transient build, never a branch-reachable release.
+      - name: Guard against a tag that is not on master
         run: |
           git fetch --tags --force --quiet origin
-          latest="$(git tag --list 'v[0-9]*' | sort -V | tail -n1)"
+          latest="$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
           if [ -z "$latest" ]; then
             exit 0
           fi
@@ -164,28 +155,22 @@ jobs:
           if git merge-base --is-ancestor "$sha" HEAD; then
             exit 0
           fi
-          parent="$(git rev-parse "${sha}^" 2>/dev/null || echo '')"
-          if [ -n "$parent" ] && git merge-base --is-ancestor "$parent" HEAD \
-             && [ "$(git rev-list --count "${parent}..HEAD")" -gt 0 ]; then
-            echo "::warning::release tag ${latest} bump-writeback (${sha}) is not on master: its advance-master step was skipped, but master has advanced past the tag's parent by $(git rev-list --count "${parent}..HEAD") commit(s). The tag's feature content is present and a new, higher version will be cut. Proceeding."
-            exit 0
-          fi
-          echo "::error::release tag ${latest} (${sha}) is not an ancestor of master and master has not advanced past the tag's parent: a prior run stranded the bump commit. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
+          echo "::error::release tag ${latest} (${sha}) is not an ancestor of master: it was pushed outside this workflow, so cutting a new version here would publish against history master does not contain. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
           exit 1
 
-      # Deferred-branch pattern: push only the tags now; master advances
-      # onto the bump commit in advance-master (last job), after every
-      # publish leg has succeeded — a failed release advances neither
-      # master nor publishes. Requires anodizer >= v0.16.0, where a bare
-      # `tag` is fully local in every mode and pushing is explicit
-      # (--push / --push-tags-only); under the old implicit-push default
-      # this flag does not exist and the step fails loud.
+      # --push routes through the atomic branch+tag push: the bump commit and
+      # the tags land together or not at all, so neither an orphan tag nor a
+      # bump commit stranded off master is representable. A push that races
+      # master is rejected here, before anything is published, and a re-run
+      # recomputes the version against the new master. GH_PAT because master
+      # protection grants the push bypass to the repository admin alone; a PAT
+      # push retriggers CI, which preflight's bump-message guard absorbs.
       - name: Run anodizer tag
         id: t
         uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
-          args: tag --changelog --push-tags-only
+          args: tag --changelog --push
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -194,9 +179,7 @@ jobs:
       # moved) or the original CI-validated SHA (if no bump was needed).
       # Either way, the freshly-pushed tags point at this SHA, so
       # downstream checkouts must use it instead of the workflow_run
-      # head_sha that was current at job start. Until advance-master runs,
-      # the bump commit is reachable ONLY via the tags — it is not on
-      # master yet.
+      # head_sha that was current at job start.
       - name: Capture tagged HEAD SHA
         id: post_tag
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -330,8 +313,8 @@ jobs:
           # it burns, and fails the first crate BEFORE any burn if its dist is
           # missing — so a bad shard can never strand a partial release.
           crates: ${{ needs.tag.outputs.publish_order }}
-          # The bump commit is reachable only via the tags until advance-master;
-          # publish-oidc checks out `sha` directly. dist_run_id is THIS release
+          # publish-oidc checks out `sha`, the commit the tags point at, directly.
+          # dist_run_id is THIS release
           # run, whose determinism-check uploaded the preserved dist.
           inputs: |
             sha=${{ needs.tag.outputs.head_sha }}
@@ -619,44 +602,3 @@ jobs:
           file: ecosystem/olm/bundle.Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/cfgd-operator-bundle:v${{ fromJson(needs.tag.outputs.versions)['cfgd-operator'] }}
-
-  # --- Post-publish master advance ---
-  # Fast-forward master onto the bump commit only after every publish leg
-  # has succeeded (or legitimately skipped, for a partial-workspace release
-  # whose leg had nothing to do — each leg's own `if:` encodes when a skip
-  # is legitimate, so any leg that should have run and failed shows
-  # `failure` here and blocks the advance). `tag` pushed only the tags, so
-  # a failed release leaves master untouched. force=false makes GitHub
-  # enforce the fast-forward server-side. GH_PAT rather than GITHUB_TOKEN:
-  # the PAT push retriggers CI on the new master HEAD (badge health), and
-  # preflight's bump-message guard culls the spurious second Release run.
-  # When nothing bumped, head_sha is the SHA master already points at and
-  # the PATCH is a no-op.
-  advance-master:
-    name: Advance master
-    needs: [tag, determinism-check, dispatch-oidc, publish-trio, helm-chart, crossplane-function, crossplane-push, olm-bundle]
-    # Drift-proof form of "tag succeeded AND every needed job is success or
-    # skipped": the two !contains() sweeps cover EVERY entry in needs, so a
-    # job added to the needs list is automatically gated — the per-leg
-    # success||skipped enumeration this replaces silently weakened whenever
-    # a new job joined needs without an if: clause. Semantics preserved
-    # exactly: no needed job may be failure or cancelled; skips stay legal.
-    if: >-
-      ${{ !cancelled() && needs.tag.result == 'success' &&
-          !contains(needs.*.result, 'failure') &&
-          !contains(needs.*.result, 'cancelled') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Fast-forward master onto the published bump commit
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          SHA: ${{ needs.tag.outputs.head_sha }}
-        run: |
-          if ! gh api -X PATCH "repos/${{ github.repository }}/git/refs/heads/master" \
-                 -f sha="$SHA" -F force=false; then
-            echo "::error::Could not fast-forward master to $SHA (master moved during release?). \
-              The release IS published — do NOT re-cut. Reconcile by hand: \
-              git fetch origin && git push origin $SHA:refs/heads/master"
-            exit 1
-          fi
