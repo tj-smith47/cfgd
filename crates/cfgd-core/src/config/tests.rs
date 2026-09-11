@@ -446,6 +446,42 @@ spec:
     );
 }
 
+/// A profile whose declared step has nothing to run is refused while the
+/// profile is resolved, which is the only path a machine with no
+/// `spec.sources` ever takes: composition is skipped outright there, so a
+/// refusal living only in the compose engine would let a blank step reach an
+/// apply on every solo machine.
+#[test]
+fn a_profile_script_step_with_a_blank_run_is_refused_while_the_profile_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("solo.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: solo
+spec:
+  scripts:
+    postApply:
+      - echo applied
+      - "   "
+"#,
+    )
+    .unwrap();
+
+    let err = resolve_profile("solo", dir.path())
+        .expect_err("a blank step must be refused as the profile resolves")
+        .to_string();
+    assert!(
+        err.contains("profile")
+            && err.contains("scripts.postApply[1]")
+            && err.contains("empty 'run'"),
+        "the refusal names the hook and the step it judged, got: {err}"
+    );
+}
+
 #[test]
 fn circular_inheritance_detected() {
     let dir = tempfile::tempdir().unwrap();

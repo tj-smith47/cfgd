@@ -1649,10 +1649,10 @@ payload's `status` field carries the stored token instead (`installed`,
 Show module details: packages, files, dependencies, resolved managers. Env variable values are masked by default (shows `***` with last 3 chars).
 
 ```sh
-cfgd module show my-tool                # env values masked, scripts condensed
-cfgd module show my-tool --show-values  # reveal full env values
-cfgd module show my-tool -s             # each script's full body
-cfgd module show my-tool -a             # both
+cfgd module show my-tool                 # env values masked, scripts condensed
+cfgd module show my-tool --show-values   # reveal full env values
+cfgd module show my-tool --show-scripts  # each script's full body
+cfgd module show my-tool --show-all      # both
 ```
 
 The `Scripts` section lists every lifecycle hook the module declares, in the

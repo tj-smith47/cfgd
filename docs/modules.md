@@ -749,16 +749,16 @@ A source that delivers only modules (no profiles) is valid; see [Source-Delivere
 ## CLI Commands
 
 ```sh
-cfgd module list                    # list modules and their status
-cfgd module show nvim               # show details: packages, files, deps, resolved managers
-cfgd module show nvim --show-values # reveal full env variable values (masked by default)
-cfgd module show nvim -s            # print each script's full body
-cfgd module show nvim -a            # both of the above
-cfgd module create my-tool          # create a new local module
+cfgd module list                           # list modules and their status
+cfgd module show nvim                      # show details: packages, files, deps, resolved managers
+cfgd module show nvim --show-values        # reveal full env variable values (masked by default)
+cfgd module show nvim --show-scripts       # print each script's full body
+cfgd module show nvim --show-all           # both of the above
+cfgd module create my-tool                 # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
-cfgd module edit nvim               # open in $EDITOR
-cfgd module delete nvim             # restore adopted files, delete module
-cfgd module delete nvim --purge     # remove deployed target files, delete module
+cfgd module edit nvim                      # open in $EDITOR
+cfgd module delete nvim                    # restore adopted files, delete module
+cfgd module delete nvim --purge            # remove deployed target files, delete module
 ```
 
 The same discover → edit → preview → apply loop drives every authoring command:

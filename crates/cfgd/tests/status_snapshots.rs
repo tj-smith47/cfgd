@@ -738,8 +738,8 @@ fn status_per_module_show_all_human() {
 }
 
 /// The bytes the approved pitch settled, from the real renderer, on the verb
-/// the pitch captured them from second: the Scripts heading, the hook heading
-/// with its muted count, the first step's muted marker line and the first
+/// the pitch captured them from second: the Scripts heading, the bare hook
+/// name heading its steps, the first step's muted marker line and the first
 /// highlighted row of its body (panel 2, which repeats panel 1's Scripts
 /// section). `cfgd module show` pins the same four lines, so the two verbs
 /// cannot render one module's scripts as two different shapes.

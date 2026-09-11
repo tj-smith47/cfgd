@@ -1723,11 +1723,17 @@ pub fn strand_a_snapshot(
     (stranded, cfgd_core::output::strip_ansi(&cap.human()))
 }
 
-/// The four lines of the approved pitch the script pins (panel 1, lines
+/// The four lines of the approved pitch both verbs are held to (panel 1, lines
 /// 63-66), byte for byte less one zero-width span: the pitch's body line
 /// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
 /// styling the line's own newline. The renderer highlights each line without
 /// its terminator, so it emits no escape for a span holding no text.
+///
+/// Compared against by `module_show_scripts_full_renders_the_approved_dracula_bytes`
+/// (`module_show_snapshots.rs`) and
+/// `status_per_module_show_scripts_renders_the_approved_dracula_bytes`
+/// (`status_snapshots.rs`), so the two verbs cannot drift from one another or
+/// from the pitch.
 pub const PITCH_SCRIPTS_LINES: [&str; 4] = [
     "\x1b[38;2;189;147;249mScripts\x1b[0m",
     "  \x1b[38;2;255;121;198mpostApply\x1b[0m",

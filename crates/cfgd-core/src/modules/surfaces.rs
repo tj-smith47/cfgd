@@ -78,10 +78,9 @@ const SCRIPTS_SECTION: &str = "Scripts";
 /// that shows them: `cfgd module show` and `cfgd status --module`.
 ///
 /// One nested section per declaring hook, in execution order, because that
-/// order is the fact a reader needs. Under
-/// [`ScriptsForm::Condensed`] each step is one row carrying its first line;
-/// under [`ScriptsForm::Full`] each step states the knobs it declares and then
-/// its whole body, highlighted. The renderer owns every coat, indent and blank
+/// order is the fact a reader needs. Under [`ScriptsForm::Condensed`] each
+/// step is one row carrying its first line; under [`ScriptsForm::Full`] each
+/// step states the knobs it declares and then its whole body, highlighted. The renderer owns every coat, indent and blank
 /// line (see [`Component::ScriptSteps`]), so two surfaces cannot render one
 /// module's scripts as two different shapes.
 ///

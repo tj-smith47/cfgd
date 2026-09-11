@@ -37513,8 +37513,19 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
                     if !exporting && INVENTORY_TELLS.iter().any(|t| code.contains(t)) {
                         stray_inventory.push(format!("{rel}:{}: {}", n + 1, line.trim()));
                     }
+                    // A multi-line call puts the slot and the section name
+                    // on two physical lines, so a name standing alone is
+                    // judged against the slot the line above it opened.
+                    let slot_above = || {
+                        lines[..n]
+                            .iter()
+                            .rev()
+                            .map(|l| l.split("//").next().unwrap_or(l).trim_end())
+                            .find(|c| !c.trim().is_empty())
+                            .is_some_and(|c| SECTION_SLOTS.iter().any(|s| c.ends_with(s)))
+                    };
                     if code.contains("\"Scripts\"")
-                        && SECTION_SLOTS.iter().any(|s| code.contains(s))
+                        && (SECTION_SLOTS.iter().any(|s| code.contains(s)) || slot_above())
                     {
                         stray_section.push(format!("{rel}:{}: {}", n + 1, line.trim()));
                     }

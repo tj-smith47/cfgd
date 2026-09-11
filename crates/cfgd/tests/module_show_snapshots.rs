@@ -300,7 +300,7 @@ fn module_show_scripts_full_human() {
 }
 
 /// The bytes the approved pitch settled, from the real renderer: the Scripts
-/// heading, the hook heading with its muted count, the first step's muted
+/// heading, the bare hook name heading its steps, the first step's muted
 /// marker line and the first highlighted row of its body (panel 1, lines
 /// 63-66 of `pitch-nvim-out.txt`). Colour off, these four lines say nothing
 /// about the coat each span carries.
@@ -340,8 +340,8 @@ fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
 
 /// The module the pitch was captured from, as far as those four lines reach:
 /// one `postApply` hook of seven steps whose first declares `timeout: 120s`
-/// and `continueOnError`. The six steps after it carry the count the hook
-/// heading states.
+/// and `continueOnError`. The six steps after it are what the first step's
+/// `1/7` marker counts against.
 fn pitch_show_output() -> ModuleShowOutput {
     let mut output = happy_show_output();
     let mut post_apply = vec![ScriptEntry::Full(ScriptCommand {
