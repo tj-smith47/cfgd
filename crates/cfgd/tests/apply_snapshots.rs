@@ -28,22 +28,31 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use cfgd::cli::ApplyArgs;
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
 use cfgd::cli::output_types::{AfterPlanCounts, ApplyOutput};
 use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
-use cfgd_core::test_helpers::assert_slots_discriminate;
 use pretty_assertions::assert_eq;
 
 use common::profile_with_packages_setup;
 use common::{
-    apply_args, apply_args_dry_run, cli_for, plan_args,
-    profile_and_module_with_on_change_hooks_setup, profile_with_on_change_hook_setup,
-    profile_with_one_failure_setup, tiny_profile_setup,
+    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
+    tiny_profile_setup,
 };
+
+// The two after-plan cases run `onChange` hooks whose commands are POSIX shell
+// (`true`), so both tests are unix-only and what they alone import is gated with
+// them: on Windows an ungated import of theirs is an unused one, and the Windows
+// build denies warnings.
+#[cfg(unix)]
+use cfgd::cli::ApplyArgs;
+#[cfg(unix)]
+use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
+#[cfg(unix)]
+use cfgd_core::test_helpers::assert_slots_discriminate;
+#[cfg(unix)]
+use common::{profile_and_module_with_on_change_hooks_setup, profile_with_on_change_hook_setup};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
