@@ -865,7 +865,7 @@ mod alignment_group_tests {
     use super::super::{NarrowSink, Renderer, StatusFields, StringSink};
     use crate::output::{Role, Theme, Verbosity};
 
-    /// The three `cfgd:env` rows an apply settles under `Phase: Prerequisites`
+    /// The three `cfgd:env` rows an apply settles under `Phase: Bootstrap`
     /// — the set the broken column was measured on, one long subject with a
     /// short detail between two short subjects with long details.
     const ROWS: &[(Role, &str, &str)] = &[
@@ -886,7 +886,7 @@ mod alignment_group_tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = NarrowSink(StringSink(buf.clone()), cols);
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        r.render_section_open("Phase: Prerequisites", true);
+        r.render_section_open("Phase: Bootstrap", true);
         r.render_section_open("cfgd:env", true);
         for (role, subject, detail) in ROWS {
             r.render_status(

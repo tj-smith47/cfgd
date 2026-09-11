@@ -1213,7 +1213,11 @@ fn reconcile_tick(
                         // about how many actions succeeded. `outcome_counts` is
                         // silent about failures — the rollup gives them their
                         // own line — but a single-line log has no second line,
-                        // so it names them here or hides them entirely.
+                        // so it names them here or hides them entirely. That
+                        // failure clause is the ONLY one composed here: every
+                        // other outcome class, the after-plan work included,
+                        // reaches the journal through `outcome_counts`, so a
+                        // class the rollup gains is logged without an edit.
                         let tally = result.tally();
                         let counts = crate::reconciler::outcome_counts(&tally);
                         Some(match tally.failed {
@@ -1315,12 +1319,39 @@ fn reconcile_tick(
         return outcome;
     }
 
-    // Server check-in after reconciliation
-    let changed = try_server_checkin(cfg, resolved);
-    if changed {
+    // Server check-in after reconciliation. The tick is the machine's reporter:
+    // it has resolved the profile, the modules and the registry, so it can
+    // answer both of the questions only the device can — and it reports them as
+    // OBSERVED maps, which is what lets the gateway retire a package this
+    // machine uninstalled or a backup unit it stopped declaring.
+    let checkin = try_server_checkin(
+        cfg,
+        resolved,
+        crate::server_client::CheckinFacts {
+            package_versions: crate::compliance::declared_package_versions(
+                &resolved.merged,
+                resolved_modules_ref.as_slice(),
+                registry,
+                &pkg_cx,
+            ),
+            backup_schedule_owners: Some(crate::backup::declared_schedule_owners(
+                &resolved.merged.backups,
+            )),
+        },
+    );
+    if checkin.config_changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
         );
+    }
+    // Only an ANSWER is recorded, and only a changed answer re-arms the timers:
+    // the timer set was resolved before this tick ran, so a cadence the cluster
+    // just moved would otherwise wait for a restart.
+    if let Some(ref projections) = checkin.backup_schedules
+        && super::checkin::record_cluster_schedules_in(Some(&state_dir), projections)
+    {
+        rt.block_on(async { state.lock().await.backup_reresolve() })
+            .notify_one();
     }
 
     // Consume any pending server-pushed config (saved by CLI checkin or enrollment)
@@ -1522,7 +1553,13 @@ pub(super) fn tick_cannot_refind(
             _ => false,
         }),
         // script-literal-ok: resource TYPES, not manager names
-        "file" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => false,
+        "file"
+        | "secret"
+        | "script"
+        | crate::reconciler::ENV_RESOURCE_TYPE
+        | crate::reconciler::ENV_RC_RESOURCE_TYPE
+        | crate::reconciler::ENV_SESSION_RESOURCE_TYPE
+        | "manager" => false,
         _ => true,
     }
 }

@@ -545,7 +545,7 @@ on the machine.
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
-| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"600"`). Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed file (e.g. `"600"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
 | `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
 | `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
@@ -829,6 +829,7 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
 | `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
+| `scheduleOwner` | enum | No | `Cluster` | Which layer owns this unit's schedule. `Cluster` lets the cluster's `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively. |
 | `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |
 | `postBackup` | list | No | `[]` | Scripts run after the copy step, and after a failed `preBackup` — always attempted, so whatever `preBackup` stopped gets restarted. Same shape as [spec.scripts](#specscripts) entries. |
@@ -841,6 +842,7 @@ backups:
     destination: ~/backups/notes          # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
     schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
+    scheduleOwner: Local                  # optional; default Cluster; Local pins the schedule to this machine
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -848,8 +850,9 @@ backups:
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
-`spec.backups[]` exists only in the YAML/TOML profile config path; the `MachineConfig` CRD does not
-carry it.
+`spec.backups[]` defines the unit and lives only in the profile; the cluster's `BackupPolicy`
+(see [Backup policies](../backup-policy.md)) may override a named unit's `schedule`/`retention`
+unless the profile pins `scheduleOwner: Local`.
 
 Every run is recorded in the state database's `backup_runs` table (source, destination, size,
 status, error, start/finish timestamps), and retention pruning walks those records rather than

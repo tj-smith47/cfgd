@@ -180,6 +180,7 @@ impl SystemConfigurator for ShellConfigurator {
                     message: e.to_string(),
                 })
             })?;
+            // user-scope-ok: the invoking user's own Windows Terminal settings.json; NTFS carries no mode bits to widen
             cfgd_core::atomic_write_str(&path, &updated)?;
 
             Ok(())

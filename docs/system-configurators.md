@@ -119,6 +119,15 @@ system:
 
 Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchDaemon plist (`/Library/LaunchDaemons/com.cfgd.environment.plist`, which runs `launchctl setenv` in the system domain at boot so all users inherit it) plus `~/.config/cfgd/env.sh` and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
 
+The files cfgd writes here are world-readable by design (`0644` on Linux and
+FreeBSD, and the macOS plist likewise): every user's login shell has to be able
+to source them, and a root-only file either aborts that shell (FreeBSD sources
+`/etc/profile.d/*.sh` unconditionally) or is skipped silently (Linux), leaving
+the variables unset for everyone but root. A mode you set yourself is preserved,
+cfgd only adds the read bits. Because every user on the machine can read these
+values, do not put a secret in `spec.system.environment`: use `spec.env` with a
+secret backend, which writes per-user files.
+
 ```yaml
 system:
   environment:

@@ -629,7 +629,7 @@ fn plan_installs_unavailable_bootstrappable_manager_optimistically() {
 
     // An unavailable-but-bootstrappable manager gets its Install planned
     // optimistically here; provisioning the manager itself is the
-    // Prerequisites phase's job (`ManagerAction::Provision`), planned
+    // Bootstrap phase's job (`ManagerAction::Provision`), planned
     // separately and not visible to this per-manager planner.
     assert_eq!(actions.len(), 1);
     assert!(
@@ -689,7 +689,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
 
     // Should have: Install(brew-tap: some/tap), Install(brew: ripgrep) — the tap
     // registers the source a formula may come from, so it orders first; brew's
-    // own provisioning is a Prerequisites-phase concern this planner never sees.
+    // own provisioning is a Bootstrap-phase concern this planner never sees.
     assert_eq!(actions.len(), 2);
     assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew-tap"));
     assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
@@ -1491,7 +1491,7 @@ fn plan_with_new_managers() {
     )));
 
     // snap: unavailable but bootstrappable → Install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -1799,7 +1799,11 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
             tool,
         )
     };
-    match shared::detect_system_method(&|_| false) {
+    // snap's real arms: every Linux mediator, and no FreeBSD port. A manager
+    // that declines an arm must never have it named, or the plan binds
+    // execution to a step the cascade skips.
+    let snap_arms = shared::system_manager_arms(None, &["snapd"], &[]);
+    match shared::detect_system_method(&snap_arms, &|_| false) {
         Some("apt") => assert!(runnable("apt-get")),
         Some("dnf") => assert!(runnable("dnf")),
         Some("zypper") => assert!(runnable("zypper")),
@@ -1811,13 +1815,51 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
     }
 }
 
+/// A plan's method is binding at execution, so the detector may only name an
+/// arm the cascade will actually run: a manager with no FreeBSD port declines
+/// `pkg`, and naming it anyway would bind the provision to a step
+/// `bootstrap_system_arms` skips.
+///
+/// Every arm is answered from `delivered` alone here — an emptied `PATH` and
+/// no tool seams leave the host with nothing to offer — so the two answers
+/// differ only in what the manager declares.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial]
+fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one() {
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _seams: Vec<_> = [
+        "CFGD_APT_GET_BIN",
+        "CFGD_DNF_BIN",
+        "CFGD_ZYPPER_BIN",
+        "CFGD_PKG_BIN",
+    ]
+    .into_iter()
+    .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+    .collect();
+    let ported = shared::system_manager_arms(None, &["golang"], &["lang/go"]);
+    let unported = shared::system_manager_arms(None, &["snapd"], &[]);
+    assert_eq!(
+        shared::detect_system_method(&ported, &|m| m == "pkg"),
+        Some("pkg"),
+        "a manager with a port is planned through the pkg this run delivers"
+    );
+    assert_eq!(
+        shared::detect_system_method(&unported, &|m| m == "pkg"),
+        None,
+        "a manager with no port is never planned through pkg"
+    );
+}
+
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
-    // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = shared::detect_brew_system_method("pip", &|_| false);
+    // detect_brew_system_method cascades brew → apt → dnf → pkg → fallback
+    let arms = shared::brew_then_system_arms("pipx", &["pipx"], &["devel/py-pipx"]);
+    let method = shared::detect_brew_system_method(&arms, "pip", &|_| false);
     assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "pip",
-        "expected brew, apt, dnf, or pip, got: {}",
+        ["brew", "apt", "dnf", "pkg", "pip"].contains(&method),
+        "expected brew, apt, dnf, pkg, or pip, got: {}",
         method
     );
 }
@@ -2545,7 +2587,7 @@ fn plan_packages_mixed_available_and_unavailable() {
     )));
 
     // nix: unavailable + bootstrappable → install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -3105,46 +3147,36 @@ fn all_package_managers_bootstrap_consistency() {
                 m.name()
             );
         } else if bootstrappable.contains(m.name()) {
-            // The positive direction is environment-conditional: each user
-            // manager can self-install only where its prerequisite tooling
-            // exists (curl, a system package manager, or pip). Those
-            // prerequisites are always present on the Linux/macOS/Windows CI
-            // runners but not on a minimal FreeBSD base, where several managers
-            // correctly report not-bootstrappable. Skip the positive assertion
-            // there rather than assert a platform whose bootstrap prerequisites
-            // this test cannot guarantee.
-            #[cfg(not(target_os = "freebsd"))]
-            {
-                // `go` alone bootstraps only through brew or a *system* package
-                // manager (not curl, which the others fall back to), so a shell
-                // without one on PATH — e.g. brew not exported into a non-login
-                // macOS session — correctly reports it non-bootstrappable.
-                // Assert the wiring in whichever direction the environment
-                // dictates instead of a blanket true that false-fails there;
-                // CI runners have a system manager, so this still asserts go IS
-                // bootstrappable. The mediators are named here rather than read
-                // back from the detector, so a detector that stopped seeing one
-                // of them fails this test instead of agreeing with itself.
-                if m.name() == "go" {
-                    let mediator_present = super::shared::brew_available()
-                        || ["apt-get", "dnf", "zypper"].into_iter().any(|tool| {
-                            cfgd_core::command_available_with_seam(
-                                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-                                tool,
-                            )
-                        });
-                    assert_eq!(
-                        m.bootstrap_plan().is_some(),
-                        mediator_present,
-                        "go bootstrappability must track the mediators its bootstrap can run"
-                    );
-                } else {
-                    assert!(
-                        m.bootstrap_plan().is_some(),
-                        "{} should be bootstrappable",
-                        m.name()
-                    );
-                }
+            // `go` alone bootstraps only through brew or a *system* package
+            // manager (not curl, which the others fall back to), so a shell
+            // without one on PATH — e.g. brew not exported into a non-login
+            // macOS session — correctly reports it non-bootstrappable.
+            // Assert the wiring in whichever direction the environment
+            // dictates instead of a blanket true that false-fails there;
+            // CI runners and the FreeBSD host both have a system manager, so
+            // this still asserts go IS bootstrappable. The mediators are named
+            // here rather than read back from the detector, so a detector that
+            // stopped seeing one of them fails this test instead of agreeing
+            // with itself.
+            if m.name() == "go" {
+                let mediator_present = super::shared::brew_available()
+                    || ["apt-get", "dnf", "zypper", "pkg"].into_iter().any(|tool| {
+                        cfgd_core::command_available_with_seam(
+                            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                            tool,
+                        )
+                    });
+                assert_eq!(
+                    m.bootstrap_plan().is_some(),
+                    mediator_present,
+                    "go bootstrappability must track the mediators its bootstrap can run"
+                );
+            } else {
+                assert!(
+                    m.bootstrap_plan().is_some(),
+                    "{} should be bootstrappable",
+                    m.name()
+                );
             }
         }
     }
@@ -3907,9 +3939,11 @@ fn brew_path_dirs_through_trait() {
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr: Box<dyn PackageManager> = Box::new(BrewManager);
     let dirs = mgr.path_dirs(&cx);
-    // On Linux: should have linuxbrew dirs
-    // On macOS: should have homebrew dirs
-    // On Windows: should be empty
+    assert_eq!(
+        dirs,
+        super::shared::brew_path_dirs(),
+        "the trait answers as the free function does"
+    );
     if cfg!(target_os = "linux") {
         assert_eq!(dirs.len(), 2);
     }
@@ -5105,6 +5139,171 @@ fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
             effective[0].min_version.as_deref(),
             Some("1:2.30"),
             "the strictest floor in the family's own grammar survives: {effective:?}"
+        );
+    }
+}
+
+/// A `pkg` arm names PORT ORIGINS. FreeBSD's Python packages carry the flavour
+/// in the name (`py311-pipx`), so a bare `pipx` resolves to nothing and a
+/// flavoured name goes stale the moment the default Python moves; the origin
+/// (`devel/py-pipx`) is what stays correct. Walked over the whole registry so a
+/// manager that grows a `pkg` arm answers this without being named.
+#[test]
+fn every_mediated_manager_names_its_pkg_origin() {
+    let mut walked = Vec::new();
+    for m in all_package_managers() {
+        let Some(pkgs) = m.mediated_packages("pkg") else {
+            continue;
+        };
+        for pkg in &pkgs {
+            let (category, name) = pkg
+                .split_once('/')
+                .unwrap_or_else(|| panic!("{}'s pkg entry {pkg} is not a port origin", m.name()));
+            assert!(
+                !category.is_empty() && !name.is_empty() && !name.contains('/'),
+                "{}'s pkg entry {pkg} is not a <category>/<name> port origin",
+                m.name()
+            );
+        }
+        walked.push(m.name().to_string());
+    }
+    for expected in ["pipx", "go", "npm"] {
+        assert!(
+            walked.iter().any(|n| n == expected),
+            "the walk must cover {expected}, whose FreeBSD bootstrap this arm exists for: {walked:?}"
+        );
+    }
+}
+
+/// The window [`silence_every_mediator_but_pkg`] holds open, and the ORDER its
+/// guards release in.
+///
+/// A struct's fields drop in DECLARATION order, the reverse of how locals drop,
+/// so the exclusive `PATH` guard is declared LAST here and released last: every
+/// `EnvVarGuard` above it restores its variable while the lock is still held,
+/// which is the whole window the lock exists to close. Reordering these fields
+/// would put the `PATH` restore outside the lock, where a parallel reader in the
+/// same binary can observe the emptied value.
+struct SilencedMediators {
+    _seams: Vec<cfgd_core::test_helpers::EnvVarGuard>,
+    _brew: cfgd_core::test_helpers::EnvVarGuard,
+    _path: cfgd_core::test_helpers::EnvVarGuard,
+    _path_excl: cfgd_core::test_helpers::ExclusiveEnvGuard,
+}
+
+/// Every mediator the pipx and npm cascades outrank `pkg` with, silenced so a
+/// bare FreeBSD host can be simulated on any developer box: an emptied `PATH`,
+/// no tool seams, and a `CFGD_BREW_BIN` naming a file that does not exist,
+/// which `brew_available` answers on alone.
+///
+/// The guards are returned rather than dropped, so a caller holds the window
+/// open for as long as it reads a cascade; [`SilencedMediators`] owns the order
+/// they release in.
+fn silence_every_mediator_but_pkg() -> SilencedMediators {
+    let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-on-this-host",
+    );
+    let seams = ["CFGD_APT_GET_BIN", "CFGD_DNF_BIN", "CFGD_PKG_BIN"]
+        .into_iter()
+        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .collect();
+    SilencedMediators {
+        _seams: seams,
+        _brew: brew,
+        _path: path,
+        _path_excl: path_excl,
+    }
+}
+
+/// A bare FreeBSD host has `pkg` and nothing else the pipx cascade knows, so
+/// the plan names it rather than falling to the `pip` arm that host has no
+/// python for.
+///
+/// Every mediator that outranks `pkg` is silenced, so only the run's own
+/// delivery answers and the method is asserted on any host.
+#[test]
+#[serial_test::serial]
+fn a_freebsd_host_plans_pipx_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
+    let pipx = super::pipx::PipxManager;
+    let plan = pipx
+        .bootstrap_plan_given(&|m| m == "pkg")
+        .expect("pkg delivers pipx");
+    assert_eq!(
+        plan.method, "pkg",
+        "a run delivering pkg alone provisions pipx through it"
+    );
+    assert_eq!(
+        pipx.mediated_packages("pkg").as_deref(),
+        Some(["devel/py-pipx".to_string()].as_slice()),
+        "the pkg arm installs the port origin"
+    );
+}
+
+/// The same for npm, whose `pkg` arm is otherwise asserted by its origin
+/// alone: a run delivering `pkg` reaches npm's port rather than the `nvm`
+/// installer, which needs a network and a shell FreeBSD's base system lacks.
+#[test]
+#[serial_test::serial]
+fn a_freebsd_host_plans_npm_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
+    let npm = super::npm::NpmManager;
+    let plan = npm
+        .bootstrap_plan_given(&|m| m == "pkg")
+        .expect("pkg delivers npm");
+    assert_eq!(
+        plan.method, "pkg",
+        "a run delivering pkg alone provisions npm through it"
+    );
+    assert_eq!(
+        npm.mediated_packages("pkg").as_deref(),
+        Some(["www/npm".to_string()].as_slice()),
+        "the pkg arm installs the port origin"
+    );
+}
+
+/// The wiring half of [`npm_nvm_fallback_requires_bash`]: with no mediator on
+/// the host and none delivered by the run, the cascade declines all the way to
+/// npm's own arm and the plan carries what that arm needs.
+#[test]
+#[serial_test::serial]
+fn a_host_with_no_mediator_at_all_plans_npm_through_its_own_nvm_arm() {
+    let _guards = silence_every_mediator_but_pkg();
+    let plan = super::npm::NpmManager
+        .bootstrap_plan_given(&|_| false)
+        .expect("npm always has an arm of its own");
+    assert_eq!(
+        plan.method, "nvm",
+        "a host no mediator reaches falls to npm's own installer"
+    );
+    for tool in ["curl", "bash"] {
+        assert!(
+            plan.requires.iter().any(|t| t == tool),
+            "the arm the cascade planned carries what the installer needs, {tool} included: {:?}",
+            plan.requires
+        );
+    }
+}
+
+/// The nvm installer is fetched with curl and RUN by bash. FreeBSD's base
+/// system carries neither, so a plan naming only curl would be approved and
+/// then die inside the install.
+///
+/// Read off the arm's own producer rather than off `bootstrap_plan_given`: the
+/// cascade prefers brew and every system mediator over this arm, so a host
+/// carrying any of them never returns it.
+#[test]
+fn npm_nvm_fallback_requires_bash() {
+    let plan = super::npm::nvm_bootstrap_plan();
+    assert_eq!(plan.method, "nvm", "the fallback arm is nvm");
+    for tool in ["curl", "bash"] {
+        assert!(
+            plan.requires.iter().any(|t| t == tool),
+            "the nvm arm fetches with curl and runs under bash, so it declares {tool}: {:?}",
+            plan.requires
         );
     }
 }

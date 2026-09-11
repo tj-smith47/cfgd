@@ -46,6 +46,15 @@ as installed:
 4. If the probe fails, cfgd falls back to `$HOME/.npm-global`, creating it if
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
 
+The unprivileged arm is proven on a real host as well as in unit tests: CI's
+FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
+`task test:freebsd:npm-prefix` target) against the `www/npm` package, whose
+configured prefix is the root-owned `/usr/local`. The script itself needs root
+to install that package and create the test account, and it runs every `cfgd`
+invocation as the unprivileged user, asserting that a declared package's binary
+lands in `$HOME/.npm-global/bin` and that the generated env file puts that
+directory on `PATH`.
+
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
 directory cfgd created, so its `bin` directory is written into the generated
@@ -82,11 +91,11 @@ packages:
       - pynvim      # resolves through brew's prefix, same apply
 ```
 
-A manager that is not on the machine yet is provisioned in the `Prerequisites`
+A manager that is not on the machine yet is provisioned in the `Bootstrap`
 phase, which runs before any package work:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh apt index
     - provision nix via nix installer
@@ -102,7 +111,7 @@ Managers one mediator delivers by an ordinary package install collapse onto a
 single node, and a single command:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ provision npm, pipx via apt (12.4s)
 ```
@@ -110,7 +119,7 @@ Phase: Prerequisites
 is one `apt-get install nodejs npm pipx`, not two `apt-get` runs queued behind
 each other for the dpkg lock. The line names every manager the command
 delivers, and `--skip` / `--only` / `--phase` still address them one at a time
-(`--skip prerequisites.npm` leaves `provision pipx via apt` behind). Only a
+(`--skip bootstrap.npm` leaves `provision pipx via apt` behind). Only a
 plain install collapses: a manager that bootstraps through a vendor script
 (`brew` via the Homebrew installer, `npm` via `nvm`, `cargo` via `rustup`)
 keeps its own node and its own command. Provisions that stay separate but share
@@ -125,7 +134,7 @@ mediator while planning (that is the manager named on the line you read, and
 the lane the node is serialized on) and execution runs exactly that one:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✗ provision npm via apt — apt could not install npm: exit code 100: E: Unable to locate package nodejs
 ```
@@ -140,6 +149,27 @@ For the same reason a manager is only planned through a mediator this host can
 actually run: on a machine with none of them, cfgd says the manager cannot be
 provisioned and why, instead of naming one and failing on it.
 
+These are the mediators each provisioned manager reaches for, and what each one
+installs:
+
+| Manager | brew | apt / dnf | zypper | FreeBSD `pkg` | Own arm |
+|---|---|---|---|---|---|
+| `pipx` | `pipx` | `pipx` | — | `devel/py-pipx` | `pip` |
+| `npm` | `node` | `nodejs`, `npm` | — | `www/npm` | `nvm` (needs `curl` and `bash`) |
+| `go` | `go` | `golang` | `golang` | `lang/go` | — |
+| `flatpak` | — | `flatpak` | `flatpak` | — | — |
+| `snap` | — | `snapd` | `snapd` | — | — |
+
+On openSUSE, `pipx` therefore falls to its `pip` arm and `npm` to `nvm`: neither
+reaches zypper, whose package names for them differ from the apt and dnf ones.
+
+The FreeBSD column names PORT ORIGINS rather than package names. FreeBSD's
+Python and Node packages carry the flavour in their name (`py311-pipx`,
+`npm-node22`), so a bare `pipx` resolves to nothing and a flavoured name goes
+stale the moment the default flavour moves; an origin is version-free and
+`pkg install devel/py-pipx` always picks the current default. An em-dash cell is
+a mediator the manager declares no arm for, and cfgd plans no arm it cannot run.
+
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
 environment of every package-manager command cfgd runs afterwards, so a
@@ -153,11 +183,11 @@ by naming the file to source.
 
 cfgd refreshes the package index of every manager that is already on the machine,
 has work in this run, and keeps a local index at all. The refresh is an action of
-its own in the `Prerequisites` phase, so it is named in the plan before it happens
+its own in the `Bootstrap` phase, so it is named in the plan before it happens
 and reported where it ran:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh apt index (1.0s)
       Hit:1 http://deb.debian.org/debian stable InRelease
@@ -183,7 +213,7 @@ that never ran.
 the family is refreshed once by `brew` rather than three times.
 
 Filters filter: a run that leaves the phase out (`--phase packages`) or drops one
-node from it (`--skip prerequisites.apt`) does not refresh that index behind your
+node from it (`--skip bootstrap.apt`) does not refresh that index behind your
 back. The refresh is the phase's, so excluding the phase excludes the refresh.
 
 The rule holds for anything else that narrows a run: a per-module daemon tick
@@ -198,7 +228,7 @@ A manager cfgd cannot provision on this host says so in the same phase, naming
 the cause rather than disappearing from the run:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✗ cannot provision pipx — pip3 is missing and apt does not install it under that name
 ```
@@ -406,9 +436,9 @@ refresh node of its own:
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  pkgdemo
-  Phases   Prerequisites, Packages
+  Phases   Bootstrap, Packages
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
     - refresh toolbox index

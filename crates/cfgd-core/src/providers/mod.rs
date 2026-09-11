@@ -999,7 +999,7 @@ impl<T: PackageManager + ?Sized> PackageManagerExt for T {
 }
 
 /// The tools a system manager installs under a package of the same name — the
-/// closed population a `Prerequisites` node may run `<system manager> install
+/// closed population a `Bootstrap` node may run `<system manager> install
 /// <tool>` for.
 ///
 /// Deliberately not "every tool a cascade names": `pip3` is a cascade
@@ -1246,6 +1246,21 @@ pub enum FileAction {
         target: PathBuf,
         mode: u32,
         origin: String,
+        /// The file whose mode moves, when it is not `target` itself.
+        ///
+        /// `Some(source)` for a `strategy: Symlink` entry, whose declared mode
+        /// belongs to the source file the link points at: the drift check
+        /// compares against that file's mode, and Linux has no `lchmod`, so a
+        /// chmod on the link would leave the entry drifted forever. `None` for
+        /// every other strategy, which deploys a regular file at `target`.
+        ///
+        /// Either way the chmod never resolves a link at `target`, because
+        /// whoever owns that directory could replace what cfgd deployed and aim
+        /// an elevated chmod at any file on the machine. The planner names the
+        /// path from the resolved strategy: a probe at apply time would lose
+        /// that race.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chmod_path: Option<PathBuf>,
     },
     Skip {
         target: PathBuf,

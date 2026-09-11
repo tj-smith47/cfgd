@@ -15,6 +15,7 @@ fn explain_covers_every_kind_incl_clusterpolicy_and_module_crd() {
         "ConfigPolicy",
         "ClusterConfigPolicy",
         "DriftAlert",
+        "BackupPolicy",
     ] {
         assert!(find_schema(k).is_some(), "explain missing {k}");
     }
@@ -108,6 +109,62 @@ fn explain_resolve_field_path_leaf() {
     let children = fields.unwrap();
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].name, "taps");
+}
+
+/// Every `cfgd explain` command a rendered hint spells re-parses, on every
+/// surface that spells one.
+///
+/// The kind a hint names is the SELECTOR the CLI accepts, never the display
+/// name: the CRD `Module` displays as `Module (CRD)`, and the lowercase of
+/// that is `module (crd)` — a space and two parentheses no shell hands to
+/// `cfgd` as one word. Both hint sites compose from
+/// [`ResourceSchema::selector_token`], so a kind whose display name is not
+/// its selector cannot print a command the reader has to fix by hand.
+///
+/// The rendered text is folded to single-spaced before the split: a hint wraps
+/// at the terminal's width, and a break landing inside `cfgd explain ` would
+/// hide the command from a walk looking for that phrase.
+#[test]
+fn every_explain_hint_names_a_selector_that_reparses() {
+    let render = |resource: &str| {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_explain(&printer, Some(resource), false).unwrap();
+        printer.flush();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        captured.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    for schema in all_schemas() {
+        let token = schema.selector_token();
+        assert_eq!(
+            find_schema(token).map(|s| s.name.as_str()),
+            Some(schema.name.as_str()),
+            "`cfgd explain {token}` does not resolve back to {}",
+            schema.name
+        );
+        for resource in [token.to_string(), format!("{token}.spec")] {
+            let mut hints_seen = 0usize;
+            for rest in render(&resource).split("cfgd explain ").skip(1) {
+                let named = rest
+                    .split([' ', '`'])
+                    .next()
+                    .unwrap_or_default()
+                    .split('.')
+                    .next()
+                    .unwrap_or_default();
+                hints_seen += 1;
+                assert_eq!(
+                    find_schema(named).map(|s| s.name.as_str()),
+                    Some(schema.name.as_str()),
+                    "`cfgd explain {resource}` prints a hint naming `{named}`, which does not select {}",
+                    schema.name
+                );
+            }
+            assert!(
+                hints_seen > 0,
+                "`cfgd explain {resource}` printed no hint at all, so the surface proves nothing"
+            );
+        }
+    }
 }
 
 #[test]

@@ -187,6 +187,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -219,6 +220,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -261,6 +263,11 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(&env_sh, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        // This configurator runs privileged, and `default_config_dir()` resolves
+        // from the running process's HOME: under `sudo -E cfgd apply` the file
+        // lands root-owned in the invoking user's home, whose rc line then gets
+        // EACCES on its own `. ~/.config/cfgd/env.sh`.
+        super::widen_world_readable(&env_sh).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -296,10 +303,9 @@ impl EnvironmentConfigurator {
 
         cfgd_core::atomic_write_str(plist_path, &plist)
             .map_err(cfgd_core::errors::CfgdError::Io)?;
-        // launchd loads a system daemon only if its plist is owned by root and not writable by
-        // group/other; 0644 is the conventional accepted mode (atomic_write_str defaults to 0600).
-        cfgd_core::set_file_permissions(plist_path, 0o644)
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        // launchd loads a system daemon only if its plist is owned by root and
+        // readable; the write lands 0600.
+        super::widen_world_readable(plist_path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 

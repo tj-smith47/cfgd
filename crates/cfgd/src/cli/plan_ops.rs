@@ -8,6 +8,7 @@ use cfgd_core::output::{Doc, ICON_ARROW, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
+// basename-ok: sourceability, not the verb
 /// Basename of the bash/zsh managed env file the reconciler writes.
 const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.
@@ -19,10 +20,11 @@ const PS_ENV_FILE: &str = ".cfgd-env.ps1";
 /// changed" heading — folded into the `cfgd:env` group on real provenance
 /// rather than a heading invented for it alone.
 ///
-/// Groups render informational-first, `cfgd:env` always last: it is the one
-/// group that is action-required (the reader has to actually run the command),
-/// so it is the last thing printed before the prompt returns. Every other
-/// group keeps the order `ApplyResult::caveats` collected it in.
+/// Groups render informational-first, cfgd's two shell-surface groups always
+/// last: they are the ones that are action-required (the reader has to actually
+/// run the command), so they are the last thing printed before the prompt
+/// returns. Every other group keeps the order `ApplyResult::caveats` collected
+/// it in.
 ///
 /// The re-source text is gated purely on the descriptions `apply_env_action`
 /// returns — it suffixes `:skipped` when the on-disk bytes already matched —
@@ -33,7 +35,7 @@ pub(in crate::cli) fn print_caveats(
     printer: &Printer,
 ) {
     let mut caveats = result.caveats.clone();
-    let env_owner = cfgd_core::reconciler::Owner::cfgd("env");
+    let env_owner = cfgd_core::reconciler::Owner::cfgd(cfgd_core::reconciler::ENV_GROUP);
 
     if let Some(reminder) = shell_env_reminder_note(result) {
         match caveats.iter_mut().find(|(owner, _)| *owner == env_owner) {
@@ -42,18 +44,24 @@ pub(in crate::cli) fn print_caveats(
         }
     }
 
-    // `cfgd:env` renders last, after every informational group: it is the one
-    // group that is action-required (the reader has to actually run its
-    // command). Not a general owner ordering — `Owner::sort_key` is the only
-    // one of those, applied where `Phase::from_actions` builds the phase
-    // tree's groups — so this stays a one-off split-and-append on the single
-    // fixed `cfgd:env` owner rather than a second comparator.
-    let (mut informational, env_last): (Vec<_>, Vec<_>) = caveats
-        .into_iter()
-        .partition(|(owner, _)| *owner != env_owner);
-    informational.extend(env_last);
+    // cfgd's env and shell groups render last, after every informational
+    // group, and between themselves in `CFGD_GROUP_ORDER` — the order the run
+    // itself printed them in. Not a general owner ordering — `Owner::sort_key`
+    // is the only one of those, applied where `Phase::from_actions` builds the
+    // phase tree's groups — so this stays a stable sink of the two fixed
+    // shell-surface owners rather than a second comparator.
+    let action_required = [
+        env_owner,
+        cfgd_core::reconciler::Owner::cfgd(cfgd_core::reconciler::SHELL_GROUP),
+    ];
+    caveats.sort_by_key(|(owner, _)| {
+        action_required
+            .iter()
+            .position(|required| required == owner)
+            .map_or(0, |at| at + 1)
+    });
 
-    cfgd_core::reconciler::render_caveats(printer, &informational);
+    cfgd_core::reconciler::render_caveats(printer, &caveats);
 }
 
 /// The `cfgd:env` re-source reminder, as a note — `None` when this apply
@@ -190,7 +198,11 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::EnvAction::InjectSourceLine { .. } => {
                 cfgd_core::reconciler::ENV_VERB_INJECT
             }
-            reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
+            // The verb the plan bullet already prints for this act
+            // (`publish 3 vars to the live session`); `refresh` below is the
+            // package-index verb, and one wire word for two acts made a
+            // consumer filtering on `type` unable to tell them apart.
+            reconciler::EnvAction::RefreshLiveSession { .. } => "publish",
         },
         reconciler::Action::Manager(ma) => match ma {
             reconciler::ManagerAction::RefreshIndex { .. } => "refresh",
@@ -934,8 +946,8 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
                 format!("{}:live-session", prefix)
             }
         },
-        // `ManagerAction::filter_subject`, so `--skip prerequisites.brew`
-        // reaches brew's provision and `--skip prerequisites.curl` its
+        // `ManagerAction::filter_subject`, so `--skip bootstrap.brew`
+        // reaches brew's provision and `--skip bootstrap.curl` its
         // prerequisite — keyed on the TOOL, not the installer, in agreement
         // with `reconciler::action_matches_phase_filter`'s `--phase` matcher.
         // A sub-manager is already folded onto its family's node at plan
@@ -944,8 +956,8 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
     }
 }
 
-/// The owner token a phase-qualified group alias (`prerequisites.managers`,
-/// `prerequisites.env`, `prerequisites.session`) resolves to, if `pattern`
+/// The owner token a phase-qualified group alias (`bootstrap.managers`,
+/// `bootstrap.env`, `bootstrap.shell`, `bootstrap.session`) resolves to, if `pattern`
 /// spells one — the alternate grammar for the `kind:name` owner-token check
 /// `pattern_matches_action` already understands directly.
 ///
@@ -990,7 +1002,7 @@ pub(in crate::cli) fn pattern_matches(pattern: &str, action_path: &str) -> bool 
 /// `OwnerKind` token; rule 2 cannot shadow it either, because after the
 /// kind-phase routing the only paths starting with `modules.` are the
 /// platform-gated skips rule 2 selects anyway. Rule 4 (the phase-qualified
-/// group alias, `prerequisites.managers`/`.env`/`.session`) falls through
+/// group alias, `bootstrap.managers`/`.env`/`.shell`/`.session`) falls through
 /// rather than returning `false` on a miss, so a pattern that only
 /// COINCIDENTALLY looks like a group alias (a system configurator that
 /// happens to be named `env`) still gets the literal match it would have
@@ -1024,24 +1036,73 @@ pub(in crate::cli) fn pattern_matches_action(
 const LEGACY_MODULE_PATTERN: &str = "modules";
 const LEGACY_MODULE_PREFIX: &str = "modules.";
 
-/// The pre-merge spelling of the phase that now also provisions package
-/// managers, as the leading segment of a `--skip`/`--only` path.
-const LEGACY_ENV_PHASE: &str = "env";
+/// The retired spellings of the [`PhaseName::Bootstrap`] phase, each with the
+/// reason a run that names it is given — the ONE wording of each, read by both
+/// deprecation sites (`--phase` in `cli::resolve_phase_filter`, `--skip`/`--only`
+/// in [`normalize_legacy_phase_patterns`]), so a token cannot be explained two
+/// ways depending on which flag carried it.
+///
+/// A reason completes "`<flag> <token>` is deprecated: " and is followed by the
+/// sentence naming the replacement, so it carries no leading capital and no
+/// trailing period.
+pub(crate) const LEGACY_PHASE_TOKENS: &[(&str, &str)] = &[
+    (
+        "env",
+        "that phase now provisions package managers as well as writing the env file",
+    ),
+    ("prerequisites", "the phase is named `bootstrap`"),
+];
 
-/// `pattern` with a leading `env` phase segment rewritten to the phase's
-/// current name, or `None` when it opens with anything else.
+/// The reason [`LEGACY_PHASE_TOKENS`] gives for `token`, or `None` when the
+/// token is a current spelling.
+pub(crate) fn legacy_phase_reason(token: &str) -> Option<&'static str> {
+    LEGACY_PHASE_TOKENS
+        .iter()
+        .find(|(legacy, _)| *legacy == token)
+        .map(|(_, reason)| *reason)
+}
+
+/// `pattern` with a leading legacy phase segment rewritten to the phase's
+/// current name, plus the reason that spelling earns, or `None` when it opens
+/// with anything else.
 ///
 /// A path's phase segment ends at the first `.` (`env.something`) or `:`
 /// (`env:/home/you/.bashrc`), so the whole grammar is covered by finding
 /// either. An owner token (`cfgd:env`) opens with its kind and is untouched.
-fn legacy_env_pattern_rewritten(pattern: &str) -> Option<String> {
+fn legacy_phase_pattern_rewritten(pattern: &str) -> Option<(String, &'static str)> {
     let end = pattern.find(['.', ':']).unwrap_or(pattern.len());
-    (&pattern[..end] == LEGACY_ENV_PHASE)
-        .then(|| format!("{}{}", PhaseName::Prerequisites.as_str(), &pattern[end..]))
+    legacy_phase_reason(&pattern[..end]).map(|reason| {
+        (
+            format!("{}{}", PhaseName::Bootstrap.as_str(), &pattern[end..]),
+            reason,
+        )
+    })
 }
 
-/// Rewrite every legacy `env` phase segment to the phase's current name,
-/// announcing each distinct pattern once.
+/// The CURRENT spelling of `pattern`: a retired phase segment rewritten to the
+/// phase's current name, a retired `modules.<name>` rewritten to `module:<name>`,
+/// anything else unchanged.
+///
+/// What a hint re-stating the flags a run was given composes with, so the
+/// command it hands back re-parses without earning the deprecation the run it
+/// describes already printed.
+///
+/// Bare [`LEGACY_MODULE_PATTERN`] is the one retired pattern with no current
+/// spelling to rewrite to: it names every module in every phase, a selection no
+/// single pattern of the routed grammar makes, so it passes through and keeps
+/// its deprecation.
+pub(in crate::cli) fn current_pattern_spelling(pattern: &str) -> String {
+    if let Some((rewritten, _)) = legacy_phase_pattern_rewritten(pattern) {
+        return rewritten;
+    }
+    if let Some(name) = pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
+        return format!("module:{name}");
+    }
+    pattern.to_string()
+}
+
+/// Rewrite every legacy phase segment to the phase's current name, announcing
+/// each distinct pattern once.
 ///
 /// Left alone, such a pattern would stop matching the moment the phase was
 /// renamed — silently, since a pattern that selects nothing is indistinguishable
@@ -1055,15 +1116,14 @@ fn normalize_legacy_phase_patterns(
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let Some(rewritten) = legacy_env_pattern_rewritten(pattern) else {
+        let Some((rewritten, reason)) = legacy_phase_pattern_rewritten(pattern) else {
             out.push(pattern.clone());
             continue;
         };
         if !seen.contains(pattern) {
             seen.push(pattern.clone());
             printer.deprecation(format!(
-                "`{flag} {pattern}` is deprecated: that phase now provisions package managers \
-                 as well as writing the env file. Use `{flag} {rewritten}`."
+                "`{flag} {pattern}` is deprecated: {reason}. Use `{flag} {rewritten}`."
             ));
         }
         out.push(rewritten);
@@ -1091,11 +1151,14 @@ fn warn_legacy_module_patterns(printer: &Printer, skip: &[String], only: &[Strin
             continue;
         }
         seen.push(pattern);
-        let replacement = match pattern.strip_prefix(LEGACY_MODULE_PREFIX) {
-            Some(name) => {
-                format!("Use `{flag} module:{name}` (all phases) or `{flag} files.module:{name}`.")
-            }
-            None => format!("Use `{flag} module:<name>` to select one module."),
+        let replacement = if pattern.starts_with(LEGACY_MODULE_PREFIX) {
+            // The routed spelling comes from the one composer, so the pattern
+            // this line tells the reader to use is the pattern a hint restating
+            // their own flags would hand them.
+            let routed = current_pattern_spelling(pattern);
+            format!("Use `{flag} {routed}` (all phases) or `{flag} files.{routed}`.")
+        } else {
+            format!("Use `{flag} module:<name>` to select one module.")
         };
         printer.deprecation(format!(
             "`{flag} {pattern}` is deprecated: module work now applies in the phase whose kind it is. {replacement}"
@@ -1285,7 +1348,7 @@ pub(in crate::cli) fn filter_plan(
     // one pass owns the whole question of what this run will do. `--phase` is
     // resolved as a predicate downstream, which cannot split a node — and a
     // batched provision is exactly the node a manager-name selector must
-    // split, or `--phase prerequisites.pipx` provisions npm as well.
+    // split, or `--phase bootstrap.pipx` provisions npm as well.
     if let Some(reconciler::PhaseFilter::Selector(phase, selector)) = phase_filter {
         reconciler::restrict_provision_batches(plan, phase, selector);
     }
@@ -1477,7 +1540,7 @@ pub(in crate::cli) fn filter_plan(
     //
     // Skip-direction only: `--only` is explicit selection, and a node the
     // user named directly is its own justification. `--only
-    // prerequisites.managers` (the docs' own recovery command) keeps every
+    // bootstrap.managers` (the docs' own recovery command) keeps every
     // manager node and nothing else — running the consumer-prune against
     // that plan would see zero surviving package installs (`--only` dropped
     // them all) and delete every manager node it just kept, which is not a

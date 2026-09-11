@@ -46,6 +46,23 @@ jobs:
       - name: Check formatting
         run: task fmt:check
 
+  # Rustdoc is the longest single step in this workflow, so it gets its own
+  # job and starts with the first wave instead of queueing behind clippy.
+  rustdoc:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rustdoc
+        run: task doc
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -61,9 +78,6 @@ jobs:
 
       - name: Clippy
         run: task clippy
-
-      - name: Rustdoc
-        run: task doc
 
       - name: Schema drift guard
         run: task schema:check
@@ -161,11 +175,24 @@ jobs:
             # ordinary userland tooling, so the minor-version gate is noise.
             export IGNORE_OSVERSION=yes
             pkg update -f
-            pkg install -y rustup-init git task nextest gmake perl5
+            # npm is the subject of the real-host prefix check in `run:`, and
+            # it must come from pkg here: IGNORE_OSVERSION is not exported into
+            # that shell, so a pkg install attempted there is rejected.
+            pkg install -y rustup-init git task nextest gmake perl5 npm
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
+            # The guest script's shell flags are the action's, not GitHub's, so
+            # the abort is stated here: without it a failing test leg is followed
+            # by a passing build and the whole job reports green.
+            set -e
             . "$HOME/.cargo/env"
             task test:ci
+            # The npm prefix fallback's unit pins inject both elevation and the
+            # write-probe, so only a real host proves it: a non-root user, the
+            # real www/npm whose configured prefix is the root-owned
+            # /usr/local, and npm honouring the --prefix cfgd passes.
+            cargo build --bin cfgd
+            task test:freebsd:npm-prefix BIN=target/debug/cfgd
 
   audit:
     name: Code Audit

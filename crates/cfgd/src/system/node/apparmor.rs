@@ -171,6 +171,7 @@ impl SystemConfigurator for AppArmorConfigurator {
                     Role::Info,
                     format!("Writing AppArmor profile: {}", path.posix()),
                 );
+                // user-scope-ok: read by apparmor_parser as root, never by a user session
                 cfgd_core::atomic_write_str(&path, content)?;
             }
 

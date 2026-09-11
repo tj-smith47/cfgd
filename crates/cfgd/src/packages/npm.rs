@@ -23,10 +23,19 @@ pub struct NpmManager;
 /// planned `nvm` is a method nothing can run.
 const NPM_FALLBACK_METHOD: &str = "nvm";
 
+/// npm's own fallback arm: the nvm installer, and the tools it needs.
+///
+/// The installer's pipeline is fetched with curl and RUN by bash. FreeBSD's
+/// base system carries neither, so naming only curl would let the plan be
+/// approved and then die inside the install.
+pub(super) fn nvm_bootstrap_plan() -> BootstrapPlan {
+    BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl", "bash"])
+}
+
 /// What a mediator installs to deliver npm. Read by `bootstrap` and by
 /// `mediated_packages`, so a batched provision asks apt for exactly the names
 /// the solo bootstrap does.
-const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"]);
+const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"], &["www/npm"]);
 
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
@@ -272,12 +281,15 @@ impl Drop for TestElevatedGuard {
     }
 }
 
+// serial-group-ok: the pinning helper itself, named by the seam's own roster row;
+// the declarations that CALL it are the ones that must carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
     let prev = TEST_ELEVATED_OVERRIDE.swap(i8::from(elevated), std::sync::atomic::Ordering::SeqCst);
     TestElevatedGuard { prev }
 }
 
+// serial-group-ok: forwards to the pinning helper above; its callers carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
 where
@@ -610,10 +622,8 @@ impl PackageManager for NpmManager {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
-        match detect_brew_system_method(NPM_FALLBACK_METHOD, delivered) {
-            NPM_FALLBACK_METHOD => {
-                Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
-            }
+        match detect_brew_system_method(&NPM_MEDIATED, NPM_FALLBACK_METHOD, delivered) {
+            NPM_FALLBACK_METHOD => Some(nvm_bootstrap_plan()),
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -621,13 +631,7 @@ impl PackageManager for NpmManager {
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `nvm` —
         // npm's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(
-            cx,
-            "npm",
-            NPM_MEDIATED.brew.unwrap_or("node"),
-            NPM_MEDIATED.system,
-            NPM_FALLBACK_METHOD,
-        )? {
+        if bootstrap_via_brew_then_system(cx, "npm", &NPM_MEDIATED, NPM_FALLBACK_METHOD)? {
             return Ok(());
         }
 
@@ -955,6 +959,8 @@ mod tests {
                 "apt"
             } else if can("dnf") {
                 "dnf"
+            } else if can("pkg") {
+                "pkg"
             } else {
                 "nvm"
             };
@@ -962,7 +968,7 @@ mod tests {
             assert_eq!(
                 plan.requires,
                 if expected_method == "nvm" {
-                    vec!["curl".to_string()]
+                    vec!["curl".to_string(), "bash".to_string()]
                 } else {
                     Vec::<String>::new()
                 }
@@ -1364,6 +1370,7 @@ mod tests {
             }
 
             fn argv_log(&self) -> String {
+                // absent-file-ok: a shim nothing ran wrote no log.
                 std::fs::read_to_string(&self.log_path).unwrap_or_default()
             }
         }
@@ -1898,7 +1905,7 @@ mod tests {
             // The decision is driven directly via `resolve_npm_prefix_with`
             // with `is_writable` forced to `false`, so this runs for real at
             // any uid — a root process bypasses the real write-probe (see
-            // npm_prefix_is_writable_returns_false_for_unwritable_directory
+            // npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root
             // for the one place that genuinely needs a root guard).
             let _clear = clear_npm_env_prefix();
             let rejected = tempfile::tempdir().expect("tempdir");
@@ -2310,7 +2317,7 @@ mod tests {
         }
 
         #[test]
-        fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
+        fn npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root() {
             // The write-probe performs a real filesystem write, and root
             // bypasses Unix DAC permission checks entirely, so an unwritable
             // directory cannot be constructed under root. The ENOTDIR case

@@ -82,11 +82,90 @@ impl StateStore {
         }
     }
 
+    /// Re-classify a run, in either direction.
+    ///
+    /// The retention prune's answer to a row it must not delete and must not
+    /// drop: a snapshot outside the unit's destination becomes
+    /// [`BackupRunStatus::Orphaned`], because dropping the row would throw away
+    /// the only proof the recorded path was ever cfgd's and nothing could
+    /// collect the payload afterwards. The prune re-judges every row against
+    /// the destination in force, so the reverse write matters just as much: a
+    /// destination restored to a path it once held sets its rows back to
+    /// [`BackupRunStatus::Success`], and the snapshots are restorable and
+    /// prunable again rather than stranded for `cfgd backup gc` to delete.
+    pub fn set_backup_run_status(&self, id: i64, status: BackupRunStatus) -> Result<()> {
+        self.conn.execute(
+            "UPDATE backup_runs SET status = ?1 WHERE id = ?2",
+            params![status.as_str(), id],
+        )?;
+        Ok(())
+    }
+
     /// Drop a run row. Called once its artifact has been removed (or was
     /// already gone) by retention pruning.
     pub fn delete_backup_run(&self, id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM backup_runs WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Replace the cluster-owned cadences with what a check-in just answered,
+    /// answering whether that changed the set.
+    ///
+    /// A REPLACE rather than a merge: the gateway sends the whole set every
+    /// time, so a unit a policy stopped scheduling has to lose its projection
+    /// here or it would run on a cadence nothing in the cluster still asks for.
+    ///
+    /// The comparison is taken inside the same transaction as the replace, so
+    /// the `true` a caller acts on describes the write it just made. The daemon
+    /// re-arms its backup timers on that answer, and re-arming on every check-in
+    /// instead would re-resolve the whole profile once per tick.
+    pub fn record_cluster_backup_schedules(
+        &self,
+        projections: &crate::backup::ScheduleProjections,
+    ) -> Result<bool> {
+        let checked_in_at = crate::utc_now_iso8601();
+        self.in_transaction(|| {
+            let changed = self.cluster_backup_schedules()? != *projections;
+            self.conn
+                .execute("DELETE FROM cluster_backup_schedules", [])?;
+            let mut insert = self.conn.prepare(
+                "INSERT INTO cluster_backup_schedules (name, schedule, retention, checked_in_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (name, projection) in projections {
+                insert.execute(params![
+                    name,
+                    projection.schedule,
+                    projection.retention,
+                    checked_in_at
+                ])?;
+            }
+            Ok(changed)
+        })
+    }
+
+    /// The cluster-owned cadences the last check-in answered with. Empty when
+    /// no check-in has run, or when the cluster owns none of this machine's
+    /// units — both of which leave every unit on its declared cadence.
+    pub fn cluster_backup_schedules(&self) -> Result<crate::backup::ScheduleProjections> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, schedule, retention FROM cluster_backup_schedules")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::backup::BackupScheduleProjection {
+                    schedule: row.get::<_, String>(1)?,
+                    retention: row.get::<_, Option<u32>>(2)?,
+                },
+            ))
+        })?;
+        let mut out = crate::backup::ScheduleProjections::new();
+        for row in rows {
+            let (name, projection) = row.map_err(|e| StateError::Database(e.to_string()))?;
+            out.insert(name, projection);
+        }
+        Ok(out)
     }
 }

@@ -138,6 +138,7 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         group.hint(super::safety_copy_hint(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
+        after_plan: Vec::new(),
         succeeded: usize::from(outcome.restored),
         skipped: 0,
         not_attempted: Vec::new(),
@@ -227,6 +228,11 @@ pub fn list_snapshots(unit: &BackupUnit<'_>, store: &StateStore) -> Result<Vec<S
 
     let mut snapshots = Vec::new();
     for run in runs {
+        // An orphaned row still names a path, but that path is outside the
+        // destination and belongs to `cfgd backup gc`, never to a restore.
+        if !run.has_artifact() {
+            continue;
+        }
         let Some(raw) = run.destination_path.as_deref() else {
             continue;
         };

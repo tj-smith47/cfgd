@@ -87,11 +87,10 @@ $ cfgd backup run missing-name
 
 $ cfgd backup list
 Backups
-
-Name      Source                         Schedule   Retention  Snapshots  Status   Last Run  Next Run
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db  -          7          1          Success  4h ago    -
-journal   ~/Documents/journal            0 3 * * *  3          1          Success  4h ago    in 11h
+Name      Source                         Schedule   Schedule Owner  Retention  Snapshots  Status   Last Run  Next Run
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          cluster         7          1          Success  just now  -
+journal   ~/Documents/journal            0 3 * * *  local           3          1          Success  just now  in 22h
 
 $ cfgd --output json backup run notes-db
 [
@@ -133,8 +132,9 @@ columns take: an unknown count is not a count of zero.
 
 `Status` and `Last Run` are two columns, the way `source list` splits them: the verdict is
 tinted by what it says, and the age beside it answers how stale the unit is. `Next Run`
-counts forward the same way (`in 11h`, `due now`). All three read as relative time on
-purpose — `-o json` keeps the exact instants in `lastRunAt` and `nextRunAt`.
+counts forward the same way, reading `due now` once the next due instant has passed. All three
+read as relative time on purpose: `-o json` keeps the exact instants in `lastRunAt` and
+`nextRunAt`.
 
 The count is the unit's own snapshots only. The safety copy [`cfgd backup restore`](#restoring)
 takes of what it overwrites is a sidecar beside the source, not a snapshot in the destination, so
@@ -176,6 +176,10 @@ backup's current `destination` (the same gate pruning uses), and one whose paylo
 longer on disk. A snapshot you could not restore is not listed as one.
 
 `--snapshots` requires a backup name; a bare `cfgd backup list --snapshots` is a usage error.
+
+`cfgd backup gc [name]` removes the snapshots a `destination:` change stranded; see
+[Garbage collection](#garbage-collection). The `Orphaned` column appears in `backup list` only on a
+machine that has some, and `-o json` carries the count as `orphaned` either way.
 
 **Next Run** is computed the same way the daemon seeds its timer, from the unit's `schedule` and
 its last recorded `finished_at` (see [`schedule`](#schedule)), so the listed time is the one the
@@ -312,7 +316,7 @@ How many snapshots to keep. Default 10, minimum 1.
 |---|---|
 | What pruning walks | the recorded runs, not a filename glob; deletes both the artifact on disk and its record |
 | Counted per outcome | the newest `retention` runs that produced a snapshot are kept, and independently the newest `retention` that did not; a run of failures never deletes a good snapshot |
-| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is dropped from history with a warning; the path itself is left untouched, and the record consumes no retention slot |
+| Paths outside `destination` | a record naming a path outside the backup's current `destination` (you changed `destination:` between runs, or the state database was edited) is re-classified `Orphaned` and kept: the path itself is left untouched, the record consumes no retention slot, and it is no longer offered as a restorable snapshot. [`cfgd backup gc`](#garbage-collection) is what removes both. Every run re-judges every record, so a `destination:` pointed back at a path it held before takes those records back |
 
 ### `schedule`
 
@@ -344,6 +348,45 @@ backups:
     source: ~/.ssh
                              # no schedule → runs during `cfgd apply`
 ```
+
+### `scheduleOwner`
+
+Which layer owns the unit's schedule. `Cluster` (the default) leaves the unit open to the
+cluster's [`BackupPolicy`](backup-policy.md), which may set or replace its `schedule` and
+`retention`; `Local` pins the unit to this machine, so the policy still reports the unit but
+projects no schedule onto it.
+
+`cfgd backup list`'s `Schedule Owner` column names one of three words. `projected` says a cluster
+policy answered and the unit now runs on the cadence that answer carried; `cluster` says the unit
+is open to a policy that has replaced nothing, so its own declaration still runs; `local` says the
+unit is pinned to this machine. The `Schedule` and `Retention` cells beside it read the projected
+values, and `-o json` keeps both sets: `schedule` / `retention` are what the profile declared,
+`effectiveSchedule` / `effectiveRetention` what the cluster projected.
+
+```console
+$ cfgd backup list
+Backups
+Name      Source                         Schedule   Schedule Owner  Retention  Snapshots  Status   Last Run  Next Run
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  0 4 * * *  projected       30         1          Success  just now  in 6h
+journal   ~/Documents/journal            0 3 * * *  local           3          1          Success  just now  in 5h
+```
+
+`notes-db` declared no schedule and left `scheduleOwner` at its `Cluster` default, so the policy's
+`0 4 * * *` and its retention of 30 are what runs. `journal` is pinned `Local`, so the same policy
+reports it and projects nothing onto it, and the `0 3 * * *` the profile declared still runs.
+
+```yaml
+backups:
+  - name: notes-db
+    source: ~/.local/share/notes/notes.db
+    schedule: "0 12 * * *"   # noon local, while the laptop is awake
+    scheduleOwner: Local     # a fleet policy's 3am window would never fire here
+```
+
+A fleet-wide `0 3 * * *` is written for machines that are on at 3am. A laptop that is asleep
+then would take the policy's window, miss every run, and report a unit that never fires; pinning
+the unit `Local` keeps the schedule the person at the keyboard chose.
 
 ### `preBackup` / `postBackup`
 
@@ -454,8 +497,11 @@ failure, not a second error object.
 ## Daemon scheduling
 
 A backup with a `schedule` gets a timer in the [daemon](daemon.md) alongside the reconcile and sync
-tasks. Nothing else changes: the timer dispatches the same engine `cfgd backup run` does, so a
-scheduled run writes the same `backup_runs` row, runs the same hooks, and prunes to the same
+tasks. On a machine the operator manages, that schedule can come from the cluster instead: a
+[`BackupPolicy`](backup-policy.md) sets the cadence of units the profile already defines, for
+every unit not pinned with [`scheduleOwner: Local`](#scheduleowner). Nothing else changes: the
+timer dispatches the same engine `cfgd backup run` does, so a scheduled run writes the same
+`backup_runs` row, runs the same hooks, and prunes to the same
 `retention`. Only `CFGD_CONTEXT` differs: `reconcile` for a daemon-driven run, `apply`
 for a CLI-driven one.
 
@@ -527,6 +573,102 @@ Timer behaviour:
 - **Shutdown is not held hostage by a hook.** `SIGTERM` / Ctrl-C reaches an in-flight `preBackup`
   or `postBackup` hook, so a `systemctl stop cfgd` during a backup does not wait out the hook's
   own timeout.
+
+## Garbage collection
+
+Changing a unit's [`destination`](#destination) leaves its existing snapshots where they were
+written. The next run of that unit notices: retention walks the recorded runs, finds rows naming a
+path outside the destination now in force, and re-classifies each `Orphaned` rather than deleting
+it. The row is the only proof the payload was ever cfgd's, so it is kept, and the run closes on the
+command that reclaims the bytes.
+
+```console
+$ cfgd backup run notes-db
+Backup: notes-db
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Source   ~/.local/share/notes/notes.db
+  Actions  1 planned
+
+backup:notes-db
+  ✓ snapshot notes.db.20260908T141604Z — 55 B
+  → run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
+
+✓ Backup complete — 1 action succeeded (<0.1s wall)
+
+$ cfgd backup list
+Backups
+Name      Source                         Schedule Owner  Retention  Snapshots  Orphaned  Status   Last Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  cluster         7          1          1         Success  just now
+
+$ cfgd backup gc
+Collect
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  1 planned
+
+backup:notes-db
+  ✓ remove notes.db.20260908T141604Z — 55 B, destination changed
+
+✓ Collect complete — 1 action succeeded (<0.1s wall)
+
+$ cfgd backup gc
+Collect
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  workstation
+
+✓ Nothing to do — everything is up to date
+```
+
+`cfgd backup gc [name]` collects every declared unit when `name` is omitted, or the named one. It
+is a run like any other: a `Collect` header, one `backup:<name>` group per unit that has something
+to collect, and a rollup. For each orphaned record it removes the recorded path, then the record.
+
+**What counts as an orphan:** a `backup_runs` record whose `destination_path` is not inside the
+unit's `destination` as currently declared. That is the same containment gate retention prunes by
+([`is_snapshot_within`](#retention)), so the two can never disagree about which snapshots are the
+unit's own. Every run re-judges every record against the destination in force at that moment, and
+writes the verdict both ways: point `destination` back at a path it held before and the next run of
+that unit marks those records `Success` again, which puts their snapshots back in
+`cfgd backup list <name> --snapshots`, back under retention, and out of reach of
+`cfgd backup gc`.
+
+**What is never touched:** anything the state store did not record. Nothing here lists a directory,
+so a file you put in an old destination by hand is not cfgd's to find and not cfgd's to delete, and
+an old destination left holding only strangers' files is left standing. A record whose payload
+is already gone settles as a `∅` skipped row: the record is dropped, but nothing on the machine
+changed. A removal that fails is a `✗` row carrying the I/O error, and its record stays, so the
+next `cfgd backup gc` retries it.
+
+**A `namePattern` change orphans nothing.** Retention counts records, not filenames: a snapshot
+written under the old pattern is still inside the destination, still restorable, and still one of
+the newest `retention` the unit keeps. It ages out through retention like any other.
+
+An orphaned record is not a restorable snapshot. It is absent from `cfgd backup list <name>
+--snapshots`, and `cfgd backup restore` and `cfgd backup rollback` cannot select it.
+
+`cfgd backup gc` exits `0` when everything it set out to collect was collected (including a run
+with nothing to collect), and `1` when a payload could not be removed, so a script can tell
+"nothing left to collect" from "cfgd could not collect it". A unit whose recorded history cfgd
+could not read at all is the third case and exits `1` too: it renders a `✗` row naming the unit and
+the store's own reason, counts as a failure in the rollup, and is listed under `unreadable` in
+`-o json`. Nothing can say what such a unit still holds, so the run never claims there was nothing
+left to collect. `-o json` reports each record under `collected`, `skipped` or `failed`:
+
+```json
+{
+  "collected": [
+    {
+      "name": "notes-db",
+      "path": "/home/me/backups/notes-old/notes.db.20260908T141604Z",
+      "sizeBytes": 55
+    }
+  ],
+  "failed": [],
+  "skipped": []
+}
+```
 
 ## Restoring
 

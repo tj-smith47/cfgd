@@ -1,84 +1,6 @@
 use super::*;
 
 #[test]
-fn parse_duration_str_seconds() {
-    let d = parse_duration_str("30s").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(30));
-}
-
-#[test]
-fn parse_duration_str_minutes() {
-    let d = parse_duration_str("5m").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(300));
-}
-
-#[test]
-fn parse_duration_str_hours() {
-    let d = parse_duration_str("1h").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(3600));
-}
-
-#[test]
-fn parse_duration_str_plain_seconds() {
-    let d = parse_duration_str("60").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(60));
-}
-
-#[test]
-fn parse_duration_str_whitespace() {
-    let d = parse_duration_str(" 10 s ").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(10));
-}
-
-#[test]
-fn parse_duration_str_days() {
-    let d = parse_duration_str("30d").unwrap();
-    assert_eq!(d, std::time::Duration::from_secs(30 * 86400));
-}
-
-#[test]
-fn parse_duration_str_invalid() {
-    assert!(
-        parse_duration_str("abc")
-            .unwrap_err()
-            .contains("invalid timeout"),
-        "bare letters should fail with a useful message"
-    );
-    assert!(
-        parse_duration_str("")
-            .unwrap_err()
-            .contains("invalid timeout"),
-        "empty string should fail"
-    );
-    assert!(
-        parse_duration_str("xs")
-            .unwrap_err()
-            .contains("invalid timeout"),
-        "non-numeric prefix should fail"
-    );
-}
-
-#[test]
-fn parse_duration_str_zero() {
-    assert_eq!(
-        parse_duration_str("0s").unwrap(),
-        std::time::Duration::from_secs(0)
-    );
-    assert_eq!(
-        parse_duration_str("0").unwrap(),
-        std::time::Duration::from_secs(0)
-    );
-}
-
-#[test]
-fn parse_duration_str_negative() {
-    assert!(
-        parse_duration_str("-5s").is_err(),
-        "negative durations should be rejected"
-    );
-}
-
-#[test]
 fn parse_loose_version_full_semver() {
     assert_eq!(
         parse_loose_version("1.28.3"),
@@ -426,57 +348,6 @@ fn is_self_reference_recognizes_only_a_pure_dot_path() {
             "'{candidate}' is not a pure self-reference"
         );
     }
-}
-
-#[test]
-fn validate_plain_name_accepts_ordinary_names() {
-    for candidate in ["snapshot", "daily/2026", "a.b.c", "..hidden", "x..y"] {
-        assert!(
-            validate_plain_name(candidate).is_ok(),
-            "'{candidate}' should be a usable name"
-        );
-    }
-}
-
-#[test]
-fn validate_plain_name_rejects_every_directory_reference() {
-    // `daily/.` is the one `Path::components()` cannot see: it normalizes to the
-    // single component `daily` while the joined path still resolves to `daily`
-    // itself rather than to something new inside it.
-    for candidate in [".", "..", "daily/.", "./daily", "a/../b", "/daily", "a//b"] {
-        assert!(
-            validate_plain_name(candidate).is_err(),
-            "'{candidate}' does not name something new and must be rejected"
-        );
-    }
-    assert!(validate_plain_name("").is_err());
-    // Windows separators are judged too — the check runs before any `Path` parse,
-    // where a `\` would otherwise be an ordinary character on unix.
-    assert!(validate_plain_name(r"daily\.").is_err());
-}
-
-#[test]
-fn validate_plain_name_rejects_a_rooted_value_on_every_host() {
-    // `Path::join` discards the base for a rooted right-hand side, so any of
-    // these would silently relocate whatever the caller was building. Windows
-    // shapes are rejected on unix too: the name may have been written into
-    // shared state by a Windows host.
-    for candidate in [
-        "/abs",
-        r"\abs",
-        "C:/evil",
-        r"C:\evil",
-        "C:evil",
-        r"\\server\share",
-    ] {
-        assert!(
-            validate_plain_name(candidate).is_err(),
-            "'{candidate}' is rooted and must not be accepted as a name"
-        );
-    }
-    // A colon anywhere is an NTFS alternate-data-stream selector, not a name.
-    assert!(validate_plain_name("notes.txt:hidden").is_err());
-    assert!(validate_plain_name("daily/C:evil").is_err());
 }
 
 #[test]
@@ -1053,17 +924,19 @@ fn path_value(env: &[config::EnvVar]) -> &str {
 }
 
 #[test]
-fn a_layers_path_concatenates_onto_the_base_in_declaration_order() {
+fn a_layers_path_prepend_lands_ahead_of_the_one_it_folds_onto() {
     let mut base = vec![ev("PATH", "$HOME/.local/bin:$PATH"), ev("EDITOR", "vim")];
     fold_env_layer(
         &mut base,
         &[ev("PATH", "/opt/homebrew/bin:$PATH"), ev("EDITOR", "nvim")],
         ':',
     );
-    // Base bucket first, then overlay, with the ambient reference written once.
+    // The overlay's prepend leads, the way a later declaration putting its own
+    // directory ahead of the ambient reference does, with that reference
+    // written once.
     assert_eq!(
         path_value(&base),
-        "$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+        "/opt/homebrew/bin:$HOME/.local/bin:$PATH"
     );
     // Every other name is still last-writer-wins.
     assert_eq!(
@@ -1086,7 +959,9 @@ fn entries_after_the_ambient_reference_stay_after_it() {
 fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
     let mut base = vec![ev("PATH", "/only/this")];
     fold_env_layer(&mut base, &[ev("PATH", "/and/this")], ':');
-    assert_eq!(path_value(&base), "/only/this:/and/this");
+    // Neither declaration names the ambient reference, so both entries are
+    // prepends and the overlay's leads.
+    assert_eq!(path_value(&base), "/and/this:/only/this");
 }
 
 #[test]
@@ -1103,12 +978,12 @@ fn one_directory_written_two_ways_lands_on_path_once() {
         &[ev("PATH", &format!("{literal}{sep}/opt/bin"))],
         sep,
     );
-    // First occurrence wins, so the spelling the earlier layer used survives;
-    // the overlay names no ambient reference, so its remaining entry joins the
-    // bucket ahead of the one the base declaration placed.
+    // The first occurrence in the RENDERED order wins, and the prepend bucket
+    // renders the overlay's entries first, so the overlay's spelling of the one
+    // directory both declarations name is the one that survives.
     assert_eq!(
         path_value(&base),
-        format!("$HOME/.cargo/bin{sep}/opt/bin{sep}$PATH")
+        format!("{literal}{sep}/opt/bin{sep}$PATH")
     );
 }
 
@@ -1119,14 +994,14 @@ fn the_windows_separator_folds_the_same_way() {
     // unusable one.
     let mut base = vec![ev("PATH", "C:\\tools;$env:PATH")];
     fold_env_layer(&mut base, &[ev("PATH", "C:\\other;$env:PATH")], ';');
-    assert_eq!(path_value(&base), "C:\\tools;C:\\other;$env:PATH");
+    assert_eq!(path_value(&base), "C:\\other;C:\\tools;$env:PATH");
 }
 
 #[test]
 fn the_ambient_reference_keeps_the_spelling_of_the_first_declaration_that_named_one() {
     let mut base = vec![ev("PATH", "/a:${PATH}")];
     fold_env_layer(&mut base, &[ev("PATH", "/b:$PATH")], ':');
-    assert_eq!(path_value(&base), "/a:/b:${PATH}");
+    assert_eq!(path_value(&base), "/b:/a:${PATH}");
 }
 
 #[test]

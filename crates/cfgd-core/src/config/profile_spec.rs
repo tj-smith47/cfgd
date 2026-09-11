@@ -3,7 +3,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::module::ScriptEntry;
+use cfgd_schema::{
+    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec,
+    case_insensitive_enum,
+};
+
 use super::source::{EnvVar, ShellAlias};
 use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
@@ -802,154 +806,6 @@ pub struct FilesSpec {
     pub permissions: HashMap<String, String>,
 }
 
-/// File deployment strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
-pub enum FileStrategy {
-    /// Create a symbolic link from target to source (default).
-    #[default]
-    Symlink,
-    /// Copy source content to target.
-    Copy,
-    /// Render a Tera template and write the output (auto-selected for .tera files).
-    Template,
-    /// Create a hard link from target to source.
-    Hardlink,
-    /// Merge structured keys/values into the target, or pipe it through a
-    /// script, leaving everything else untouched. Requires a `patch:` block.
-    Patch,
-}
-
-case_insensitive_enum!(FileStrategy {
-    "Symlink" => FileStrategy::Symlink,
-    "Copy" => FileStrategy::Copy,
-    "Template" => FileStrategy::Template,
-    "Hardlink" => FileStrategy::Hardlink,
-    "Patch" => FileStrategy::Patch,
-});
-
-impl FileStrategy {
-    /// Whether the strategy is meaningful as the global `spec.fileStrategy`
-    /// default.
-    ///
-    /// `Patch` is not: it is defined by a per-file `patch:` block, which a
-    /// file inheriting the global default cannot have. The config parser and
-    /// the published schema both derive their accepted value set from this, so
-    /// an editor and `cfgd` can never disagree about it.
-    pub fn valid_as_global_default(self) -> bool {
-        !matches!(self, FileStrategy::Patch)
-    }
-
-    /// The lowercase word a report names this strategy by — a deploy row's
-    /// child method, and the status table's Method column. Distinct from
-    /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this
-    /// is the ONE display spelling, so the two surfaces naming a resolved
-    /// strategy cannot drift on casing the way an inline
-    /// `.as_str().to_lowercase()` at each call site would invite.
-    pub fn method_label(self) -> &'static str {
-        match self {
-            FileStrategy::Symlink => "symlink",
-            FileStrategy::Copy => "copy",
-            FileStrategy::Template => "template",
-            FileStrategy::Hardlink => "hardlink",
-            FileStrategy::Patch => "patch",
-        }
-    }
-
-    /// The strategy a `module_file_manifest.strategy` column records, read
-    /// back — the inverse of [`Self::as_str`], which is what the manifest
-    /// writer persists. `None` for a value no variant spells, so a corrupt
-    /// column degrades to an absent cell rather than a guessed method.
-    pub fn from_recorded(recorded: &str) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|s| recorded.eq_ignore_ascii_case(s.as_str()))
-    }
-}
-
-/// File format used to interpret and re-serialize a `Patch`-strategy target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub enum PatchFormat {
-    /// INI sections/keys, edited line-by-line to preserve comments and layout.
-    Ini,
-    /// JSON, re-serialized on write (no comments to preserve).
-    Json,
-    /// YAML; comments are NOT preserved across a merge (see docs for the caveat).
-    Yaml,
-    /// TOML, edited in place to preserve comments and layout.
-    Toml,
-}
-
-case_insensitive_enum!(PatchFormat {
-    "Ini" => PatchFormat::Ini,
-    "Json" => PatchFormat::Json,
-    "Yaml" => PatchFormat::Yaml,
-    "Toml" => PatchFormat::Toml,
-});
-
-/// Configuration for the `Patch` file strategy: a structured merge (`ensure`)
-/// or a content-rewriting script, applied on top of the target's current
-/// content.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PatchSpec {
-    /// File format to parse the target as. Inferred from the target's
-    /// extension when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<PatchFormat>,
-    /// Keys/values to deep-merge into the target, leaving unmentioned keys
-    /// untouched. Values are literal (no template rendering). Mutually
-    /// exclusive with `script`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<serde_json::Value>")]
-    pub ensure: Option<serde_yaml::Value>,
-    /// A script path or an inline command that receives the target's current
-    /// content on stdin and writes the new content to stdout. A relative path
-    /// resolves against the module directory for a module file
-    /// (`spec.files[]`) and against the config directory for a profile file
-    /// (`spec.files.managed[]`); a value that resolves to no file is run as an
-    /// inline command. Mutually exclusive with `ensure`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-    /// Name of the source whose `constraints.noScripts` bars this filter, set
-    /// by composition when the subscriber did not opt in.
-    ///
-    /// Not part of the config surface (`#[serde(skip)]`, so `deny_unknown_fields`
-    /// rejects it in YAML and it never reaches the published schema): composition
-    /// is the only writer. Poisoning the spec rather than dropping it keeps the
-    /// file visible on read-only surfaces while making the filter unrunnable by
-    /// construction — every evaluation path funnels through `compute_patched`,
-    /// which refuses a marked spec.
-    #[serde(skip)]
-    pub blocked_by: Option<String>,
-}
-
-/// Controls when encryption is required for a managed file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
-pub enum EncryptionMode {
-    /// File must be encrypted when stored in the repository.
-    #[default]
-    InRepo,
-    /// File must always be encrypted, including at rest on disk.
-    Always,
-}
-
-case_insensitive_enum!(EncryptionMode {
-    "InRepo" => EncryptionMode::InRepo,
-    "Always" => EncryptionMode::Always,
-});
-
-/// Encryption settings for a managed file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EncryptionSpec {
-    /// The encryption backend to use (e.g. "sops", "age").
-    pub backend: String,
-    /// When encryption must be enforced. Defaults to `InRepo`.
-    #[serde(default)]
-    pub mode: EncryptionMode,
-}
-
 /// Encryption constraint applied to files from a config source.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1067,11 +923,9 @@ pub(crate) fn profile_spec_from_value(
     serde_yaml::from_value::<ProfileSpec>(value)
 }
 
-/// Validate the `source` / `strategy` / `patch` / `encryption` shape shared by
-/// `ManagedFileSpec` and `ModuleFileEntry`: `source` is required unless
-/// `strategy` is `Patch`; a `patch` block is required when `strategy` is
-/// `Patch` and rejected otherwise; within a `patch` block exactly one of
-/// `ensure`/`script` must be set; `encryption` is rejected on a `Patch` entry.
+/// The one source/strategy/patch/encryption shape rule, in this crate's error
+/// type: cfgd-schema owns the rule so the Module CRD applies the same one, and
+/// states its refusal as a bare message the caller labels.
 pub(crate) fn validate_file_patch_shape(
     subject: &str,
     source_is_empty: bool,
@@ -1080,59 +934,16 @@ pub(crate) fn validate_file_patch_shape(
     encryption_declared: bool,
     private: bool,
 ) -> Result<()> {
-    let is_patch = matches!(strategy, Some(FileStrategy::Patch));
-    // `private` marks the SOURCE file local-only (gitignored, skipped where it
-    // is absent). `Patch` has no source, so the flag can only ever be a no-op
-    // that reads as a promise the strategy never keeps.
-    if is_patch && private {
-        return Err(ConfigError::Invalid {
-            message: format!("{subject}: 'private' is not supported with strategy 'patch'"),
-        }
-        .into());
-    }
-    // Every `encryption` mode constrains the SOURCE file a strategy deploys
-    // ("must be encrypted in the repo"). `Patch` has no source — it rewrites
-    // the target's own plaintext structure — so the constraint could only be
-    // silently ignored. Reject it instead of pretending it was honoured.
-    if is_patch && encryption_declared {
-        return Err(ConfigError::Invalid {
-            message: format!("{subject}: 'encryption' is not supported with strategy 'patch'"),
-        }
-        .into());
-    }
-    match (is_patch, patch) {
-        (true, None) => Err(ConfigError::Invalid {
-            message: format!("{subject}: strategy 'patch' requires a 'patch' block"),
-        }
-        .into()),
-        (false, Some(_)) => Err(ConfigError::Invalid {
-            message: format!("{subject}: 'patch' is only valid when strategy is 'patch'"),
-        }
-        .into()),
-        (true, Some(m)) => match (m.ensure.is_some(), m.script.is_some()) {
-            (true, true) => Err(ConfigError::Invalid {
-                message: format!(
-                    "{subject}: 'patch' must set exactly one of 'ensure' or 'script', not both"
-                ),
-            }
-            .into()),
-            (false, false) => Err(ConfigError::Invalid {
-                message: format!("{subject}: 'patch' must set exactly one of 'ensure' or 'script'"),
-            }
-            .into()),
-            _ => Ok(()),
-        },
-        (false, None) => {
-            if source_is_empty {
-                Err(ConfigError::Invalid {
-                    message: format!("{subject}: 'source' is required unless strategy is 'patch'"),
-                }
-                .into())
-            } else {
-                Ok(())
-            }
-        }
-    }
+    cfgd_schema::validate_file_patch_shape(
+        subject,
+        source_is_empty,
+        strategy,
+        patch,
+        encryption_declared,
+        private,
+    )
+    .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+    Ok(())
 }
 
 /// Validate the `patch` strategy shape of every managed file
@@ -1197,158 +1008,6 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     Ok(())
 }
 
-/// `spec.scripts`: lifecycle hooks run at specific points in the reconcile cycle.
-///
-/// ```yaml
-/// scripts:
-///   preApply: "echo starting apply"
-///   postApply:
-///     - run: brew cleanup
-///       continueOnError: true
-///   onDrift: "notify-send 'cfgd: drift detected'"
-/// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScriptSpec {
-    /// Run once before any action in an apply.
-    #[serde(default)]
-    pub pre_apply: Vec<ScriptEntry>,
-    /// Run once after every action in an apply completes.
-    #[serde(default)]
-    pub post_apply: Vec<ScriptEntry>,
-    /// Run once before a daemon reconcile tick begins.
-    #[serde(default)]
-    pub pre_reconcile: Vec<ScriptEntry>,
-    /// Run once after a daemon reconcile tick completes.
-    #[serde(default)]
-    pub post_reconcile: Vec<ScriptEntry>,
-    /// Run when the daemon detects drift, before any auto-apply decision.
-    #[serde(default)]
-    pub on_drift: Vec<ScriptEntry>,
-    /// Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
-    #[serde(default)]
-    pub on_change: Vec<ScriptEntry>,
-}
-
-impl ScriptSpec {
-    /// Every lifecycle hook paired with the entries declared for it, in the
-    /// canonical hook order: each context's `pre` before its `post` (apply,
-    /// then reconcile), then the event hooks. An apply and a reconcile are
-    /// separate runs, so no single run reaches all six.
-    ///
-    /// The ONE enumeration of the hook set: a surface that lists, counts or
-    /// names hooks reads from here, so none of them can miss a hook the YAML
-    /// accepts or disagree about the order they are reported in.
-    pub fn hooks(&self) -> [(&'static str, &[ScriptEntry]); 6] {
-        // Destructured, so a seventh hook field does not compile until it is
-        // listed here — the mechanism behind "no surface can miss a hook".
-        let Self {
-            pre_apply,
-            post_apply,
-            pre_reconcile,
-            post_reconcile,
-            on_drift,
-            on_change,
-        } = self;
-        [
-            ("preApply", pre_apply),
-            ("postApply", post_apply),
-            ("preReconcile", pre_reconcile),
-            ("postReconcile", post_reconcile),
-            ("onDrift", on_drift),
-            ("onChange", on_change),
-        ]
-    }
-}
-
-/// A declarative backup: snapshot `source` (a file or directory) into
-/// `destination`, retaining the newest `retention` snapshots.
-///
-/// The shape is validated at parse time and run by the backup engine.
-/// Schedule-less backups (no `schedule`) run automatically on every
-/// `cfgd apply`; every backup — scheduled or not — can also be run directly
-/// with `cfgd backup run [name]`.
-//
-// Every `///` line on this struct and its fields is copied verbatim into
-// schemas/cfgd-profile.schema.json, which editors render as YAML completion
-// help. Keep them plain prose: a rustdoc intra-doc link renders as literal
-// `[`name`]` noise to a user who has no rustdoc to follow it to.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BackupSpec {
-    /// Unique identifier for this backup within `spec.backups`, unique across
-    /// the list. Keys the `destination` default, run records, and CLI
-    /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`)
-    /// and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must
-    /// be non-empty, non-blank, a single segment (no `/` or `\`), not a
-    /// directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and
-    /// free of `:` anywhere — a drive and NTFS data-stream separator on Windows.
-    /// Windows shapes are rejected on every platform so a name written on one
-    /// OS stays valid on the others.
-    pub name: String,
-    /// File or directory to snapshot. A leading `~` expands to the home
-    /// directory. Must not contain, or sit inside, the resolved `destination` —
-    /// a nested pair is rejected before any copy, with symlinks resolved on both
-    /// sides. Its filename is what `{filename}` interpolates, so a source whose
-    /// filename contains `:` (legal on Unix, a drive and data-stream separator
-    /// on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
-    pub source: PathBuf,
-    /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
-    /// when omitted — resolved by the backup engine, not at parse time, since
-    /// the state dir depends on runtime scope/overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destination: Option<PathBuf>,
-    /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
-    /// and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are
-    /// rejected at parse time. A literal `/` nests the snapshot in a
-    /// subdirectory of the destination. At run time the rendered value must be
-    /// relative and every segment must name something: `.` and `..` segments,
-    /// empty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`,
-    /// `C:daily`, `\\server\share`), and `:` anywhere are all rejected. Windows
-    /// shapes are rejected on every platform, so a pattern is valid everywhere
-    /// or nowhere. A rejection names the `{filename}` it interpolated, so a
-    /// colon in the source filename points at itself. Defaults to
-    /// `"{filename}.{timestamp}"`.
-    #[serde(default = "default_backup_name_pattern")]
-    pub name_pattern: String,
-    /// When to run this backup: a duration interval (e.g. `"6h"`) or a cron
-    /// expression, validated at parse time. Cron expressions may be 5-field
-    /// (`minute hour day month weekday`, e.g. `"0 3 * * *"`) or 6-field with a
-    /// leading seconds field (`second minute hour day month weekday`, e.g.
-    /// `"30 0 3 * * *"`), and are evaluated in the machine's LOCAL timezone,
-    /// like a crontab entry. An interval is measured from the unit's last
-    /// recorded run, so a `"1d"` backup on a machine rebooted daily still fires
-    /// daily. Setting this hands the backup to the daemon's timers and takes it
-    /// out of apply; omitted means "run on every apply".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<String>,
-    /// Number of newest snapshots to keep for this backup; older snapshots are
-    /// pruned from disk and from the run history. Must be at least 1 (`0` would
-    /// keep no backups, which is a misconfiguration rather than a supported
-    /// "unlimited" mode). Defaults to 10.
-    #[serde(default = "default_backup_retention")]
-    #[schemars(range(min = 1))]
-    pub retention: u32,
-    /// Scripts run before the snapshot is taken (e.g. stop a service that
-    /// holds `source` open so the snapshot is consistent). A failure skips the
-    /// snapshot and records a failed run; `postBackup` still runs.
-    #[serde(default)]
-    pub pre_backup: Vec<ScriptEntry>,
-    /// Scripts run after the copy step (e.g. restart the service stopped by
-    /// `preBackup`). Always attempted, including after a failed `preBackup` or
-    /// a failed copy.
-    #[serde(default)]
-    pub post_backup: Vec<ScriptEntry>,
-}
-
-fn default_backup_name_pattern() -> String {
-    "{filename}.{timestamp}".to_string()
-}
-
-fn default_backup_retention() -> u32 {
-    10
-}
-
 /// The only `{var}` tokens a backup `namePattern` may reference.
 const BACKUP_NAME_PATTERN_VARS: &[&str] = &["name", "filename", "timestamp"];
 
@@ -1411,59 +1070,25 @@ fn validate_backup_name_pattern(subject: &str, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a backup `name`.
+/// Validate a backup `name`, relabelling [`cfgd_schema::validate_backup_unit_name`]'s
+/// refusal as a [`ConfigError::Invalid`].
 ///
-/// The name is a directory component (`<state_dir>/backups/<name>/`), a lock
-/// filename (`<state_dir>/locks/backup-<name>.lock`), and the key the retention
-/// pass prunes by — three roots cfgd creates and later deletes wholesale — so it
-/// goes through [`crate::validate_plain_name`], the shared gate for exactly that
-/// class. Only the single-component rule is checked here on top: `validate_plain_name`
-/// accepts a nested `daily/2026`, which a backup name must not be.
+/// The grammar itself lives in the leaf crate, because the cluster-side
+/// `BackupPolicy` names the same units and cannot reach into this crate.
 pub(crate) fn validate_backup_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        return Err(ConfigError::Invalid {
-            message: "backup name must not be empty or whitespace-only".to_string(),
-        }
-        .into());
-    }
-    if name.contains('/') || name.contains('\\') {
-        return Err(ConfigError::Invalid {
-            message: format!(
-                "backup name '{name}' must not contain path separators ('/' or '\\'); it is used as a directory component (<state_dir>/backups/<name>/)"
-            ),
-        }
-        .into());
-    }
-    if let Err(why) = crate::validate_plain_name(name) {
-        return Err(ConfigError::Invalid {
-            message: format!(
-                "backup name '{name}' is not usable as a name: {why}; it becomes a directory component (<state_dir>/backups/<name>/) and a lock file (<state_dir>/locks/backup-<name>.lock)"
-            ),
-        }
-        .into());
-    }
+    cfgd_schema::validate_backup_unit_name(name)
+        .map_err(|message| ConfigError::Invalid { message })?;
     Ok(())
 }
 
-/// Validate a backup `schedule`: it must parse as either a
-/// [`crate::parse_duration_str`] interval or a `croner` cron expression.
-/// Naming both attempted interpretations' errors on failure so a typo in
-/// either form is diagnosable from the message alone.
+/// Validate a backup `schedule` through the shared grammar
+/// [`cfgd_schema::validate_backup_schedule_grammar`], prefixing the subject the
+/// local document can name and the CRD cannot.
 fn validate_backup_schedule(subject: &str, schedule: &str) -> Result<()> {
-    let duration_err = match crate::parse_duration_str(schedule) {
-        Ok(_) => return Ok(()),
-        Err(e) => e,
-    };
-    let cron_err = match schedule.parse::<croner::Cron>() {
-        Ok(_) => return Ok(()),
-        Err(e) => e,
-    };
-    Err(ConfigError::Invalid {
-        message: format!(
-            "{subject}: schedule '{schedule}' is not a valid interval ({duration_err}) and not a valid cron expression ({cron_err})"
-        ),
-    }
-    .into())
+    cfgd_schema::validate_backup_schedule_grammar(schedule).map_err(|e| ConfigError::Invalid {
+        message: format!("{subject}: {e}"),
+    })?;
+    Ok(())
 }
 
 /// Validate `spec.backups[]`: `name` is non-empty, path-safe, and unique
@@ -1475,26 +1100,13 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
     for spec in specs {
         validate_backup_name(&spec.name)?;
         let subject = format!("backup '{}'", spec.name);
-        if !seen_names.insert(spec.name.as_str()) {
-            return Err(ConfigError::Invalid {
-                message: format!(
-                    "duplicate backup name '{}': names must be unique across spec.backups",
-                    spec.name
-                ),
-            }
-            .into());
-        }
+        cfgd_schema::validate_backup_unit_shape(&spec.name, Some(spec.retention), &mut seen_names)
+            .map_err(|e| ConfigError::Invalid {
+                message: format!("{subject}: {e}"),
+            })?;
         validate_backup_name_pattern(&subject, &spec.name_pattern)?;
         if let Some(schedule) = &spec.schedule {
             validate_backup_schedule(&subject, schedule)?;
-        }
-        if spec.retention == 0 {
-            return Err(ConfigError::Invalid {
-                message: format!(
-                    "{subject}: retention must be at least 1 (0 would keep no backups); omit the field to use the default of 10"
-                ),
-            }
-            .into());
         }
     }
     Ok(())
@@ -1503,6 +1115,21 @@ pub fn validate_backup_specs(specs: &[BackupSpec]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_schema::{PatchFormat, default_backup_name_pattern, default_backup_retention};
+
+    /// What the shared unit-shape rule says about a unit declared after
+    /// `taken`, so this parser's message is asserted against the rule itself
+    /// rather than against a copy of its wording.
+    fn shared_shape_refusal<'a>(
+        name: &'a str,
+        retention: Option<u32>,
+        taken: &[&'a str],
+    ) -> String {
+        let mut seen: std::collections::HashSet<&'a str> = taken.iter().copied().collect();
+        cfgd_schema::validate_backup_unit_shape(name, retention, &mut seen)
+            .expect_err("the shape rule refuses this unit")
+            .to_string()
+    }
 
     /// A minimal valid backup unit; tests override only the field under test.
     fn backup(name: &str) -> BackupSpec {
@@ -1512,6 +1139,7 @@ mod tests {
             destination: None,
             name_pattern: default_backup_name_pattern(),
             schedule: None,
+            schedule_owner: Default::default(),
             retention: default_backup_retention(),
             pre_backup: vec![],
             post_backup: vec![],
@@ -1838,17 +1466,26 @@ postBackup:
 
     #[test]
     fn validate_backup_specs_rejects_duplicate_names() {
+        // The second name is the first with surrounding blanks: a name is one
+        // unit whatever it is padded with, matching how the cluster-side
+        // BackupPolicy reads its own units.
         let specs = vec![
             backup("db"),
             BackupSpec {
                 source: PathBuf::from("/b"),
-                ..backup("db")
+                ..backup(" db ")
             },
         ];
         let err = validate_backup_specs(&specs).expect_err("duplicate names must be rejected");
         let msg = format!("{err}");
-        assert!(msg.contains("duplicate backup name"), "got: {msg}");
-        assert!(msg.contains("'db'"), "got: {msg}");
+        // Ground truth is the shared rule, which the cluster-side
+        // `BackupPolicy.spec.units[]` answers to as well; this parser only
+        // prefixes the subject a local document can name.
+        assert!(
+            msg.contains(&shared_shape_refusal(" db ", None, &["db"])),
+            "got: {msg}"
+        );
+        assert!(msg.contains("' db '"), "got: {msg}");
     }
 
     #[test]
@@ -1914,7 +1551,10 @@ postBackup:
         }];
         let err = validate_backup_specs(&specs).expect_err("retention 0 must be rejected");
         let msg = format!("{err}");
-        assert!(msg.contains("retention must be at least 1"), "got: {msg}");
+        assert!(
+            msg.contains(&shared_shape_refusal("db", Some(0), &[])),
+            "got: {msg}"
+        );
     }
 
     #[test]

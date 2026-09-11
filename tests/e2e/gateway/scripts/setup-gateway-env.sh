@@ -44,29 +44,41 @@ if [ -z "$ADMIN_KEY" ]; then
     ADMIN_KEY=""
 fi
 
-# --- Create bootstrap token for enrollment tests ---
-BOOTSTRAP_TOKEN=""
-GW_DEVICE_ID="e2e-device-${E2E_RUN_ID}"
+# --- Admin-API helpers, defined here because this file sources first ---
+# Every domain file sees them, so none carries its own guarded copy: a
+# `declare -f` fallback in four files is four definitions to keep in step, and
+# a case reaching the wrong copy would differ only in which header it sent.
 
-if [ -n "$ADMIN_KEY" ]; then
-    TOKEN_RESPONSE=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $ADMIN_KEY" \
-        -d '{"username":"e2e-user","team":"e2e-team","expiresIn":3600}')
-else
-    # Open mode — no auth header needed
-    TOKEN_RESPONSE=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
-        -H "Content-Type: application/json" \
-        -d '{"username":"e2e-user","team":"e2e-team","expiresIn":3600}')
-fi
-
-if [ -n "$TOKEN_RESPONSE" ]; then
-    BOOTSTRAP_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // empty')
-    if [ -n "$BOOTSTRAP_TOKEN" ]; then
-        echo "Bootstrap token created"
+# Build the auth header for admin API calls.
+gw_admin_auth_header() {
+    if [ -n "${ADMIN_KEY:-}" ]; then
+        echo "Authorization: Bearer $ADMIN_KEY"
     else
-        echo "WARN: Failed to extract token from response: $TOKEN_RESPONSE"
+        # Open mode — no auth needed, but curl -H "" is harmless
+        echo "X-No-Auth: open-mode"
     fi
+}
+
+# Create a fresh bootstrap token via the admin API. Prints the token string, and
+# nothing at all when the API refused.
+gw_create_bootstrap_token() {
+    local username="${1:-e2e-user}"
+    local resp
+    resp=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
+        -H "Content-Type: application/json" \
+        -H "$(gw_admin_auth_header)" \
+        -d "{\"username\":\"$username\",\"team\":\"e2e-team\",\"expiresIn\":3600}" 2>/dev/null)
+    echo "$resp" | jq -r '.token // empty' 2>/dev/null
+}
+
+# --- Create bootstrap token for enrollment tests ---
+GW_DEVICE_ID="e2e-device-${E2E_RUN_ID}"
+# `|| true` because this file runs under `set -e` and a refused mint is a warning
+# here: the cases that need a token check for one themselves.
+BOOTSTRAP_TOKEN=$(gw_create_bootstrap_token "e2e-user" || true)
+
+if [ -n "$BOOTSTRAP_TOKEN" ]; then
+    echo "Bootstrap token created"
 else
     echo "WARN: Failed to create bootstrap token"
 fi

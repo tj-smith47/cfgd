@@ -3,6 +3,7 @@ use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
+use cfgd_core::test_helpers::{rust_sources_under, walked_file_body};
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -480,6 +481,10 @@ fn every_destructive_backup_verb_mirrors_the_global_yes() {
         ("Run", false),
         ("List", false),
         ("Restore", true),
+        // `gc` deletes only paths the state store itself recorded, outside the
+        // unit's destination — never a file the user authored — so it prompts
+        // for nothing and has no `--yes` to mirror.
+        ("Gc", false),
         ("Rollback", true),
     ];
     let source = std::fs::read_to_string(
@@ -5396,7 +5401,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("Actions exist in phase: Prerequisites"),
+        output.contains("Actions exist in phase: Bootstrap"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -7139,17 +7144,13 @@ fn cmd_apply_dry_run_each_phase() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let all_phases = [
-        ApplyPhase::PreScripts,
-        ApplyPhase::Prerequisites,
-        ApplyPhase::Modules,
-        ApplyPhase::Packages,
-        ApplyPhase::System,
-        ApplyPhase::Files,
-        ApplyPhase::Secrets,
-        ApplyPhase::PostScripts,
-    ];
-    for phase in all_phases {
+    // Every spelling `--phase` accepts, the two deprecated ones included: a
+    // retired spelling that still parses but no longer applies would fail here
+    // rather than on the machine of whoever kept writing it.
+    for phase in <ApplyPhase as clap::ValueEnum>::value_variants()
+        .iter()
+        .copied()
+    {
         let args = ApplyArgs {
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
@@ -7171,8 +7172,6 @@ fn cmd_apply_dry_run_each_phase() {
             phase.as_str()
         );
     }
-    // Verify all 8 phase names are accepted (no unknown-phase errors)
-    assert_eq!(all_phases.len(), 8);
 }
 
 // --- Verify after real apply ---
@@ -8613,9 +8612,10 @@ fn build_registry_has_system_configurators() {
 /// "not registered" rather than "not available on this host".
 #[test]
 fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
-    let body = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/registry.rs"))
-        .unwrap();
-    let production = cfgd_core::test_helpers::production_slice(&body);
+    let production = cfgd_core::test_helpers::production_slice_of(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/cli/registry.rs"
+    )));
     // The floor: an empty offender set means nothing only while the walk is
     // still reading the block it judges.
     assert!(
@@ -10710,6 +10710,7 @@ fn action_type_str_file_variants() {
             target: "/b".into(),
             mode: 0o644,
             origin: "local".into(),
+            chmod_path: None,
         })),
         "chmod"
     );
@@ -10860,6 +10861,16 @@ fn action_type_str_env_variants() {
             line: "source /tmp/env".into(),
         })),
         "inject"
+    );
+
+    // The live session is its own act with its own verb: `refresh` below
+    // names a package index, and one word for both left a consumer filtering
+    // on `type` unable to tell them apart.
+    assert_eq!(
+        super::action_type_str(&Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("FOO".into(), "bar".into())],
+        })),
+        "publish"
     );
 }
 
@@ -14223,7 +14234,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
             phase: Some(&retired),
             ..PreviewScope::unscoped()
         }),
-        "Run `cfgd apply --phase prerequisites` to make these changes"
+        "Run `cfgd apply --phase bootstrap` to make these changes"
     );
 }
 
@@ -14791,7 +14802,7 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
     let mut offenders = Vec::new();
     let mut judged = 0usize;
     for path in &goldens {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let text = walked_file_body(path);
         let text = text.replace("\r\n", "\n");
         if text.trim().is_empty() {
             continue;
@@ -14895,7 +14906,7 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
     let mut offenders = Vec::new();
     let mut judged = 0usize;
     for path in cfgd_core::test_helpers::snapshot_goldens(&["txt"]) {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = walked_file_body(&path);
         let text = text.replace("\r\n", "\n");
         let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
         // A heading owns rows, so the golden's first line names a surface only
@@ -15015,49 +15026,34 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
-    let mut stack = vec![cli_dir.clone()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
+    for p in rust_sources_under(&cli_dir) {
+        let body = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", p.display()));
+        checked += 1;
+        let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
+        // A hand-spelled generated line can carry its two tells on two
+        // physical lines; fold every continuation back first.
+        for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
+            let line = line.as_str();
+            let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
+            // A fixture joining a generated file's name onto a directory
+            // is building a path; a bare mention in an assertion needle or
+            // a synthesized row's id is not.
+            if joins.iter().any(|j| line.contains(j.as_str())) {
+                offenders.push(format!(
+                    "{where_}: joins a hardcoded env file name — take \
+                     `cfgd_core::reconciler::primary_env_file(home)`"
+                ));
             }
-            if !p.extension().is_some_and(|e| e == "rs") {
-                continue;
-            }
-            let Ok(body) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            checked += 1;
-            let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
-            // A hand-spelled generated line can carry its two tells on two
-            // physical lines; fold every continuation back first.
-            for (n, line) in cfgd_core::test_helpers::logical_source_lines(&body) {
-                let line = line.as_str();
-                let where_ = format!("{}:{}", cfgd_core::to_posix_string(&rel), n);
-                // A fixture joining a generated file's name onto a directory
-                // is building a path; a bare mention in an assertion needle or
-                // a synthesized row's id is not.
-                if joins.iter().any(|j| line.contains(j.as_str())) {
-                    offenders.push(format!(
-                        "{where_}: joins a hardcoded env file name — take \
-                         `cfgd_core::reconciler::primary_env_file(home)`"
-                    ));
-                }
-                // A generated line carries its owner comment, which is what a
-                // hand-edited (deliberately non-generated) fixture body lacks.
-                if line.contains("managed by cfgd")
-                    && owner_comments.iter().any(|c| line.contains(c.as_str()))
-                {
-                    offenders.push(format!(
-                        "{where_}: spells a generated env line by hand — render \
-                         it through `MergedEnvItems::declared_line`"
-                    ));
-                }
+            // A generated line carries its owner comment, which is what a
+            // hand-edited (deliberately non-generated) fixture body lacks.
+            if line.contains("managed by cfgd")
+                && owner_comments.iter().any(|c| line.contains(c.as_str()))
+            {
+                offenders.push(format!(
+                    "{where_}: spells a generated env line by hand — render \
+                     it through `MergedEnvItems::declared_line`"
+                ));
             }
         }
     }
@@ -15093,11 +15089,18 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
 fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     /// (golden, the test source that produced it, that test's name); both
     /// paths workspace-relative, the grammar the walk's own population is in.
-    const DECLARED: &[(&str, &str, &str)] = &[(
-        "crates/cfgd/tests/output_snapshots/plan/composed_source.txt",
-        "crates/cfgd/tests/plan_snapshots.rs",
-        "plan_composed_source_human",
-    )];
+    const DECLARED: &[(&str, &str, &str)] = &[
+        (
+            "crates/cfgd/tests/output_snapshots/apply/env_owner_groups.txt",
+            "crates/cfgd/tests/apply_snapshots.rs",
+            "apply_env_owner_groups_human",
+        ),
+        (
+            "crates/cfgd/tests/output_snapshots/plan/composed_source.txt",
+            "crates/cfgd/tests/plan_snapshots.rs",
+            "plan_composed_source_human",
+        ),
+    ];
     /// The env-target action subjects, as `action_display_subject` renders
     /// them. `write` is qualified by the generated basenames so a fixture's
     /// own file write cannot look like one.
@@ -15113,7 +15116,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     let root = cfgd_core::test_helpers::workspace_root();
     let mut found: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::snapshot_goldens(&["txt", "json"]) {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = walked_file_body(&path);
         let carries = text.lines().any(|line| {
             ROW_MARKERS.iter().any(|m| match *m {
                 "write " => {
@@ -15168,27 +15171,21 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
 fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources = String::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                if p.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "rs")
-                && p.file_name().is_some_and(|n| n != "tests.rs")
-                && let Ok(body) = std::fs::read_to_string(&p)
+    ] {
+        for p in rust_sources_under(&dir) {
+            if p.file_name().is_some_and(|n| n == "tests.rs")
+                || p.components().any(|c| c.as_os_str() == "tests")
             {
-                sources.push_str(&body);
-                sources.push('\n');
+                continue;
             }
+            let body = std::fs::read_to_string(&p).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", p.display())
+            });
+            sources.push_str(&body);
+            sources.push('\n');
         }
     }
     assert!(
@@ -15200,17 +15197,25 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
     let mut checked = 0usize;
     while let Some(path) = scripts.pop() {
         if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                scripts.extend(entries.flatten().map(|e| e.path()));
-            }
+            let entries = std::fs::read_dir(&path).unwrap_or_else(|e| {
+                panic!(
+                    "{}: the walk must read every directory: {e}",
+                    path.display()
+                )
+            });
+            scripts.extend(entries.map(|e| {
+                e.unwrap_or_else(|err| {
+                    panic!("{}: the walk must read every entry: {err}", path.display())
+                })
+                .path()
+            }));
             continue;
         }
         if path.extension().is_none_or(|e| e != "sh") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every script: {e}", path.display()));
         for (n, line) in body.lines().enumerate() {
             // A grep against anything else reads a manifest, a kubectl payload
             // or a proc file — none of them cfgd's own prose.
@@ -15301,10 +15306,13 @@ fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies(
     ];
     let mut top = true;
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let p = entry.path();
             let named_dockerfile = p
                 .file_name()
@@ -15326,8 +15334,11 @@ fn every_third_party_download_in_a_dockerfile_or_ci_script_retries_and_verifies(
 
     let mut checked = 0usize;
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
+        let body = match std::fs::read_to_string(&path) {
+            Ok(body) => body,
+            // a binary asset carries no download line
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(e) => panic!("{}: the walk must read every file: {e}", path.display()),
         };
         let commands = logical_lines(&body);
         for (i, (line_no, cmd)) in commands.iter().enumerate() {
@@ -15705,16 +15716,12 @@ fn every_result_line_opens_with_a_past_tense_verb() {
 fn no_command_words_the_up_to_date_verdict_for_itself() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
     for path in files {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (n, line) in production.lines().enumerate() {
             let code = line.trim_start();
             if code.starts_with("//") || code.starts_with("///") {
@@ -15793,15 +15800,14 @@ fn production_body(body: &str) -> String {
 /// `tests.rs` itself removed — the population every literal sweep below walks.
 fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect()
 }
@@ -16281,17 +16287,14 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
 #[test]
 fn every_reconciler_the_binary_builds_names_its_recording_scope() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut built = 0usize;
     let mut offenders = Vec::new();
     for path in files {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -16335,8 +16338,7 @@ fn every_reconciler_the_binary_builds_names_its_recording_scope() {
 #[test]
 fn every_single_subject_source_title_uses_the_owner_spelling() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source");
-    let mut files = walk_rust_files(&dir);
-    files.sort();
+    let files = rust_sources_under(&dir);
     let mut owner_titles = 0usize;
     let mut plural_titles = 0usize;
     let mut offenders = Vec::new();
@@ -16344,9 +16346,7 @@ fn every_single_subject_source_title_uses_the_owner_spelling() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         for (n, line) in production.lines().enumerate() {
             owner_titles += line.matches("heading_owner_prefixed(").count();
@@ -18255,20 +18255,16 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
     let providers_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
         .iter()
-        .flat_map(|dir| {
-            let mut files = walk_rust_files(&providers_root.join(dir));
-            files.sort();
-            files
-        })
+        .flat_map(|dir| rust_sources_under(&providers_root.join(dir)))
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .filter(|p| {
             p.file_name()
                 .is_none_or(|n| n != "tests_snapshot_bridge.rs")
         })
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect();
 
@@ -18403,15 +18399,14 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .join("../cfgd-core/src")
         .canonicalize()
         .expect("the workspace sibling crate is checked out beside this one");
-    let mut files = walk_rust_files(&core_src);
-    files.sort();
+    let files = rust_sources_under(&core_src);
     files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-        .filter_map(|path| {
-            let body = std::fs::read_to_string(&path).ok()?;
-            Some((path, production_body(&body)))
+        .map(|path| {
+            let body = walked_file_body(&path);
+            (path, production_body(&body))
         })
         .collect()
 }
@@ -18491,8 +18486,7 @@ fn no_in_flight_label_carries_a_trailing_ellipsis() {
 #[test]
 fn no_apply_path_warn_restates_a_printer_line() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut package_files = walk_rust_files(&packages_dir);
-    package_files.sort();
+    let package_files = rust_sources_under(&packages_dir);
     let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
         .into_iter()
         .filter(|(path, _)| {
@@ -18504,9 +18498,9 @@ fn no_apply_path_warn_restates_a_printer_line() {
                 .into_iter()
                 .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
                 .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-                .filter_map(|path| {
-                    let body = std::fs::read_to_string(&path).ok()?;
-                    Some((path, production_body(&body)))
+                .map(|path| {
+                    let body = walked_file_body(&path);
+                    (path, production_body(&body))
                 }),
         )
         .collect();
@@ -21374,8 +21368,8 @@ fn action_path_env_write() {
         vars: 0,
         aliases: 0,
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap:/home/user/.config/cfgd/env.sh");
 }
 
 // -----------------------------------------------------------------------
@@ -22312,6 +22306,7 @@ fn action_path_file_permissions() {
         target: PathBuf::from("/home/user/.ssh/config"),
         mode: 0o600,
         origin: "profile".into(),
+        chmod_path: None,
     });
     let path = super::action_path(&PhaseName::Files, &action);
     assert_eq!(path, "files:/home/user/.ssh/config");
@@ -22348,8 +22343,8 @@ fn action_path_manager_provision() {
         batched: vec![],
         depends_on: vec![],
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites.brew");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap.brew");
 }
 
 #[test]
@@ -22429,8 +22424,8 @@ fn action_path_env_inject_source_line() {
         rc_path: PathBuf::from("/home/user/.zshrc"),
         line: ". ~/.cfgd.env".into(),
     });
-    let path = super::action_path(&PhaseName::Prerequisites, &action);
-    assert_eq!(path, "prerequisites:/home/user/.zshrc");
+    let path = super::action_path(&PhaseName::Bootstrap, &action);
+    assert_eq!(path, "bootstrap:/home/user/.zshrc");
 }
 
 #[test]
@@ -26579,6 +26574,7 @@ mod cmd_source_add_local {
 fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     let cases = [
         (super::ApplyPhase::PreScripts, "pre-scripts"),
+        (super::ApplyPhase::Bootstrap, "bootstrap"),
         (super::ApplyPhase::Prerequisites, "prerequisites"),
         (super::ApplyPhase::Env, "env"),
         (super::ApplyPhase::Modules, "modules"),
@@ -26595,6 +26591,15 @@ fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     );
     for (phase, label) in cases {
         assert_eq!(phase.as_str(), label);
+        // And the label IS the token clap parses, deprecated spellings
+        // included: a value name that drifted from it would leave every
+        // caller composing a `--phase` out of `as_str` printing one nobody
+        // can type.
+        assert_eq!(
+            <super::ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+                .map(|pv| pv.get_name().to_string()),
+            Some(label.to_string())
+        );
     }
 }
 
@@ -26607,14 +26612,18 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
             PhaseFilter::Phase(PhaseName::PreScripts),
         ),
         (
-            super::ApplyPhase::Prerequisites,
-            PhaseFilter::Phase(PhaseName::Prerequisites),
+            super::ApplyPhase::Bootstrap,
+            PhaseFilter::Phase(PhaseName::Bootstrap),
         ),
-        // The deprecated spelling resolves to the same phase, so a script
-        // written against it keeps selecting the work it always selected.
+        // Each deprecated spelling resolves to the same phase, so a script
+        // written against either keeps selecting the work it always selected.
+        (
+            super::ApplyPhase::Prerequisites,
+            PhaseFilter::Phase(PhaseName::Bootstrap),
+        ),
         (
             super::ApplyPhase::Env,
-            PhaseFilter::Phase(PhaseName::Prerequisites),
+            PhaseFilter::Phase(PhaseName::Bootstrap),
         ),
         // The one variant that is NOT a plan phase: module work applies in the
         // phase whose kind it is.
@@ -26653,26 +26662,30 @@ fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
 #[test]
 fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+    use std::str::FromStr;
 
-    let (printer, buf) = test_printer_capture();
-    let filter = super::resolve_phase_filter(
-        Some(super::PhaseArg::bare(super::ApplyPhase::Env)),
-        &ProviderRegistry::new(),
-        &printer,
-    )
-    .unwrap();
-    printer.flush();
-    let out = cfgd_core::test_helpers::captured_text(&buf);
+    for (token, reason) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let (printer, buf) = test_printer_capture();
+        let filter = super::resolve_phase_filter(
+            Some(super::PhaseArg::from_str(token).unwrap()),
+            &ProviderRegistry::new(),
+            &printer,
+        )
+        .unwrap();
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
 
-    assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
-    assert!(
-        out.contains("`--phase env` is deprecated") && out.contains("--phase prerequisites"),
-        "the notice must name both the spelling and its replacement:\n{out}"
-    );
+        assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Bootstrap)));
+        assert!(
+            out.contains(&format!("`--phase {token}` is deprecated: {reason}."))
+                && out.contains("--phase bootstrap"),
+            "the notice must name the spelling, its reason and its replacement:\n{out}"
+        );
+    }
 
     let (printer, buf) = test_printer_capture();
     super::resolve_phase_filter(
-        Some(super::PhaseArg::bare(super::ApplyPhase::Prerequisites)),
+        Some(super::PhaseArg::bare(super::ApplyPhase::Bootstrap)),
         &ProviderRegistry::new(),
         &printer,
     )
@@ -26684,22 +26697,219 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     );
 }
 
+/// Both deprecation sites word a retired phase spelling the same way.
+///
+/// `--phase` resolves through clap's `ApplyPhase`, `--skip`/`--only` through a
+/// leading path segment `filter_plan` rewrites, so the two reach the table by
+/// different routes: a token explained one way by the flag that rejects it and
+/// another by the flag that rewrites it would read as two different retirements.
+#[test]
+fn every_legacy_phase_token_is_rewritten_by_both_deprecation_sites() {
+    use cfgd_core::reconciler::{
+        Action, ManagerAction, Owner, Phase, PhaseFilter, PhaseName, Plan,
+    };
+    use std::str::FromStr;
+
+    // The table is what BOTH sites word themselves from, so an alias clap
+    // still accepts while the table has forgotten it would deprecate itself
+    // silently on every flag at once.
+    let mut aliases: Vec<String> = <super::ApplyPhase as clap::ValueEnum>::value_variants()
+        .iter()
+        .filter(|phase| {
+            super::apply_phase_to_filter(**phase) == PhaseFilter::Phase(PhaseName::Bootstrap)
+        })
+        .map(|phase| {
+            <super::ApplyPhase as clap::ValueEnum>::to_possible_value(phase)
+                .expect("every ApplyPhase variant is a spelling the user can type")
+                .get_name()
+                .to_string()
+        })
+        .filter(|name| name != PhaseName::Bootstrap.as_str())
+        .collect();
+    aliases.sort();
+    let mut worded: Vec<String> = super::plan_ops::LEGACY_PHASE_TOKENS
+        .iter()
+        .map(|(token, _)| (*token).to_string())
+        .collect();
+    worded.sort();
+    assert_eq!(
+        aliases, worded,
+        "every spelling clap still resolves to the phase needs its retirement worded here"
+    );
+
+    for (token, reason) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let (printer, buf) = test_printer_capture();
+        let filter = super::resolve_phase_filter(
+            Some(super::PhaseArg::from_str(token).unwrap()),
+            &ProviderRegistry::new(),
+            &printer,
+        )
+        .unwrap();
+        printer.flush();
+        let phase_site = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(
+            filter,
+            Some(PhaseFilter::Phase(PhaseName::Bootstrap)),
+            "`--phase {token}` must still select the phase it always selected"
+        );
+
+        let mut plan = Plan {
+            phases: vec![Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    declared: None,
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            )],
+            warnings: vec![],
+        };
+        let (printer, buf) = test_printer_capture();
+        super::plan_ops::filter_plan(
+            &mut plan,
+            &[format!("{token}.managers")],
+            &[],
+            None,
+            &printer,
+            &ProviderRegistry::new(),
+            &std::collections::HashSet::new(),
+        );
+        printer.flush();
+        let skip_site = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            plan.phases.iter().all(|p| p.action_count() == 0),
+            "`--skip {token}.managers` must still reach the group it always reached: {:?}",
+            plan.phases
+        );
+
+        assert!(
+            phase_site.contains(&format!("`--phase {token}` is deprecated: {reason}."))
+                && skip_site.contains(&format!(
+                    "`--skip {token}.managers` is deprecated: {reason}."
+                )),
+            "both sites must give the token the same reason:\n{phase_site}\n{skip_site}"
+        );
+    }
+}
+
+/// A preview's next step re-states the run's flags in the CURRENT spelling.
+///
+/// The hint is the command the reader runs next, so echoing back the retired
+/// pattern they typed hands them a second deprecation for taking the advice.
+/// Both retired grammars a `--skip`/`--only` pattern can open on are covered:
+/// the phase segment and the pre-routing `modules.<name>`.
+#[test]
+fn a_preview_hint_restates_a_retired_pattern_as_its_current_spelling() {
+    use cfgd_core::reconciler::PhaseName;
+    use std::str::FromStr;
+
+    let current = PhaseName::Bootstrap.as_str();
+    for (token, _) in super::plan_ops::LEGACY_PHASE_TOKENS {
+        let phase = super::PhaseArg::from_str(token).unwrap();
+        let skip = [format!("{token}.managers")];
+        let only = [format!("{token}.env")];
+        let hint = super::perform_preview_hint(&super::PreviewScope {
+            module: &[],
+            with_profile: false,
+            phase: Some(&phase),
+            only: &only,
+            skip: &skip,
+            skip_scripts: false,
+        });
+        assert!(
+            hint.contains(&format!("--phase {current}"))
+                && hint.contains(&format!("--only {current}.env"))
+                && hint.contains(&format!("--skip {current}.managers")),
+            "the hint must name the current spelling on every flag:\n{hint}"
+        );
+        assert!(
+            !hint.contains(&format!("--phase {token}"))
+                && !hint.contains(&format!("--only {token}."))
+                && !hint.contains(&format!("--skip {token}.")),
+            "and never the retired one:\n{hint}"
+        );
+    }
+
+    let skip = ["modules.nvim".to_string()];
+    let hint = super::perform_preview_hint(&super::PreviewScope {
+        module: &[],
+        with_profile: false,
+        phase: None,
+        only: &[],
+        skip: &skip,
+        skip_scripts: false,
+    });
+    assert!(
+        hint.contains("--skip module:nvim") && !hint.contains("--skip modules.nvim"),
+        "a retired module pattern must be re-stated as the routed one:\n{hint}"
+    );
+
+    // The deprecation the run prints and the hint it closes on are two
+    // surfaces naming one replacement, so both take it from the same composer:
+    // a reader told to type `module:nvim` is handed `module:nvim`.
+    let routed = super::plan_ops::current_pattern_spelling("modules.nvim");
+    let mut empty_plan = cfgd_core::reconciler::Plan {
+        phases: vec![],
+        warnings: vec![],
+    };
+    let (printer, buf) = test_printer_capture();
+    super::plan_ops::filter_plan(
+        &mut empty_plan,
+        &skip,
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    printer.flush();
+    let deprecation = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        deprecation.contains(&format!("--skip {routed}")),
+        "the deprecation names the routed replacement:\n{deprecation}"
+    );
+    assert!(
+        hint.contains(&format!("--skip {routed}")),
+        "and the hint names the same one:\n{hint}"
+    );
+
+    // Bare `modules` names every module in every phase, which no routed
+    // pattern spells, so it survives the fold rather than being rewritten to
+    // something that selects a different set.
+    let skip = ["modules".to_string()];
+    let hint = super::perform_preview_hint(&super::PreviewScope {
+        module: &[],
+        with_profile: false,
+        phase: None,
+        only: &[],
+        skip: &skip,
+        skip_scripts: false,
+    });
+    assert!(
+        hint.contains("--skip modules"),
+        "a retired pattern with no current spelling passes through:\n{hint}"
+    );
+}
+
 #[test]
 fn phase_arg_parses_the_dotted_grammar() {
     use std::str::FromStr;
 
-    let bare = super::PhaseArg::from_str("prerequisites").unwrap();
-    assert!(matches!(bare.phase, super::ApplyPhase::Prerequisites));
+    let bare = super::PhaseArg::from_str("bootstrap").unwrap();
+    assert!(matches!(bare.phase, super::ApplyPhase::Bootstrap));
     assert_eq!(bare.selector, None);
 
-    let dotted = super::PhaseArg::from_str("prerequisites.managers").unwrap();
-    assert!(matches!(dotted.phase, super::ApplyPhase::Prerequisites));
+    let dotted = super::PhaseArg::from_str("bootstrap.managers").unwrap();
+    assert!(matches!(dotted.phase, super::ApplyPhase::Bootstrap));
     assert_eq!(dotted.selector.as_deref(), Some("managers"));
 
-    let manager_selector = super::PhaseArg::from_str("prerequisites.brew").unwrap();
+    let manager_selector = super::PhaseArg::from_str("bootstrap.brew").unwrap();
     assert!(matches!(
         manager_selector.phase,
-        super::ApplyPhase::Prerequisites
+        super::ApplyPhase::Bootstrap
     ));
     assert_eq!(manager_selector.selector.as_deref(), Some("brew"));
 
@@ -26728,7 +26938,7 @@ fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
         "the hidden legacy spelling must not appear in the possible-values listing:\n{err}"
     );
     assert!(
-        err.contains("prerequisites"),
+        err.contains("bootstrap"),
         "the current spelling must appear in the possible-values listing:\n{err}"
     );
 }
@@ -26737,13 +26947,13 @@ fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
 fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
     use std::str::FromStr;
 
-    // "prerequisites." names no selector after the dot — a likely typo, so it
+    // "bootstrap." names no selector after the dot — a likely typo, so it
     // errors with a message naming the bare-phase and dotted alternatives
     // rather than silently swallowing the dangling '.' or misreporting the
     // whole string (including the dot) as an unrecognized phase name.
-    let err = super::PhaseArg::from_str("prerequisites.").unwrap_err();
+    let err = super::PhaseArg::from_str("bootstrap.").unwrap_err();
     assert!(
-        err.contains("prerequisites.") && err.contains("prerequisites.managers"),
+        err.contains("bootstrap.") && err.contains("bootstrap.managers"),
         "error must name the input and show a valid dotted example:\n{err}"
     );
 }
@@ -26756,12 +26966,12 @@ fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
 fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
     use super::Command;
 
-    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.brew", "--yes"])
-        .expect("--phase prerequisites.brew must parse");
+    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.brew", "--yes"])
+        .expect("--phase bootstrap.brew must parse");
     match cli.command {
         Some(Command::Apply(args)) => {
             let phase = args.phase.expect("--phase must be Some after parse");
-            assert!(matches!(phase.phase, super::ApplyPhase::Prerequisites));
+            assert!(matches!(phase.phase, super::ApplyPhase::Bootstrap));
             assert_eq!(phase.selector.as_deref(), Some("brew"));
         }
         _ => panic!("expected Command::Apply"),
@@ -26770,7 +26980,7 @@ fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
 
 #[test]
 fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
-    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.", "--yes"]) {
+    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.", "--yes"]) {
         Ok(_) => panic!("a trailing '.' must fail parsing"),
         Err(e) => e,
     };
@@ -26786,7 +26996,7 @@ fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
     );
     let rendered = err.to_string();
     assert!(
-        rendered.contains("prerequisites.") && rendered.contains("prerequisites.managers"),
+        rendered.contains("bootstrap.") && rendered.contains("bootstrap.managers"),
         "the rendered clap error must still carry the FromStr message:\n{rendered}"
     );
 }
@@ -26809,7 +27019,7 @@ fn phase_flag_help_lists_the_phase_vocabulary() {
         "--phase must carry a possible-values list for --help / completions"
     );
     assert!(
-        rendered.contains("prerequisites") && rendered.contains("packages"),
+        rendered.contains("bootstrap") && rendered.contains("packages"),
         "--help must list the phase vocabulary:\n{rendered}"
     );
     assert!(
@@ -26825,7 +27035,7 @@ fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("managers".to_string()),
         }),
         &ProviderRegistry::new(),
@@ -26835,7 +27045,7 @@ fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
     assert_eq!(
         filter,
         Some(PhaseFilter::Selector(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             "managers".to_string()
         ))
     );
@@ -26861,7 +27071,7 @@ fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
 }
 
 #[test]
-fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites() {
+fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_bootstrap() {
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -26874,8 +27084,32 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("--phase packages.brew") && msg.contains("--phase prerequisites.brew"),
-        "error must name the rejected combo and point at the prerequisites spelling:\n{msg}"
+        msg.contains("--phase packages.brew") && msg.contains("--phase bootstrap.brew"),
+        "error must name the rejected combo and point at the bootstrap spelling:\n{msg}"
+    );
+}
+
+/// A phase with no dotted grammar names itself in its own refusal.
+///
+/// The refusal spells the phase from clap's own name for the variant, the same
+/// derivation the deprecation notice above it reads: a second spelling here
+/// would send a reader looking for a flag they never typed.
+#[test]
+fn resolve_phase_filter_names_the_phase_it_refuses_a_selector_on() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Files,
+            selector: Some("nvim".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("`--phase files.nvim` is not valid: `files` has no dotted"),
+        "the refusal must name the phase clap parsed:\n{msg}"
     );
 }
 
@@ -26883,7 +27117,7 @@ fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites
 /// `ProviderRegistry::manager_names()` to answer with a specific set without
 /// depending on a real `PackageManager` implementation. The second field names
 /// the tools its bootstrap cascade shells out to — the population a
-/// `Prerequisites` node is keyed on, and so part of the selector vocabulary.
+/// `Bootstrap` node is keyed on, and so part of the selector vocabulary.
 struct NamedManagerStub(&'static str, &'static [&'static str]);
 
 impl cfgd_core::providers::PackageManager for NamedManagerStub {
@@ -26950,7 +27184,7 @@ fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabula
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("bogus".to_string()),
         }),
         &registry,
@@ -26969,7 +27203,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     use cfgd_core::reconciler::{PhaseFilter, PhaseName};
 
     // `ManagerAction::filter_subject` keys a prerequisite node on its TOOL, and
-    // `--skip prerequisites.curl` has always accepted that spelling — but the
+    // `--skip bootstrap.curl` has always accepted that spelling — but the
     // `--phase` validator listed manager families only, so one grammar was
     // legal on one flag and rejected on the other.
     let mut registry = ProviderRegistry::new();
@@ -26977,7 +27211,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("curl".to_string()),
         }),
         &registry,
@@ -26987,7 +27221,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     assert_eq!(
         filter,
         Some(PhaseFilter::Selector(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             "curl".to_string()
         ))
     );
@@ -26996,7 +27230,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     // refused, and the tool now appears in what the refusal offers.
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
-            phase: super::ApplyPhase::Prerequisites,
+            phase: super::ApplyPhase::Bootstrap,
             selector: Some("bogus".to_string()),
         }),
         &registry,
@@ -30071,8 +30305,7 @@ fn every_merged_env_view_is_built_once_per_command() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&cli_dir);
     for path in files {
         let name = path
             .file_name()
@@ -30085,10 +30318,7 @@ fn every_merged_env_view_is_built_once_per_command() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let mut open: Vec<&str> = Vec::new();
         let mut prev = "";
         for line in production.lines() {
@@ -30178,8 +30408,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&cli_dir);
     for path in files {
         let name = path
             .file_name()
@@ -30189,10 +30418,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let Some((_, composers)) = COMPOSERS.iter().find(|(ty, _)| {
@@ -30291,8 +30517,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&core_src);
-    files.sort();
+    let files = rust_sources_under(&core_src);
     for path in files {
         let name = path
             .file_name()
@@ -30302,10 +30527,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
         if name == "tests.rs" || name == "test_helpers.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains("\"package\".to_string()")
@@ -30387,8 +30609,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
     let exempt = roots[1].join("reconciler/format.rs");
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let (mut seen, mut anchors) = (0usize, 0usize);
         for path in files {
             let name = path
@@ -30399,11 +30620,8 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
             if name == "tests.rs" || name == "test_helpers.rs" || path == exempt {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             for (i, (n, line)) in lines.iter().enumerate() {
                 if line.contains("resource_id") {
@@ -30487,18 +30705,14 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&root);
-    files.sort();
+    let files = rust_sources_under(&root);
     let (mut seen, mut anchors) = (0usize, 0usize);
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
         seen += 1;
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines = cfgd_core::test_helpers::logical_source_lines(&production);
         for (i, (n, line)) in lines.iter().enumerate() {
             if line.contains("drift_operands(") {
@@ -30569,8 +30783,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -30581,11 +30794,8 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
             if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             for (i, (n, line)) in lines.iter().enumerate() {
                 let code = line.trim_start();
@@ -30678,8 +30888,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -30690,11 +30899,8 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
             if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             // Folded, so a mint rustfmt broke across a `\`-continued literal
             // still presents its tell and its composer on one logical line.
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
@@ -30773,8 +30979,8 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
 #[test]
 fn every_resolved_package_producer_routes_through_the_one_resolver() {
     let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = walk_rust_files(&cfgd.join("src"));
-    files.extend(walk_rust_files(&cfgd.join("../cfgd-core/src")));
+    let mut files = rust_sources_under(&cfgd.join("src"));
+    files.extend(rust_sources_under(&cfgd.join("../cfgd-core/src")));
     files.sort();
     let mut producers = Vec::new();
     for path in files {
@@ -30785,10 +30991,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
         if name == "tests.rs" || name == "test_helpers.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (i, line) in production.lines().enumerate() {
             if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
                 producers.push(format!(
@@ -30822,17 +31025,13 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
 #[test]
 fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel() {
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages);
-    files.sort();
+    let files = rust_sources_under(&packages);
     let mut offenders = Vec::new();
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         for (i, line) in production.lines().enumerate() {
             let code = line.trim();
             if code.starts_with("//") || !code.contains("\"unknown\"") {
@@ -30851,23 +31050,6 @@ fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel()
          never by a literal:\n{}",
         offenders.join("\n")
     );
-}
-
-/// Every `.rs` file under `dir`, recursively.
-fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(walk_rust_files(&path));
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-    out
 }
 
 /// A package-manager install verb is a fact the FAMILY owns. `cfgd module
@@ -30901,16 +31083,13 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let declaration = src.join("packages").join("simple").join("mod.rs");
 
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut offenders = Vec::new();
     for path in files {
         if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
@@ -30983,8 +31162,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
 fn no_result_section_respells_a_word_its_command_title_already_spent() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
-    let mut files = walk_rust_files(&cli_dir);
-    files.sort();
+    let files = rust_sources_under(&cli_dir);
 
     // `printer.heading("X")` / `printer.section("X")`, off a non-comment line.
     let literals = |body: &str, call: &str| -> Vec<String> {
@@ -30999,10 +31177,7 @@ fn no_result_section_respells_a_word_its_command_title_already_spent() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let headings = literals(&production, "printer.heading(\"");
         let sections = literals(&production, "printer.section(\"");
         for heading in &headings {
@@ -31796,26 +31971,18 @@ fn every_bootstrap_failure_names_what_it_installed() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                if p.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "rs")
-                && p.file_name().is_some_and(|n| n != "tests.rs")
-                && let Ok(body) = std::fs::read_to_string(&p)
+    ] {
+        for p in rust_sources_under(&dir) {
+            if p.components().any(|c| c.as_os_str() == "tests")
+                || p.file_name().is_some_and(|n| n == "tests.rs")
             {
-                files.push((p, production_body(&body)));
+                continue;
             }
+            let production = cfgd_core::test_helpers::production_slice_of(&p);
+            files.push((p, production));
         }
     }
 
@@ -31955,30 +32122,19 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     };
     let mut seen = 0usize;
     let mut offenders = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n != "tests") {
-                    stack.push(path);
-                }
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs")
+    ] {
+        for path in rust_sources_under(&dir) {
+            if path.components().any(|c| c.as_os_str() == "tests")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             let mut from = 0usize;
             while let Some(at) = body[from..].find(".detail(format!(\"") {
                 let open = from + at + ".detail(format!(\"".len();
@@ -32054,6 +32210,7 @@ fn component_health_fixture() -> super::status::StatusOutput {
         managed_resources: [
             ("file", "~/.gitconfig"),
             ("env", "/home/user/.cfgd.env"),
+            ("env", "/home/user/.bashrc"),
             ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
         ]
         .into_iter()
@@ -32142,10 +32299,13 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
         heading_line.contains("(checked 3m ago)"),
         "the heading carries the recorded scan's age, got:\n{heading_line}"
     );
+    // The session is the one owner a machine-wide scan never reaches, so it
+    // keeps the record's own word while its siblings earn a verdict.
     let rows = [
         ("profile:base", "— Synced (1 file)"),
         ("cfgd:env", "— Synced (1 env file)"),
-        ("cfgd:session", "— Synced (1 session env)"),
+        ("cfgd:shell", "— Synced (1 rc line)"),
+        ("cfgd:session", "— Applied (1 live session)"),
         ("module:broken", "— Failed"),
         ("module:git", "— Synced (1 file)"),
         ("module:nvim", "— Synced (6 files)"),
@@ -32262,13 +32422,14 @@ fn component_health_lists_every_owner_with_a_themed_verdict() {
 /// A Component Health row reads `Synced` only where a check actually covers
 /// its owner. Three renders off one fixture:
 ///
-/// - nothing stamped: every row states the record's own fact (`Installed`)
+/// - nothing stamped: every row states the record's own fact (`Applied`)
 ///   under a heading that says drift was never checked. `Synced` beside
 ///   `(drift never checked)` is the contradiction this pin refuses: the word
 ///   would claim an answer no check produced, and both halves render from the
 ///   same document.
-/// - the machine-wide stamp: a full walk covered every owner, so every row
-///   earns `Synced`.
+/// - the machine-wide stamp: a full walk covered every owner the scan
+///   REACHES, so those rows earn `Synced`; `cfgd:session` is not one of them
+///   — nothing re-reads a live session — so it keeps stating `Applied`.
 /// - only `module:nvim` scoped: a scoped scan checks one module's own files,
 ///   packages and env ITEMS — never the env FILES or the profile's packages —
 ///   so nvim earns the verdict and `cfgd:env` does not, and the heading is
@@ -32300,10 +32461,17 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
         section.starts_with(" (drift never checked)"),
         "an unstamped host says so on the heading:\n{section}"
     );
-    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+    for owner in [
+        "cfgd:env",
+        "cfgd:shell",
+        "cfgd:session",
+        "module:git",
+        "module:nvim",
+        "profile:base",
+    ] {
         let line = row(section, owner);
         assert!(
-            line.contains("— Installed") && !line.contains("Synced"),
+            line.contains("— Applied") && !line.contains("Synced"),
             "`{owner}` may not read Synced with no check behind it:\n{line}"
         );
     }
@@ -32311,13 +32479,27 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
     let machine_wide = component_health_fixture();
     let rendered = render(&machine_wide);
     let section = component_health_section(&rendered);
-    for owner in ["cfgd:env", "module:git", "module:nvim", "profile:base"] {
+    for owner in [
+        "cfgd:env",
+        "cfgd:shell",
+        "module:git",
+        "module:nvim",
+        "profile:base",
+    ] {
         let line = row(section, owner);
         assert!(
             line.contains("— Synced"),
             "a machine-wide scan covers `{owner}`:\n{line}"
         );
     }
+    // The live session is the one owner outside the scan's reach: nothing
+    // re-reads a `launchctl` / `systemctl --user` environment, so a stamp the
+    // whole machine earned still leaves this row on the record's own word.
+    let session = row(section, "cfgd:session");
+    assert!(
+        session.contains("— Applied") && !session.contains("Synced"),
+        "a machine-wide scan reaches no live session:\n{session}"
+    );
 
     let mut scoped = component_health_fixture();
     scoped.last_scan_at = None;
@@ -32335,10 +32517,16 @@ fn a_component_health_row_earns_synced_only_from_a_check_that_covers_it() {
         row(section, "module:nvim").contains("— Synced"),
         "the scanned module earns its verdict:\n{section}"
     );
-    for uncovered in ["cfgd:env", "module:git", "profile:base"] {
+    for uncovered in [
+        "cfgd:env",
+        "cfgd:shell",
+        "cfgd:session",
+        "module:git",
+        "profile:base",
+    ] {
         let line = row(section, uncovered);
         assert!(
-            line.contains("— Installed"),
+            line.contains("— Applied"),
             "a scoped scan of nvim vouches for nothing else, `{uncovered}` read:\n{line}"
         );
     }
@@ -32626,33 +32814,23 @@ fn one_stored_literal_for_a_missing_package() {
     // lands. Dedicated test files are skipped — this test's own source
     // quotes the needle, and a fixture may seed a legacy literal on purpose.
     let mut files = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs")
-                || path.file_name().is_some_and(|n| n == "tests.rs")
-            {
-                continue;
-            }
-            files.push(path);
-        }
+    ] {
+        files.extend(
+            rust_sources_under(&dir)
+                .into_iter()
+                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs")),
+        );
     }
     let mut seen = 0usize;
     let mut offenders = Vec::new();
     for path in files {
         let file = cfgd_core::to_posix_string(&path);
-        let text = std::fs::read_to_string(&path).unwrap();
         // A file's own inline test module builds fixture rows whose literals
         // are the point; only the production region is walked.
-        let text = cfgd_core::test_helpers::production_slice(&text);
+        let text = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(r#"resource_type: "package""#) {
@@ -32736,21 +32914,14 @@ fn one_stored_literal_for_a_missing_package() {
 fn every_empty_drift_verdict_states_whether_a_check_ran() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut carriers = Vec::new();
-    let mut stack = vec![
+    for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
-    ];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
+    ] {
+        for path in rust_sources_under(&dir) {
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             if text.contains("No drift detected") || text.contains("No drift recorded") {
                 carriers.push(path);
             }
@@ -33221,8 +33392,9 @@ fn every_recorded_scope_slot_declares_its_owner_tokens() {
 fn every_title_cased_status_word_renders_role_styled() {
     /// Every word the pair producers return, enumerated from their own match
     /// arms (`ApplyStatus::human_str`, `module_status_display`,
-    /// `source_status_display`, `backup_run_status_display`,
-    /// `ComplianceStatus::human_display`). A new arm adds its word here.
+    /// `module_listing_display`, `source_status_display`,
+    /// `backup_run_status_display`, `ComplianceStatus::human_display`). A new
+    /// arm adds its word here.
     const WORDS: &[&str] = &[
         // ApplyStatus
         "Success",
@@ -33234,6 +33406,9 @@ fn every_title_cased_status_word_renders_role_styled() {
         "Synced",
         "Drifted",
         "NotApplied",
+        "Applied",
+        // module_listing_display, whose unchecked arm states presence instead
+        "Installed",
         // source_status_display (`Unknown` is shared with the module one)
         "Active",
         "Pending",
@@ -33249,6 +33424,7 @@ fn every_title_cased_status_word_renders_role_styled() {
     const PAIRS: &[&str] = &[
         "human_display()",
         "module_status_display(",
+        "module_listing_display(",
         "source_status_display(",
         "backup_run_status_display(",
         "state_display()",
@@ -33902,7 +34078,7 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
                 .iter()
                 .filter(|c| c.contains("cli/backup.rs"))
                 .count()
-                == 3
+                == 4
             && checked.iter().any(|c| c.contains("daemon/backup.rs"))
             && checked.iter().any(|c| c.contains("cli/diff.rs"))
             && checked.iter().any(|c| c.contains("cli/init/cmd_init.rs")),
@@ -33931,8 +34107,8 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
 #[test]
 fn no_journal_line_folds_the_home_directory() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = walk_rust_files(&root.join("src"));
-    files.extend(walk_rust_files(&root.join("../cfgd-core/src")));
+    let mut files = rust_sources_under(&root.join("src"));
+    files.extend(rust_sources_under(&root.join("../cfgd-core/src")));
     files.sort();
     let mut journal_lines = 0usize;
     let mut hatched = 0usize;
@@ -33943,9 +34119,7 @@ fn no_journal_line_folds_the_home_directory() {
         {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let raw = walked_file_body(&path);
         let body = production_body(&raw);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -33992,7 +34166,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
     // The floors are what a walk over the WRONG root cannot fake: a root that
     // resolves nowhere sees no files. Both counts are far under today's real
     // counts, so a deletion does not trip them and a re-rooting does — a
-    // floor of 1 would let a regression in `walk_rust_files` or the skip
+    // floor of 1 would let a regression in `rust_sources_under` or the skip
     // filter blind 99% of the tree and still pass.
     const FLOOR_FILES: [usize; 2] = [80, 90];
 
@@ -34000,8 +34174,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
     let roots = [root.join("src"), root.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, walk_root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(walk_root);
-        files.sort();
+        let files = rust_sources_under(walk_root);
         let mut seen = 0usize;
         for path in files {
             if path.file_name().is_none_or(|n| n == "tests.rs")
@@ -34011,11 +34184,8 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
             {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let body = cfgd_core::test_helpers::production_slice(&raw);
+            let body = cfgd_core::test_helpers::production_slice_of(&path);
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 // A trailing `// old → new` on a code line is still a
@@ -34068,8 +34238,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34085,11 +34254,8 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let mut enclosing_fn = String::new();
             for (i, (n, line)) in lines.iter().enumerate() {
@@ -34165,8 +34331,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34183,11 +34348,8 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let in_git_rs = path.ends_with("modules/git.rs");
             for (i, (n, line)) in lines.iter().enumerate() {
@@ -34303,8 +34465,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders = Vec::new();
     for (r, root) in roots.iter().enumerate() {
-        let mut files = walk_rust_files(root);
-        files.sort();
+        let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
             let name = path
@@ -34318,11 +34479,8 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
             seen += 1;
-            let production = cfgd_core::test_helpers::production_slice(&body);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines: Vec<&str> = production.lines().collect();
             // Tokens the tell's own spelling contributes (`with_data`,
             // `serde_json`, `to_`, `json`) are never themselves the bound
@@ -34469,8 +34627,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     // because a builder named otherwise is the same bug with a different
     // spelling.
     let cli_dir = manifest.join("src/cli");
-    let mut cli_files = walk_rust_files(&cli_dir);
-    cli_files.sort();
+    let cli_files = rust_sources_under(&cli_dir);
     let mut builder_seen = 0usize;
     let mut builder_offenders = Vec::new();
     for path in cli_files {
@@ -34482,10 +34639,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         if name == "tests.rs" {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
@@ -34886,12 +35040,16 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         name: "notes".into(),
         source: under_home("notes"),
         schedule: None,
+        schedule_owner: "cluster".into(),
+        effective_schedule: None,
+        effective_retention: None,
         retention: 3,
         last_run_status: None,
         last_run_at: None,
         last_run_clean: None,
         next_run_at: None,
         snapshots: None,
+        orphaned: None,
     }];
     let module_show = super::module::ModuleShowOutput {
         name: "nvim".into(),
@@ -34930,6 +35088,27 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     };
     let before = snapshot(cfgd_core::compliance::ComplianceStatus::Compliant);
     let after = snapshot(cfgd_core::compliance::ComplianceStatus::Warning);
+
+    // `verify` names a path in all three of its row shapes: the answered
+    // results, the checks that could not run, and the recorded rows it left
+    // standing.
+    let verify_output = super::verify::VerifyOutput {
+        results: vec![cfgd_core::reconciler::VerifyResult {
+            resource_type: "env".into(),
+            resource_id: under_home(".cfgd.env"),
+            matches: false,
+            expected: "hash-desired".into(),
+            actual: "hash-actual".into(),
+            unmanaged: false,
+        }],
+        pass_count: 0,
+        fail_count: 1,
+        system_errors: vec![cfgd_core::reconciler::SystemCheckError {
+            key: under_home(".gitconfig"),
+            error: "permission denied".into(),
+        }],
+        standing: vec![drift_event(12, under_home(".bashrc"))],
+    };
 
     let docs: Vec<(&str, cfgd_core::output::Doc)> = vec![
         (
@@ -35012,6 +35191,10 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 now,
             ),
         ),
+        (
+            "cfgd verify",
+            super::verify::build_verify_doc(&verify_output, None),
+        ),
     ];
     for (surface, doc) in docs {
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -35057,21 +35240,13 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 #[test]
 fn every_plan_running_verb_settles_its_link_deployed_hashes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let mut sources = Vec::new();
-    let mut pending = vec![root];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && path.file_name().is_none_or(|n| n != "tests.rs")
-                && !path.components().any(|c| c.as_os_str() == "tests")
-            {
-                sources.push(path);
-            }
-        }
-    }
+    let mut sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
+        .into_iter()
+        .filter(|p| {
+            p.file_name().is_none_or(|n| n != "tests.rs")
+                && !p.components().any(|c| c.as_os_str() == "tests")
+        })
+        .collect();
     // The daemon's own applying tick is the third apply path; it holds its
     // file manager apart from the registry, so it reaches the core seam
     // directly rather than through the CLI helper.
@@ -35131,8 +35306,7 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
 #[test]
 fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages_dir);
-    files.sort();
+    let files = rust_sources_under(&packages_dir);
     let spawns = [
         ".output()",
         ".status()",
@@ -35295,8 +35469,7 @@ fn the_bootstrap_arm_walk_catches_an_own_arm_through_any_spawn_wrapper() {
 #[test]
 fn every_multi_arm_bootstrap_honours_the_planned_method() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut files = walk_rust_files(&packages_dir);
-    files.sort();
+    let files = rust_sources_under(&packages_dir);
     let arm_helpers = ARM_SELECTING_HELPERS;
     let mut seen = 0usize;
     let mut offenders = Vec::new();
@@ -35372,8 +35545,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
 #[test]
 fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = walk_rust_files(&src);
-    files.sort();
+    let files = rust_sources_under(&src);
     let mut linked = 0usize;
     let mut rows = Vec::new();
     let mut pointers = Vec::new();
@@ -35383,9 +35555,7 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let production = production_body(&body);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
@@ -35723,9 +35893,7 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
 
     for rel in files {
         let path = root.join(rel);
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         let mut checked = 0usize;
         for (n, line) in lines.iter().enumerate() {
@@ -35833,9 +36001,7 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for rel in MINTS.iter().map(|(f, _)| *f).chain(READERS) {
         let path = root.join(rel);
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("fleet drift surface {rel} unreadable: {e}"));
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         let mut checked = 0usize;
         let mut built = 0usize;
@@ -35921,13 +36087,9 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
         .expect("cfgd-core reconciler directory");
     let mut offenders = Vec::new();
     let mut composed = 0usize;
-    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&dir);
-    files.sort();
+    let files: Vec<std::path::PathBuf> = rust_sources_under(&dir);
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = cfgd_core::test_helpers::production_slice(&body);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if line.contains("system_resource_key(") {
@@ -35972,10 +36134,6 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
 /// holding its own state store and profiles directory.
 #[test]
 fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
-    let body = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
-    )
-    .expect("doctor.rs unreadable");
     // The words `status`/`diff` spend on a resource they CHECKED, plus the
     // section name `diff` reserves for configurator drift.
     const RESERVED: &[&str] = &[
@@ -35990,7 +36148,9 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
 
     // Flattened, because rustfmt wraps a long `.section_if_nonempty(` onto the
     // line below its opener and a line-scoped scan reads right past it.
-    let production = cfgd_core::test_helpers::production_slice(&body);
+    let production = cfgd_core::test_helpers::production_slice_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/doctor.rs"),
+    );
     let flat = production
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -36249,14 +36409,12 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         .join("../cfgd-core/src/output")
         .canonicalize()
         .expect("cfgd-core/src/output");
-    for path in walk_rust_files(&core_output) {
+    for path in rust_sources_under(&core_output) {
         if path.components().any(|c| c.as_os_str() == "tests") {
             continue;
         }
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            let production = production_body(&body);
-            sources.push((path, production));
-        }
+        let production = production_body(&walked_file_body(&path));
+        sources.push((path, production));
     }
     let mut found: Vec<(String, String)> = Vec::new();
     for (path, body) in &sources {
@@ -36614,5 +36772,186 @@ fn every_mutating_verbs_next_step_renders_at_the_runs_own_depth() {
          on the printer or on the `Doc` the verb emits after its section \
          closes, or hatch the line with `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// A profile declaring one schedule-less backup unit at `declared` retention,
+/// with `seeded` snapshots already on disk and recorded, and — when
+/// `projected` is set — the cadence a check-in last recorded for it.
+///
+/// The unit leaves `scheduleOwner` at its default, so the projection is the
+/// cluster's to make.
+fn backup_projection_env(
+    declared: u32,
+    projected: Option<u32>,
+    seeded: usize,
+) -> (tempfile::TempDir, tempfile::TempDir) {
+    let (config_dir, state_dir) = setup_test_env();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      retention: {declared}\n",
+            source.posix()
+        ),
+    )
+    .unwrap();
+
+    let destination = state_dir.path().join("backups").join("docs");
+    std::fs::create_dir_all(&destination).unwrap();
+    let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+    for i in 1..=seeded {
+        let snapshot = destination.join(format!("notes.txt.2026010{i}T000000Z"));
+        std::fs::write(&snapshot, "an older snapshot").unwrap();
+        store
+            .record_backup_run(&cfgd_core::state::BackupRunDraft {
+                name: "docs".to_string(),
+                source: source.posix().to_string(),
+                destination_path: Some(snapshot.posix().to_string()),
+                size_bytes: Some(17),
+                status: cfgd_core::state::BackupRunStatus::Success,
+                error: None,
+                started_at: format!("2026-01-0{i}T00:00:00Z"),
+                finished_at: format!("2026-01-0{i}T00:00:00Z"),
+            })
+            .unwrap();
+    }
+    if let Some(retention) = projected {
+        store
+            .record_cluster_backup_schedules(&cfgd_core::backup::ScheduleProjections::from([(
+                "docs".to_string(),
+                cfgd_core::backup::BackupScheduleProjection {
+                    schedule: "6h".to_string(),
+                    retention: Some(retention),
+                },
+            )]))
+            .unwrap();
+    }
+    (config_dir, state_dir)
+}
+
+/// How many snapshots the unit has on disk.
+fn snapshots_kept(state_dir: &Path) -> usize {
+    std::fs::read_dir(state_dir.join("backups").join("docs"))
+        .unwrap()
+        .count()
+}
+
+/// A cluster `BackupPolicy` owns a unit's `retention` as well as its schedule,
+/// so the run that prunes keeps the projected number. Holding the declared
+/// spec, `cfgd backup run` deleted snapshots the cadence the fleet set — and
+/// the daemon's own fire, plus `cfgd backup list`, said they were kept.
+#[test]
+fn a_backup_run_prunes_to_the_retention_the_cluster_projected() {
+    let (config_dir, state_dir) = backup_projection_env(5, Some(2), 4);
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    super::backup::run_backup_run(&cli, &printer, Some("docs")).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        2,
+        "the run prunes to the cluster's retention, not the profile's 5"
+    );
+}
+
+/// The same seam the other way round: a cluster raising retention above the
+/// declared number keeps what the cluster keeps, so a run cannot delete a
+/// snapshot the fleet's cadence is holding on to.
+#[test]
+fn a_backup_run_keeps_what_a_raised_cluster_retention_keeps() {
+    let (config_dir, state_dir) = backup_projection_env(2, Some(5), 4);
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    super::backup::run_backup_run(&cli, &printer, Some("docs")).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        5,
+        "the four seeded snapshots and this run's own are all inside the cluster's retention"
+    );
+}
+
+/// The backups an apply fires read the same projection: they are the same
+/// units, run by a different verb, and a machine whose apply pruned to the
+/// declared number would lose snapshots between two daemon fires.
+#[test]
+fn an_apply_prunes_its_backups_to_the_retention_the_cluster_projected() {
+    let (config_dir, state_dir) = backup_projection_env(5, Some(2), 4);
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::run_apply(&cli, &printer, &args).unwrap();
+    assert_eq!(
+        snapshots_kept(state_dir.path()),
+        2,
+        "an apply's backups prune to the cluster's retention like every other run"
+    );
+}
+
+/// Every `BackupUnit` the CLI builds is bound to a spec the recorded
+/// projection was folded over, so no verb runs, prunes or reports a unit on a
+/// cadence the cluster replaced. A verb that deliberately wants the DECLARED
+/// spec says so with `// declared-spec-ok:` on the line or just above it.
+///
+/// `cfgd backup run` and the backups an apply fires once held the declared
+/// spec, so both pruned to the declared retention while the daemon's fire and
+/// `cfgd backup list` reported the cluster's.
+#[test]
+fn every_backup_unit_the_cli_builds_is_projected() {
+    const HATCH: &str = "// declared-spec-ok:";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
+        .into_iter()
+        .filter(|p| {
+            p.file_name().is_none_or(|n| n != "tests.rs")
+                && !p.components().any(|c| c.as_os_str() == "tests")
+        })
+        .collect();
+    let mut seen = 0usize;
+    let mut declared = Vec::new();
+    for path in sources {
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("BackupUnit::new(") {
+                continue;
+            }
+            let window = lines[n.saturating_sub(15)..=n].join("\n");
+            if window.contains(HATCH) {
+                continue;
+            }
+            seen += 1;
+            if !window.contains("projected_spec(") {
+                declared.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        seen, 8,
+        "the walk no longer reaches every unit-building surface (list, list --snapshots, \
+         restore, rollback's two, run, gc) plus the apply — it found {seen}"
+    );
+    assert!(
+        declared.is_empty(),
+        "a `BackupUnit` the CLI builds takes the spec the recorded projection was folded \
+         over (`cfgd_core::backup::projected_spec`), or says why it takes the declared one \
+         with `{HATCH} <why>`:\n{}",
+        declared.join("\n")
     );
 }

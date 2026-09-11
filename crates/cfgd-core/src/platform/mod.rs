@@ -3,8 +3,6 @@
 use std::collections::HashMap;
 use std::fs;
 
-use serde::Deserialize;
-
 /// Detected operating system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Os {
@@ -191,60 +189,10 @@ pub fn applicable_here<'a, T: PlatformGated>(
     entries.iter().filter(move |e| e.applies_to(platform))
 }
 
-/// Reject a `platforms:` tag no host can ever match.
-///
-/// [`Platform::matches_any`] compares tags verbatim, so a misspelled one
-/// silently matches nothing: on a whole module that is at least a visible
-/// Skip action, but on one env var it is a variable that quietly never
-/// appears. Every tag cfgd emits is lowercase `[a-z0-9_]`, and the four
-/// families of near-miss spelling (`darwin`, `win`, `amd64`, `arm64`) are
-/// named against their canonical token rather than merely refused.
-///
-/// Anything else lowercase is accepted: a distro or arch cfgd does not name is
-/// still a legitimate tag for another host ([`Arch::Other`] carries its
-/// target's own spelling).
-pub fn validate_platform_tag(tag: &str) -> std::result::Result<(), String> {
-    let canonical = |t: &str| match t {
-        "darwin" | "osx" | "mac" => Some("macos"),
-        "win" | "win32" | "win64" => Some("windows"),
-        "x64" | "amd64" => Some("x86_64"),
-        "arm64" => Some("aarch64"),
-        _ => None,
-    };
-    let lower = tag.to_ascii_lowercase();
-    if let Some(canon) = canonical(&lower) {
-        return Err(format!(
-            "platform tag '{tag}' is not a platform: tags are matched exactly; use '{canon}'"
-        ));
-    }
-    if tag.is_empty()
-        || !tag
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-    {
-        return Err(format!(
-            "platform tag '{tag}' is not a platform: tags are matched exactly and every tag cfgd \
-             knows is lowercase letters, digits and underscores (for example 'macos', 'ubuntu', 'x86_64')"
-        ));
-    }
-    Ok(())
-}
-
-/// The serde hook every `platforms:` field is deserialized through, so a tag
-/// no host can match is refused where it is written rather than at the machine
-/// it silently skipped.
-pub fn deserialize_platform_tags<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let tags = Vec::<String>::deserialize(deserializer)?;
-    for tag in &tags {
-        validate_platform_tag(tag).map_err(serde::de::Error::custom)?;
-    }
-    Ok(tags)
-}
+// Both live in `cfgd-schema` so the Module CRD validates a tag by the same
+// rule the local parser refuses one by; re-exported here because every
+// `platforms:` field names the serde hook through this module's path.
+pub use cfgd_schema::{deserialize_platform_tags, validate_platform_tag};
 
 impl Os {
     pub fn as_str(&self) -> &str {

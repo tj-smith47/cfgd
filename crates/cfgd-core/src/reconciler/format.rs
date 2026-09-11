@@ -79,6 +79,60 @@ pub fn pre_skip_doubling_error(subject: &str, reason: &str) -> Option<String> {
     })
 }
 
+/// The verb [`action_display_subject`] opens a [`FileAction::Skip`] row with,
+/// read by the composer and by [`file_skip_reason_doubling_error`] so the rule
+/// and the row cannot disagree about which word the row has already said.
+pub const FILE_SKIP_VERB: &str = "skip";
+
+/// The diagnostic for a [`FileAction::Skip`] reason that opens on a restatement
+/// of the verb its own composer already spelled, or `None` when the reason adds
+/// what the row does not already say.
+///
+/// The fourth member of the doubling family, and the only ONE-slot member:
+/// [`action_display_subject`] composes this action as
+/// `skip <target>: <reason>`, a single string with the reason embedded in it, so
+/// [`pre_skip_doubling_error`] cannot judge it — that predicate asks whether the
+/// SUBJECT contains the reason's noun, which a composed subject does by
+/// construction, for every reason, correct ones included. What the row has
+/// already said by the time a reader reaches the reason is therefore just
+/// [`FILE_SKIP_VERB`], and that is the one word the reason may not repeat:
+/// `skip ~/.gitconfig: skipped: target exists as unmanaged file` spends it
+/// twice on one line. Judged on the reason's opening word alone, stemmed, so
+/// `skipped`, `skipping` and a trailing `:` are all the same offence, while a
+/// reason that merely mentions the verb later states something the row does not.
+/// A reason whose own first word merely BEGINS with the verb (`skiplist`) is
+/// refused too: the stem cannot tell a longer word from the verb it contains,
+/// and refusing the rare honest one is the cheap direction when the expensive
+/// one is a row that says `skip` twice — `// file-skip-reason-ok: <why>` is how
+/// such a reason states that it is not a restatement. That marker waives the
+/// DOUBLING judgement and nothing else: a mint whose reason the static half
+/// cannot read at all is a different exemption under its own marker, because one
+/// spelling for both let a hatch placed for unreadability silence this rule over
+/// a reason whose bytes were there to be judged.
+///
+/// Enforced at both ends, as the family's other members are, and neither end
+/// covers what the other misses: the composition asserts it in debug builds, so
+/// a reason's actual bytes are judged however they were produced, but only on a
+/// path a debug build executes — in a release build, by nothing. The static half
+/// is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`, which
+/// judges every production mint whose reason it can read as a string literal or
+/// as a one-line `const`, and REFUSES a mint whose reason it cannot read rather
+/// than passing over it — by the RULE and not by a shape, so a local binding and
+/// a `reason` field-init shorthand are refused exactly as a `format!` is.
+pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
+    let opener = reason
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    opener.starts_with(FILE_SKIP_VERB).then(|| {
+        format!(
+            "skip reason `{reason}` opens on `{opener}`; the row is already \
+             `{FILE_SKIP_VERB} <target>: <reason>`, so the reason says why, not that"
+        )
+    })
+}
+
 /// Debug-only guard that a pre-skip reason does not double its own subject,
 /// returning the reason so every arm of [`Action::pre_skip_reason`] is checked
 /// by the shape of how it answers rather than by a test remembering to.
@@ -96,6 +150,22 @@ pub(crate) fn debug_checked_pre_skip_reason(action: &Action, reason: &'static st
         debug_assert!(false, "{message}");
     }
     reason
+}
+
+/// Debug-only guard that a skip reason does not restate the row's own verb.
+///
+/// Called from the composition itself, which is the only place that knows the
+/// verb was already spelled, so a reason reaching the row from anywhere is
+/// checked rather than only the ones a walk can read out of the sources.
+/// Debug-only like its two siblings: the row still composes, it merely says one
+/// word twice, and a release build must not panic mid-plan over a wording
+/// defect.
+fn debug_assert_file_skip_reason_undoubled(reason: &str) {
+    if cfg!(debug_assertions)
+        && let Some(message) = file_skip_reason_doubling_error(reason)
+    {
+        debug_assert!(false, "{message}");
+    }
 }
 
 /// Debug-only guard that a configurator's drift key does not repeat its name.
@@ -575,12 +645,15 @@ fn plan_item(action: &Action, arrow: &str) -> String {
                 reason,
                 origin,
                 ..
-            } => format!(
-                "skip {}: {}{}",
-                target.posix(),
-                reason,
-                provenance_suffix(origin)
-            ),
+            } => {
+                debug_assert_file_skip_reason_undoubled(reason);
+                format!(
+                    "{FILE_SKIP_VERB} {}: {}{}",
+                    target.posix(),
+                    reason,
+                    provenance_suffix(origin)
+                )
+            }
         },
         Action::Package(pa) => match pa {
             PackageAction::Install {
@@ -1337,6 +1410,403 @@ mod tests {
             withheld.len(),
             "a pre-skip arm was added without a row in this walk: {body}"
         );
+    }
+
+    /// Whether the `reason` binding at `lines[idx][from..]` belongs to a match
+    /// PATTERN rather than to a construction.
+    ///
+    /// A pattern binds the field with the same shorthand spelling a construction
+    /// uses, and the arm's `=>` sits straight after the brace that closes the
+    /// pattern, so that is what the two are told apart by. A pattern READS the
+    /// field; it mints no reason for the walk to judge.
+    fn binds_in_a_pattern(lines: &[&str], idx: usize, from: usize) -> bool {
+        let mut depth = 1i32;
+        for (n, line) in lines[idx..].iter().enumerate() {
+            let text = if n == 0 { &line[from..] } else { line };
+            for (pos, ch) in text.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return text[pos + 1..].trim_start().starts_with("=>");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// The part of `line` the compiler reads as code: everything before the `//`
+    /// that opens a comment, which is the first `//` lying outside a string
+    /// literal.
+    ///
+    /// `carried` is the `(in a literal, escaped)` state the line above left open,
+    /// so a `//` inside a multi-line literal is content rather than a comment.
+    /// The character walk below cannot tell a brace or a quote in a comment from
+    /// one in code, and a WHOLLY commented line is not the only shape that
+    /// carries one: a trailing `// FileAction::Skip {` opened a region nothing in
+    /// it mints, and a trailing `// "` flipped the literal guard for every line
+    /// after it.
+    fn code_before_a_comment(line: &str, carried: (bool, bool)) -> &str {
+        let (mut in_str, mut escaped) = carried;
+        let bytes = line.as_bytes();
+        for (at, ch) in line.char_indices() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+            } else if ch == '"' {
+                in_str = true;
+            } else if ch == '/' && bytes.get(at + 1) == Some(&b'/') {
+                return &line[..at];
+            }
+        }
+        line
+    }
+
+    /// The cut the walk masks its lines through reads a `//` as a comment only
+    /// where the compiler does.
+    ///
+    /// The character scan below cannot tell a brace or a quote in a comment from
+    /// one in code, so what the cut keeps is what decides whether a construction
+    /// is masked at the right depth: a trailing comment goes, a `//` inside a
+    /// string literal stays, an escaped quote does not end that literal early, and
+    /// a literal still open from the line above carries its answer onto this one.
+    #[test]
+    fn the_comment_cut_reads_a_slash_pair_the_way_the_compiler_does() {
+        assert_eq!(
+            code_before_a_comment("    reason: \"x\", // FileAction::Skip {", (false, false)),
+            "    reason: \"x\", ",
+            "a trailing comment is not code"
+        );
+        assert_eq!(
+            code_before_a_comment("    let at = \"https://example/\";", (false, false)),
+            "    let at = \"https://example/\";",
+            "a `//` inside a literal is content"
+        );
+        assert_eq!(
+            code_before_a_comment("    \"a\\\" // b\"; // cut", (false, false)),
+            "    \"a\\\" // b\"; ",
+            "an escaped quote does not close the literal the `//` sits in"
+        );
+        assert_eq!(
+            code_before_a_comment("    open // still literal\", then code", (true, false)),
+            "    open // still literal\", then code",
+            "a literal the line above left open carries onto this one"
+        );
+    }
+
+    /// No `FileAction::Skip` reason spends the verb its own row already spelled.
+    ///
+    /// The one-slot member of the same family: this action composes as
+    /// `skip <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s
+    /// two-slot question cannot be asked of it (see
+    /// [`super::file_skip_reason_doubling_error`], which states why) and the
+    /// golden that first rendered
+    /// `∅ skip <target>: skipped: target exists as unmanaged file` had no walk
+    /// to trip.
+    ///
+    /// The population is DERIVED rather than listed: every production mint of
+    /// the `reason` field in either crate's sources, read through
+    /// `production_slice_of` so a reason written inside a test fixture is
+    /// outside it, with the crate roots read off `crates/` so a crate added to
+    /// the workspace joins the walk with it. A reason spelled as a `const` is
+    /// resolved through the same sources, because both of today's mints state
+    /// the string somewhere other than the construction.
+    ///
+    /// Anything else a mint's `reason` field holds — a `format!`, a call, a
+    /// `match`, a local binding, or the `reason` field-init shorthand clippy's
+    /// `redundant_field_names` asks for — is REFUSED rather than dropped, and
+    /// refused by the RULE rather than by the expression's shape: a bare
+    /// identifier is exempted nowhere, so a structural rebuild of a reason
+    /// judged at the mint that stated it says so with
+    /// `// file-skip-reason-unreadable-ok: <why>` on the field's line or the one
+    /// above. That marker is NARROW: it waives the refusal, never the rule, so a
+    /// hatched field whose reason the resolver can read after all is minted and
+    /// doubling-judged like any other. The doubling exemption is the separate
+    /// `// file-skip-reason-ok: <why>` that
+    /// [`super::file_skip_reason_doubling_error`] states the use of, and the two
+    /// are separate markers so a hatch placed against unreadability cannot also
+    /// silence the rule over bytes the walk can read.
+    /// A count floor cannot stand in for the refusal: a third mint the resolver
+    /// could not read would lower no count, so the walk would pass having judged
+    /// it never, and the composer's debug assertion only reaches what a debug
+    /// build executes.
+    #[test]
+    fn no_file_skip_reason_repeats_the_verb_its_row_already_spelled() {
+        let crates_dir = crate::test_helpers::workspace_root().join("crates");
+        let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| panic!("the walk must read every crate: {e}"))
+                    .path()
+                    .join("src")
+            })
+            .filter(|src| src.is_dir())
+            .collect();
+        roots.sort();
+
+        let workspace = crate::test_helpers::workspace_root();
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for path in roots
+            .iter()
+            .flat_map(|root| crate::test_helpers::rust_sources_under(root))
+        {
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            let name = relative.rsplit('/').next().unwrap_or(&relative);
+            // A file that IS test scaffolding carries no `#[cfg(test)]` for the
+            // slice to cut at, so it is named out rather than read as
+            // production.
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || relative.contains("/tests/")
+            {
+                continue;
+            }
+            sources.push((
+                relative.clone(),
+                crate::test_helpers::production_slice_of(&path),
+            ));
+        }
+        assert!(
+            sources.len() > 100,
+            "the walk read only {} production sources, so it has gone blind",
+            sources.len()
+        );
+
+        // Every ONE-LINE `const NAME: &str = "…";` the production sources
+        // declare, so a reason stated away from its construction is still judged
+        // by its bytes. A declaration the one-line match cannot read — one that
+        // wraps, or one built with `concat!` — enters neither map, so it is
+        // invisible to the ambiguity check below and its mint lands in the
+        // unresolvable arm, which is the honest answer: the walk did not see it.
+        // Keyed by NAME alone, which nothing stops two modules from both
+        // declaring, so a name whose one-line declarations disagree is recorded
+        // here and refused at the mint that asks for it rather than anywhere it
+        // appears: the resolution reads whichever source sorted last, and two
+        // same-named consts that no skip reason names are not this walk's
+        // business.
+        let mut literals: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut ambiguous: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (_, body) in &sources {
+            for line in body.lines() {
+                let Some((head, tail)) = line.split_once(": &str = \"") else {
+                    continue;
+                };
+                let Some(name) = head.rsplit(' ').next() else {
+                    continue;
+                };
+                if let Some((value, _)) = tail.split_once('"')
+                    && let Some(prior) = literals.insert(name.to_string(), value.to_string())
+                    && prior != value
+                {
+                    ambiguous.insert(name.to_string());
+                }
+            }
+        }
+
+        let opener = "FileAction::Skip {";
+        let mut mints: Vec<(String, String)> = Vec::new();
+        let mut unjudged: Vec<(String, String)> = Vec::new();
+        for (relative, body) in &sources {
+            let lines: Vec<&str> = body.lines().collect();
+            let mut depth: Option<i32> = None;
+            let mut carried_literal: Option<(bool, bool)> = None;
+            for (idx, line) in lines.iter().enumerate() {
+                let line = code_before_a_comment(line, carried_literal.unwrap_or((false, false)));
+                let from = match depth {
+                    Some(_) => 0,
+                    None => match line.find(opener) {
+                        Some(at) => {
+                            depth = Some(1);
+                            carried_literal = None;
+                            at + opener.len()
+                        }
+                        None => continue,
+                    },
+                };
+                // Only the text lying DIRECTLY inside the braces the
+                // construction or pattern opened names its fields: the arm body
+                // under a pattern reads `reason` as an ordinary expression
+                // (`format!("{FILE_SKIP_VERB} …", reason)`), and a nested
+                // struct's braces hold another type's fields. Everything else on
+                // the line is masked to spaces, so a surviving token's byte
+                // offset is still the line's own and the brace depth carries
+                // across lines.
+                //
+                // The `"`-literal guard travels with that depth, so a brace in
+                // the body of a multi-line literal opens nothing either. A
+                // comment's own delimiters are already gone, cut by
+                // `code_before_a_comment` above. The two shapes the guard still
+                // cannot tell from a literal's delimiters are a raw string's
+                // inner `"` and a char literal (`'{'`), and the cost of one is a
+                // region masked at the wrong depth, which passes SILENTLY rather
+                // than refusing; neither shape appears in today's population, and
+                // a reason a mis-masked region leaves unreadable says so with the
+                // unreadability hatch.
+                let mut open = depth.unwrap_or(1);
+                let (mut in_str, mut escaped) = carried_literal.unwrap_or((false, false));
+                let mut region = " ".repeat(from);
+                let mut cursor = from;
+                while cursor < line.len() {
+                    let mut closed: Option<usize> = None;
+                    for (off, ch) in line[cursor..].char_indices() {
+                        let mut keep = open == 1;
+                        if in_str {
+                            if escaped {
+                                escaped = false;
+                            } else if ch == '\\' {
+                                escaped = true;
+                            } else if ch == '"' {
+                                in_str = false;
+                            }
+                        } else {
+                            match ch {
+                                '"' => in_str = true,
+                                '{' => {
+                                    open += 1;
+                                    keep = false;
+                                }
+                                '}' => {
+                                    open -= 1;
+                                    keep = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if keep {
+                            region.push(ch);
+                        } else {
+                            for _ in 0..ch.len_utf8() {
+                                region.push(' ');
+                            }
+                        }
+                        if open == 0 {
+                            closed = Some(cursor + off + ch.len_utf8());
+                            break;
+                        }
+                    }
+                    // A construction can open on the very line a pattern's brace
+                    // closed (`} => FileAction::Skip {`), and its fields are what
+                    // the region exists to reach: a scan that stopped at the
+                    // close would leave every one of them judged by nothing and
+                    // the hatch that covers one silencing nothing.
+                    let Some(after) = closed else { break };
+                    let Some(reopen) = line[after..].find(opener) else {
+                        break;
+                    };
+                    cursor = after + reopen + opener.len();
+                    for _ in after..cursor {
+                        region.push(' ');
+                    }
+                    open = 1;
+                    in_str = false;
+                    escaped = false;
+                }
+                depth = (open > 0).then_some(open);
+                carried_literal = depth.map(|_| (in_str, escaped));
+                let line = region.as_str();
+                // Read off the RAW lines, which still carry the comments the
+                // code portion cut, and split by what each marker waives.
+                let hatched = |tell: &str| {
+                    lines[idx.saturating_sub(1)..=idx]
+                        .iter()
+                        .any(|l| l.contains(tell))
+                };
+                let doubling_hatched = hatched("file-skip-reason-ok:");
+                let unreadable_hatched = hatched("file-skip-reason-unreadable-ok:");
+                // The `reason` field-init SHORTHAND, which the `reason: ` scan
+                // cannot see at all and which clippy's `redundant_field_names`
+                // is what pushes an author toward. A match PATTERN binds the
+                // field by the same spelling, and the arm's `=>` after the
+                // pattern's own closing brace is what tells the two apart: a
+                // pattern READS the field and mints nothing.
+                if let Some((at, _)) = line.match_indices("reason").find(|(at, _)| {
+                    let before = line[..*at].chars().next_back();
+                    let after = line[at + "reason".len()..].trim_start();
+                    before.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '.')
+                        && (after.is_empty() || after.starts_with(','))
+                }) && !unreadable_hatched
+                    && !binds_in_a_pattern(&lines, idx, at + "reason".len())
+                {
+                    unjudged.push((
+                        format!("{relative}:{}", idx + 1),
+                        "the `reason` field-init shorthand".to_string(),
+                    ));
+                }
+                if let Some((_, expr)) = line.split_once("reason: ") {
+                    let expr = expr.trim_end_matches(',').trim();
+                    let name = expr
+                        .trim_end_matches("()")
+                        .trim_end_matches(".to_string")
+                        .trim_end_matches(".into")
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(expr);
+                    let reason = match expr.strip_prefix('"') {
+                        Some(rest) => rest.split('"').next().map(str::to_string),
+                        None => literals.get(name).cloned(),
+                    };
+                    let site = format!("{relative}:{}", idx + 1);
+                    if !expr.starts_with('"') && ambiguous.contains(name) {
+                        if !unreadable_hatched {
+                            unjudged.push((
+                                site,
+                                format!("`{name}` is declared with two different values"),
+                            ));
+                        }
+                    } else if let Some(reason) = reason {
+                        if !doubling_hatched {
+                            mints.push((site, reason));
+                        }
+                    } else if !unreadable_hatched {
+                        unjudged.push((site, expr.to_string()));
+                    }
+                }
+            }
+        }
+        assert!(
+            unjudged.is_empty(),
+            "a skip reason the walk cannot read is judged by no walk: {unjudged:?}; state it \
+             as a string literal or as a `const` whose name no other production const \
+             takes, or hatch it with `// file-skip-reason-unreadable-ok: <why>`"
+        );
+        assert!(
+            mints.len() >= 2,
+            "the sources mint two skip reasons and the walk found {}: {mints:?}",
+            mints.len()
+        );
+
+        for (site, reason) in &mints {
+            let action = Action::File(crate::providers::FileAction::Skip {
+                target: std::path::PathBuf::from("/home/u/.gitconfig"),
+                reason: reason.clone(),
+                origin: crate::config::LOCAL_LAYER.to_string(),
+            });
+            let subject =
+                action_display_subject(&action, crate::output::theme::ICON_ARROW).to_string();
+            // The premise the predicate rests on, read off the real composer
+            // rather than assumed: the row has said the verb, and only the
+            // verb, before the reason is reached.
+            assert!(
+                subject.starts_with(&format!("{} ", super::FILE_SKIP_VERB)),
+                "{site}: the row opens on its verb: {subject}"
+            );
+            assert!(
+                super::file_skip_reason_doubling_error(reason).is_none(),
+                "{site}: {}",
+                super::file_skip_reason_doubling_error(reason).unwrap_or_default()
+            );
+        }
     }
 
     /// A subject names EVERY operand it acts on, at every width.

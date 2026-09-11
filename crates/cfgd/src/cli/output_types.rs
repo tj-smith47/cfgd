@@ -87,6 +87,12 @@ pub struct ApplyOutput {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_id: Option<i64>,
+    /// What the run's plan promised, which is the number the header printed
+    /// before the first action ran: the three counts below partition it, and
+    /// `afterPlan` sits outside it. A consumer differencing the counts against
+    /// a total derived from the result list read work the plan never named as
+    /// part of the plan.
+    pub total: usize,
     pub succeeded: usize,
     /// Actions that ran and changed nothing — the rollup's `N skipped`.
     pub skipped: usize,
@@ -95,6 +101,11 @@ pub struct ApplyOutput {
     /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
     /// outside the plan's `totalActions`, exactly as the human line prices it.
     pub not_attempted: usize,
+    /// The work the run did that its plan could not name, split by outcome.
+    /// Flattened, so its three counts are siblings of the planned ones on the
+    /// wire.
+    #[serde(flatten)]
+    pub after_plan: AfterPlanCounts,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -113,10 +124,12 @@ impl ApplyOutput {
         Self {
             status: "nothingToDo".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -126,12 +139,63 @@ impl ApplyOutput {
         Self {
             status: "aborted".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
+        }
+    }
+}
+
+/// The `cfgd apply` payload's account of work the run did that its plan could
+/// not name — an env surface a resolved secret or a late PATH directory forced
+/// it to rewrite, an `onChange` hook whose condition is whether this very run
+/// changed anything.
+///
+/// All three counts sit outside `total` and outside the three counts that
+/// partition it, because the header promised the plan's number before the run
+/// began. They are three fields rather than one because `-o json` emits no
+/// rollup: a consumer reading a lone class total cannot tell a surface that
+/// converged from one that changed nothing or failed, which is the very
+/// conflation this class exists to end. Each is omitted at zero, so a run that
+/// did no such work, or none that failed, puts nothing on the wire.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterPlanCounts {
+    /// Every such item, whatever its outcome.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan: usize,
+    /// Those that ran and changed nothing (a live-session publish no manager
+    /// performed, an env file already holding the bytes the run would write).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_skipped: usize,
+    /// Those that failed. A run can close `status: success` with one of these:
+    /// the plan's own actions all succeeded, and this class is outside them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_failed: usize,
+}
+
+impl AfterPlanCounts {
+    /// Count a finished run's after-plan class by outcome, off the ONE
+    /// derivation of that outcome (`ApplyResult::after_plan`), so the wire
+    /// cannot disagree with the rollup the same run printed.
+    pub fn of(result: &cfgd_core::reconciler::ApplyResult) -> Self {
+        use cfgd_core::reconciler::AfterPlanState;
+        let outcomes = result.after_plan();
+        Self {
+            after_plan: outcomes.len(),
+            after_plan_skipped: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Skipped)
+                .count(),
+            after_plan_failed: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Failed)
+                .count(),
         }
     }
 }
@@ -698,7 +762,25 @@ pub struct BackupListEntry {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// Which layer owns this unit's schedule, as the lowercase word
+    /// `ScheduleOwner::label` spells (`cluster` / `local`). Never skipped: a
+    /// constant key is what a consumer gates on to tell a unit a cluster
+    /// `BackupPolicy` may reschedule from one the profile pinned.
+    pub schedule_owner: String,
+    /// The cadence a cluster `BackupPolicy` projected onto this unit, present
+    /// only when the projection CHANGED it. `schedule` stays what the profile
+    /// declared, so a consumer can see both what the machine asked for and what
+    /// the cluster projected, and the key's presence means one thing: the two
+    /// differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_schedule: Option<String>,
     pub retention: u32,
+    /// The retention the cluster projected, on the same terms as
+    /// `effective_schedule`: present only when the projection changed it. A
+    /// projection that states no retention leaves `retention` standing and
+    /// omits this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_retention: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,6 +804,12 @@ pub struct BackupListEntry {
     /// source is a sidecar, not a snapshot, and is never counted here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<usize>,
+    /// How many recorded snapshots of this unit sit OUTSIDE its current
+    /// destination — what a `destination:` change stranded and
+    /// `cfgd backup gc` collects. `None` on the same terms as `snapshots`: an
+    /// unknown count is not zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphaned: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -912,6 +1000,78 @@ pub struct BackupRollbackDeclinedOutput {
     pub declined: bool,
 }
 
+/// One orphaned snapshot `cfgd backup gc` read, in whichever of the payload's
+/// three lists its outcome put it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcEntry {
+    /// The `spec.backups[]` unit that recorded the snapshot.
+    pub name: String,
+    /// The path the state store recorded, absolute and posix-folded — the only
+    /// path gc ever removes.
+    pub path: String,
+    /// Bytes the snapshot occupied when it was written. Kept on a `skipped`
+    /// entry too: it is what the row recorded, not what was measured now.
+    pub size_bytes: u64,
+    /// Why the removal failed. Present only on a `failed` entry, whose record
+    /// is left in place for a later `cfgd backup gc` to retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::CollectedSnapshot> for BackupGcEntry {
+    fn from(entry: &cfgd_core::backup::CollectedSnapshot) -> Self {
+        Self {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            size_bytes: entry.size_bytes,
+            error: entry.error.clone(),
+        }
+    }
+}
+
+/// Outcome of `cfgd backup gc`, split the way the run reported it.
+///
+/// Three constant keys rather than one list with an outcome field: a consumer
+/// deciding whether anything on the machine changed reads `collected`, and a
+/// list it would have to filter first answers that question wrongly by
+/// default. Every key is present even when empty, so a script never has to
+/// tell "nothing was collected" from "this cfgd does not report it".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcOutput {
+    /// Snapshots whose payload this run removed.
+    pub collected: Vec<BackupGcEntry>,
+    /// Snapshots whose payload was already gone: the record is dropped, and
+    /// nothing on the machine changed.
+    pub skipped: Vec<BackupGcEntry>,
+    /// Snapshots that could not be removed. Each keeps its record.
+    pub failed: Vec<BackupGcEntry>,
+    /// Units whose recorded history could not be read at all, so nothing can
+    /// say what they still hold. Absent when every declared unit answered,
+    /// which is a different fact from a run that found nothing to collect.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
+}
+
+impl From<&cfgd_core::backup::CollectOutcome> for BackupGcOutput {
+    fn from(outcome: &cfgd_core::backup::CollectOutcome) -> Self {
+        let map = |entries: &[cfgd_core::backup::CollectedSnapshot]| {
+            entries.iter().map(BackupGcEntry::from).collect()
+        };
+        Self {
+            collected: map(&outcome.collected),
+            skipped: map(&outcome.skipped),
+            failed: map(&outcome.failed),
+            unreadable: outcome
+                .unreadable
+                .iter()
+                .map(|unit| unit.unit.clone())
+                .collect(),
+        }
+    }
+}
+
 /// Outcome of one unit run by `cfgd backup run`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -926,6 +1086,17 @@ pub struct BackupRunOutput {
     pub clean: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// How many recorded snapshots this run found outside the destination now
+    /// in force, and so re-classified for `cfgd backup gc` to collect. Absent
+    /// on a run that stranded nothing, which is every run until a
+    /// `destination:` moves.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub orphaned: usize,
+}
+
+/// Whether a count is zero, for the `-o json` slots a zero says nothing in.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
@@ -936,6 +1107,7 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
             destination_path: record.destination_path.clone(),
             clean: record.is_clean(),
             error: record.error.clone(),
+            orphaned: 0,
         }
     }
 }
@@ -950,13 +1122,17 @@ impl BackupRunOutput {
     /// is the caller's because a record-less report has no name of its own.
     pub fn from_report(name: &str, report: &cfgd_core::backup::BackupRunReport) -> Self {
         match (&report.record, &report.skipped) {
-            (Some(record), _) => Self::from(record),
+            (Some(record), _) => Self {
+                orphaned: report.orphaned,
+                ..Self::from(record)
+            },
             (None, Some(holder)) => Self {
                 name: name.to_string(),
                 status: "skipped".to_string(),
                 destination_path: None,
                 clean: false,
                 error: Some(format!("already running ({holder})")),
+                orphaned: 0,
             },
             (None, None) => Self {
                 name: name.to_string(),
@@ -966,6 +1142,7 @@ impl BackupRunOutput {
                 destination_path: None,
                 clean: false,
                 error: report.error.clone(),
+                orphaned: 0,
             },
         }
     }
@@ -1343,10 +1520,12 @@ mod tests {
         let v = ApplyOutput {
             status: "partial".to_string(),
             apply_id: Some(7),
+            total: 2,
             succeeded: 2,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1354,12 +1533,14 @@ mod tests {
                 destination_path: Some("/backups/photos/20260801T000000Z".to_string()),
                 clean: false,
                 error: Some("postBackup hook failed".to_string()),
+                orphaned: 2,
             }],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["backups"][0]["name"], json!("photos"));
         assert_eq!(json["backups"][0]["clean"], json!(false));
         assert_eq!(json["backups"][0]["error"], json!("postBackup hook failed"));
+        assert_eq!(json["backups"][0]["orphaned"], json!(2));
     }
 
     #[test]
@@ -1367,8 +1548,10 @@ mod tests {
         let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(99),
+            total: 4,
             succeeded: 3,
             skipped: 0,
             failed: 1,
@@ -1396,8 +1579,10 @@ mod tests {
         commits.insert("alpha".to_string(), "a-sha".to_string());
         commits.insert("mid".to_string(), "m-sha".to_string());
         let v = ApplyOutput {
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(1),
+            total: 1,
             succeeded: 1,
             skipped: 0,
             failed: 0,

@@ -184,7 +184,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 
 **For platform & infrastructure engineers:**
 - [Multi-source config](docs/sources.md): publish team baselines with policy tiers (locked/required/recommended/optional)
-- [Kubernetes operator](docs/operator.md): CRDs for MachineConfig, ConfigPolicy, DriftAlert; admission webhook; device gateway with fleet dashboard
+- [Kubernetes operator](docs/operator.md): CRDs for MachineConfig, ConfigPolicy, ClusterConfigPolicy, DriftAlert, BackupPolicy, Module; admission webhook; device gateway with fleet dashboard
 - [Node configuration](docs/system-configurators.md): sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp, certificates
 - [CSI driver](docs/operator.md): OCI-based module injection into pods via volumes
 - [Crossplane integration](docs/team-config.md): TeamConfig XR for self-service team environment distribution
@@ -216,6 +216,7 @@ Puppet is the closest philosophical match: declarative state, continuous enforce
 | [Team Config](docs/team-config.md) | Crossplane-powered team config distribution |
 | [Safety](docs/safety.md) | Atomic writes, backups, rollback, apply locking, path safety |
 | [Declarative Backups](docs/backups.md) | `spec.backups[]` snapshots, hook ordering, retention, restoring |
+| [Backup Policy](docs/backup-policy.md) | Fleet-wide backup schedules, the precedence table, `scheduleOwner` |
 | [CLI Reference](docs/cli-reference.md) | Complete command reference with flags and examples |
 | [Installation](docs/installation.md) | Every install channel, verifying signed downloads, self-upgrade |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |

@@ -76,6 +76,11 @@
             "null"
           ]
         },
+        "scheduleOwner": {
+          "$ref": "#/definitions/ScheduleOwner",
+          "default": "Cluster",
+          "description": "Which layer owns this unit's schedule. `Cluster` (the default) lets a\ncluster `BackupPolicy` set or replace this unit's `schedule` and\n`retention`; `Local` pins the unit to the machine, so a policy reports\nit but projects no schedule onto it. Parsed case-insensitively."
+        },
         "source": {
           "description": "File or directory to snapshot. A leading `~` expands to the home\ndirectory. Must not contain, or sit inside, the resolved `destination` —\na nested pair is rejected before any copy, with symlinks resolved on both\nsides. Its filename is what `{filename}` interpolates, so a source whose\nfilename contains `:` (legal on Unix, a drive and data-stream separator\non Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
           "type": "string"
@@ -985,6 +990,21 @@
         }
       },
       "type": "object"
+    },
+    "ScheduleOwner": {
+      "description": "Which layer owns a backup unit's schedule.\n\n`Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`,\nwhich may set or replace its `schedule` and `retention`. `Local` pins the\nunit to the machine: the policy still reports it, but projects no schedule\nonto it.",
+      "oneOf": [
+        {
+          "const": "Cluster",
+          "description": "A cluster `BackupPolicy` may override this unit's schedule (default).",
+          "type": "string"
+        },
+        {
+          "const": "Local",
+          "description": "The profile keeps this unit's schedule; no policy projects onto it.",
+          "type": "string"
+        }
+      ]
     },
     "ScriptCommand": {
       "description": "The mapping form of a script entry: a command with a timeout, shell,\nguard condition or working directory.",

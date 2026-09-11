@@ -11,7 +11,7 @@ use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
 use super::{ControllerStores, MACHINE_CONFIG_FINALIZER};
-use crate::crds::{Condition, DriftAlert, MachineConfigStatus, ModuleRef};
+use crate::crds::{Condition, DriftAlert, MachineConfigStatus, ModuleRef, ScheduleOwner};
 use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
@@ -206,6 +206,7 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
     mc.metadata.generation = Some(7);
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(7),
         conditions: vec![],
         package_versions: Default::default(),
@@ -399,6 +400,7 @@ async fn reconcile_machine_config_carries_the_policys_compliant_message_forward(
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("p")],
         package_versions: Default::default(),
@@ -459,6 +461,7 @@ async fn a_drifted_policy_targeted_machine_reaches_steady_state() {
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("pp-policy")],
         package_versions: Default::default(),
@@ -655,6 +658,7 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
     // reconcile must preserve in its emitted patch.
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2025-12-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),
@@ -725,5 +729,74 @@ async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_
     assert!(
         report.captured.is_empty(),
         "a reconcile that cannot read its caches must not write a status"
+    );
+}
+
+/// `backupScheduleOwners` and `packageVersions` are reported by the device on
+/// check-in, so no reconcile here can measure either. Blanking
+/// `backupScheduleOwners` would tell the BackupPolicy controller that a machine
+/// which pinned a unit locally is free to be scheduled from the cluster, until
+/// the device checked in again.
+///
+/// The status write names neither: they are the gateway's fields, applied
+/// server-side under its own manager, and a merge patch that names them would
+/// move their ownership to this manager and turn the gateway's next
+/// (unforced) apply into a conflict. A merge patch changes only what it names,
+/// so leaving both out is what preserves them.
+#[tokio::test]
+async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway() {
+    let mut mc = machine_config("mc-pinned", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.status = Some(MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: [(
+            "dotfiles".to_string(),
+            ScheduleOwner::Local.label().to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        observed_generation: Some(1),
+        conditions: vec![],
+        package_versions: [("brew/git".to_string(), "2.45.1".to_string())]
+            .into_iter()
+            .collect(),
+    });
+
+    // Drift keeps the reconcile off the already-observed short circuit, which
+    // is the only path on which the status is rebuilt and written.
+    let alert = super::test_fixtures::drift_alert(
+        "alert-pinned",
+        NS,
+        "mc-pinned",
+        crate::crds::DriftSeverity::Medium,
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-pinned")))
+                .returning_json(&mc),
+            expect_event_post(NS), // Reconciled
+            expect_event_post(NS), // DriftDetected
+        ],
+        stores_with_drift(vec![alert]),
+    );
+
+    reconcile_machine_config(Arc::new(mc), ctx)
+        .await
+        .expect("the reconcile succeeds");
+
+    let report = harness.finish().await;
+    let status = report.captured[0].body_json()["status"].clone();
+    assert!(
+        status.get("backupScheduleOwners").is_none(),
+        "the owners are the gateway's field, and a merge patch naming them would claim it: {status}"
+    );
+    assert!(
+        status.get("packageVersions").is_none(),
+        "the reported versions are the gateway's field on the same terms: {status}"
+    );
+    assert!(
+        status["lastReconciled"].as_str().is_some(),
+        "the reconcile still writes the fields it does own: {status}"
     );
 }

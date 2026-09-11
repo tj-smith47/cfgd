@@ -57,6 +57,37 @@ pub(super) fn read_command_output(cmd: &mut Command) -> String {
         .unwrap_or_default()
 }
 
+/// Widen a file a privileged configurator wrote so the unprivileged readers it
+/// exists for can read it.
+///
+/// The class is "a file root writes that a non-root reader must open": the
+/// system-wide env files every login shell sources, the macOS `env.sh` a user's
+/// rc line sources, the LaunchDaemon plist launchd loads, the systemd unit file
+/// systemd reads. `atomic_write`'s tempfile lands on 0600, so a writer in that
+/// class cannot leave the mode alone. A root-only
+/// `/etc/profile.d/cfgd-env.sh` is worse than absent: FreeBSD's `/etc/profile`
+/// sources every `/etc/profile.d/*.sh` unconditionally, so a refused read aborts
+/// the login shell of every unprivileged user on the machine, while Linux's
+/// skips the unreadable file and silently leaves the managed variables unset.
+///
+/// The widen ORs the read bits into the mode the file already carries rather
+/// than setting `0o644`: `/etc/environment` keeps lines cfgd did not write, so
+/// its mode is the administrator's, and `atomic_write` deliberately preserves an
+/// existing target's mode. A site that set an absolute mode would silently drop
+/// a `0o664` file's group-write bit on every apply. A file cfgd wrote fresh has
+/// no mode of its own to keep, so `0o600 | 0o044` is the 0644 convention anyway.
+///
+/// The widen goes through [`cfgd_core::widen_file_permissions_nofollow`], so a
+/// symlink at the path is refused rather than followed: `macos_write_env_sh`
+/// widens `~/.config/cfgd/env.sh` while elevated, inside a directory the invoking
+/// user owns, and a path-based chmod there lets that user unlink the file between
+/// the write and the widen and point root at another user's private key.
+///
+/// A no-op on Windows, where there are no mode bits to widen.
+pub(super) fn widen_world_readable(path: &std::path::Path) -> std::io::Result<()> {
+    cfgd_core::widen_file_permissions_nofollow(path, 0o044)
+}
+
 /// Diff a YAML mapping against actual values.
 ///
 /// Iterates every key in `desired` (which must be a YAML mapping), converts each

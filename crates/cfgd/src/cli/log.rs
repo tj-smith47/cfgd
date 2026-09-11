@@ -225,6 +225,7 @@ mod tests {
         let mut output = in_progress_log();
         output.entries[0].summary = Some(
             cfgd_core::state::ApplySummary::Actions {
+                after_plan: 0,
                 total: 13,
                 succeeded: 12,
                 skipped: 1,

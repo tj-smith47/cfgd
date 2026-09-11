@@ -465,6 +465,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 "cfgd-gpg-{}.params",
                 cfgd_core::sha256_hex(spec.email.as_bytes())
             ));
+            // user-scope-ok: a gpg batch parameter file carrying key material, read only by the gpg this run spawns
             cfgd_core::atomic_write_str(&param_path, &param)?;
 
             let mut cmd = gpg_cmd();

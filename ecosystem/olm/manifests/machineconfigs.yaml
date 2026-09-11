@@ -141,6 +141,7 @@ spec:
                   `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
                   no system settings are reconciled.
                 type: object
+                x-kubernetes-map-type: granular
             required:
             - hostname
             - profile
@@ -151,6 +152,17 @@ spec:
           status:
             nullable: true
             properties:
+              backupScheduleOwners:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: |-
+                  Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by
+                  unit name (`{"dotfiles": "local"}`). Device-reported, like
+                  `packageVersions`: no controller computes it, and a reconcile that
+                  cannot observe it preserves it.
+                type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 default: []
                 items:
@@ -191,8 +203,16 @@ spec:
                 additionalProperties:
                   type: string
                 default: {}
-                description: 'Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).'
+                description: |-
+                  Installed versions of the packages the machine declares, keyed
+                  `<manager>/<package>` (e.g. {"brew/kubectl": "1.28.3"}). The manager
+                  qualifies the name because two managers may hold the same package at
+                  different versions, so a `ConfigPolicy` version requirement naming that
+                  package is met only when EVERY reported copy of it satisfies the
+                  requirement. Device-reported: written by the device gateway on every
+                  check-in, and a reconcile that cannot observe it preserves it.
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
         required:
         - spec

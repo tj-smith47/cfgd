@@ -112,8 +112,25 @@ single-source-of-truth wiring.
   to `-p cfgd-core -p cfgd`, because cfgd-csi/cfgd-operator are k8s
   server-side with no FreeBSD surface (same rationale as the Windows branch).
   The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
-  the VM); `task`/`nextest` come from pkg; no protoc (neither in-scope crate
-  compiles protos). The guest gets `mem: 10240`: rustc compiling cfgd-core's
+  the VM); `task`/`nextest`/`npm` come from pkg; no protoc (neither in-scope
+  crate compiles protos). The `run:` block opens on `set -e`: it holds three
+  commands now, the guest script's shell flags are the action's rather than
+  GitHub's, and without the abort a failing `task test:ci` is followed by a
+  passing build and the leg reports green on red tests.
+- After `task test:ci` that same guest builds `--bin cfgd` and runs
+  `task test:freebsd:npm-prefix`, the real-host proof of the unprivileged npm
+  global-prefix fallback documented in `docs/packages.md`: the unit pins
+  inject both elevation and the write-probe, so only a real non-root user
+  against the real `www/npm` (configured prefix `/usr/local`, root-owned) can
+  observe cfgd fall back to `$HOME/.npm-global` and pass `--prefix`.
+  **That step runs as root and mutates the guest**: it installs `www/npm`,
+  and it creates and `pw userdel -r`s the `cfgdnpm` user, home included. It
+  belongs only on a disposable guest, which is why the FreeBSD-only decision
+  is a Taskfile `uname -s` branch like `test:ci`'s and never a leg of
+  `task ci`; the script refuses a non-root caller, a non-FreeBSD host, and a
+  target user whose uid or home says it is somebody real. `npm` is installed
+  in `prepare` rather than by the script because `IGNORE_OSVERSION` is not
+  exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg
   locally against the accept VM (start-if-stopped, poll, sync, `task test:ci`).
@@ -151,16 +168,16 @@ single-source-of-truth wiring.
   (`task`, anodizer on PATH from the action step, docker, helm, yq, jq),
   and that job checks out with `fetch-depth: 0` because the prediction
   walks the tags.
-- The `clippy` job also runs `task doc` (`cargo doc --workspace --no-deps
+- The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
-  the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var), right
-  after `task clippy` and ahead of the schema/CRD/chart drift guards: it needs
-  the same Rust toolchain checkout as clippy and nothing else, so a second job
-  would only add a redundant checkout+toolchain setup for a `cargo`
-  invocation that must recompile under its own feature set either way (the
-  doc leg's `--all-features` pulls in `test-helpers`, which `cargo clippy
-  --workspace --all-targets` above it does not build, so the two legs do not
-  even share a build cache). `--all-features` is load-bearing, not decoration:
+  the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its
+  only step, in the first wave beside `fmt` and `clippy`: it is the longest
+  single step in the workflow, and inside the `clippy` job it queued the
+  schema/CRD/chart drift guards behind it. Its checkout+toolchain setup is
+  paid twice on purpose; the doc leg's `--all-features` pulls in
+  `test-helpers`, which `cargo clippy --workspace --all-targets` does not
+  build, so the two legs never shared a build cache even in one job.
+  `--all-features` is load-bearing, not decoration:
   `cfgd-core` is the only crate in the workspace with a non-default feature (`test-helpers`),
   and without it the gate never compiles `test_helpers.rs` or the
   `EnvHostProbeOverride` seam at all, so a broken link inside either one
@@ -176,10 +193,53 @@ single-source-of-truth wiring.
   `#[allow(rustdoc::invalid_html_tags)]`. Everywhere else, prefer a backtick
   code span over a backslash escape for a literal that looks like an HTML
   tag — it resolves the same lint and reads cleaner in the source. The gate
-  lives in `task ci` and `task check` beside this job, and deliberately NOT in
-  `task lint` (the `task commit` chain): the two rustdocs are a four-minute
-  serial leg that peaks near 10 GB, and a broken link is a merge blocker, not
-  a commit blocker — CI refuses it before it lands.
+  lives in this job and in `task push`, which runs it ahead of the push and
+  blocks on a failure; no other local target (`task ci`, `task check`, `task
+  lint`, the `task commit` chain) chains to `task doc`, and the task itself
+  refuses to start with under 10 GB available (`_check:mem-headroom`). The
+  two rustdocs peak near 10 GB each; on the 12 GB dev host that is the
+  kernel OOM-killing the largest process on the box, whichever session owns
+  it (41 kills between 2026-09-04 and 2026-09-09, every one a rustdoc or the
+  rust-analyzer beside it). A broken link is a merge blocker, not a commit
+  blocker — CI refuses it before it lands.
+- **Every e2e job that cargo-builds carries the compile-cache layering, under its
+  own key.** Six e2e jobs compile on the runner rather than riding the
+  setup job's images: `setup` (e2e-setup.yml, building the three images),
+  `operator-tests` (`test-oci.sh` → `ensure_cfgd_binary`), `full-stack-tests`
+  (`setup-fullstack-env.sh` → `ensure_cfgd_binary`), `crossplane-tests`
+  (`run-crossplane-tests.sh` renders the CRDs with `cargo run --release --bin
+  cfgd-gen-crds`), `gateway-tests` (`test-device-projection.sh` drives a real
+  binary against the gateway) and `cli-tests` (the suite is native). Each carries
+  four parts — `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER: sccache` in its env,
+  `mozilla-actions/sccache-action`, and `Swatinem/rust-cache` under a `key:` no
+  sibling shares (`e2e-setup`, `e2e-operator`, `e2e-full-stack`, `e2e-crossplane`,
+  `e2e-gateway`, `e2e-cli`) — because two jobs on one key is one cache their
+  different `target/` trees evict each other from. `node-tests`, `helm-tests` and
+  `server-tests` compile nothing and carry no Rust toolchain at all. A new e2e job
+  that builds joins the list with its own key. A cold build is what the per-job
+  budget cannot absorb: raising the timeout hides a missing cache rather than
+  fixing it.
+- **What `.claude/scripts/audit.sh`'s "e2e compile-cache layering" gate judges.**
+  Its population is the `.github/workflows/e2e*.yml` glob, and a glob matching
+  nothing fails the gate rather than passing an unwatched tree. Inside each file it
+  cuts the `jobs:` map at every two-space job key, a trailing `# comment` on that
+  key included, and for every job carrying a `dtolnay/rust-toolchain` step it
+  demands all four parts plus a `key:`; the key map is judged over every scanned
+  workflow at once, so two files cannot hand GitHub one key either. The toolchain
+  step is the whole of the tell, and that is the gate's ceiling: the real build is
+  three indirections away (job → task target → `run-all.sh` → `ensure_cfgd_binary`),
+  so a job that compiles inside a container already shipping `rustc`, or through an
+  action that installs its own toolchain, carries no tell and is NOT caught. Such a
+  job layers the cache by hand and says so in a comment beside its `env:`.
+- Outside e2e.yml, the layering rides `./.github/actions/setup-rust` (toolchain +
+  sccache + rust-cache + protoc + go-task, each gated by an input), which every
+  compiling ci.yml job uses; `msrv` layers by hand because it installs a pinned
+  older toolchain. `fmt` passes `cache: 'false'` (it only runs `cargo fmt`), the
+  `audit`/`cargo-audit`/`snapshot` jobs compile nothing, and `test-freebsd` builds
+  inside a vmactions guest a runner-side cache cannot reach. release.yml,
+  nightly.yml, determinism-shards.yml and the two publish workflows run no `cargo`
+  step at all — anodizer-action owns those builds, and a determinism rebuild must
+  start from a clean `target/` by definition.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

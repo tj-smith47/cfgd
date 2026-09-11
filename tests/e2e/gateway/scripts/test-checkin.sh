@@ -1,4 +1,4 @@
-# Gateway checkin tests (GW-07 through GW-10, GW-18).
+# Gateway checkin tests (GW-07 through GW-10, GW-18, GW-31).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
@@ -200,5 +200,146 @@ EOF
 
         # Cleanup: delete the MachineConfig
         kubectl delete machineconfig "${GW18_MC_NAME}" -n "${E2E_NAMESPACE}" --ignore-not-found 2>/dev/null || true
+    fi
+fi
+
+# =================================================================
+# GW-31: A checkin takes over a status map the merge-patch path owned
+# =================================================================
+begin_test "GW-31: Checkin takes over a merge-patch-owned status map"
+
+if [ -z "${DEVICE_API_KEY:-}" ]; then
+    skip_test "GW-31" "No device enrolled (GW-02 may have failed)"
+else
+    GW31_MC_NAME="e2e-mc-ssa-${E2E_RUN_ID}"
+    GW31_MANAGER="cfgd-operator/gateway/packages"
+
+    kubectl apply -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: ${GW31_MC_NAME}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+spec:
+  hostname: "e2e-host-${E2E_RUN_ID}"
+  profile: "e2e-test"
+EOF
+    GW31_APPLY_RC=$?
+
+    if [ "$GW31_APPLY_RC" -ne 0 ]; then
+        fail_test "GW-31" "Failed to create MachineConfig CRD"
+    else
+        # Two seeds, because the ownership a release leaves behind is what the
+        # check-in has to take over: a kubectl merge patch, then one under the
+        # released manager cfgd-operator/status. The map is atomic, so the
+        # second Update takes the whole leaf and the first's claim with it: one
+        # Update owner stands behind two seeded keys, and both are what the
+        # check-in below, the first server-side apply to reach the field, must
+        # retire.
+        GW31_PASS=true
+        GW31_SEED1_ERR=$(kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            --subresource=status --type=merge \
+            -p '{"status":{"packageVersions":{"seeded/stale":"0.0.1"}}}' 2>&1 >/dev/null)
+        GW31_SEED1_RC=$?
+        GW31_SEED2_ERR=$(kubectl patch machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            --subresource=status --type=merge \
+            --field-manager="cfgd-operator/status" \
+            -p '{"status":{"packageVersions":{"seeded/status":"0.0.2"}}}' 2>&1 >/dev/null)
+        GW31_SEED2_RC=$?
+        echo "  Seed rc: ${GW31_SEED1_RC} ${GW31_SEED2_RC} ${GW31_SEED1_ERR}${GW31_SEED2_ERR}"
+
+        # The premise the takeover is measured against, read back before the
+        # check-in: both seeded keys present, and the released manager holding
+        # the map under an Update claim. Asserted here, the check-in below is
+        # red before and green after inside one run.
+        kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+            -o json --show-managed-fields=true > $GW_SCRATCH/gw31-seeded.json 2>/dev/null
+        GW31_SEEDED_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "{}")
+        GW31_SEEDED_OWNERS=$(jq -r \
+            '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
+            $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw31-seeded.json
+        GW31_SEEDED_OWNED=empty
+        [ -n "$GW31_SEEDED_OWNERS" ] && GW31_SEEDED_OWNED=owned
+        echo "  Seeded status.packageVersions: $GW31_SEEDED_MAP"
+        echo "  Seeded Update managers naming f:packageVersions: ${GW31_SEEDED_OWNERS:-none}"
+
+        assert_equals "$GW31_SEED1_RC" "0" || GW31_PASS=false
+        assert_equals "$GW31_SEED2_RC" "0" || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_MAP" '{"seeded/stale":"0.0.1","seeded/status":"0.0.2"}' || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_OWNED" "owned" || GW31_PASS=false
+        assert_equals "$GW31_SEEDED_OWNERS" "cfgd-operator/status" || GW31_PASS=false
+
+        GW31_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw31-checkin.txt -w "%{http_code}" \
+            -X POST "${GW_URL}/api/v1/checkin" \
+            -H "Authorization: Bearer ${DEVICE_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-ssa-${E2E_RUN_ID}\",\"packageVersions\":{\"e2e/pkg\":\"1.2.3\"}}" \
+            2>/dev/null || echo "000")
+        GW31_CHECKIN_BODY=$(cat $GW_SCRATCH/gw31-checkin.txt 2>/dev/null || echo "")
+        rm -f $GW_SCRATCH/gw31-checkin.txt
+
+        echo "  Checkin HTTP status: $GW31_CHECKIN_CODE"
+
+        if [ "$GW31_CHECKIN_CODE" != "200" ]; then
+            fail_test "GW-31" "Checkin failed (HTTP $GW31_CHECKIN_CODE): $GW31_CHECKIN_BODY"
+        else
+            # The gateway awaits the apply before it answers, so the object read
+            # here already carries whatever the check-in wrote.
+            kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+                -o json --show-managed-fields=true > $GW_SCRATCH/gw31-mc.json 2>/dev/null
+            GW31_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "{}")
+
+            GW31_APPLY_OP=$(kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
+                --show-managed-fields=true \
+                -o jsonpath="{.metadata.managedFields[?(@.manager==\"${GW31_MANAGER}\")].operation}" 2>/dev/null || echo "")
+            GW31_APPLY_FIELDS=$(jq -c --arg m "$GW31_MANAGER" \
+                '[.metadata.managedFields[] | select(.manager==$m) | .fieldsV1] | tostring' \
+                $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "")
+            GW31_UPDATE_OWNERS=$(jq -r \
+                '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
+                $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "")
+
+            echo "  status.packageVersions:        $GW31_MAP"
+            echo "  ${GW31_MANAGER} operation: ${GW31_APPLY_OP:-none}"
+            echo "  Update managers still naming f:packageVersions: ${GW31_UPDATE_OWNERS:-none}"
+
+            # The gateway logs a refused status write at error level and lets the
+            # check-in succeed, so a silent 409 shows up here and nowhere else.
+            # The read is asserted on its own: an empty log and a log that could
+            # not be read look alike, and only one of them is a passing test.
+            GW31_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>&1)
+            GW31_LOG_RC=$?
+            GW31_LOG_READ=empty
+            [ -n "$GW31_LOG" ] && GW31_LOG_READ=read
+            GW31_CONFLICT_LOG=$(printf '%s\n' "$GW31_LOG" \
+                | grep -F "device-reported MachineConfig status was not written" \
+                | grep -F "${GW31_MC_NAME}" || true)
+            echo "  Gateway log read: rc=${GW31_LOG_RC} ${GW31_LOG_READ}"
+            echo "  Conflict log lines: ${GW31_CONFLICT_LOG:-none}"
+
+            assert_equals "$GW31_MAP" '{"e2e/pkg":"1.2.3"}' || GW31_PASS=false
+            assert_equals "$GW31_APPLY_OP" "Apply" || GW31_PASS=false
+            assert_contains "$GW31_APPLY_FIELDS" "f:packageVersions" || GW31_PASS=false
+            assert_equals "$GW31_UPDATE_OWNERS" "" || GW31_PASS=false
+            assert_equals "$GW31_LOG_RC" "0" || GW31_PASS=false
+            assert_equals "$GW31_LOG_READ" "read" || GW31_PASS=false
+            assert_equals "$GW31_CONFLICT_LOG" "" || GW31_PASS=false
+
+            if [ "$GW31_PASS" = true ]; then
+                pass_test "GW-31"
+            else
+                echo "  managedFields:"
+                jq -c '.metadata.managedFields' $GW_SCRATCH/gw31-mc.json 2>/dev/null | sed 's/^/    /'
+                fail_test "GW-31" "The checkin did not take sole ownership of status.packageVersions"
+            fi
+            rm -f $GW_SCRATCH/gw31-mc.json
+        fi
+
+        # Cleanup: delete the MachineConfig
+        kubectl delete machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" --ignore-not-found 2>/dev/null || true
     fi
 fi

@@ -1,5 +1,5 @@
 //! The concurrent dispatcher: per-manager lanes, serving the `Packages` phase
-//! behind Rule P's tier barrier and the `Prerequisites` phase's `cfgd:managers`
+//! behind Rule P's tier barrier and the `Bootstrap` phase's `cfgd:managers`
 //! group as a DAG.
 //!
 //! Every other phase mutates shared user state and stays a sequential walk.
@@ -27,7 +27,7 @@
 //!    the same instant.
 //! 2. **Module `depends`, and a node's own edges** — a module's package work
 //!    waits for every action of its transitive dependencies, and a
-//!    `Prerequisites` node waits for every node its plan named. A node whose
+//!    `Bootstrap` node waits for every node its plan named. A node whose
 //!    dependency FAILED never runs at all: it settles as a failure naming the
 //!    ancestor, because what it was waiting to be handed does not exist —
 //!    unless the run is aborting, where nothing that never began is reported
@@ -46,7 +46,7 @@
 //!    currently available drains the phase. Evaluated at dispatch time, because
 //!    a manager provisioned earlier in the same phase becomes available
 //!    mid-run. The predicate is keyed on the manager's own state rather than on
-//!    which action kind names it, so it does NOT apply to a `Prerequisites`
+//!    which action kind names it, so it does NOT apply to a `Bootstrap`
 //!    node: a node whose whole job is to MAKE its manager available is
 //!    unavailable by definition — left in, it would drain the one phase whose
 //!    purpose is that provisioning runs concurrently.
@@ -259,7 +259,7 @@ struct Slot<'p> {
     /// The module that owns it, for the `depends` edges.
     module: Option<String>,
     /// The DAG node this action IS, when the phase's ordering is a graph
-    /// (`Prerequisites`). `None` for package work, whose ordering is the tier
+    /// (`Bootstrap`). `None` for package work, whose ordering is the tier
     /// barrier and module `depends` instead — and the one bit the drain rule
     /// and the failure cascade both read to tell the two gatings apart.
     node: Option<String>,
@@ -274,7 +274,7 @@ struct Slot<'p> {
     /// tier order alone would run a module's brew installs before a
     /// profile-declared tap. Install-shaped actions only — that reason does
     /// not apply to a removal, so an untap neither crosses the barrier nor
-    /// holds its family. Always `false` for a `Prerequisites` node, whose
+    /// holds its family. Always `false` for a `Bootstrap` node, whose
     /// ordering is the DAG's.
     registers_sources: bool,
     state: SlotState,
@@ -433,7 +433,7 @@ fn drains_phase(registry: &ProviderRegistry, manager: &str) -> bool {
 
 impl<'p> Slot<'p> {
     fn drains(&self, registry: &ProviderRegistry) -> bool {
-        // A `Prerequisites` node is exempt: the gate asks "is this manager
+        // A `Bootstrap` node is exempt: the gate asks "is this manager
         // missing", and a provision's answer is yes until the moment it
         // succeeds. Draining on it would serialize the whole graph — see the
         // module doc's rule 5.
@@ -482,7 +482,7 @@ fn action_lane(action: &Action) -> Option<&str> {
 /// Install-shaped arms only: the hoist-and-hold exists because a formula may
 /// only exist in the repository the tap adds, and that reason does not apply
 /// to a removal — an untap hoisted across the barrier would run BEFORE the
-/// installs that still resolve through the tap it removes. A `Prerequisites`
+/// installs that still resolve through the tap it removes. A `Bootstrap`
 /// node is excluded by shape (neither arm matches), keeping its ordering the
 /// DAG's.
 fn registers_family_sources(action: &Action, registry: &ProviderRegistry) -> bool {
@@ -1030,7 +1030,7 @@ impl super::Reconciler<'_> {
         let mut lanes_busy: HashSet<String> = HashSet::new();
         let mut owners_busy: HashMap<String, usize> = HashMap::new();
         // The slot of the draining action in flight, if any. Recorded by slot
-        // rather than recomputed at collection, because a Prerequisites
+        // rather than recomputed at collection, because a Bootstrap
         // `Provision` node's whole point is that its manager IS available by
         // the time it finishes.
         let mut draining: Option<usize> = None;
@@ -2938,7 +2938,7 @@ mod tests {
         (tree, running)
     }
 
-    fn prerequisites_sweep_actions() -> [Action; 4] {
+    fn bootstrap_sweep_actions() -> [Action; 4] {
         [
             provision("apt", "system", &[]),
             provision("brew", "curl", &[]),
@@ -2953,9 +2953,9 @@ mod tests {
         // — so the two rows `fail_dependents` just swept are genuinely HELD,
         // not merely en route to an instant commit.
         let (printer, _buf) = crate::output::Printer::for_test_with_live_bars();
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let managers = Owner::cfgd("managers");
-        let actions = prerequisites_sweep_actions();
+        let actions = bootstrap_sweep_actions();
 
         let (tree, running) = swept_by_fail_dependents(&printer, &section, &managers, &actions);
 
@@ -2971,9 +2971,9 @@ mod tests {
     #[test]
     fn fail_dependents_commits_swept_rows_once_in_dispatch_order_on_a_live_tree() {
         let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let managers = Owner::cfgd("managers");
-        let actions = prerequisites_sweep_actions();
+        let actions = bootstrap_sweep_actions();
 
         let (mut tree, running) = swept_by_fail_dependents(&printer, &section, &managers, &actions);
 

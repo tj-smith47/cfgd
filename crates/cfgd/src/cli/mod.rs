@@ -390,10 +390,16 @@ impl PreviewScope<'_> {
             parts.push(format!("--phase {phase}"));
         }
         for path in self.only {
-            parts.push(format!("--only {path}"));
+            parts.push(format!(
+                "--only {}",
+                plan_ops::current_pattern_spelling(path)
+            ));
         }
         for path in self.skip {
-            parts.push(format!("--skip {path}"));
+            parts.push(format!(
+                "--skip {}",
+                plan_ops::current_pattern_spelling(path)
+            ));
         }
         if self.skip_scripts {
             parts.push("--skip-scripts".to_string());
@@ -920,8 +926,8 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Apply only a specific phase, optionally scoped to `<phase>.<selector>`
-    /// (an owner group — `prerequisites.managers` — or a manager name —
-    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// (an owner group — `bootstrap.managers` — or a manager name —
+    /// `bootstrap.brew`). Phases: pre-scripts, bootstrap, modules,
     /// packages, system, files, secrets, post-scripts
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
@@ -988,8 +994,8 @@ pub struct PlanArgs {
     #[arg(long)]
     pub from: Option<String>,
     /// Plan only a specific phase, optionally scoped to `<phase>.<selector>`
-    /// (an owner group — `prerequisites.managers` — or a manager name —
-    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// (an owner group — `bootstrap.managers` — or a manager name —
+    /// `bootstrap.brew`). Phases: pre-scripts, bootstrap, modules,
     /// packages, system, files, secrets, post-scripts
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
@@ -1086,13 +1092,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools                                    # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools               # several modules\n  cfgd apply --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --module nettools                                     # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -1223,7 +1229,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1750,6 +1756,15 @@ pub enum BackupCommand {
         /// Skip the confirmation prompt
         #[arg(from_global)]
         yes: bool,
+    },
+
+    /// Remove the snapshots a destination change orphaned
+    #[command(
+        long_about = "Remove the snapshots a `destination:` change left behind.\n\nWhen a backup's `destination:` moves, the snapshots already written under the old\ndirectory fall outside the unit's retention: nothing prunes them, because pruning\nonly ever deletes what is inside the current destination. The next `cfgd backup\nrun` marks each such recorded run `Orphaned` and `cfgd backup gc` collects it —\nremoving the path the state store recorded, then the record itself.\n\nOnly a path cfgd recorded is ever removed. The old destination is never listed, so\nanything you put there yourself is not cfgd's to find and is left alone. A change\nto `namePattern` orphans nothing: retention counts recorded runs, not names, so\nthe old-named snapshots stay inside the destination and age out normally.\n\nWith no name, every backup declared in the active profile is collected.\n\nExamples:\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup gc"
+    )]
+    Gc {
+        /// Backup name (default: collect every backup declared in the active profile)
+        name: Option<String>,
     },
 
     /// Put a backup's pre-restore copy back over its source
@@ -2470,10 +2485,15 @@ pub enum SourceOverrideAction {
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ApplyPhase {
     PreScripts,
+    /// Everything the rest of the run consumes: the package managers
+    /// themselves, the generated env file that publishes where their binaries
+    /// live, and the live session broadcast.
+    Bootstrap,
+    /// Deprecated spelling of `bootstrap`.
+    #[value(name = "prerequisites", hide = true)]
     Prerequisites,
-    /// The pre-merge spelling of `prerequisites`, from before the phase also
-    /// provisioned package managers. Still selects that phase, and says once
-    /// per run that it is on the way out.
+    /// Deprecated spelling of `bootstrap`, from before the phase also
+    /// provisioned package managers.
     #[value(name = "env", hide = true)]
     Env,
     Modules,
@@ -2489,6 +2509,7 @@ impl ApplyPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyPhase::PreScripts => "pre-scripts",
+            ApplyPhase::Bootstrap => "bootstrap",
             ApplyPhase::Prerequisites => "prerequisites",
             ApplyPhase::Env => "env",
             ApplyPhase::Modules => "modules",
@@ -2502,8 +2523,8 @@ impl ApplyPhase {
 }
 
 /// Clap value type for `--phase`'s dotted grammar:
-/// `<phase>[.<selector>]`, e.g. `prerequisites`, `prerequisites.managers`,
-/// `prerequisites.brew`. Not a `ValueEnum` because the selector half is open
+/// `<phase>[.<selector>]`, e.g. `bootstrap`, `bootstrap.managers`,
+/// `bootstrap.brew`. Not a `ValueEnum` because the selector half is open
 /// (any owner-group name or any registered manager name); [`ApplyPhase`]
 /// still gates the phase half to the closed, typo-checked vocabulary.
 #[derive(Clone, Debug)]
@@ -2528,14 +2549,16 @@ impl std::fmt::Display for PhaseArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Rendered back through clap's own vocabulary, so a `--phase` a hint
         // re-states re-parses by construction rather than through a second
-        // table kept by hand. The retired spelling renders as the phase it
-        // selects: re-emitting `env` would hand the reader a command that
-        // prints a deprecation on its way to doing what `prerequisites` does.
+        // table kept by hand. A retired spelling renders as the phase it
+        // selects: re-emitting it would hand the reader a command that prints
+        // a deprecation on its way to doing what `bootstrap` does.
         let name = match self.phase {
-            ApplyPhase::Env => "prerequisites".to_string(),
+            ApplyPhase::Env | ApplyPhase::Prerequisites => {
+                PhaseName::Bootstrap.as_str().to_string()
+            }
             phase => <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
                 .map(|pv| pv.get_name().to_string())
-                .unwrap_or_else(|| "prerequisites".to_string()),
+                .unwrap_or_default(),
         };
         write!(f, "{name}")?;
         match &self.selector {
@@ -2634,7 +2657,9 @@ fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
     match p {
         ApplyPhase::Modules => PhaseFilter::ModuleOwners,
         ApplyPhase::PreScripts => PhaseFilter::Phase(PhaseName::PreScripts),
-        ApplyPhase::Prerequisites | ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Prerequisites),
+        ApplyPhase::Bootstrap | ApplyPhase::Prerequisites | ApplyPhase::Env => {
+            PhaseFilter::Phase(PhaseName::Bootstrap)
+        }
         ApplyPhase::Packages => PhaseFilter::Phase(PhaseName::Packages),
         ApplyPhase::System => PhaseFilter::Phase(PhaseName::System),
         ApplyPhase::Files => PhaseFilter::Phase(PhaseName::Files),
@@ -2665,11 +2690,19 @@ fn resolve_phase_filter(
     let Some(PhaseArg { phase, selector }) = phase else {
         return Ok(None);
     };
-    if matches!(phase, ApplyPhase::Env) {
-        printer.deprecation(
-            "`--phase env` is deprecated: that phase now provisions package managers as well \
-             as writing the env file. Use `--phase prerequisites`.",
-        );
+    // Keyed on clap's own name for the variant, and worded from the one table
+    // `--skip`/`--only` reads, so a token cannot be deprecated on one flag and
+    // silently accepted — or explained differently — on another.
+    let possible = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase);
+    let token = possible
+        .as_ref()
+        .map(clap::builder::PossibleValue::get_name)
+        .unwrap_or_default();
+    if let Some(reason) = plan_ops::legacy_phase_reason(token) {
+        printer.deprecation(format!(
+            "`--phase {token}` is deprecated: {reason}. Use `--phase {}`.",
+            PhaseName::Bootstrap.as_str()
+        ));
     }
     let base = apply_phase_to_filter(phase);
     let Some(selector) = selector else {
@@ -2682,19 +2715,16 @@ fn resolve_phase_filter(
              `--module {selector}` instead."
         );
     };
-    if name != PhaseName::Prerequisites {
-        let phase_label = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
-            .map(|pv| pv.get_name().to_string())
-            .unwrap_or_default();
+    if name != PhaseName::Bootstrap {
         if name == PhaseName::Packages {
             anyhow::bail!(
                 "`--phase packages.{selector}` is not valid: package manager work lives in \
-                 `prerequisites`, not `packages`. Use `--phase prerequisites.{selector}` instead."
+                 `bootstrap`, not `packages`. Use `--phase bootstrap.{selector}` instead."
             );
         }
         anyhow::bail!(
-            "`--phase {phase_label}.{selector}` is not valid: `{phase_label}` has no dotted \
-             selector grammar. Selectors are only valid on `--phase prerequisites`."
+            "`--phase {token}.{selector}` is not valid: `{token}` has no dotted \
+             selector grammar. Selectors are only valid on `--phase bootstrap`."
         );
     }
     let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
@@ -2703,12 +2733,12 @@ fn resolve_phase_filter(
         .collect();
     // The planner's own vocabulary, not a second one derived here: a
     // prerequisite node is keyed on its TOOL, so a list of manager names alone
-    // refused `--phase prerequisites.curl` while `--skip prerequisites.curl`
+    // refused `--phase bootstrap.curl` while `--skip bootstrap.curl`
     // accepted it and the matcher was written to serve both.
     legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
         anyhow::bail!(
-            "unknown selector '{selector}' for `--phase prerequisites`: legal values are {}",
+            "unknown selector '{selector}' for `--phase bootstrap`: legal values are {}",
             legal.join(", ")
         );
     }
@@ -3084,6 +3114,7 @@ pub fn execute(
             BackupCommand::Rollback { name, yes } => {
                 backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
             }
+            BackupCommand::Gc { name } => backup::cmd_backup_gc(cli, printer, name.as_deref()),
         },
         Command::Explain {
             resource,

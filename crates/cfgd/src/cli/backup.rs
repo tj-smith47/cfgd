@@ -49,6 +49,25 @@ fn find_backup_spec<'a>(
     })
 }
 
+/// The cadences the last check-in recorded, read once for a whole command.
+///
+/// Every `BackupUnit` the CLI builds is bound to a
+/// [`cfgd_core::backup::projected_spec`] folded over these, because a cluster
+/// `BackupPolicy` owns a unit's `retention` as well as its `schedule`: a verb
+/// holding the declared spec prunes to a number neither the daemon's fire nor
+/// `cfgd backup list` reports.
+///
+/// An unreadable store costs the command the cluster's cadence, never the run
+/// — every unit then falls back to what its own profile declares, which is the
+/// same degradation the listing's history columns take.
+pub(in crate::cli) fn recorded_projections(
+    state: Option<&cfgd_core::state::StateStore>,
+) -> cfgd_core::backup::ScheduleProjections {
+    state
+        .and_then(|state| state.cluster_backup_schedules().ok())
+        .unwrap_or_default()
+}
+
 /// The three values every unit-constructing surface needs: where config lives,
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
 ///
@@ -124,6 +143,24 @@ fn restoring_verb_state(
     }
 }
 
+/// The listing's Schedule Owner cell for one row.
+///
+/// The entry carries the owner as the word its `-o json` reader matches on, so
+/// the type is read back through the same `FromStr` the config parser uses
+/// rather than compared by hand; a word no variant spells renders as it was
+/// stored. Whether the cluster's answer replaced the declared cadence is the
+/// question the two effective slots already answer, so it is not asked twice.
+fn schedule_owner_cell(entry: &BackupListEntry) -> String {
+    let overridden = entry.effective_schedule.is_some() || entry.effective_retention.is_some();
+    entry
+        .schedule_owner
+        .parse::<cfgd_core::config::ScheduleOwner>()
+        .map_or_else(
+            |_| entry.schedule_owner.clone(),
+            |owner| owner.listing_label(overridden).to_string(),
+        )
+}
+
 /// Build the `cfgd backup list` Doc from a populated entries vector. Pure; the
 /// caller assembles the entries from config + the state store and passes `now`,
 /// so a render pins in a test rather than reading a clock inside the builder.
@@ -143,12 +180,16 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
 
     // `Snapshots` sits beside `Retention` because the two are one fact read
     // twice: how many this unit holds, and how many it is allowed to keep.
+    // `Orphaned` follows `Snapshots` for the same reason — both count what the
+    // unit holds — and drops out entirely on a machine with none.
     let mut t = Table::new([
         "Name",
         "Source",
         "Schedule",
+        "Schedule Owner",
         "Retention",
         "Snapshots",
+        "Orphaned",
         "Status",
         "Last Run",
         "Next Run",
@@ -173,15 +214,30 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             (e.name.clone(), None),
             (cfgd_core::fold_home_in_text(&e.source), None),
             (
-                e.schedule
+                e.effective_schedule
                     .clone()
+                    .or_else(|| e.schedule.clone())
                     .unwrap_or_else(|| cfgd_core::ABSENT.into()),
                 None,
             ),
-            (e.retention.to_string(), None),
+            (schedule_owner_cell(e), None),
+            (
+                e.effective_retention.unwrap_or(e.retention).to_string(),
+                None,
+            ),
             (
                 e.snapshots
                     .map_or_else(|| cfgd_core::ABSENT.to_string(), |n| n.to_string()),
+                None,
+            ),
+            // A zero reads `-` so the whole column drops on the machines that
+            // have never moved a destination: the count earns a column only
+            // where there is something to collect.
+            (
+                match e.orphaned {
+                    Some(n) if n > 0 => n.to_string(),
+                    _ => cfgd_core::ABSENT.to_string(),
+                },
                 None,
             ),
             (status, role),
@@ -195,9 +251,10 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             ),
         ]);
     }
-    // `Schedule` on a catalog of unscheduled units, `Status` and `Next Run`
-    // before the first run: a column of `-` pushes `Snapshots` and `Last Run`,
-    // the two cells a reader compares across listings, off to the right.
+    // `Schedule` on a catalog of unscheduled units, `Orphaned` on a machine
+    // that never moved a destination, `Status` and `Next Run` before the first
+    // run: a column of `-` pushes `Snapshots` and `Last Run`, the two cells a
+    // reader compares across listings, off to the right.
     doc = doc.table(t.without_unfillable_columns());
     doc.with_data(entries)
 }
@@ -334,16 +391,36 @@ pub fn cmd_backup_list(
             .ok()
             .map(|state_dir| (config_dir(cli), state_dir))
     });
+    // What the last check-in said the cluster owns. An unreadable store already
+    // cost this listing its history; it costs the effective cadence too, and
+    // every unit falls back to the schedule its own profile declares.
+    let projections = recorded_projections(state);
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
-            let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            // One read of this unit's history answers both columns it feeds:
+            // `backup_runs` is newest-first, so its first row IS the latest
+            // run, and a second query for it would be a second round trip over
+            // the rows already in hand.
+            let runs = state.and_then(|state| state.backup_runs(&spec.name).ok());
+            let last = runs.as_ref().and_then(|runs| runs.first().cloned());
+            // Off the recorded rows, and gated on exactly what the snapshot
+            // count beside it is gated on, so the two are present or absent
+            // together: gc never lists a directory, so what is orphaned is
+            // exactly what the store says is orphaned.
+            let orphaned = unit_dirs.as_ref().zip(runs.as_ref()).map(|(_, runs)| {
+                runs.iter()
+                    .filter(|run| run.status == cfgd_core::state::BackupRunStatus::Orphaned)
+                    .count()
+            });
+            let effective = cfgd_core::backup::effective_schedule(spec, &projections);
             let snapshots =
                 unit_dirs
                     .as_ref()
                     .zip(state)
                     .and_then(|((config_dir, state_dir), state)| {
-                        let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
+                        let projected = cfgd_core::backup::projected_spec(spec, &projections);
+                        let unit = BackupUnit::new(&projected, config_dir, profile_name, state_dir);
                         cfgd_core::backup::list_snapshots(&unit, state)
                             .ok()
                             .map(|s| s.len())
@@ -352,20 +429,32 @@ pub fn cmd_backup_list(
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
+                schedule_owner: spec.schedule_owner.label().to_string(),
+                // Both effective slots answer one question — did the cluster
+                // CHANGE this — so both appear only when the value the cluster
+                // projected differs from the one the profile declared.
+                effective_schedule: (effective.from_cluster
+                    && effective.schedule != spec.schedule.as_deref())
+                .then(|| effective.schedule.map(str::to_string))
+                .flatten(),
                 retention: spec.retention,
+                effective_retention: (effective.from_cluster
+                    && effective.retention != spec.retention)
+                    .then_some(effective.retention),
                 last_run_status: last.as_ref().map(|r| r.status.as_str().to_string()),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),
                 last_run_clean: last.as_ref().map(BackupRunRecord::is_clean),
                 // Seeded from the same `finished_at` the daemon anchors an
                 // interval schedule on, so the listed time is the one the
                 // timer will actually use rather than a second opinion.
-                next_run_at: spec.schedule.as_deref().and_then(|schedule| {
+                next_run_at: effective.schedule.and_then(|schedule| {
                     cfgd_core::backup::next_run_at(
                         schedule,
                         last.as_ref().map(|r| r.finished_at.as_str()),
                     )
                 }),
                 snapshots,
+                orphaned,
             }
         })
         .collect();
@@ -388,7 +477,8 @@ fn list_unit_snapshots(
     profile_name: &str,
 ) -> anyhow::Result<()> {
     let (config_dir, state, state_dir) = unit_context(ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, state)?
         .iter()
@@ -479,7 +569,8 @@ pub fn run_backup_restore(
     let spec = find_backup_spec(&backups, args.name)?;
 
     let (config_dir, state, state_dir) = unit_context(&ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     let snapshots = cfgd_core::backup::list_snapshots(&unit, state)?;
     let selected: &SnapshotInfo =
@@ -678,11 +769,13 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let projections = recorded_projections(Some(state));
     let entries: Vec<BackupRollbackEntry> = backups
         .iter()
         .filter_map(|spec| {
-            let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+            let projected = cfgd_core::backup::projected_spec(spec, &projections);
+            let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
             cfgd_core::backup::rollback_copy(&unit).map(|copy| BackupRollbackEntry {
                 name: spec.name.clone(),
                 copy: copy.path.posix().to_string(),
@@ -717,8 +810,9 @@ pub fn run_backup_rollback(
 
     let spec = find_backup_spec(&backups, name)?;
 
-    let (config_dir, _state, state_dir) = unit_context(&ctx)?;
-    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
+    let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
     // Resolved before the prompt so the operator is told which copy they are
     // agreeing to, and so a unit with nothing to put back is refused without
@@ -912,7 +1006,12 @@ pub fn run_backup_run(
     }
 
     let (config_dir, state, state_dir) = unit_context(&ctx)?;
-    let units: Vec<BackupUnit<'_>> = targets
+    let projections = recorded_projections(Some(state));
+    let projected: Vec<config::BackupSpec> = targets
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &projections))
+        .collect();
+    let units: Vec<BackupUnit<'_>> = projected
         .iter()
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
@@ -950,6 +1049,108 @@ pub fn run_backup_run(
         .collect();
     printer.emit(Doc::new().with_data(&outputs));
     Ok(BackupRunOutcome { reports })
+}
+
+/// `cfgd backup gc` — collect the snapshots a `destination:` change orphaned.
+///
+/// The exit code is the run's, on the same terms as `backup run`: a payload
+/// that could not be removed keeps its record and exits nonzero, so a script
+/// can tell "nothing left to collect" from "cfgd could not collect it". A unit
+/// whose history could not be read is the same answer for the same reason, and
+/// it reaches the exit through the run's own tally rather than a second
+/// condition beside it.
+pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+    // The payload Doc is already on stdout by the time the exit code is
+    // decided, so exiting here rather than returning an error keeps a failed
+    // collection from being rendered as a SECOND top-level document — the same
+    // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
+    if run_backup_gc(cli, printer, name)?.tally().failed > 0 {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+    Ok(())
+}
+
+/// Core of `backup gc`: the same run skeleton every backup verb reports
+/// through — a `Collect` header, one `backup:<name>` group per unit that has an
+/// orphan, and the rollup.
+///
+/// The orphaned rows are read ONCE, before the header, because the header
+/// states how many actions the run set out to do and the rollup reconciles
+/// against that same number.
+pub fn run_backup_gc(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+) -> anyhow::Result<cfgd_core::backup::CollectOutcome> {
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    // Enforce, like `backup run`: gc deletes files, so it is a mutating
+    // surface and a source constraint violation must abort it rather than be
+    // recorded and stepped over.
+    let (sources, header_modules, backups) =
+        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+
+    let targets: Vec<&config::BackupSpec> = match name {
+        Some(n) => vec![find_backup_spec(&backups, n)?],
+        None => backups.iter().collect(),
+    };
+
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let projections = recorded_projections(Some(state));
+    let projected: Vec<config::BackupSpec> = targets
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &projections))
+        .collect();
+    let units: Vec<BackupUnit<'_>> = projected
+        .iter()
+        .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
+        .collect();
+    let scan = cfgd_core::backup::orphaned_snapshots(state, &units);
+    let actions = scan.action_count();
+
+    let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    let unit_source = named.map(|spec| spec.source.posix().to_string());
+    let profile_inherits = local_resolved.inherits_chain();
+    let run_ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Collect,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name),
+        sources: &sources,
+        modules: &header_modules,
+        profile_inherits: &profile_inherits,
+        trigger: None,
+        subject: named.map(|spec| spec.name.as_str()),
+        unit_source: unit_source.as_deref(),
+    };
+    cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, actions).header(printer);
+    scan.report_unreadable(printer);
+
+    // The up-to-date verdict is a claim about every declared unit, so a unit
+    // nothing could be asked about withholds it: that run settles through the
+    // rollup, which prices the unreadable unit as the failure it is.
+    if actions == 0 {
+        let (role, verdict) = cfgd_core::reconciler::nothing_to_do_verdict(0);
+        printer.emit(
+            Doc::new()
+                .status(role, verdict)
+                .with_data(BackupGcOutput::from(
+                    &cfgd_core::backup::CollectOutcome::default(),
+                )),
+        );
+        return Ok(cfgd_core::backup::CollectOutcome::default());
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = cfgd_core::backup::collect_orphans(state, scan, printer);
+    cfgd_core::reconciler::render_run_rollup(
+        &outcome.tally(),
+        cfgd_core::reconciler::RunTitle::Collect,
+        printer,
+        Some(started.elapsed()),
+    );
+
+    printer.emit(Doc::new().with_data(BackupGcOutput::from(&outcome)));
+    Ok(outcome)
 }
 
 #[cfg(test)]

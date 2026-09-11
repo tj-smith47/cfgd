@@ -32,7 +32,7 @@ fn stub_kube_client() -> Client {
 
 /// Build the webhook Router for tests, returning the live `Metrics` so
 /// post-request assertions on counters/histograms work.
-pub(super) fn test_webhook_router() -> (Router, Metrics) {
+pub(crate) fn test_webhook_router() -> (Router, Metrics) {
     test_webhook_router_with_client(stub_kube_client())
 }
 

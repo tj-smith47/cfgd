@@ -103,7 +103,7 @@ impl<'a> super::Reconciler<'a> {
     /// instead of standing silent until the whole tree is ready. `observe` fires
     /// at real computation boundaries, in COMPUTATION order rather than render
     /// order — the two differ because the phases are not independent: no bucket
-    /// is final until module work has been routed into it, `Prerequisites` is
+    /// is final until module work has been routed into it, `Bootstrap` is
     /// planned from the package work that survived dedup, and the caller hands
     /// `file_actions` in already computed. Two phases therefore never fire.
     /// `Files` fires for the conflict sweep that hashes every declared source,
@@ -180,14 +180,14 @@ impl<'a> super::Reconciler<'a> {
         // installs only once.
         let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed);
 
-        // Prerequisites: the managers that create binaries, then the env file
+        // Bootstrap: the managers that create binaries, then the env file
         // that publishes where they live, then the live-session broadcast. It
         // is planned from the package work that SURVIVED dedup and filtering,
         // because a manager whose every install was claimed elsewhere has no
         // consumer left in this run and must not mint a node — a converged
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
-        observe(PhaseName::Prerequisites);
+        observe(PhaseName::Bootstrap);
         // Read once, from the resolution that already applied every `prefer`
         // and `aliases` the module wrote, and BEFORE the elision below drops
         // the entries those routes were minted from.
@@ -287,7 +287,7 @@ impl<'a> super::Reconciler<'a> {
             // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
             // orders the groups; the concatenation order here is irrelevant.
             (
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 manager_actions.into_iter().chain(env_actions).collect(),
             ),
             (PhaseName::Packages, package_actions),
@@ -1120,7 +1120,7 @@ impl<'a> super::Reconciler<'a> {
     /// execute-time re-read in `PackageExec::install_module_packages` all
     /// read, so a package can never be planned-but-unpriced,
     /// priced-but-elided, or installed by the `Packages` phase after the
-    /// `Prerequisites` phase already landed it.
+    /// `Bootstrap` phase already landed it.
     ///
     /// The provisioned arm is the in-run twin of the resolver's own rule
     /// (`modules::resolve_package`): a bare entry is satisfied by whichever

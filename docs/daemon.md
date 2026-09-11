@@ -147,19 +147,20 @@ scripts:
 
 Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`. See the [Profile spec reference](spec/profile.md#specscripts) for the full script entry schema, timeout defaults, and `continueOnError` behaviour.
 
-They run before the reconcile header, under a `Drift Hooks` heading with one owner group
+They run before the reconcile header, under a `Drift Hooks` group with one owner group
 per declaring thing, so a hook is attributed the same way a planned action is:
 
 ```
-Drift Hooks
+Phase: Drift Hooks
   profile:driftdemo
     ✓ onDrift: scripts/notify-slack.sh   (0.1s)
   module:nvim
     ✓ onDrift: scripts/snapshot-state.sh (0.1s)
 ```
 
-The heading carries no `Phase: ` prefix: `Phase: ` marks a phase the plan produced, and
-hooks are not planned. An `onDrift` failure renders as a warning, never as a run failure.
+The heading is styled as a phase even though no plan holds it, so hook work reads as
+part of the same tree: an apply's `onChange` hooks open a `Change Hooks` group the same
+way. An `onDrift` failure renders as a warning, never as a run failure.
 
 ## Drift Accounting
 

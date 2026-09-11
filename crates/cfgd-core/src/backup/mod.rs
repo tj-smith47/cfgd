@@ -21,6 +21,7 @@ use crate::reconciler::{
 };
 use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
+pub mod gc;
 pub mod restore;
 pub mod rollback;
 pub mod schedule;
@@ -28,6 +29,10 @@ pub mod schedule;
 #[cfg(test)]
 mod tests;
 
+pub use gc::{
+    CollectOutcome, CollectedSnapshot, OrphanScan, OrphanedSnapshot, UnreadableUnit,
+    collect_orphans, orphaned_snapshots,
+};
 pub use restore::{
     RESTORE_ACTION_COUNT, RestoreOutcome, RestoreTarget, SnapshotInfo, list_snapshots,
     report_restore, restore_backup, restore_target, select_snapshot,
@@ -35,7 +40,10 @@ pub use restore::{
 pub use rollback::{
     RollbackCopy, RollbackOutcome, report_rollback, rollback_backup, rollback_copy,
 };
-pub use schedule::next_run_at;
+pub use schedule::{
+    BackupScheduleProjection, EffectiveSchedule, ScheduleProjections, declared_schedule_owners,
+    effective_schedule, next_run_at, projected_spec, record_cluster_schedules,
+};
 
 /// One `spec.backups[]` entry bound to the runtime context it needs.
 ///
@@ -145,6 +153,11 @@ pub struct BackupRunReport {
     /// record would also be the one arm whose `-o json` entry could not say
     /// what went wrong.
     pub error: Option<String>,
+    /// How many rows this run's retention prune re-classified
+    /// [`BackupRunStatus::Orphaned`] — snapshots a `destination:` change
+    /// stranded. Display-only: it is what the closing hint counts, and
+    /// `cfgd backup gc` reads the rows themselves.
+    pub orphaned: usize,
 }
 
 impl BackupRunReport {
@@ -226,7 +239,7 @@ pub fn run_backup(
     unit: &BackupUnit<'_>,
     store: &StateStore,
     printer: &Printer,
-    items: &mut Vec<BackupItem>,
+    report: &mut BackupRunReport,
 ) -> Result<BackupRunRecord> {
     let _lock = acquire_unit_lock(unit)?;
     let spec = unit.spec;
@@ -239,7 +252,7 @@ pub fn run_backup(
         ScriptPhase::PreBackup,
         BackupOperation::Backup,
         printer,
-        items,
+        &mut report.items,
     )
     .err();
     // A failed `preBackup` means the source is not in the state the hook was
@@ -268,11 +281,11 @@ pub fn run_backup(
         ScriptPhase::PostBackup,
         BackupOperation::Backup,
         printer,
-        items,
+        &mut report.items,
     )
     .err();
 
-    record_run(
+    let (record, orphaned) = record_run(
         store,
         unit,
         printer,
@@ -283,7 +296,9 @@ pub fn run_backup(
             copy,
             post_error,
         },
-    )
+    )?;
+    report.orphaned = orphaned;
+    Ok(record)
 }
 
 /// What the three mutating steps of a run produced, before any of it is
@@ -308,6 +323,20 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
     match destination.and_then(|p| p.file_name()) {
         Some(name) => format!("snapshot {}", name.to_string_lossy()),
         None => "snapshot".to_string(),
+    }
+}
+
+/// The collect line's subject: `remove <snapshot file name>`.
+///
+/// The fourth member of the family [`snapshot_subject`], [`restore_subject`]
+/// and [`rollback_subject`] belong to, built to the same rule: a lowercase
+/// verb head and the file NAME the row records, never its whole path — the
+/// path is what the run's own group and the unit's destination already state,
+/// and the name is what `cfgd backup list <name> --snapshots` spells.
+pub(super) fn collect_subject(snapshot: &Path) -> String {
+    match snapshot.file_name() {
+        Some(name) => format!("remove {}", name.to_string_lossy()),
+        None => "remove snapshot".to_string(),
     }
 }
 
@@ -434,10 +463,17 @@ pub fn run_backup_group(
 ) -> BackupRunReport {
     let group = phase.owner(&crate::reconciler::Owner::backup(&unit.spec.name), width);
     let mut report = BackupRunReport::default();
-    match run_backup(unit, store, printer, &mut report.items) {
+    match run_backup(unit, store, printer, &mut report) {
         Ok(record) => {
             report.items.push(report_backup_record(printer, &record));
             report.record = Some(record);
+            if report.orphaned > 0 {
+                group.hint(orphan_hint(
+                    report.orphaned,
+                    &unit.spec.name,
+                    &unit.destination_dir(),
+                ));
+            }
         }
         Err(crate::errors::CfgdError::Backup(BackupError::Busy { holder, .. })) => {
             group
@@ -545,6 +581,10 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> Back
 
 /// The tail of [`run_backup`] that produces the `backup_runs` row: status,
 /// error joining, and the retention prune that follows every recorded run.
+///
+/// Returns the row and how many rows that prune re-classified
+/// [`BackupRunStatus::Orphaned`], which the caller words as a hint once the
+/// unit's own row is on screen.
 fn record_run(
     store: &StateStore,
     unit: &BackupUnit<'_>,
@@ -552,7 +592,7 @@ fn record_run(
     source: &Path,
     started_at: String,
     outcome: RunOutcome,
-) -> Result<BackupRunRecord> {
+) -> Result<(BackupRunRecord, usize)> {
     let mut failures = Vec::new();
     if let Some(e) = outcome.pre_error {
         failures.push(collapse_to_subject_line(&e));
@@ -588,8 +628,8 @@ fn record_run(
         finished_at: crate::utc_now_iso8601(),
     };
     let record = store.record_backup_run(&draft)?;
-    prune_retention(store, unit, printer);
-    Ok(record)
+    let orphaned = prune_retention(store, unit, printer);
+    Ok((record, orphaned))
 }
 
 /// Take the unit's exclusive lock, translating a held lock into the
@@ -907,7 +947,7 @@ fn is_snapshot_within(path: &Path, destination: &Path) -> bool {
 /// Best-effort `0700` on a directory cfgd owns. No-op on Windows, and a failure
 /// is logged rather than raised — the snapshot itself is unaffected.
 fn restrict_to_owner(dir: &Path) {
-    if let Err(e) = crate::set_file_permissions(dir, 0o700) {
+    if let Err(e) = crate::set_file_permissions_nofollow(dir, 0o700) {
         tracing::warn!(
             dir = %dir.posix(),
             error = %e,
@@ -1091,10 +1131,19 @@ pub(super) fn remove_existing(path: &Path) -> std::io::Result<()> {
 /// place so the next run retries it.
 ///
 /// Nothing is deleted from disk unless [`is_snapshot_within`] confirms the
-/// recorded path is inside *this unit's* destination. A row that fails that gate
-/// is dropped from the table without a single filesystem call, so a stale or
-/// foreign row bounds the table instead of aiming a recursive delete.
-fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) {
+/// recorded path is inside *this unit's* destination. Every row is re-judged
+/// against the destination in force on THIS run, and the verdict is written
+/// both ways without a single filesystem call: a row that fails the gate is
+/// re-classified [`BackupRunStatus::Orphaned`] rather than deleted, so the
+/// payload a `destination:` change stranded stays collectable by
+/// [`collect_orphans`], and a row that passes it again — a destination moved
+/// back to a path it once held — is set to [`BackupRunStatus::Success`], so
+/// its snapshot is restorable and prunable rather than waiting to be
+/// collected. Dropping the row instead threw away the only proof the recorded
+/// path was ever cfgd's, which is why nothing could reclaim it afterwards. An
+/// orphaned row is neither an artifact nor a failure in the kept counts, so it
+/// occupies no retention slot.
+fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) -> usize {
     let spec = unit.spec;
     let owner = OwnerLabel::new("backup", &spec.name).plain();
     let destination = unit.destination_dir();
@@ -1107,7 +1156,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
                     "could not read run history: {}",
                     collapse_to_subject_line(&e)
                 ));
-            return;
+            return 0;
         }
     };
 
@@ -1124,25 +1173,49 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     let keep = spec.retention as usize;
     let mut kept_artifacts = 0;
     let mut kept_failures = 0;
+    let mut newly_orphaned = 0usize;
+    let set_status = |run: &BackupRunRecord, status: BackupRunStatus| {
+        if let Err(e) = store.set_backup_run_status(run.id, status) {
+            warn(format!(
+                "{owner}: could not re-classify run {} as {}: {}",
+                run.id,
+                status.as_str(),
+                collapse_to_subject_line(&e)
+            ));
+            return false;
+        }
+        true
+    };
+
     // `backup_runs` is newest-first, so the first `keep` of each class survive.
     for run in &runs {
-        // Containment first, ahead of the retention accounting: a foreign row
-        // must neither reach a delete nor occupy a slot that a real snapshot
-        // needs, or stale rows would crowd out the runs the user asked to keep.
-        if let Some(path) = &run.destination_path
-            && !is_snapshot_within(Path::new(path), &destination)
-        {
-            warn(format!(
-                "{owner}: run {} records a snapshot outside the destination {} ({path}); \
-                 dropping the record and leaving the path untouched — delete it yourself if it is stale",
-                run.id,
-                destination.posix(),
-            ));
-            drop_row(run.id);
+        // Containment against the destination IN FORCE, ahead of the retention
+        // accounting and ahead of what the row's stored status says: a foreign
+        // row must neither reach a delete nor occupy a slot that a real
+        // snapshot needs, and a destination moved back to a path it once held
+        // must give its rows their snapshots back rather than leave them
+        // stranded for `cfgd backup gc` to delete.
+        let outside = run
+            .destination_path
+            .as_ref()
+            .is_some_and(|path| !is_snapshot_within(Path::new(path), &destination));
+        let was_orphaned = run.status == BackupRunStatus::Orphaned;
+        if outside {
+            // An already-orphaned row is left exactly as it is: re-marking
+            // would rewrite the same value, and it is gc's to clear.
+            if !was_orphaned && set_status(run, BackupRunStatus::Orphaned) {
+                newly_orphaned += 1;
+            }
+            continue;
+        }
+        // Inside the destination again. Only a run that WROTE a snapshot ever
+        // carries a `destination_path`, so the status it is restored to is the
+        // one it held before the prune re-classified it.
+        if was_orphaned && !set_status(run, BackupRunStatus::Success) {
             continue;
         }
 
-        let counter = if run.has_artifact() {
+        let counter = if was_orphaned || run.has_artifact() {
             &mut kept_artifacts
         } else {
             &mut kept_failures
@@ -1166,6 +1239,25 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
         }
         drop_row(run.id);
     }
+
+    newly_orphaned
+}
+
+/// The hint a prune that stranded rows leaves under the unit's own group:
+/// nothing about the run went wrong, so what the reader gets is the command
+/// that reclaims the bytes.
+///
+/// Rendered by [`run_backup_group`] rather than by the prune itself, because
+/// the prune runs under the unit's lock and the snapshot's own row is not on
+/// screen until that lock is released. It fires once, on the run that
+/// discovers them, because an orphaned row is never re-marked.
+fn orphan_hint(count: usize, name: &str, destination: &Path) -> String {
+    format!(
+        "run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
+         destination change",
+        crate::plural_noun(count, "snapshot"),
+        destination.posix(),
+    )
 }
 
 /// Remove now-empty directories a nested `namePattern` left behind, walking up

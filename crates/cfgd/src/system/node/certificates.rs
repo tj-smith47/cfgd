@@ -144,6 +144,8 @@ impl SystemConfigurator for CertificateConfigurator {
                                     desired_mode, path_str, name
                                 ),
                             );
+                            // These paths are the operator's own declarations.
+                            // follow-ok: the mode is for the file a trust-store link points at.
                             cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {

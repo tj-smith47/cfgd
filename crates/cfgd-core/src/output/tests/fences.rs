@@ -4,29 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
-    KNOWN_GOLDEN_ROOTS, snapshot_golden_roots, snapshot_goldens, snapshot_root_files,
-    workspace_root,
+    KNOWN_GOLDEN_ROOTS, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
+    snapshot_root_files, walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
 fn workspace_rust_files() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![workspace_root().join("crates")];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    assert!(!out.is_empty(), "found no sources under crates/");
-    out
+    rust_sources_under(&workspace_root().join("crates"))
 }
 
 /// `MultiProgress::suspend` and `ProgressBar::suspend` both `unwrap()` an
@@ -42,9 +26,7 @@ fn suspend_is_never_called() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains(".suspend(") {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
@@ -96,9 +78,7 @@ fn every_subscriber_writes_through_a_folding_writer() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (line_no, why) in unfolded_subscriber_offenders(&body) {
             let line = body.lines().nth(line_no).unwrap_or_default();
             offenders.push(format!(
@@ -143,9 +123,7 @@ fn no_subscriber_drops_its_timestamp() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if code_half(line).contains("without_time(") && !hatched(&lines, i, UNSTAMPED_HATCH) {
@@ -561,6 +539,27 @@ fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
 }
 
+/// The index of the `]` closing the bracket `text` opens on, or `None` while it
+/// is still open, so an accumulation runs to the BALANCED close: a value holding
+/// a bracket of its own (`class[0].1`) ends the scan at the first `]` character
+/// and leaves every later entry unread.
+fn balanced_close(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (at, ch) in text.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The argument text of the `with_writer(` opened at `from` on `lines[at]`, up
 /// to its matching close paren — across lines, because rustfmt splits a long
 /// call and a line-scoped read would see `with_writer(` and `std::io::stderr`
@@ -717,9 +716,7 @@ fn package_context_is_only_built_through_its_constructors() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains("PackageContext {") {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
@@ -775,9 +772,7 @@ fn no_decision_row_renderer_reads_the_stored_summary() {
             continue;
         }
         scanned += 1;
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
@@ -885,9 +880,7 @@ fn every_daemon_info_event_names_its_subsystem() {
         {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         // `service/` installs and uninstalls the unit from a one-shot command
         // the user is watching, so those DO report through the printer. The
         // loop itself has no terminal to report to.
@@ -1502,9 +1495,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         // The dialect-alone tells' one path-based hatch: the file that OWNS
         // the dialect (`env_engine.rs`, home of `path_line`/`fold_path_line`)
         // pins the raw assignment syntax through helpers with no `generate_*`
@@ -1563,7 +1554,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     // holds no offender, and an empty offender list reads the same whether the
     // scan saw every file-scope item or none of them.
     assert!(
-        items >= 316,
+        items >= 315,
         "the walk read {items} items outside a function body in cfgd-core; it \
          has stopped seeing the crate's file-scope declarations"
     );
@@ -1823,7 +1814,7 @@ fn no_walk_folding_a_label_spells_an_offender_path_natively() {
     // The floor is the POPULATION: an empty offender list reads the same
     // whether the scan found every walk or none of them.
     assert!(
-        folding >= 6,
+        folding >= 9,
         "the scan read {folding} label-folding walks; it has stopped seeing them"
     );
 }
@@ -2208,9 +2199,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         if !body.contains("#[test]") && !body.contains("#[tokio::test") {
             continue;
         }
@@ -2391,6 +2380,278 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     );
 }
 
+/// Every test guard that pins a process-global seam: the call a pin is written
+/// as, the serial group the guard's own rustdoc names, the UNPINNED reader whose
+/// answer only holds inside that group, and the number of pin call sites it
+/// watches today. An empty group is `serial_test`'s unnamed lock.
+///
+/// The pin is a needle rather than a type name because a seam whose guard is
+/// private to one file is reached through a helper call (`with_test_elevated`)
+/// rather than a `Type::` constructor, and one column holding both shapes is
+/// what lets this table name every seam in the workspace.
+///
+/// The reader is the accessor that answers the override. A test asserting what
+/// it returns with NOTHING pinned is the designated victim of every pin on that
+/// seam, so it belongs to the same group as the pins themselves; a test reading
+/// the seam's CONSTANT is not in the class, the constant being the value an
+/// override displaces rather than the override.
+///
+/// A guard that takes the lock itself (`GitRefreshWindowGuard`) or needs no
+/// serialization at all (`CommandPathMemoTtlGuard`) is deliberately absent, as
+/// are the env-var guards, whose serialization
+/// [`every_test_mutating_the_process_environment_serializes_itself`] demands
+/// instead.
+///
+/// Not every seam is a numeric ceiling. The tracing dispatcher is one as well,
+/// and it has no guard: installing a subscriber mutates the process-global
+/// dispatcher registry and the per-callsite interest caches, so a capture live
+/// while another declaration installs can come back holding that declaration's
+/// events and missing its own. Its pin is the install call, whichever of the
+/// three spellings it takes, and its reader is the capture a test reads back,
+/// including through the helper that installs for it: a test calling such a
+/// helper installs a subscriber without naming one, which is how an
+/// unserialized installer reached this binary.
+///
+/// A WRAPPER around an install joins this table as its own row, pin column the
+/// declaration and reader column the call: the walk judges the declaration a pin
+/// is written in, so a wrapper that installs for its callers is judged once and
+/// its callers are judged by nothing. Hatching the wrapper and rostering it is
+/// what makes the next hop out cost two lines rather than a paragraph.
+const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
+    (
+        ".with_subscriber(",
+        "tracing_dispatcher",
+        "capture_run_logs_async(",
+        1,
+    ),
+    (
+        "AvailabilityMemoTtlGuard::",
+        "",
+        "availability_memo_ttl(",
+        4,
+    ),
+    (
+        "AvailableVersionMemoTtlGuard::",
+        "available_version_memo",
+        "available_version_memo_ttl(",
+        5,
+    ),
+    (
+        "ConfigReuseMaxAgeGuard::",
+        "tick_cache_reuse",
+        "config_reuse_max_age(",
+        1,
+    ),
+    (
+        "EnumerationMemoTtlGuard::",
+        "enumeration_memo",
+        "enumeration_memo_ttl(",
+        14,
+    ),
+    (
+        "ModuleReuseTtlGuard::",
+        "tick_cache_reuse",
+        "module_reuse_ttl(",
+        1,
+    ),
+    (
+        "RateLimitedBackoffGuard::",
+        "rate_limited_backoff",
+        "BackoffConfig::rate_limited(",
+        3,
+    ),
+    (
+        "fn capture_warn_logs",
+        "tracing_dispatcher",
+        "capture_warn_logs(",
+        1,
+    ),
+    ("fn run_sighup", "tracing_dispatcher", "run_sighup(", 1),
+    (
+        "fn with_trace_subscriber",
+        "tracing_dispatcher",
+        "with_trace_subscriber(",
+        1,
+    ),
+    (
+        "set_global_default(",
+        "tracing_dispatcher",
+        "daemon_log()",
+        1,
+    ),
+    (
+        "tracing::subscriber::with_default(",
+        "tracing_dispatcher",
+        "capture_run_logs(",
+        5,
+    ),
+    ("with_test_elevated", "", "effective_elevated(", 14),
+];
+
+/// Exempts one declaration from the walk below, with the reason after it.
+const SERIAL_GROUP_HATCH: &str = "serial-group-ok:";
+
+/// Whether the attribute line `line` joins the serial group `group` — the EXACT
+/// group, because `serial_test` locks per name and two groups serialize nothing
+/// against each other. An empty `group` is the unnamed lock, which is a whole
+/// attribute rather than a prefix: `#[serial_test::serial]` joins it and
+/// `#[serial_test::serial(other)]` does not.
+fn joins_serial_group(line: &str, group: &str) -> bool {
+    let attr = code_half(line);
+    let attr = attr.trim();
+    if !attr.starts_with("#[") {
+        return false;
+    }
+    if group.is_empty() {
+        return attr == "#[serial_test::serial]" || attr == "#[serial]";
+    }
+    attr.contains(&format!("serial({group})"))
+}
+
+/// A test whose verdict depends on a serialized seam joins that seam's group.
+///
+/// Most [`SERIAL_PINS`] seams are one process-global `AtomicU64` a guard
+/// overrides, saving the value it found and restoring it on drop. Two of them
+/// live at once is not a flake but a lost override: the second pin captures the
+/// FIRST one's value as the one to restore, so the seam stays pinned for the
+/// rest of the binary and every later test reads a ceiling nobody set. The
+/// group that prevents it is named in the guard's own rustdoc, which no
+/// compiler reads, and it has to be the same name every other caller wrote — a
+/// pin serialized under a group of its own serializes against nothing.
+///
+/// A test READING the unpinned seam is in the same class one property over: its
+/// whole claim is that nothing is pinned, which a concurrent pin displaces, so
+/// the roster's reader column is demanded of `#[test]` declarations too. A
+/// production call site is no declaration the walk can demand an attribute of
+/// and is left alone.
+///
+/// The walk judges the DECLARATION a pin is written in, so a pin inside a shared
+/// helper is an offender like an unserialized test: the helper's callers are not
+/// visible here, and a helper that pins is a helper every caller must serialize.
+/// A pin outside every declaration is reported per file for the same reason.
+/// `// serial-group-ok: <why>` on the declaration or in its attribute block
+/// exempts one.
+///
+/// Its subject is TEST code, so unlike a production walk it reads each file
+/// whole rather than through `production_slice_of`: the cut would drop every
+/// pin, each one living in a `#[cfg(test)]` module. A file it cannot read is a
+/// file it cannot judge, so an unreadable one fails the walk outright.
+#[test]
+fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
+    let mut files_read = 0usize;
+    let mut hits: std::collections::BTreeMap<&str, usize> = SERIAL_PINS
+        .iter()
+        .map(|(pin, _, _, _)| (*pin, 0usize))
+        .collect();
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it, and
+        // `test_helpers.rs` is where the guards themselves are declared.
+        if path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new("test_helpers.rs"))
+        {
+            continue;
+        }
+        let labelled = source_label(&path);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
+        });
+        if !SERIAL_PINS
+            .iter()
+            .any(|(pin, _, reader, _)| body.contains(pin) || body.contains(reader))
+        {
+            continue;
+        }
+        files_read += 1;
+        let lines: Vec<&str> = body.lines().collect();
+        let relative = labelled;
+
+        let mut attributed = 0usize;
+        for (open, slice) in source_functions(&relative, &body) {
+            let code: Vec<String> = crate::test_helpers::logical_source_lines(&slice)
+                .into_iter()
+                .map(|(_, line)| code_half(&line))
+                .collect();
+            let start = attribute_block_start(&lines, open - 1);
+            let attrs = &lines[start..open - 1];
+            let is_test = attrs.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+            });
+            let name = declared_fn_name(&slice).unwrap_or("<unnamed>").to_string();
+            for (pin, group, reader, _) in SERIAL_PINS {
+                let found = code.iter().filter(|line| line.contains(pin)).count();
+                let reads = is_test && code.iter().any(|line| line.contains(reader));
+                if found == 0 && !reads {
+                    continue;
+                }
+                *hits.entry(*pin).or_insert(0) += found;
+                attributed += found;
+                if (start..open).any(|at| hatched(&lines, at, SERIAL_GROUP_HATCH)) {
+                    continue;
+                }
+                if is_test && attrs.iter().any(|l| joins_serial_group(l, group)) {
+                    continue;
+                }
+                let wanted = if group.is_empty() {
+                    "#[serial_test::serial]".to_string()
+                } else {
+                    format!("#[serial_test::serial({group})]")
+                };
+                if found > 0 {
+                    offenders.push(format!(
+                        "{relative}:{open}: {name} pins {pin} without {wanted}"
+                    ));
+                }
+                if reads {
+                    offenders.push(format!(
+                        "{relative}:{open}: {name} reads the unpinned {reader} without {wanted}"
+                    ));
+                }
+            }
+        }
+        // A pin written outside every declaration is serialized by no attribute
+        // at all, and the pass above reads declarations only.
+        let loose: usize = crate::test_helpers::logical_source_lines(&body)
+            .into_iter()
+            .map(|(_, line)| code_half(&line))
+            .map(|code| {
+                SERIAL_PINS
+                    .iter()
+                    .filter(|(pin, _, _, _)| code.contains(*pin))
+                    .count()
+            })
+            .sum();
+        if loose > attributed {
+            offenders.push(format!(
+                "{relative}: {} pin(s) outside every function declaration",
+                loose - attributed
+            ));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a declaration pinning or reading a serialized seam must carry that \
+         seam's own `#[serial_test::serial…]` group, or `// serial-group-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    // Floors, so a walk that stopped matching anything cannot pass silently.
+    assert!(
+        files_read >= 15,
+        "the walk read {files_read} files holding a pin or a reader; it has stopped seeing them"
+    );
+    for (pin, _, _, floor) in SERIAL_PINS {
+        let found = hits.get(*pin).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "{pin} matched {found} lines, under its floor of {floor} — \
+             the walk has gone blind to it"
+        );
+    }
+}
+
 /// No item outside a function body writes the process environment.
 ///
 /// The walks above are FUNCTION-scoped: they cut a file into
@@ -2452,10 +2713,7 @@ fn every_production_path_read_takes_the_read_guard() {
         {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let body = crate::test_helpers::production_slice(&raw);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         // Each declaration as the line range it covers and whether its own
@@ -2520,9 +2778,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         for (open, item) in const_items_outside_functions(&relative, &body) {
@@ -2701,13 +2957,10 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         if path.file_name() != Some(std::ffi::OsStr::new("test_helpers.rs")) {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
         files_read += 1;
         // The trailing test module exercises the helpers, so its own tests
         // reach every seed and would be derived as helpers themselves.
-        let body = crate::test_helpers::production_slice(&raw);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let owners = impl_owners(&lines);
         let relative = source_label(&path);
@@ -2810,6 +3063,149 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         derived.len() >= 10,
         "the derivation found {} env-mutating helpers: {derived:?}",
         derived.len()
+    );
+}
+
+/// A walk that reads several sources reads each one through
+/// [`crate::test_helpers::production_slice_of`], which owns both halves the
+/// walk needs: the read that must not be swallowed, and the per-file floor on
+/// what the slice returned.
+///
+/// The pure [`crate::test_helpers::production_slice`] takes a body, so a caller
+/// reaching it inside a loop has already read the file itself and can only
+/// carry the floor by hand — which is how the same block came to be copied,
+/// and how most walks came to carry no floor at all. A caller that genuinely
+/// holds one compiled-in body and no path keeps the pure cut and says so with
+/// `// unfloored-slice-ok: <why>` on that line or the one above it.
+#[test]
+fn every_multi_file_production_walk_reads_through_the_floored_helper() {
+    // Spelled in parts, or this walk's own needle is the first offender it
+    // finds.
+    let needle = concat!("production_", "slice");
+    let hatch = concat!("unfloored-", "slice-ok:");
+    let mut offenders = Vec::new();
+    let mut sources = 0usize;
+    for path in workspace_rust_files() {
+        // `test_helpers.rs` holds the shared walk BODIES, so exempting the file
+        // would hide the newest multi-file walk from this rule. Only its own
+        // PRODUCTION region is judged, because the unit tests of the cut below
+        // hold one body each and legitimately call the pure form, and a
+        // declaration line names the cut rather than reaching it.
+        let own_file = path.file_name() == Some(std::ffi::OsStr::new("test_helpers.rs"));
+        let body = if own_file {
+            crate::test_helpers::production_slice_of(&path)
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            })
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        let mut spells = false;
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if !line.contains(needle) {
+                continue;
+            }
+            if line.contains(" fn ") {
+                continue;
+            }
+            spells = true;
+            // The bare identifier, judged by what FOLLOWS it: an `_` there is
+            // the floored helper or one of its own test names, and anything
+            // else is the pure cut reached by name — called, handed to a
+            // `map`, or imported under a name this walk would never see.
+            let bare = line
+                .match_indices(needle)
+                .any(|(at, _)| !line[at + needle.len()..].starts_with('_'));
+            if !bare {
+                continue;
+            }
+            let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
+            if line.contains(hatch) || above.contains(hatch) {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+        if spells {
+            sources += 1;
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "read the file through `cfgd_core::test_helpers::production_slice_of`, \
+         which reads it and floors the slice at the lines preceding its test \
+         module, or say why one body needs the pure cut with \
+         `// unfloored-slice-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        sources >= 4,
+        "the walk found the slice helper in {sources} sources; it has stopped \
+         reading the population it judges"
+    );
+}
+
+/// Every fence in this file is a claim about a POPULATION, so the walk that
+/// enumerates it fails rather than returning a shorter one.
+///
+/// Both failures are read off the message, not off the panic: a walk that
+/// swallowed the directory it could not open still ends up with nothing to
+/// return, so "I could not look" and "there was nothing there" arrive as the
+/// same empty list, and only the wording — the directory's own name included —
+/// tells them apart.
+///
+/// The success arm asserts the whole vector rather than a count, because the
+/// three properties every caller reads off this list are separable and each
+/// fails silently on its own: a walk that stopped descending, one that stopped
+/// filtering, and one that returned the filesystem's order all answer a length
+/// check.
+#[test]
+fn the_source_walk_fails_on_a_root_it_cannot_open_and_lists_every_source_under_one_it_can() {
+    fn walk_failure(root: &Path) -> String {
+        match std::panic::catch_unwind(|| rust_sources_under(root)) {
+            Ok(files) => format!("the walk returned {} files", files.len()),
+            Err(payload) => payload
+                .downcast::<String>()
+                .map(|m| *m)
+                .unwrap_or_else(|_| String::from("a panic carrying no message")),
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+
+    let missing = root.path().join("nothing-here");
+    let unopenable = walk_failure(&missing);
+    assert!(
+        unopenable.contains("must read every directory") && unopenable.contains("nothing-here"),
+        "a root the walk could not open answered: {unopenable}"
+    );
+
+    let empty = walk_failure(root.path());
+    assert!(
+        empty.contains("found no sources"),
+        "a root holding no source answered: {empty}"
+    );
+
+    let nested = root.path().join("sub");
+    std::fs::create_dir(&nested).unwrap_or_else(|e| panic!("{}: mkdir: {e}", nested.display()));
+    for (file, body) in [
+        (root.path().join("z.rs"), "fn z() {}\n"),
+        (root.path().join("m.rs"), "fn m() {}\n"),
+        (nested.join("a.rs"), "fn a() {}\n"),
+        (root.path().join("notes.txt"), "not a source\n"),
+    ] {
+        std::fs::write(&file, body).unwrap_or_else(|e| panic!("{}: write: {e}", file.display()));
+    }
+    assert_eq!(
+        rust_sources_under(root.path()),
+        vec![
+            root.path().join("m.rs"),
+            nested.join("a.rs"),
+            root.path().join("z.rs")
+        ],
+        "every .rs under the root, at every depth, nothing else, sorted"
     );
 }
 
@@ -3167,9 +3563,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         if !posix.contains("/tests/") || posix.contains("/src/") {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
 
@@ -3262,10 +3656,13 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == "target") {
@@ -3319,9 +3716,7 @@ fn every_golden_root_is_named() {
 /// under it is the `─` rule the renderer emits immediately after it, which is
 /// why nothing can be interposed between the two.
 fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (0, Vec::new());
-    };
+    let text = walked_file_body(path);
     // `str::lines` drops a trailing `\r` only where the line ended in `\n`, so
     // a CRLF checkout does not read every line as whitespace-terminated, and it
     // borrows rather than minting a second copy of every file. A file whose
@@ -3441,4 +3836,848 @@ fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
          pages; it has stopped reading the captured renders in docs/",
         docs.len()
     );
+}
+
+/// Every label-bearing type cfgd-schema owns, with the `(canonical token,
+/// display label)` pairs read off its own `ALL` — so a new VARIANT is covered
+/// by construction. The type list is the only hand-written half, and
+/// [`every_display_label_is_the_lowercase_of_its_canonical_token`] checks it
+/// against the source.
+fn labelled_schema_types() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "FileStrategy",
+            cfgd_schema::FileStrategy::ALL
+                .iter()
+                .map(|v| (v.as_str(), v.method_label()))
+                .collect(),
+        ),
+        (
+            "ScheduleOwner",
+            cfgd_schema::ScheduleOwner::ALL
+                .iter()
+                .map(|v| (v.as_str(), v.label()))
+                .collect(),
+        ),
+    ]
+}
+
+/// Whether a source line declares a display label, judged on the SHAPE of the
+/// name rather than on the two spellings that exist today: a third accessor
+/// called `owner_label` or `phase_label` joins the population without editing
+/// this walk.
+fn declares_a_display_label(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("pub fn ")
+        .and_then(|rest| rest.split_once('('))
+        .is_some_and(|(name, _)| name.ends_with("label"))
+}
+
+/// A display label is the ASCII-lowercase of the canonical token beside it, on
+/// every label-bearing type cfgd-schema owns: a hand-written arm returning
+/// anything else compiles, and one that reads `Local` where the listing prints
+/// `local` would make the two spellings of one value drift.
+///
+/// The variant population comes from each type's `ALL`; the TYPE population is
+/// read back off cfgd-schema's sources, so a third label-bearing type cannot be
+/// invisible to this walk the way a hand-listed pair of enums would let it be.
+/// The walk lives here because cfgd-schema is a leaf crate: it cannot reach
+/// [`crate::test_helpers::production_slice`], and a bare `#[cfg(test)]` anchor
+/// of its own goes blind at the first test-only import above the label fns.
+#[test]
+fn every_display_label_is_the_lowercase_of_its_canonical_token() {
+    let table = labelled_schema_types();
+    for (ty, pairs) in &table {
+        assert!(!pairs.is_empty(), "{ty} states no variants");
+        for (token, label) in pairs {
+            assert_eq!(
+                *label,
+                token.to_ascii_lowercase(),
+                "{ty}::{token}'s label is not its token lowercased"
+            );
+        }
+    }
+
+    let schema_src = workspace_root().join("crates/cfgd-schema/src");
+    let sources: Vec<PathBuf> = workspace_rust_files()
+        .into_iter()
+        .filter(|p| p.starts_with(&schema_src))
+        .collect();
+    assert!(
+        sources.len() >= 2,
+        "the walk reached {} sources under crates/cfgd-schema/src; the crate \
+         was moved or renamed",
+        sources.len()
+    );
+
+    let mut sites: Vec<String> = Vec::new();
+    for path in &sources {
+        let production = crate::test_helpers::production_slice_of(path);
+        let mut current: Option<String> = None;
+        for line in production.lines() {
+            if let Some(rest) = line.strip_prefix("impl ") {
+                current = rest.split_whitespace().next().map(str::to_string);
+            }
+            if declares_a_display_label(line) {
+                sites.push(
+                    current
+                        .clone()
+                        .unwrap_or_else(|| panic!("a label fn outside an impl: {line}")),
+                );
+            }
+        }
+    }
+    assert!(
+        sites.len() >= 2,
+        "the walk no longer reaches cfgd-schema's label fns — it found {sites:?}"
+    );
+    let listed: Vec<&str> = table.iter().map(|(ty, _)| *ty).collect();
+    for site in &sites {
+        assert!(
+            listed.contains(&site.as_str()),
+            "{site} states a display label no walk checks; add it to \
+             `labelled_schema_types`"
+        );
+    }
+    for ty in &listed {
+        assert!(
+            sites.iter().any(|s| s == ty),
+            "{ty} is listed but states no display label in cfgd-schema"
+        );
+    }
+}
+
+/// The two hyphenated env resource types are matched on in both crates, so a
+/// rename has to reach every matcher at once.
+///
+/// `ENV_RC_RESOURCE_TYPE` / `ENV_SESSION_RESOURCE_TYPE` exist to make that
+/// true, and the promise held only while nothing spelled the word instead:
+/// five production matchers had drifted to bare literals — the pending-decision
+/// prune, the daemon tick's vouching list, and the drift report's own kind
+/// vocabulary — each of which a rename would have left matching a type nothing
+/// writes. The walk is both crates' production slices; the file DECLARING the
+/// constants is the one exception, and a serde or wire spelling that must stay
+/// a literal carries `// env-type-literal-ok: <why>` on its own line or the one
+/// above it.
+#[test]
+fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
+    let declarations = Path::new("reconciler").join("types.rs");
+    let mut offenders = Vec::new();
+    let mut files_walked = 0usize;
+    for path in workspace_rust_files() {
+        let is_test_source = path.ends_with(Path::new("tests.rs"))
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tests_"))
+            || path.components().any(|c| c.as_os_str() == "tests");
+        if path.ends_with(&declarations) || is_test_source {
+            continue;
+        }
+        files_walked += 1;
+        let production = crate::test_helpers::production_slice_of(&path);
+        let mut hatched = false;
+        for (i, line) in production.lines().enumerate() {
+            let previous = hatched;
+            hatched = line.contains("env-type-literal-ok:");
+            if previous || hatched || line.trim_start().starts_with("//") {
+                continue;
+            }
+            for literal in ["\"env-rc\"", "\"env-session\""] {
+                if line.contains(literal) {
+                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        files_walked >= 100,
+        "the walk no longer reads the workspace's sources: {files_walked} files"
+    );
+    assert!(
+        offenders.is_empty(),
+        "match on `cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE` / \
+         `ENV_SESSION_RESOURCE_TYPE` instead, so a rename reaches every \
+         matcher:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Files holding a pin of gc's failed-removal arm, and the number of pins each
+/// still has to yield.
+///
+/// A floor per file, so a pin whose shape drifts out of needle reach fails here
+/// rather than leaving the walk reading three members of a class of four.
+const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
+    ("crates/cfgd-core/src/backup/tests.rs", 2),
+    ("crates/cfgd/tests/backup_exit_code.rs", 1),
+    ("crates/cfgd/tests/backup_snapshots.rs", 1),
+];
+
+/// The calls that run a backup gc collection through a surface that names gc:
+/// the orphan collector, the library entry point, the command wrapper and the
+/// argv of the real binary.
+///
+/// Any function driving one of these is a candidate pin of gc's failed-removal
+/// arm, in EVERY file, so a future one is judged on what it DOES rather than on
+/// a name a needle has to guess, and no file has to be named ahead of it. Each
+/// spelling names gc and nothing else, so judging the whole workspace on them
+/// costs no hatch. `orphaned_snapshots` is deliberately absent — it reads rows
+/// and removes nothing, so no pin of the failed-removal arm can be driven
+/// through it alone.
+const GC_COLLECT_ENTRIES: &[&str] = &[
+    "collect_orphans",
+    "run_backup_gc",
+    "cmd_backup_gc(",
+    "\"backup\", \"gc\"",
+];
+
+/// The engine harness's own collect call, matched by its argument rather than by
+/// the identifier the harness happens to be bound to (an iterator's own
+/// `collect()` takes no argument). The harness is private to `backup/tests.rs`,
+/// so this spelling means a gc collection only inside a file that already pins
+/// the arm and is read there alone.
+const GC_ENGINE_COLLECT: &str = ".collect(&";
+
+/// The shapes that make a backup payload unremovable, read off
+/// [`crate::test_helpers::hold_payload_unremovable`]'s own source, so renaming
+/// the stand-in's contents or switching the Windows sharing call moves this
+/// walk with the producer instead of blinding it.
+fn unremovable_payload_tells() -> Vec<String> {
+    let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
+    let label = source_label(&path);
+    let body = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the producer must be readable: {label} — {e}"));
+    let slice = source_functions(&label, &body)
+        .into_iter()
+        .find(|(_, slice)| declared_fn_name(slice) == Some("hold_payload_unremovable"))
+        .map(|(_, slice)| slice)
+        .expect("the fixture must still be a free function in test_helpers.rs");
+    let stand_in = slice
+        .split_once("b\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(literal, _)| literal.to_string())
+        .expect("the unix arm must still write a stand-in file with a literal body");
+    assert!(
+        slice.contains("share_mode("),
+        "the Windows arm must still hold the snapshot open through share_mode"
+    );
+    vec![stand_in, "share_mode(".to_string()]
+}
+
+/// Every pin of gc's failed-removal arm reaches its unremovable payload through
+/// the one fixture, and no such pin is gated to one operating system.
+///
+/// The arm is the same on every host — a removal cfgd cannot perform keeps its
+/// row — but the reason a kernel refuses one is not, so a pin that hand-rolls
+/// the unix shape can only ever run there and the arm goes unproven everywhere
+/// else. Both halves are the finding: a stand-in written beside the fixture
+/// drifts from it, and a `#[cfg(unix)]` over a pin of this arm silently takes
+/// the arm out of the Windows and macOS suites. `// unix-only-gc-ok: <why>`
+/// hatches a pin that genuinely asserts a unix-only fact.
+#[test]
+fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
+    let tells = unremovable_payload_tells();
+    let mut judged: Vec<(String, String)> = Vec::new();
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        // The producer states both shapes by definition, and this walk quotes
+        // them to find the others.
+        if posix.ends_with("cfgd-core/src/test_helpers.rs")
+            || posix.ends_with("output/tests/fences.rs")
+        {
+            continue;
+        }
+        let relative = source_label(&path);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the walk could not read {relative} — {e}"));
+        let lines: Vec<&str> = body.lines().collect();
+        let floored = GC_FAILED_REMOVAL_PINS
+            .iter()
+            .any(|(file, _)| posix.ends_with(file));
+
+        for (open, slice) in source_functions(&relative, &body) {
+            let Some(name) = declared_fn_name(&slice) else {
+                continue;
+            };
+            let attributes = &lines[attribute_block_start(&lines, open - 1)..open - 1];
+            let hatched = attributes
+                .iter()
+                .chain(slice.lines().collect::<Vec<_>>().iter())
+                .any(|l| l.contains("unix-only-gc-ok:"));
+            let reaches = slice.contains("hold_payload_unremovable");
+            let hand_rolled = tells.iter().any(|tell| slice.contains(tell.as_str()));
+            // Anything driving a collection is a candidate pin of this arm
+            // whatever it is called, so a future one cannot hide behind a name
+            // no needle spells, nor behind a file no floor names yet.
+            let drives_a_collection = GC_COLLECT_ENTRIES.iter().any(|call| slice.contains(call))
+                || (floored && slice.contains(GC_ENGINE_COLLECT));
+            if !(reaches || hand_rolled || drives_a_collection) {
+                continue;
+            }
+            let at = format!("{relative}:{open}: {name}");
+            if reaches || hand_rolled {
+                judged.push((posix.clone(), at.clone()));
+            }
+            if hatched {
+                continue;
+            }
+            if hand_rolled && !reaches {
+                offenders.push(format!("{at}: hand-rolled unremovable payload"));
+            }
+            if attributes
+                .iter()
+                .any(|l| l.trim_start().starts_with("#[cfg(unix)]"))
+            {
+                offenders.push(format!("{at}: gated to unix"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a pin of gc's failed-removal arm must hold its payload through \
+         `cfgd_core::test_helpers::hold_payload_unremovable`, which refuses the \
+         removal the way each OS really does, and must run on every OS:\n{}",
+        offenders.join("\n")
+    );
+    for (file, floor) in GC_FAILED_REMOVAL_PINS {
+        let found = judged.iter().filter(|(p, _)| p.ends_with(file)).count();
+        assert!(
+            found >= *floor,
+            "{file} yielded {found} pins of gc's failed-removal arm, under its \
+             floor of {floor} — a member has fallen out of needle reach:\n{}",
+            judged
+                .iter()
+                .map(|(_, at)| at.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    // A floor only guards a file it names, so the table has to be the whole
+    // non-zero set: a pin landing in a fourth file is judged here and watched
+    // by nothing, free to fall out of needle reach unnoticed.
+    let unfloored: std::collections::BTreeSet<&str> = judged
+        .iter()
+        .map(|(file, _)| file.as_str())
+        .filter(|file| {
+            !GC_FAILED_REMOVAL_PINS
+                .iter()
+                .any(|(floored, _)| file.ends_with(floored))
+        })
+        .collect();
+    assert!(
+        unfloored.is_empty(),
+        "a file holding a pin of gc's failed-removal arm needs a row in \
+         `GC_FAILED_REMOVAL_PINS`, or its count can fall to zero unwatched:\n{}",
+        unfloored.into_iter().collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Every path-based chmod in the WORKSPACE says why following a symlink is safe
+/// there.
+///
+/// The rule, the tells and the hatch grammar live in
+/// [`crate::test_helpers::path_based_chmod_population`], which derives the crate
+/// roots by reading `crates/` so a crate added to the workspace joins this
+/// population with it.
+///
+/// One walk over every crate, not one per crate and not one per directory: the
+/// class was first swept in the reconciler alone, and a chmod turned out to be as
+/// likely in the source cache, the backup engine, the daemon's IPC setup, the
+/// self-upgrade, the secrets backends or the device gateway. A walk reads source
+/// TEXT, so the crate graph does not bound it, and a per-crate body left
+/// `cfgd-csi` (root on every node), `cfgd-crd` and `cfgd-schema` judged by
+/// nobody. One population also means no site is judged twice.
+///
+/// The floor sits AT what the workspace holds rather than under it, so a call
+/// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
+/// and the assertion prints the numbers it read. The roots are named as well as
+/// counted, for the reason [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named:
+/// a count survives a root renamed or moved out of `crates/` as long as some
+/// other crate appears to restore it.
+#[test]
+fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
+    /// Every crate root the walk must still be reading, workspace-relative.
+    const CHMOD_WALK_ROOTS: &[&str] = &[
+        "crates/cfgd-core/src",
+        "crates/cfgd-crd/src",
+        "crates/cfgd-csi/src",
+        "crates/cfgd-operator/src",
+        "crates/cfgd-schema/src",
+        "crates/cfgd/src",
+    ];
+    let crates_dir = crate::test_helpers::workspace_root().join("crates");
+    let population = crate::test_helpers::path_based_chmod_population(&crates_dir);
+    let unread: Vec<&str> = CHMOD_WALK_ROOTS
+        .iter()
+        .copied()
+        .filter(|named| !population.roots.iter().any(|read| read == named))
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "the walk no longer reads {unread:?}; it read {:?} — a renamed or moved \
+         crate root leaves its chmods judged by nobody",
+        population.roots
+    );
+    assert!(
+        population.roots.len() >= 6 && population.files >= 391 && population.chmods >= 31,
+        "the walk read {} crate roots, {} files and {} chmods, too few to be the population",
+        population.roots.len(),
+        population.files,
+        population.chmods
+    );
+    assert!(
+        population.offenders.is_empty(),
+        "every path-based chmod states why it may follow a link:\n{}",
+        population.offenders.join("\n")
+    );
+}
+
+/// A distinctness premise proves the numbers its fixture ASSERTS, never a
+/// second set written beside them.
+///
+/// [`crate::test_helpers::assert_slots_discriminate`] can only judge the array
+/// it is handed, so an array of literals typed next to an assertion that retypes
+/// the same numbers guards nothing: the mis-wiring the premise exists to catch
+/// edits the fixture, and the literals stay where they were. Six call sites were
+/// in exactly that shape.
+///
+/// Two shapes are welded and both are CHECKED here, each by the thing that welds
+/// it. An array BOUND to a name is welded by the assertion reading that name back
+/// (`for (slot, count) in slots`, `format!` off `slots[0].1`), so the name is
+/// required to appear again below the call, inside the same function body and
+/// before any later `let` rebinds it: bound and then asserted against retyped
+/// bytes, the binding guards nothing an array of literals does not. An INLINE array is welded by every value being read off
+/// the product under test (`tally.succeeded`, `class[0].1`), so every entry is
+/// parsed and a bare integer is the offence, because nothing connects that
+/// integer to the bytes asserted.
+///
+/// Both readings judge the WHOLE argument: the accumulation runs to the balanced
+/// `]` rather than the first `]` CHARACTER, since a value may hold a bracket of
+/// its own, and the array's own brackets are stripped before the entries are
+/// split, since a closing `]);` left on the last entry's value makes it parse as
+/// no integer and reads as a product. An argument shape neither reading covers is
+/// refused rather than passed over. `// slots-literal-ok: <why>` on the call's
+/// line or the one above hatches a genuine exception.
+#[test]
+fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
+    let mut offenders = Vec::new();
+    let mut sites = 0usize;
+    let mut slots = 0usize;
+    let mut bound = 0usize;
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        // The helper's own file declares it; this one quotes the call shape.
+        if posix.ends_with("cfgd-core/src/test_helpers.rs")
+            || posix.ends_with("cfgd-core/src/output/tests/fences.rs")
+        {
+            continue;
+        }
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            let Some((_, after)) = line.split_once("assert_slots_discriminate(") else {
+                continue;
+            };
+            sites += 1;
+            if hatched(&lines, idx, "slots-literal-ok:") {
+                continue;
+            }
+            let after = after.trim_start();
+            let inline = after.strip_prefix('&').unwrap_or(after);
+            if !inline.starts_with('[') {
+                bound += 1;
+                let name = inline.trim_end_matches([')', ';', ' ']);
+                let indent = line.len() - line.trim_start().len();
+                // The scan ends at the function's closing brace, and at a
+                // REBINDING of the same name before it: a later `let slots = …`
+                // answers for its own call, so counting it would let the call
+                // above pass on a read-back that never reads the array it was
+                // handed. A COMMENT naming the array is not a read either, so a
+                // line that is one is passed over rather than counted.
+                let rebound = format!("let {name} ");
+                let rebound_mut = format!("let mut {name} ");
+                let read_back = lines[idx + 1..]
+                    .iter()
+                    .take_while(|below| {
+                        let trimmed = below.trim_start();
+                        !(trimmed == "}" && below.len() - trimmed.len() < indent)
+                            && !trimmed.starts_with(&rebound)
+                            && !trimmed.starts_with(&rebound_mut)
+                    })
+                    .any(|below| !below.trim_start().starts_with("//") && below.contains(name));
+                if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    offenders.push(format!(
+                        "{posix}:{}: the walk cannot read `{name}` as a bound name",
+                        idx + 1
+                    ));
+                } else if !read_back {
+                    offenders.push(format!(
+                        "{posix}:{}: `{name}` is never read back below the call",
+                        idx + 1
+                    ));
+                }
+                continue;
+            }
+            let mut arg = inline.to_string();
+            let mut at = idx;
+            while balanced_close(&arg).is_none() && at + 1 < lines.len() {
+                at += 1;
+                arg.push_str(lines[at]);
+            }
+            let Some(close) = balanced_close(&arg) else {
+                offenders.push(format!(
+                    "{posix}:{}: the walk cannot find the end of the slot array",
+                    idx + 1
+                ));
+                continue;
+            };
+            for entry in arg[1..close].split("(\"").skip(1) {
+                let Some((name, value)) = entry.split_once("\",") else {
+                    offenders.push(format!(
+                        "{posix}:{}: the walk cannot read a slot's name and value",
+                        idx + 1
+                    ));
+                    continue;
+                };
+                slots += 1;
+                if value
+                    .trim()
+                    .trim_end_matches([')', ',', ' '])
+                    .parse::<usize>()
+                    .is_ok()
+                {
+                    offenders.push(format!("{posix}:{}: `{name}`", idx + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        sites >= 11 && slots >= 29 && bound >= 3,
+        "the walk found {sites} distinctness premises, judged {slots} inline slots \
+         and read back {bound} bound arrays; too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a distinctness premise states the value the fixture asserts, read off \
+         the product or bound to a name the assertion reads back:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The call a walk reads an enumerated file with.
+const WALK_FILE_READ: &str = "read_to_string";
+
+/// Spellings that drop that call's failure instead of reporting it.
+const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", "unwrap_or("];
+
+/// Whether a column-0 attribute line opens a region the compiler builds only
+/// when `test` is on.
+///
+/// Judged on the predicate's SHAPE rather than on one spelling of it: `test` is
+/// a cfg flag a composite predicate may carry (`#[cfg(all(test, feature =
+/// "crd"))]`, `#[cfg(any(test, feature = "test-helpers"))]`), and an exact match
+/// against `#[cfg(test)]` read every composite one as production and dropped its
+/// file whole. A `not(` WRAPPING the flag disqualifies it, because
+/// `#[cfg(not(test))]` and `#[cfg(not(any(test, …)))]` open the opposite
+/// region, while `#[cfg(all(test, not(windows)))]` negates a different flag and
+/// still opens a test region; and `test` is matched as a whole word with `-`
+/// counted into it so `feature = "test-helpers"` — a gate the compiler honours
+/// outside a test build — is not mistaken for the flag.
+fn opens_a_test_region(line: &str) -> bool {
+    let attribute = line.split_once("//").map_or(line, |(code, _)| code);
+    attribute.starts_with("#[cfg(")
+        && !negates_the_test_flag(attribute)
+        && carries_the_test_flag(attribute)
+}
+
+fn carries_the_test_flag(predicate: &str) -> bool {
+    predicate
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        .any(|word| word == "test")
+}
+
+/// Whether any `not(…)` in the predicate carries the test flag inside its own
+/// parentheses.
+fn negates_the_test_flag(predicate: &str) -> bool {
+    let mut rest = predicate;
+    while let Some(at) = rest.find("not(") {
+        let inner = &rest[at + "not(".len()..];
+        let mut depth = 1usize;
+        let mut end = inner.len();
+        for (i, c) in inner.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if carries_the_test_flag(&inner[..end]) {
+            return true;
+        }
+        rest = &inner[end..];
+    }
+    false
+}
+
+#[test]
+fn a_negation_closes_a_test_region_only_when_it_wraps_the_flag() {
+    for opener in [
+        "#[cfg(test)]",
+        "#[cfg(all(test, feature = \"crd\"))]",
+        "#[cfg(any(test, feature = \"test-helpers\"))]",
+        "#[cfg(all(test, not(windows)))]",
+    ] {
+        assert!(opens_a_test_region(opener), "{opener} opens a test region");
+    }
+    for other in [
+        "#[cfg(not(test))]",
+        "#[cfg(not(any(test, feature = \"test-helpers\")))]",
+        "#[cfg(feature = \"test-helpers\")]",
+        "#[cfg(unix)]",
+    ] {
+        assert!(!opens_a_test_region(other), "{other} opens no test region");
+    }
+}
+
+/// A walk that cannot read a file it enumerated FAILS, rather than reading less
+/// than its floor promises.
+///
+/// A walk's floor counts the population it found on disk, not the members it
+/// managed to open, so a file whose read failed is indistinguishable from a file
+/// holding nothing: no rule judges it, no offender is reported, and the walk
+/// passes. [`crate::test_helpers::walked_file_body`] and
+/// [`crate::test_helpers::production_slice_of`] are the two readers that refuse
+/// instead, and a crate too far down the graph to reach either states the refusal
+/// inline.
+///
+/// The population is every `.rs` source of every crate, judged over its TEST
+/// region: a file that IS scaffolding (one whose name opens on `test`, or one
+/// lying under a `tests/` directory) is judged whole, and every other file only
+/// from its first column-0 attribute that opens a test region, which is where the
+/// walks living in an inline test module begin. Six of them do,
+/// `reconciler/format.rs`'s among them, so a filename filter read a narrower
+/// population than the rule claims. A scaffolding name is matched by its PREFIX
+/// because `tests.rs` is one spelling of it and `tests_module.rs` is another: a
+/// whole-file test module carries no anchor of its own, the parent's
+/// `#[cfg(test)] mod tests_module;` being what gates it, so an exact-name test
+/// dropped eleven files holding nothing but test declarations.
+/// A production read whose file may legitimately be absent
+/// (`/etc/os-release`, a cached credential, a target a check is asking about)
+/// falls outside the REGION rather than outside the filename, and is never
+/// hatched one at a time.
+///
+/// `// absent-file-ok: <why>` hatches a read inside a test region whose absence
+/// is itself a legitimate state: the argv log a shim writes on its first
+/// invocation, which a shim nothing ran never wrote.
+#[test]
+fn no_walk_silently_drops_a_file_it_enumerated() {
+    let mut files = 0usize;
+    let mut hatches = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        let name = posix.rsplit('/').next().unwrap_or(&posix);
+        files += 1;
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        // Scaffolding carries no `#[cfg(test)]` to cut at and is judged whole;
+        // every other file is judged from its first one on, the anchor
+        // `production_slice` reads from the other side, so the production
+        // carve-out falls out of the REGION and a walk written in an inline test
+        // module is inside the population rather than outside it.
+        let from = if name.starts_with("test") || posix.contains("/tests/") {
+            Some(0)
+        } else {
+            lines.iter().position(|l| opens_a_test_region(l))
+        };
+        // A file holding test declarations whose region the anchor never found is
+        // not a file with nothing to judge: `files` has already counted it, so the
+        // drop reports itself rather than lowering a floor no single file can move.
+        let Some(from) = from else {
+            if lines.iter().any(|l| {
+                let trimmed = l.trim_start();
+                trimmed.starts_with("#[test]") || trimmed.starts_with("#[tokio::test")
+            }) {
+                offenders.push(format!(
+                    "{posix}: holds test declarations the walk found no test region for"
+                ));
+            }
+            continue;
+        };
+        for (idx, line) in lines.iter().enumerate().skip(from) {
+            if !line.contains(WALK_FILE_READ) {
+                continue;
+            }
+            // rustfmt breaks a long read onto its own line and leaves the
+            // combinator on the next one, so the tell is looked for across the
+            // pair rather than on the call's line alone.
+            let window = format!("{line}{}", lines.get(idx + 1).copied().unwrap_or_default());
+            if !SILENT_READ_TELLS.iter().any(|tell| window.contains(tell)) {
+                continue;
+            }
+            if hatched(&lines, idx, "absent-file-ok:") {
+                hatches += 1;
+                continue;
+            }
+            offenders.push(format!("{posix}:{}: {}", idx + 1, line.trim()));
+        }
+    }
+    assert!(
+        files >= 550 && hatches >= 5,
+        "the walk read {files} sources and found {hatches} hatched absences, \
+         too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a walk that cannot read a file it enumerated reads less than its floor \
+         promises; read it through `walked_file_body` / `production_slice_of`, or \
+         say why the absence is a legitimate state with \
+         `// absent-file-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The pins whose body runs at one uid only, per suffix: floor = what the
+/// workspace holds today, `>=` so an addition never trips it and a member
+/// falling out of the walk's reach does.
+const UID_GATED_PINS: [(&str, usize); 4] = [
+    ("_as_root", 2),
+    ("_as_non_root", 14),
+    ("_as_linux_root", 3),
+    ("_as_non_linux_root", 2),
+];
+
+/// The first statement of a function body, comments dropped and whitespace
+/// collapsed, read from the line after the body's opening brace to the first
+/// line that closes the statement at depth zero. A leading `use` item executes
+/// nothing and is passed over, so a gate that follows the imports is still the
+/// first thing the body DOES.
+fn first_statement(slice: &str) -> String {
+    let body = slice.split_once('{').map_or("", |(_, rest)| rest);
+    let mut out = String::new();
+    let mut depth = 0usize;
+    let mut in_use_item = false;
+    for line in body.lines() {
+        let code = line.split(" //").next().unwrap_or("").trim();
+        if code.is_empty() || code.starts_with("//") {
+            continue;
+        }
+        if out.is_empty() && (in_use_item || code.starts_with("use ")) {
+            in_use_item = !code.ends_with(';');
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(code);
+        depth += code.matches('{').count();
+        depth = depth.saturating_sub(code.matches('}').count());
+        if depth == 0 && (code.ends_with(';') || code.ends_with('}')) {
+            break;
+        }
+    }
+    out
+}
+
+/// The suffix a uid gate demands of its pin's name, or `None` when the
+/// statement is not an empty-bodied early return on `is_root()`.
+///
+/// A leading `!` names the arm that RUNS as the privileged one; a
+/// `target_os = "linux"` in the condition narrows either arm to Linux, which is
+/// the only platform where root owns a separate Homebrew account.
+fn uid_gate_suffix(statement: &str) -> Option<&'static str> {
+    let cond = statement.strip_prefix("if ")?;
+    let (cond, block) = cond.split_once('{')?;
+    if block.trim() != "return; }" || !cond.contains("is_root()") {
+        return None;
+    }
+    let negated = cond.trim_start().starts_with('!');
+    let linux = cond.contains("target_os = \"linux\"");
+    Some(match (negated, linux) {
+        (true, false) => "_as_root",
+        (false, false) => "_as_non_root",
+        (true, true) => "_as_linux_root",
+        (false, true) => "_as_non_linux_root",
+    })
+}
+
+/// Every test that returns early on `is_root()` before asserting anything names
+/// the uid its body runs at, and every name claiming a uid opens on that gate.
+///
+/// A pin whose first statement is `if !is_root() { return; }` proves nothing
+/// off root, and its green line under an unprivileged run is indistinguishable
+/// from a pin that ran. The name is the only place a reader of the run can see
+/// which half executed, so the suffix is mechanical: `_as_root` for the
+/// privileged arm, `_as_non_root` for the unprivileged one, and the
+/// `_linux_` forms when the gate also asks `cfg!(target_os = "linux")`. A pin
+/// that asserts in BOTH arms (`if is_root() { assert A } else { assert B }`)
+/// carries no suffix, because every run executes it. The reverse direction
+/// holds too, or a suffix could outlive the gate it describes.
+#[test]
+fn every_pin_that_runs_at_one_uid_says_so_in_its_name() {
+    let mut found: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        let relative = source_label(&path);
+        let body = crate::test_helpers::walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (open, slice) in source_functions(&relative, &body) {
+            let attrs = &lines[attribute_block_start(&lines, open - 1)..open - 1];
+            let is_test = attrs.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("#[test]") || t.starts_with("#[tokio::test")
+            });
+            if !is_test {
+                continue;
+            }
+            let name = declared_fn_name(&slice).unwrap_or("<unnamed>");
+            let at = format!("{relative}:{open}: {name}");
+            let statement = first_statement(&slice);
+            let gate = uid_gate_suffix(&statement);
+            let claimed = UID_GATED_PINS
+                .iter()
+                .map(|(suffix, _)| *suffix)
+                .find(|suffix| name.ends_with(suffix));
+            match (gate, claimed) {
+                (Some(gate), Some(claimed)) if gate == claimed => {
+                    found.entry(gate).or_default().push(at);
+                }
+                (Some(gate), _) => offenders.push(format!(
+                    "{at}: opens on `{statement}`, so its body runs only {}; the name \
+                     must end `{gate}`",
+                    gate.trim_start_matches("_as_").replace('_', " ")
+                )),
+                (None, Some(claimed)) => offenders.push(format!(
+                    "{at}: is named `{claimed}` but does not open on the uid gate that \
+                     suffix states (first statement: `{statement}`)"
+                )),
+                (None, None) => {}
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a pin that returns early on `is_root()` names the uid its body runs at, \
+         and only such a pin carries that suffix:\n{}",
+        offenders.join("\n")
+    );
+    for (suffix, floor) in UID_GATED_PINS {
+        let pins = found.get(suffix).map_or(0, Vec::len);
+        assert!(
+            pins >= floor,
+            "{pins} pins end `{suffix}`, under the floor of {floor}; a member has \
+             fallen out of the walk's reach:\n{}",
+            found.get(suffix).map(|v| v.join("\n")).unwrap_or_default()
+        );
+    }
 }

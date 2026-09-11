@@ -212,13 +212,13 @@ pub(super) fn build_module_crd_json(
 ) -> anyhow::Result<serde_json::Value> {
     let cfgd_core::config::ModuleSpec {
         depends,
-        platforms: _platform_gates, // module-level platform gating: no CRD counterpart today
+        platforms,
         packages,
         files,
         env,
-        aliases: _shell_aliases, // shell aliases: no CRD counterpart today
-        scripts,
-        system: _system_config, // system configurator settings: no CRD counterpart today
+        aliases,
+        scripts: scripts_spec,
+        system,
     } = &module_doc.spec;
 
     let packages: Vec<cfgd_crd::PackageEntry> = packages
@@ -226,24 +226,32 @@ pub(super) fn build_module_crd_json(
         .map(|entry| {
             let cfgd_core::config::ModulePackageEntry {
                 name,
-                min_version: _min_version, // no CRD counterpart today
-                prefer: _prefer,           // no CRD counterpart today
+                min_version,
+                prefer,
+                deny,
                 aliases,
-                script: _script,   // no CRD counterpart today
-                only_if: _only_if, // no CRD counterpart today
-                unless: _unless,   // no CRD counterpart today
-                creates: _creates, // no CRD counterpart today
-                deny: _deny,       // no CRD counterpart today
-                platforms: _platform_tags, // gating tags: the CRD's `platforms` field is a
-                                   // per-manager name-override map (see PackageEntry::platforms), not gating
-                                   // tags, so package-level gating has no CRD counterpart today
+                platforms,
+                // The four script-install knobs steer a `prefer: [script]`
+                // install on a machine the agent is reconciling — a shell body
+                // and the guards that decide whether to run it. Nothing
+                // cluster-side executes a package install, so carrying them
+                // onto the CRD would publish a shell payload no reader of the
+                // resource can run.
+                script: _script,   // no CRD counterpart
+                only_if: _only_if, // no CRD counterpart
+                unless: _unless,   // no CRD counterpart
+                creates: _creates, // no CRD counterpart
             } = entry;
             cfgd_crd::PackageEntry {
                 name: name.clone(),
-                platforms: aliases
+                aliases: aliases
                     .iter()
                     .map(|(manager, override_name)| (manager.clone(), override_name.clone()))
                     .collect(),
+                min_version: min_version.clone(),
+                prefer: prefer.clone(),
+                deny: deny.clone(),
+                platforms: platforms.clone(),
             }
         })
         .collect();
@@ -254,15 +262,20 @@ pub(super) fn build_module_crd_json(
             let cfgd_core::config::ModuleFileEntry {
                 source,
                 target,
-                strategy: _strategy,       // no CRD counterpart today
-                private: _private,         // no CRD counterpart today
-                encryption: _encryption,   // no CRD counterpart today
-                permissions: _permissions, // no CRD counterpart today
-                patch: _patch,             // no CRD counterpart today
+                strategy,
+                private,
+                encryption,
+                permissions,
+                patch,
             } = entry;
             cfgd_crd::ModuleFileSpec {
                 source: source.clone(),
                 target: target.clone(),
+                strategy: *strategy,
+                private: *private,
+                encryption: encryption.clone(),
+                permissions: permissions.clone(),
+                patch: patch.clone(),
             }
         })
         .collect();
@@ -278,7 +291,7 @@ pub(super) fn build_module_crd_json(
             cfgd_crd::ModuleEnvVar {
                 name: name.clone(),
                 value: value.clone(),
-                append: false, // local EnvVar has no append concept today
+                append: false, // the local EnvVar carries no append concept
                 // Carried so a module round-trips through the registry
                 // unchanged, and so the pod-mutating webhook can honour the
                 // gate instead of injecting an entry the module gated off.
@@ -287,25 +300,37 @@ pub(super) fn build_module_crd_json(
         })
         .collect();
 
-    if let Some(spec) = scripts {
-        let cfgd_core::config::ScriptSpec {
-            pre_apply: _pre_apply, // no CRD counterpart today
-            // The CRD's `postApply` is a relative script PATH the operator's
-            // mutating webhook joins verbatim into an init container command
-            // (`sh -c "/cfgd-modules/{name}/{postApply}"`); the local field is a
-            // list of inline script BODIES with per-entry guards (only_if/unless/
-            // creates/continue_on_error/shell/workdir, see ScriptEntry::Full).
-            // Joining bodies into that path field would make the webhook run an
-            // inline body as an unquoted, unconditional shell command inside a
-            // pod init container, silently discarding every guard — there is no
-            // faithful mapping today, so it stays dropped.
-            post_apply: _post_apply,
-            pre_reconcile: _pre_reconcile,   // no CRD counterpart today
-            post_reconcile: _post_reconcile, // no CRD counterpart today
-            on_drift: _on_drift,             // no CRD counterpart today
-            on_change: _on_change,           // no CRD counterpart today
-        } = spec;
-    }
+    let aliases: Vec<cfgd_crd::ModuleAlias> = aliases
+        .iter()
+        .map(|entry| {
+            let cfgd_core::config::ShellAlias {
+                name,
+                command,
+                platforms,
+            } = entry;
+            cfgd_crd::ModuleAlias {
+                name: name.clone(),
+                command: command.clone(),
+                platforms: platforms.clone(),
+            }
+        })
+        .collect();
+
+    // `SystemSettings` is a YAML value map and the CRD field a JSON one; the
+    // configurator settings themselves are plain scalars, lists and maps, so
+    // the re-serialization is total.
+    let system = system
+        .iter()
+        .map(|(configurator, settings)| Ok((configurator.clone(), serde_json::to_value(settings)?)))
+        .collect::<Result<std::collections::BTreeMap<_, _>, serde_json::Error>>()?;
+
+    // The CRD's `scripts.postApply` is a relative script PATH the operator's
+    // mutating webhook joins verbatim into an init container command
+    // (`sh -c "/cfgd-modules/{name}/{postApply}"`), and a module directory
+    // declares no such path. The local hook set is a different thing entirely —
+    // inline bodies the cfgd AGENT runs on a machine — so it travels as
+    // `spec.hooks`, its own field, rather than being flattened into a path the
+    // webhook would run as an unquoted shell command with every guard discarded.
     let scripts = cfgd_crd::ModuleScripts { post_apply: None };
 
     let spec = cfgd_crd::ModuleSpec {
@@ -317,6 +342,10 @@ pub(super) fn build_module_crd_json(
         oci_artifact: Some(artifact.to_string()),
         signature,
         mount_policy: cfgd_crd::MountPolicy::default(),
+        platforms: platforms.clone(),
+        aliases,
+        system,
+        hooks: scripts_spec.clone(),
     };
 
     let mut spec_json = serde_json::to_value(&spec)?;
@@ -1112,18 +1141,53 @@ mod tests {
 
         const MINIMAL_MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n";
 
+        /// Every field of `ModuleSpec`, `ModulePackageEntry` and
+        /// `ModuleFileEntry` set to a distinguishable value — the fixture the
+        /// round-trip guard below prices, so a local field that stops reaching
+        /// the CRD changes this document's rendering rather than passing
+        /// unnoticed.
         const FULL_MODULE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: full-mod
 spec:
+  depends:
+    - base
+  platforms:
+    - linux
   packages:
     - name: sed
+      minVersion: "4.8"
+      prefer:
+        - brew
+        - apt
       aliases:
         brew: gnu-sed
         apt: sed
+      script: curl -fsSL https://example.invalid/sed.sh | sh
+      onlyIf: command -v curl
+      unless: command -v gsed
+      creates: ~/.local/bin/gsed
+      deny:
+        - snap
       platforms:
         - linux
+  files:
+    - source: files/init.lua
+      target: ~/.config/nvim/init.lua
+      strategy: Copy
+      private: true
+      encryption:
+        backend: sops
+        mode: Always
+      permissions: "600"
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini
+        ensure:
+          user:
+            name: Ada
   env:
     - name: FOO
       value: bar
@@ -1134,17 +1198,28 @@ spec:
   aliases:
     - name: ll
       command: ls -la
+    - name: mac-ls
+      command: ls -G
+      platforms:
+        - macos
   scripts:
     preApply:
-      - echo pre-should-be-dropped
+      - echo pre
     postApply:
       - echo one
       - echo two
+    preReconcile:
+      - run: echo pre-reconcile
+        timeout: 30s
+    postReconcile:
+      - echo post-reconcile
+    onDrift:
+      - echo drift
+    onChange:
+      - echo change
   system:
     shell:
       defaultShell: zsh
-  platforms:
-    - linux
 "#;
 
         fn crd_spec(crd_json: &serde_json::Value) -> cfgd_crd::ModuleSpec {
@@ -1290,50 +1365,95 @@ spec:
             );
         }
 
+        /// The round-trip / completeness guard. `build_module_crd_json`
+        /// destructures every local type field by field, so a field added to
+        /// the local kind fails to compile until it is mapped or explicitly
+        /// dropped; this document is what pins the VALUES that mapping
+        /// produces, for every field at once.
         #[test]
-        fn env_and_package_aliases_round_trip_while_post_apply_scripts_stay_dropped() {
+        fn a_module_exercising_every_local_field_builds_the_full_crd_spec() {
+            let module_doc = parse_module(FULL_MODULE_YAML).expect("parse module.yaml");
+            let crd_json = build_module_crd_json(&module_doc, "localhost:5000/test/full:v1", None)
+                .expect("build crd json");
+
+            assert_eq!(
+                crd_json["spec"],
+                serde_json::json!({
+                    "ociArtifact": "localhost:5000/test/full:v1",
+                    "depends": ["base"],
+                    "platforms": ["linux"],
+                    "packages": [{
+                        "name": "sed",
+                        "aliases": { "apt": "sed", "brew": "gnu-sed" },
+                        "minVersion": "4.8",
+                        "prefer": ["brew", "apt"],
+                        "deny": ["snap"],
+                        "platforms": ["linux"],
+                    }],
+                    "files": [
+                        {
+                            "source": "files/init.lua",
+                            "target": "~/.config/nvim/init.lua",
+                            "strategy": "Copy",
+                            "private": true,
+                            "encryption": { "backend": "sops", "mode": "Always" },
+                            "permissions": "600",
+                        },
+                        {
+                            "source": "",
+                            "target": "~/.gitconfig",
+                            "strategy": "Patch",
+                            "patch": {
+                                "format": "Ini",
+                                "ensure": { "user": { "name": "Ada" } },
+                            },
+                        },
+                    ],
+                    "env": [
+                        { "name": "FOO", "value": "bar", "append": false },
+                        { "name": "MAC_ONLY", "value": "yes", "append": false, "platforms": ["macos"] },
+                    ],
+                    "aliases": [
+                        { "name": "ll", "command": "ls -la" },
+                        { "name": "mac-ls", "command": "ls -G", "platforms": ["macos"] },
+                    ],
+                    "system": { "shell": { "defaultShell": "zsh" } },
+                    "scripts": {},
+                    "hooks": {
+                        "preApply": ["echo pre"],
+                        "postApply": ["echo one", "echo two"],
+                        "preReconcile": [{ "run": "echo pre-reconcile", "timeout": "30s" }],
+                        "postReconcile": ["echo post-reconcile"],
+                        "onDrift": ["echo drift"],
+                        "onChange": ["echo change"],
+                    },
+                }),
+                "every field the local module kind declares reaches the Module CRD, so a \
+                 module published to a registry and read back out of the cluster still \
+                 declares what its author wrote"
+            );
+        }
+
+        #[test]
+        fn crd_post_apply_stays_the_init_container_path_while_hooks_carry_the_inline_bodies() {
             let module_doc = parse_module(FULL_MODULE_YAML).expect("parse module.yaml");
             let crd_json = build_module_crd_json(&module_doc, "localhost:5000/test/full:v1", None)
                 .expect("build crd json");
             let spec = &crd_json["spec"];
 
-            assert_eq!(
-                spec["env"],
-                serde_json::json!([
-                    { "name": "FOO", "value": "bar", "append": false },
-                    {
-                        "name": "MAC_ONLY",
-                        "value": "yes",
-                        "append": false,
-                        "platforms": ["macos"],
-                    },
-                ]),
-                "env vars round-trip into the CRD's env field, gate included, so a module \
-                 pushed to a registry comes back declaring what it declared — and so the \
-                 pod-mutating webhook can honour the gate rather than injecting an entry \
-                 the module gated off: {spec:?}"
-            );
-            assert_eq!(
-                spec["packages"][0]["platforms"],
-                serde_json::json!({ "brew": "gnu-sed", "apt": "sed" }),
-                "package-level aliases map to the CRD's per-manager platforms override: {spec:?}"
-            );
             assert!(
                 spec["scripts"].get("postApply").is_none(),
-                "the CRD's postApply is a script PATH the operator's mutating webhook \
-                 executes verbatim as an unquoted shell command; the local field is a list \
-                 of inline script bodies with per-entry guards (only_if/unless/creates/\
-                 continue_on_error/shell/workdir) that have no faithful path mapping, so \
-                 postApply must stay dropped rather than reinterpreted as a path — \
-                 reinterpreting it would let an inline body run as arbitrary shell in a \
-                 pod init container: {spec:?}"
+                "the CRD's scripts.postApply is a relative script PATH the operator's \
+                 mutating webhook runs verbatim as an unquoted shell command in an init \
+                 container; a module directory declares no such path, so nothing may be \
+                 written there: {spec:?}"
             );
-            assert!(
-                spec.get("aliases").is_none(),
-                "module-level shell aliases have no CRD counterpart today (schema-growth \
-                 canary for the local ModuleSpec's other unmapped fields — aliases, system, \
-                 module-level platforms — none of which have a matching CRD field to leak \
-                 into): {spec:?}"
+            assert_eq!(
+                spec["hooks"]["postApply"],
+                serde_json::json!(["echo one", "echo two"]),
+                "the agent's inline hook bodies travel as spec.hooks, their own field, \
+                 where every guard and timeout survives instead of being flattened into \
+                 a path: {spec:?}"
             );
         }
 

@@ -113,6 +113,36 @@ pub fn cmd_checkin(
         None
     };
 
+    // What the machine reports about itself beyond the hash: the versions it
+    // holds for the packages it DECLARES, and which layer owns each backup
+    // unit's schedule. Both are questions only the device can answer and the
+    // check-in is its only channel to the cluster, where a `ConfigPolicy`
+    // version pin and a `BackupPolicy` schedule projection are decided from
+    // them.
+    //
+    // Nothing observed means nothing claimed, whether the whole context failed
+    // to build or one manager holding declared packages could not be listed:
+    // the map is left out of the body entirely, the gateway's own manager for
+    // it writes nothing, and the cluster keeps the versions the last check-in
+    // that could look reported.
+    let checkin_facts = cfgd_core::server_client::CheckinFacts {
+        package_versions: match ctx.package_context() {
+            Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
+                &resolved.merged,
+                &resolved_modules,
+                &registry,
+                &pkg_cx,
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "checkin: package versions unavailable");
+                None
+            }
+        },
+        backup_schedule_owners: Some(cfgd_core::backup::declared_schedule_owners(
+            &resolved.merged.backups,
+        )),
+    };
+
     let resp = {
         // `client.checkin` narrates through the bare `&Printer` it's handed
         // (`status_simple("Checking in with device gateway")`) rather than a
@@ -129,7 +159,7 @@ pub fn cmd_checkin(
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
         let result = client
-            .checkin(&config_hash, compliance_summary, printer)
+            .checkin(&config_hash, compliance_summary, checkin_facts, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
@@ -157,6 +187,22 @@ pub fn cmd_checkin(
         }
         result?
     };
+
+    // The cadences the cluster owns for this machine, recorded where the
+    // daemon's timers and `cfgd backup list` both read them. Never written to
+    // the profile on disk: it is the cluster's answer, replaced by the next
+    // check-in. An answer that carries no projection at all is a gateway that
+    // could not read the cluster, so the set already recorded stands.
+    if let Some(ref projections) = resp.backup_schedules {
+        match ctx.state() {
+            Ok(state) => {
+                cfgd_core::backup::record_cluster_schedules(state, projections);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "checkin: state store unavailable — the cluster-owned backup schedules were not recorded");
+            }
+        }
+    }
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
@@ -243,7 +289,7 @@ fn build_checkin_client(
 ) -> ServerClient {
     if api_key.is_none()
         && let Some(cred) = stored_cred
-        && cred.server_url.trim_end_matches('/') == server_url.trim_end_matches('/')
+        && cfgd_core::server_client::credential_matches(server_url, cred)
     {
         return ServerClient::from_credential(cred);
     }
@@ -374,7 +420,7 @@ spec: {}
 
         let client = build_checkin_client(&server.url(), None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -399,7 +445,7 @@ spec: {}
             Some(&cred),
         );
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -420,7 +466,7 @@ spec: {}
         let client =
             build_checkin_client(&server.url(), None, Some("explicit-device"), Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         // The mock succeeds without requiring Bearer stored-key, confirming the
         // anonymous (non-stored-cred) path was taken.
@@ -444,7 +490,7 @@ spec: {}
 
         let client = build_checkin_client(&server_url, None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, &printer);
+        let result = client.checkin("hash", None, Default::default(), &printer);
 
         assert!(
             result.is_ok(),
@@ -927,6 +973,110 @@ spec:
             json["configChanged"].as_bool(),
             Some(true),
             "configChanged should reflect server response: {json}"
+        );
+    }
+
+    /// The daemon's periodic check-in and `cfgd checkin` are two callers in two
+    /// crates, and a machine gets one behaviour or the other depending on which
+    /// ran last. Given ONE pushed configuration, both must leave the same
+    /// pending file with the same bytes.
+    #[test]
+    #[serial_test::serial]
+    fn both_check_in_paths_record_the_same_pushed_configuration() {
+        use cfgd_core::config::*;
+
+        const PUSHED: &str =
+            r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git","curl"]}}"#;
+        let pending_of = |state_dir: &std::path::Path| {
+            std::fs::read_to_string(state_dir.join("pending-server-config.json"))
+                .expect("the pushed configuration was recorded")
+        };
+
+        // The CLI's path.
+        let cli_config = make_test_config_dir();
+        let cli_state = tempfile::tempdir().unwrap();
+        let cli_written = {
+            let _home = cfgd_core::with_test_home_guard(cli_config.path());
+            let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", cli_state.path().to_str().unwrap());
+            let mut server = mockito::Server::new();
+            let _mock = server
+                .mock("POST", "/api/v1/checkin")
+                .with_status(200)
+                .with_body(PUSHED)
+                .create();
+            let cli = test_cli_for(cli_config.path(), cli_state.path());
+            let (printer, _cap) = Printer::for_test_doc();
+            cmd_checkin(
+                &cli,
+                &printer,
+                &server.url(),
+                Some("test-key"),
+                Some("dev-1"),
+            )
+            .expect("the gateway answered");
+            pending_of(cli_state.path())
+        };
+
+        // The daemon's path, against the same answer.
+        let daemon_home = tempfile::tempdir().unwrap();
+        let daemon_written = {
+            let _home = cfgd_core::with_test_home_guard(daemon_home.path());
+            let _state_env =
+                EnvVarGuard::set("CFGD_STATE_DIR", daemon_home.path().to_str().unwrap());
+            let mut server = mockito::Server::new();
+            let _mock = server
+                .mock("POST", "/api/v1/checkin")
+                .with_status(200)
+                .with_body(PUSHED)
+                .create();
+            cfgd_core::server_client::save_credential(
+                &cfgd_core::server_client::DeviceCredential {
+                    server_url: server.url(),
+                    device_id: "dev-1".to_string(),
+                    api_key: "test-key".to_string(),
+                    username: "tester".to_string(),
+                    team: None,
+                    enrolled_at: cfgd_core::utc_now_iso8601(),
+                },
+            )
+            .expect("store the device credential");
+
+            let config = CfgdConfig {
+                api_version: cfgd_core::API_VERSION.into(),
+                kind: "Config".into(),
+                metadata: ConfigMetadata {
+                    name: "test".into(),
+                },
+                spec: ConfigSpec {
+                    profile: Some("default".into()),
+                    origin: vec![OriginSpec {
+                        origin_type: OriginType::Server,
+                        url: server.url(),
+                        branch: "main".into(),
+                        auth: None,
+                        ssh_strict_host_key_checking: Default::default(),
+                    }],
+                    ..Default::default()
+                },
+                deprecations: Vec::new(),
+            };
+            let resolved = ResolvedProfile {
+                layers: vec![ProfileLayer {
+                    source: "local".into(),
+                    profile_name: "test".into(),
+                    priority: 1000,
+                    policy: LayerPolicy::Local,
+                    spec: ProfileSpec::default(),
+                }],
+                merged: MergedProfile::default(),
+            };
+            cfgd_core::daemon::try_server_checkin(&config, &resolved, Default::default());
+            pending_of(daemon_home.path())
+        };
+
+        assert_eq!(
+            cli_written, daemon_written,
+            "one pushed configuration, one recording, whichever caller checked in"
         );
     }
 

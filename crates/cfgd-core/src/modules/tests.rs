@@ -6369,7 +6369,7 @@ fn load_modules_oversized_file_in_modules_dir_rejected() {
 /// when the `modules/` directory itself is not readable (Unix only; skip as root).
 #[test]
 #[cfg(unix)]
-fn load_modules_unreadable_directory_errors() {
+fn load_modules_unreadable_directory_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Running as root bypasses permission checks — skip to avoid false pass.
@@ -6404,11 +6404,11 @@ fn load_modules_unreadable_directory_errors() {
 /// succeeds) but cannot be read because permissions are removed (Unix only, non-root).
 #[test]
 #[cfg(unix)]
-fn load_module_unreadable_yaml_errors() {
+fn load_module_unreadable_yaml_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     if crate::is_root() {
-        return;
+        return; // root reads a 0o000 module.yaml; the read failure cannot be staged
     }
 
     let dir = tempfile::tempdir().unwrap();

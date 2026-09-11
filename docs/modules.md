@@ -265,16 +265,14 @@ The full resolution logic for each package entry:
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
    - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
    - If all checks pass, the manager is selected.
-4. **If no candidate satisfies:** cfgd collects all available managers and their versions, then presents an interactive prompt:
+4. **If no candidate satisfies:** resolution fails and the run stops, naming the package, its module and the floor nothing met:
    ```
-   Package 'neovim' (minVersion: 0.9) could not be resolved automatically.
-   Available options:
-     [ ] apt — neovim 0.6.1 (below minimum)
-     [ ] snap — nvim 0.10.2
-     [ ] brew — neovim 0.10.2 (not installed, can bootstrap)
-   Select managers to use, or skip:
+   ✗ package 'neovim' in module 'demo' cannot be resolved: no available manager satisfies the requirements (minVersion: 99.0)
    ```
-   You can select one or more, or skip the package (it will be recorded as skipped in the plan).
+   A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
+   ```
+   ⚠ chocolatey: not installed — can provision via system
+   ```
 5. **When `prefer` has multiple entries and no `minVersion`:** the first available manager wins. No version check is needed.
 
 ### Version Comparison
@@ -581,8 +579,9 @@ The heading's annotation dates the recorded drift verdicts: how long ago the
 machine was last checked, or `(drift never checked)` when no scan has ever
 run. A row only reads `Synced` where a check actually covered that owner — a
 machine-wide scan, or a scoped (`--module`) one that stamped that module. An
-owner nothing has checked reads `Installed` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
-paints rather than from any declaration, so a health line and the rows under
+owner nothing has checked reads `Applied` instead, the record's own fact. The
+counts are taken from the rows the `Managed Resources` table below paints
+rather than from any declaration, so a health line and the rows under
 it cannot disagree; a kind an owner holds none of is dropped rather than
 rendered as `0`, and an owner holding nothing reads its bare verdict. The
 verdict leads and the counts are its parenthetical: a `Failed` or `Drifted`
@@ -598,12 +597,13 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of six states:
+A module reads as one of seven states:
 
 | State | Meaning | Where it can appear |
 |---|---|---|
 | `Synced` | converged, with every check behind it answered | any status surface where a check covers the module |
-| `Installed` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Applied` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Installed` | the module is on this machine, presence rather than convergence | `cfgd module list` and `cfgd module show` |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
 | `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |
@@ -632,9 +632,9 @@ Plan
   Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Prerequisites, Packages, Files, Post-Scripts
+  Phases   Bootstrap, Packages, Files, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh apt index
     - refresh brew index
@@ -846,6 +846,24 @@ cfgd init --from https://gitlab.example.com/jane/dotfiles.git --apply-module nvi
 ```
 
 Clones the repo, finds the module, resolves deps, detects platform, and applies only that module.
+
+## Modules in a Cluster
+
+`cfgd module push <dir> --artifact <ref> --apply` publishes the module to an OCI registry and
+registers it as a cluster-scoped `Module` resource in one step. The resource carries the same
+surface the local `module.yaml` declares: `platforms`, `depends`, `packages` (with `minVersion`,
+`prefer`, `deny`, per-manager name overrides in `aliases` and gating `platforms` tags), `files`
+(with `strategy`, `private`, `permissions`, `encryption` and a `patch` block), `env`, `aliases`,
+`system`, and the lifecycle hooks under `spec.hooks`. A module read back out of the cluster
+declares what its author wrote.
+
+One thing stays off the resource, because nothing cluster-side runs it: a package entry's four
+script-install knobs (`script`, `onlyIf`, `unless`, `creates`). They steer a shell install on a
+machine the agent is reconciling, and the cluster installs nothing.
+
+`spec.hooks` (the agent's inline hook bodies) is distinct from `spec.scripts.postApply`, which is
+a relative script path inside the artifact that the pod-mutating webhook runs in an init
+container. See [operator.md](operator.md#module) for the full CRD field table.
 
 ## Security
 

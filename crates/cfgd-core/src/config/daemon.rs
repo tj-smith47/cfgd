@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use cfgd_schema::case_insensitive_enum;
+
 use super::sync_secrets::{NotifyConfig, SyncConfig};
 
 /// `spec.daemon`: settings for `cfgd daemon`'s background reconcile loop.

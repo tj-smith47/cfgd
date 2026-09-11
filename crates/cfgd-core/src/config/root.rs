@@ -2,16 +2,18 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use cfgd_schema::case_insensitive_enum;
+
 use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
-use super::profile_spec::FileStrategy;
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::SourceSpec;
 use super::sync_secrets::SecretsConfig;
 use super::theme::ThemeConfig;
 use crate::errors::Result;
+use cfgd_schema::FileStrategy;
 
 // --- Root Config (cfgd.yaml) ---
 

@@ -141,6 +141,7 @@ spec:
                   `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
                   no system settings are reconciled.
                 type: object
+                x-kubernetes-map-type: granular
             required:
             - hostname
             - profile
@@ -151,6 +152,17 @@ spec:
           status:
             nullable: true
             properties:
+              backupScheduleOwners:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: |-
+                  Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by
+                  unit name (`{"dotfiles": "local"}`). Device-reported, like
+                  `packageVersions`: no controller computes it, and a reconcile that
+                  cannot observe it preserves it.
+                type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 default: []
                 items:
@@ -191,8 +203,16 @@ spec:
                 additionalProperties:
                   type: string
                 default: {}
-                description: 'Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).'
+                description: |-
+                  Installed versions of the packages the machine declares, keyed
+                  `<manager>/<package>` (e.g. {"brew/kubectl": "1.28.3"}). The manager
+                  qualifies the name because two managers may hold the same package at
+                  different versions, so a `ConfigPolicy` version requirement naming that
+                  package is met only when EVERY reported copy of it satisfies the
+                  requirement. Device-reported: written by the device gateway on every
+                  check-in, and a reconcile that cannot observe it preserves it.
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
         required:
         - spec
@@ -318,6 +338,7 @@ spec:
                   System settings every selected MachineConfig must declare, keyed the
                   same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
               targetSelector:
                 default:
                   matchExpressions: []
@@ -372,6 +393,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true
@@ -417,11 +439,10 @@ spec:
                 default: []
                 description: |-
                   `namespace/name` of the MachineConfigs currently violating this policy,
-                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-                  `PolicyViolation` event fires on the transition into violation rather
-                  than once per observation — an in-process memory would re-announce every
-                  machine after an operator restart. `nonCompliantCount` is the exact
-                  total and is never capped.
+                  sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+                  fires on the transition into violation rather than once per observation —
+                  an in-process memory would re-announce every machine after an operator
+                  restart. `nonCompliantCount` is the exact total and is never capped.
                 items:
                   type: string
                 maxItems: 500
@@ -711,6 +732,7 @@ spec:
                       an empty map matches everything.
                     type: object
                 type: object
+                x-kubernetes-map-type: atomic
               packages:
                 default: []
                 description: Packages every MachineConfig in a selected namespace must declare.
@@ -786,6 +808,7 @@ spec:
                   System settings every MachineConfig in a selected namespace must
                   declare, keyed the same way as `MachineConfig.spec.systemSettings`.
                 type: object
+                x-kubernetes-map-type: granular
             type: object
           status:
             nullable: true
@@ -831,11 +854,10 @@ spec:
                 default: []
                 description: |-
                   `namespace/name` of the MachineConfigs currently violating this policy,
-                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-                  `PolicyViolation` event fires on the transition into violation rather
-                  than once per observation — an in-process memory would re-announce every
-                  machine after an operator restart. `nonCompliantCount` is the exact
-                  total and is never capped.
+                  sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+                  fires on the transition into violation rather than once per observation —
+                  an in-process memory would re-announce every machine after an operator
+                  restart. `nonCompliantCount` is the exact total and is never capped.
                 items:
                   type: string
                 maxItems: 500
@@ -892,6 +914,33 @@ spec:
         properties:
           spec:
             properties:
+              aliases:
+                description: Shell aliases this module contributes to the machines that apply it.
+                items:
+                  description: A shell alias a Module contributes.
+                  properties:
+                    command:
+                      description: |-
+                        Command the alias expands to, written in the syntax of the shell it is
+                        generated for. cfgd quotes the whole value per dialect when it writes
+                        the alias definition, so the text reaches the shell exactly as declared.
+                      type: string
+                    name:
+                      description: Alias name, as typed at the shell prompt.
+                      type: string
+                    platforms:
+                      description: |-
+                        Platform tags gating this entry alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - command
+                  - name
+                  type: object
+                type: array
               depends:
                 default: []
                 description: Names of other `Module` resources that must be applied first.
@@ -944,8 +993,82 @@ spec:
                 items:
                   description: A file managed by a Module.
                   properties:
+                    encryption:
+                      description: |-
+                        Encryption the source file must satisfy. Rejected on a `Patch` entry,
+                        which has no source to encrypt.
+                      nullable: true
+                      properties:
+                        backend:
+                          description: The encryption backend to use (e.g. "sops", "age").
+                          type: string
+                        mode:
+                          default: InRepo
+                          description: When encryption must be enforced. Defaults to `InRepo`.
+                          enum:
+                          - InRepo
+                          - Always
+                          type: string
+                      required:
+                      - backend
+                      type: object
+                    patch:
+                      description: |-
+                        Structured merge or rewriting script for `strategy: Patch`. Required
+                        when `strategy` is `Patch`, rejected otherwise.
+                      nullable: true
+                      properties:
+                        ensure:
+                          description: |-
+                            Keys/values to deep-merge into the target, leaving unmentioned keys
+                            untouched. Values are literal (no template rendering). Mutually
+                            exclusive with `script`.
+                          x-kubernetes-preserve-unknown-fields: true
+                        format:
+                          description: File format used to interpret and re-serialize a `Patch`-strategy target.
+                          enum:
+                          - Ini
+                          - Json
+                          - Yaml
+                          - Toml
+                          nullable: true
+                          type: string
+                        script:
+                          description: |-
+                            A script path or an inline command that receives the target's current
+                            content on stdin and writes the new content to stdout. A relative path
+                            resolves against the module directory for a module file
+                            (`spec.files[]`) and against the config directory for a profile file
+                            (`spec.files.managed[]`); a value that resolves to no file is run as an
+                            inline command. Mutually exclusive with `ensure`.
+                          nullable: true
+                          type: string
+                      type: object
+                    permissions:
+                      description: Unix permission bits (e.g. "600", "644") applied after deployment.
+                      nullable: true
+                      type: string
+                    private:
+                      description: |-
+                        The source file is local-only: auto-added to .gitignore, and silently
+                        skipped on a machine where it does not exist. Default: `false`.
+                      type: boolean
                     source:
-                      description: Path to the file inside the module artifact.
+                      default: ''
+                      description: |-
+                        Path to the file inside the module artifact. Empty only when
+                        `strategy` is `Patch`, which rewrites the target's own content and
+                        reads no source.
+                      type: string
+                    strategy:
+                      description: File deployment strategy.
+                      enum:
+                      - Symlink
+                      - Copy
+                      - Template
+                      - Hardlink
+                      - Patch
+                      nullable: true
                       type: string
                     target:
                       description: |-
@@ -953,13 +1076,599 @@ spec:
                         machine.
                       type: string
                   required:
-                  - source
                   - target
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:
-                - source
+                - target
                 x-kubernetes-list-type: map
+              hooks:
+                description: |-
+                  Lifecycle hooks the cfgd agent runs around this module's deployment,
+                  each a list of inline command bodies with their own guards and
+                  timeouts. Distinct from `scripts.postApply`, which is a script PATH
+                  inside the artifact that the pod-mutating webhook runs in an init
+                  container: these bodies are for the agent applying the module to a
+                  machine, and nothing in a pod runs them.
+                nullable: true
+                properties:
+                  onChange:
+                    default: []
+                    description: Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  onDrift:
+                    default: []
+                    description: Run when the daemon detects drift, before any auto-apply decision.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  postApply:
+                    default: []
+                    description: Run once after every action in an apply completes.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  postReconcile:
+                    default: []
+                    description: Run once after a daemon reconcile tick completes.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  preApply:
+                    default: []
+                    description: Run once before any action in an apply.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                  preReconcile:
+                    default: []
+                    description: Run once before a daemon reconcile tick begins.
+                    items:
+                      anyOf:
+                      - {}
+                      - required:
+                        - run
+                      description: |-
+                        A lifecycle script entry: either a bare command string, or a mapping for
+                        one that needs a timeout, shell, or guard condition.
+
+                        ```yaml
+                        preApply: "echo starting"
+                        # or
+                        postApply:
+                          run: brew update
+                          timeout: 2m
+                          onlyIf: command -v brew
+                        ```
+                      properties:
+                        continueOnError:
+                          description: |-
+                            Treat a non-zero exit as success and continue reconciliation instead
+                            of failing the run. Default: `false`.
+                          nullable: true
+                          type: boolean
+                        creates:
+                          description: |-
+                            Skip the script if this path already exists. A leading `~` expands to
+                            the home directory; a relative path resolves against the script's
+                            working directory. Existence follows symlinks.
+                          nullable: true
+                          type: string
+                        idleTimeout:
+                          description: |-
+                            Kill the script if it produces no stdout/stderr output for this duration.
+                            Prevents scripts from silently hanging on unresponsive resources.
+                            Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+                          nullable: true
+                          type: string
+                        interactive:
+                          description: |-
+                            Run the script attached to the terminal (inherited stdin/stdout/stderr,
+                            no spinner, no output capture, no idle timeout) so it can prompt the
+                            user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+                            stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+                            script is skipped with a warning rather than hanging on instant EOF.
+                          type: boolean
+                        onlyIf:
+                          description: |-
+                            Run the script only if this command exits zero. A non-zero exit skips
+                            the script (the condition for running was not met). Evaluated with the
+                            same shell, working directory, and environment as the body.
+                          nullable: true
+                          type: string
+                        run:
+                          description: The command or script body to run.
+                          type: string
+                        shell:
+                          description: Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+                          enum:
+                          - sh
+                          - bash
+                          - zsh
+                          - pwsh
+                          - cmd
+                          - auto
+                          type: string
+                        timeout:
+                          description: |-
+                            Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+                            Unset means no timeout.
+                          nullable: true
+                          type: string
+                        unless:
+                          description: |-
+                            Run the script only if this command exits NON-zero. A zero exit
+                            (success) skips the script (the guarded state already holds).
+                            Evaluated with the same shell, working directory, and environment as
+                            the body.
+                          nullable: true
+                          type: string
+                        workdir:
+                          description: |-
+                            Working directory for the script. By default every lifecycle script
+                            runs in the user's home directory — never the config source tree — so
+                            a relative write can't pollute the user's GitOps repo. Set `workdir`
+                            to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+                            against the script environment (which always carries `$CFGD_MODULE_DIR`
+                            and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+                            `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+                          nullable: true
+                          type: string
+                      x-kubernetes-preserve-unknown-fields: true
+                    type: array
+                type: object
               mountPolicy:
                 default: Always
                 description: |-
@@ -981,21 +1690,56 @@ spec:
               packages:
                 default: []
                 description: |-
-                  Packages this module installs, each with optional per-platform name
-                  overrides.
+                  Packages this module installs. Each entry names the package and the
+                  hints that decide which manager installs it: per-manager name
+                  overrides, a version floor, a manager preference order, a manager
+                  denylist, and the platform tags gating the entry.
                 items:
-                  description: An entry in a Module's package list with optional per-platform overrides.
+                  description: |-
+                    An entry in a Module's package list: the package to install plus the hints
+                    that decide which manager on a machine installs it.
                   properties:
+                    aliases:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Per-manager package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"})
+                        for a package spelled differently by each manager.
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    deny:
+                      description: |-
+                        Package managers never used for this package, even where one is
+                        available and the machine's own priority would pick it.
+                      items:
+                        type: string
+                      type: array
+                    minVersion:
+                      description: |-
+                        Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+                        An installed copy below this is treated as not satisfying the module.
+                      nullable: true
+                      type: string
                     name:
                       description: |-
-                        Default package name, used on every platform `platforms` names no
+                        Default package name, used on every manager `aliases` names no
                         override for.
                       type: string
                     platforms:
-                      additionalProperties:
+                      description: |-
+                        Platform tags gating this package alone. Empty means every platform the
+                        declaring module is not already gated off of. Tags are matched against
+                        the machine's OS, distro, and arch; use `macos` for macOS.
+                      items:
                         type: string
-                      description: 'Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).'
-                      type: object
+                      type: array
+                    prefer:
+                      description: |-
+                        Manager preference order for this package, overriding the machine's
+                        default manager priority (e.g. `[brew, apt]`).
+                      items:
+                        type: string
+                      type: array
                   required:
                   - name
                   type: object
@@ -1003,6 +1747,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              platforms:
+                description: |-
+                  Platform tags gating the whole module on a machine reconciling it.
+                  When non-empty and the machine matches none of them, the module is
+                  skipped entirely (it appears as a skipped action rather than
+                  vanishing). Tags are matched against the machine's OS, distro, and
+                  arch; use `macos` for macOS.
+                items:
+                  type: string
+                type: array
               scripts:
                 default: {}
                 description: Lifecycle commands run around the module's deployment.
@@ -1044,6 +1798,14 @@ spec:
                         type: string
                     type: object
                 type: object
+              system:
+                additionalProperties: true
+                description: |-
+                  System configurator settings this module contributes, keyed by
+                  configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
+                  into the profile's system map, module values winning at leaf level.
+                type: object
+                x-kubernetes-map-type: atomic
             type: object
           status:
             nullable: true
@@ -1133,6 +1895,267 @@ spec:
         required:
         - spec
         title: Module
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: backuppolicies.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    categories:
+    - cfgd
+    kind: BackupPolicy
+    plural: backuppolicies
+    shortNames:
+    - bpol
+    singular: backuppolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.unitsSummary
+      name: Units
+      type: string
+    - jsonPath: .status.machinesMatched
+      name: Machines
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BackupPolicySpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              A fleet-wide backup schedule, applied to the machines its selector matches.
+
+              A policy overrides the cadence of a backup unit the machine's own profile
+              already defines; it never defines the unit. `source` and `destination` are
+              machine-local paths a cluster object cannot know, so a unit this policy
+              names on a machine whose profile does not define it is reported and
+              otherwise left alone.
+            properties:
+              selector:
+                default:
+                  matchExpressions: []
+                  matchLabels: {}
+                description: |-
+                  Which MachineConfigs in this namespace the policy schedules backups
+                  for. Empty, it applies to all of them.
+                properties:
+                  matchExpressions:
+                    default: []
+                    description: |-
+                      Set-based requirements a resource must satisfy, evaluated alongside
+                      `matchLabels`. Every requirement must hold.
+                    items:
+                      description: A single requirement for label selector expressions.
+                      properties:
+                        key:
+                          description: Label key this requirement tests.
+                          type: string
+                        operator:
+                          description: |-
+                            How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+                            `DoesNotExist`.
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          default: []
+                          description: |-
+                            Values the key is tested against. Required for `In` and `NotIn`, and
+                            must be empty for `Exists` and `DoesNotExist`.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: |-
+                      Labels a resource must carry verbatim to match. Every entry must match;
+                      an empty map matches everything.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              units:
+                description: |-
+                  Schedule overrides, each naming a backup unit the matched machine's own
+                  profile defines. Required, and at least one entry: a policy that
+                  schedules nothing sets no cadence anywhere.
+                items:
+                  description: One backup unit's cluster-side schedule.
+                  properties:
+                    name:
+                      description: |-
+                        Name of the unit in the machine's own `spec.backups[]` this entry
+                        schedules. Unique within the list.
+                      type: string
+                    retention:
+                      description: |-
+                        How many snapshots the unit keeps. Omitted, the machine's own profile
+                        decides.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    schedule:
+                      description: |-
+                        Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on,
+                        evaluated against the machine's local clock — a nightly window means
+                        3am where each machine sits, not 3am in the cluster's timezone.
+                      type: string
+                  required:
+                  - name
+                  - schedule
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - units
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              machinesMatched:
+                description: How many machines the selector matched, exact and never capped.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              observedGeneration:
+                description: |-
+                  The `metadata.generation` every other field here was computed from. A
+                  status whose `observedGeneration` is behind `metadata.generation`
+                  describes the PREVIOUS spec.
+                format: int64
+                nullable: true
+                type: integer
+              units:
+                default: []
+                description: |-
+                  Sorted by (hostname, name) and capped at 500 rows; `machinesMatched`
+                  stays exact.
+                items:
+                  description: One machine's copy of one backup unit, as the policy last observed it.
+                  properties:
+                    hostname:
+                      description: Hostname of the machine this row reports on.
+                      type: string
+                    lastRun:
+                      description: When the unit last ran, as an RFC 3339 timestamp.
+                      nullable: true
+                      type: string
+                    message:
+                      description: |-
+                        Why this row is not what the policy asked for: the machine pinned the
+                        unit's schedule itself, or it reported an owner for the unit that no
+                        layer spells. Absent on a row the policy scheduled.
+                      nullable: true
+                      type: string
+                    name:
+                      description: Name of the backup unit.
+                      type: string
+                    nextRun:
+                      description: When the unit is next due, as an RFC 3339 timestamp.
+                      nullable: true
+                      type: string
+                    owner:
+                      description: |-
+                        Which layer owns this unit's schedule on that machine: `cluster` when
+                        this policy's schedule projects onto it, `local` when the machine's own
+                        profile pinned the unit with `scheduleOwner: Local` and the policy
+                        reports it without scheduling it.
+                      type: string
+                    retention:
+                      description: The retention the machine reported, on the same terms as `schedule`.
+                      format: uint32
+                      minimum: 0.0
+                      nullable: true
+                      type: integer
+                    schedule:
+                      description: |-
+                        The schedule the machine reported running the unit on: the one this
+                        policy projected onto it where `owner` is `cluster`, the one the
+                        machine's own profile declared where `owner` is `local`. Absent while
+                        the machine has not reported the unit yet.
+                      nullable: true
+                      type: string
+                  required:
+                  - hostname
+                  - name
+                  - owner
+                  type: object
+                maxItems: 500
+                type: array
+                x-kubernetes-list-map-keys:
+                - hostname
+                - name
+                x-kubernetes-list-type: map
+              unitsSummary:
+                description: |-
+                  The unit names in `units`, deduplicated and comma-joined, and the only
+                  field the `Units` printer column may be bound to: a column resolving to
+                  an array prints the Go rendering of the slice, so an empty one reads as
+                  the literal `[]` where an absent value leaves the cell empty. Absent
+                  when no unit has been reported.
+                nullable: true
+                type: string
+            required:
+            - machinesMatched
+            type: object
+        required:
+        - spec
+        title: BackupPolicy
         type: object
     served: true
     storage: true

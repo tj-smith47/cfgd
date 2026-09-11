@@ -217,8 +217,7 @@ Homebrew, and `brew`'s binaries are reachable from the next shell without you ed
 The test is who made the directory, not who installed the manager: a manager that was already on
 the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
 `$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
-prints a re-source reminder, under the `cfgd:env` group of the closing **Caveats** section, after
-any apply that touched either.
+prints a re-source reminder as the closing hint of any apply that touched either.
 
 ### Example: make `EDITOR` reach everywhere
 
@@ -234,26 +233,25 @@ spec:
 ```console
 $ cfgd apply --yes
 Apply
-  Config   /home/you/.config/cfgd/cfgd.yaml
+  Config   ~/.config/cfgd/cfgd.yaml
   Profile  envdemo
-  Phases   Prerequisites
+  Phases   Bootstrap
   Actions  6 planned
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:env
-    ✓ write /home/you/.cfgd.env                       — 1 var
-    ✓ inject source line into /home/you/.bashrc
-    ✓ inject source line into /home/you/.zshenv
-    ✓ inject source line into /home/you/.profile
-    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
+    ✓ write ~/.cfgd.env                       — 1 var (<0.1s)
+    ✓ write ~/.config/environment.d/cfgd.conf — 1 var (<0.1s)
+  cfgd:shell
+    ✓ inject source line into ~/.bashrc       (<0.1s)
+    ✓ inject source line into ~/.zshenv       (<0.1s)
+    ✓ inject source line into ~/.profile      (<0.1s)
   cfgd:session
-    ✓ publish 1 var to the session manager
+    ✓ publish 1 var to the live session       (<0.1s)
 
-✓ Apply complete — 6 actions succeeded (0.3s wall)
+✓ Apply complete — 6 actions succeeded (0.1s wall)
 
-Caveats
-  cfgd:env
-    → Run `source ~/.cfgd.env`, or open a new shell
+→ Run `source ~/.cfgd.env`, or open a new shell
 
 # Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
@@ -275,7 +273,7 @@ a colon (the one parenthetical on that line is the elapsed):
 
 ```console
   cfgd:session
-    ∅ publish 1 var to the session manager — no session manager
+    ∅ publish 1 var to the live session — no session manager
 
 ✓ Apply complete — 5 actions succeeded, 1 not attempted: no session manager (0.3s wall)
 ```
@@ -313,9 +311,11 @@ export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # m
 `environment.d` and the macOS LaunchAgent have no trailing-comment grammar, so their lines
 carry no owner.
 
-The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
-a future shell reads, `cfgd:session` pushes the same values into the session manager you are
-already logged into. A host with no live user session reports that group's action as
+The three owner groups separate what cfgd authored from what it edited from what is not
+durable at all: `cfgd:env` writes the files a future shell reads, `cfgd:shell` plants the one
+line that reads them into a dotfile you own, `cfgd:session` pushes the same values into the
+session manager you are already logged into. Skipping one and keeping the others is a real
+request — `--skip bootstrap.shell` writes the env file and leaves `~/.bashrc` alone. A host with no live user session reports that group's action as
 unchanged and carries the reason as a warning under it; the files are still correct.
 
 To opt out of the broader surfaces, narrow the scope: `envScope: Interactive` restores the

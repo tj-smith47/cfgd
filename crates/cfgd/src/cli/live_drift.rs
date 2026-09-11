@@ -109,14 +109,22 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
 
 /// The resource types a full CLI live check evaluates end to end, and so the
 /// ONLY types its complement-resolve may clear. Everything else in
-/// `drift_events` — the daemon's `secret`, `script`, `env-session` and
-/// `manager` rows, any class a future writer mints — is a finding nothing in
+/// `drift_events` — the daemon's `secret`, `script`,
+/// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows,
+/// any class a future writer mints — is a finding nothing in
 /// this check re-examined, and stands for its own writer to settle. Also the
 /// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
 /// tuple pushed into a checked/findings vector is a wire key, never a
 /// rendered label.
 pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
-    "file", "module", "package", "system", "env", "env-rc", "env-var", "alias",
+    "file",
+    "module",
+    "package",
+    "system",
+    cfgd_core::reconciler::ENV_RESOURCE_TYPE,
+    cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE,
+    "env-var",
+    "alias",
 ];
 
 /// Whether a recorded row is one THIS full check could not have re-found, so
@@ -898,8 +906,10 @@ pub(in crate::cli) struct ManagerDriftPhrase {
     /// What the manager's state IS, with no subject — the `diff` line prepends
     /// `<manager>: ` and the `actual` string stands alone.
     pub(in crate::cli) state: &'static str,
-    /// What can be done about it: `can bootstrap via <method>`, or
-    /// `cannot bootstrap: <reason>`.
+    /// What can be done about it: `can provision via <method>`, or
+    /// `cannot provision: <reason>` — the verb the plan's own bullet spends
+    /// on the very action this row is reporting the absence of, so one fact
+    /// is not named two ways across two commands.
     pub(in crate::cli) detail: String,
 }
 
@@ -913,11 +923,11 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
         ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("can bootstrap via {via}"),
+            detail: format!("can provision via {via}"),
         }),
         ManagerAction::Refuse { reason, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("cannot bootstrap: {reason}"),
+            detail: format!("cannot provision: {reason}"),
         }),
     }
 }
@@ -2203,7 +2213,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "provision:npm")
             .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
         assert_eq!(
-            manager_row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            manager_row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method `diff` would show, got: {manager_row:?}"
         );
     }
@@ -2247,7 +2257,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "refuse:npm")
             .unwrap_or_else(|| panic!("a refused manager must register as drift too: {drift:?}"));
         assert!(
-            manager_row.actual.contains("cannot bootstrap")
+            manager_row.actual.contains("cannot provision")
                 && manager_row.actual.contains("a-tool-nothing-provides"),
             "must name why, distinct from the provisionable wording, got: {manager_row:?}"
         );
@@ -2266,11 +2276,13 @@ mod tests {
     // for every package in them; given a context per half — which is what
     // `cmd_verify` built before — the same manager is enumerated twice.
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn both_halves_of_verify_share_one_enumeration_per_manager() {
         // The count is a memo-hit claim, so the memo's age ceiling is pinned out
-        // of reach — unpinned it rests on the 30s wall clock. No serialization:
-        // nothing in this crate's test binary pins the ceiling to zero, and a
-        // longer ceiling can only let another test's entries live longer.
+        // of reach — unpinned it rests on the 30s wall clock. The group is the one
+        // every other pin of this ceiling joins: two pins alive at once restore
+        // each other's saved value, leaving the seam pinned for the rest of the
+        // binary with nothing going red where the second pin was written.
         let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
@@ -2341,7 +2353,7 @@ mod tests {
             "must fail verify — this is what flips exit code 5"
         );
         assert_eq!(
-            row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method, same as diff/status, got: {row:?}"
         );
     }
@@ -2381,7 +2393,7 @@ mod tests {
         );
         assert!(
             row.actual
-                .contains("cannot bootstrap: a-tool-nothing-provides"),
+                .contains("cannot provision: a-tool-nothing-provides"),
             "must name the refusal reason, got: {row:?}"
         );
     }
@@ -2389,7 +2401,7 @@ mod tests {
     /// One unprovisionable manager, read on both surfaces that report it.
     ///
     /// `diff` renders a status line and `verify`/`status --scan` a `VerifyResult`,
-    /// and the two used to word the same fact differently (`cannot bootstrap:
+    /// and the two used to word the same fact differently (`cannot provision:
     /// <reason>` against `not installed (cannot bootstrap — <reason>)`), so a
     /// reader matching a verify row against the diff explaining it met two
     /// spellings of one refusal. Captured from the real renders rather than

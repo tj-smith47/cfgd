@@ -676,6 +676,21 @@ webhooks:
         resources: [modules]
     failurePolicy: Fail
     sideEffects: None
+  - name: validate-backuppolicy.cfgd.io
+    admissionReviewVersions: [v1]
+    clientConfig:
+      service:
+        name: cfgd-operator
+        namespace: cfgd-system
+        path: /validate-backuppolicy
+      caBundle: "${CA_BUNDLE}"
+    rules:
+      - apiGroups: ["cfgd.io"]
+        apiVersions: ["v1alpha1"]
+        operations: [CREATE, UPDATE]
+        resources: [backuppolicies]
+    failurePolicy: Fail
+    sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration

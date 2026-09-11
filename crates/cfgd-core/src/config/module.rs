@@ -3,10 +3,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use cfgd_schema::{EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec};
+
 use super::parse::check_yaml_anchor_limit;
-use super::profile_spec::{
-    EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec, SystemSettings, validate_file_patch_shape,
-};
+use super::profile_spec::{SystemSettings, validate_file_patch_shape};
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
 
@@ -259,12 +259,17 @@ pub struct ModuleFileEntry {
     pub patch: Option<PatchSpec>,
 }
 
-/// Validate the `patch` strategy shape of every module file entry
-/// (`spec.files`). See `validate_file_patch_shape`.
+/// Validate every module file entry: the `patch` strategy shape (see
+/// `validate_file_patch_shape`) and the `target` the cluster-side SSA merge
+/// keys on (see [`cfgd_schema::validate_file_target`]).
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
+    let mut seen = std::collections::HashMap::with_capacity(entries.len());
     for entry in entries {
+        let subject = format!("module file '{}'", entry.target);
+        cfgd_schema::validate_file_target(&subject, &entry.target, &mut seen)
+            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
         validate_file_patch_shape(
-            &format!("module file '{}'", entry.target),
+            &subject,
             entry.source.is_empty(),
             entry.strategy,
             entry.patch.as_ref(),
@@ -273,137 +278,6 @@ pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Interpreter for inline lifecycle scripts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ScriptShell {
-    /// Platform default: `sh` on Unix, `cmd.exe` on Windows.
-    #[default]
-    Auto,
-    Sh,
-    Bash,
-    Zsh,
-    Pwsh,
-    Cmd,
-}
-
-case_insensitive_enum!(ScriptShell {
-    "auto" => ScriptShell::Auto,
-    "sh" => ScriptShell::Sh,
-    "bash" => ScriptShell::Bash,
-    "zsh" => ScriptShell::Zsh,
-    "pwsh" => ScriptShell::Pwsh,
-    "cmd" => ScriptShell::Cmd,
-});
-
-/// A lifecycle script entry: either a bare command string, or a mapping for
-/// one that needs a timeout, shell, or guard condition.
-///
-/// ```yaml
-/// preApply: "echo starting"
-/// # or
-/// postApply:
-///   run: brew update
-///   timeout: 2m
-///   onlyIf: command -v brew
-/// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum ScriptEntry {
-    /// A bare command string, run with the platform's default shell and no
-    /// timeout/guard.
-    Simple(String),
-    /// The mapping form, carrying the body and its knobs.
-    // A named type rather than an inline variant so `cfgd explain` shows a
-    // reader `<(string | ScriptCommand)>` — a name they can look up — instead
-    // of `<(string | object)>`.
-    Full(ScriptCommand),
-}
-
-/// The mapping form of a script entry: a command with a timeout, shell,
-/// guard condition or working directory.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ScriptCommand {
-    /// The command or script body to run.
-    pub run: String,
-    /// Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
-    /// Unset means no timeout.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<String>,
-    /// Kill the script if it produces no stdout/stderr output for this duration.
-    /// Prevents scripts from silently hanging on unresponsive resources.
-    /// Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "idleTimeout"
-    )]
-    pub idle_timeout: Option<String>,
-    /// Treat a non-zero exit as success and continue reconciliation instead
-    /// of failing the run. Default: `false`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "continueOnError"
-    )]
-    pub continue_on_error: Option<bool>,
-    /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-    #[serde(default, skip_serializing_if = "is_shell_auto")]
-    pub shell: ScriptShell,
-    /// Run the script only if this command exits zero. A non-zero exit skips
-    /// the script (the condition for running was not met). Evaluated with the
-    /// same shell, working directory, and environment as the body.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
-    pub only_if: Option<String>,
-    /// Run the script only if this command exits NON-zero. A zero exit
-    /// (success) skips the script (the guarded state already holds).
-    /// Evaluated with the same shell, working directory, and environment as
-    /// the body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unless: Option<String>,
-    /// Skip the script if this path already exists. A leading `~` expands to
-    /// the home directory; a relative path resolves against the script's
-    /// working directory. Existence follows symlinks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub creates: Option<String>,
-    /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
-    /// no spinner, no output capture, no idle timeout) so it can prompt the
-    /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
-    /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-    /// script is skipped with a warning rather than hanging on instant EOF.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub interactive: bool,
-    /// Working directory for the script. By default every lifecycle script
-    /// runs in the user's home directory — never the config source tree — so
-    /// a relative write can't pollute the user's GitOps repo. Set `workdir`
-    /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
-    /// against the script environment (which always carries `$CFGD_MODULE_DIR`
-    /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
-    /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workdir: Option<String>,
-}
-
-fn is_shell_auto(s: &ScriptShell) -> bool {
-    *s == ScriptShell::Auto
-}
-
-impl ScriptEntry {
-    /// Extract the run command string from any variant.
-    pub fn run_str(&self) -> &str {
-        match self {
-            ScriptEntry::Simple(s) => s,
-            ScriptEntry::Full(ScriptCommand { run, .. }) => run,
-        }
-    }
-}
-
-impl std::fmt::Display for ScriptEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.run_str())
-    }
 }
 
 // --- Module Lockfile ---
@@ -485,6 +359,7 @@ impl crate::platform::PlatformGated for ModulePackageEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_schema::{ScriptCommand, ScriptEntry, ScriptShell};
 
     #[test]
     fn module_spec_rejects_unknown_field() {
@@ -567,6 +442,47 @@ spec: {}
         assert!(
             !round_tripped.contains("version:"),
             "an absent version must not be materialized on write, got: {round_tripped}"
+        );
+    }
+
+    /// A module published to a cluster becomes a `Module` resource whose
+    /// `spec.files` is a server-side-apply map keyed on `target`. A target the
+    /// merge cannot key on is refused here, while the message can still name
+    /// the entry that wrote it.
+    #[test]
+    fn module_file_entry_rejects_an_empty_target() {
+        let yaml = "source: a
+target: \"\"\n";
+        let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_module_file_entries(&[entry]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("module file '': target must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The local parser names an entry by its own target, so both halves of a
+    /// collision spell the same subject: a message pairing them would read
+    /// `module file '~/.vimrc' ... duplicates module file '~/.vimrc'`, which
+    /// tells a reader nothing the first clause did not.
+    #[test]
+    fn module_file_entries_reject_two_files_claiming_one_target() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: m
+spec:
+  files:
+    - source: vimrc
+      target: ~/.vimrc
+    - source: vimrc.local
+      target: ~/.vimrc
+"#;
+        let err = parse_module(yaml).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config error: invalid config: module file '~/.vimrc': declared twice"
         );
     }
 

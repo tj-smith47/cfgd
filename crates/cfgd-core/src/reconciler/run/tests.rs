@@ -83,6 +83,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
 
 fn action_result(success: bool) -> ActionResult {
     ActionResult {
+        after_plan: None,
         phase: "files".to_string(),
         description: "file:create:/tmp/x".to_string(),
         success,
@@ -164,6 +165,7 @@ fn rollup_lines_covers_every_apply_status() {
     ];
     for (status, count, roles) in cases {
         let tally = RunTally {
+            after_plan: Vec::new(),
             succeeded: 2,
             skipped: 0,
             not_attempted: Vec::new(),
@@ -188,6 +190,7 @@ fn rollup_lines_covers_every_apply_status() {
     // The short tally: the extra line is the rollup's, and its role decides
     // whether the glyph is `◉` or `○`.
     let short = RunTally {
+        after_plan: Vec::new(),
         succeeded: 1,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -222,6 +225,7 @@ fn rollup_lines_covers_every_apply_status() {
 #[test]
 fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     let nothing = RunTally {
+        after_plan: Vec::new(),
         succeeded: 0,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -273,8 +277,10 @@ fn a_completed_rollup_names_the_run_it_finished() {
         (RunTitle::Apply, "Apply complete"),
         (RunTitle::Reconcile, "Reconcile complete"),
         (RunTitle::Backup, "Backup complete"),
+        (RunTitle::Collect, "Collect complete"),
     ] {
         let tally = RunTally {
+            after_plan: Vec::new(),
             succeeded: 1,
             skipped: 0,
             not_attempted: Vec::new(),
@@ -293,6 +299,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
     }
 
     let partial = RunTally {
+        after_plan: Vec::new(),
         succeeded: 1,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -336,6 +343,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
         (ApplyStatus::Failed, 0, 3),
     ] {
         let tally = RunTally {
+            after_plan: Vec::new(),
             succeeded,
             skipped: 0,
             not_attempted: Vec::new(),
@@ -365,6 +373,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
 #[test]
 fn abort_rollup_keeps_the_lowercase_cli_sentence() {
     let tally = RunTally {
+        after_plan: Vec::new(),
         succeeded: 2,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -393,6 +402,7 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     // the failure clause that action is in neither the applied count nor the
     // not-attempted line, and the closing line reads as a clean stop.
     let tally = RunTally {
+        after_plan: Vec::new(),
         succeeded: 2,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -423,6 +433,7 @@ fn the_rollups_elapsed_hangs_off_the_line_that_names_the_run() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         render_run_rollup(
             &RunTally {
+                after_plan: Vec::new(),
                 succeeded: 1,
                 skipped: 0,
                 not_attempted: Vec::new(),
@@ -468,14 +479,37 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
     // (`N actions not attempted`) — a different class, for work the run
     // planned and never reached, which already has a line and a role of its
     // own and is checked below.
-    let classes = [
-        ("succeeded", Role::Ok),
-        ("failed", Role::Fail),
-        ("skipped", Role::Skipped),
-        ("not attempted:", Role::Skipped),
+    //
+    // The planned failure word carries its noun: the after-plan class states
+    // its own failures with the same verb (a failure is a failure, and the
+    // trailing `after the plan` is what says which class it belongs to), so
+    // `actions failed` is the tell that names only the planned one.
+    //
+    // The after-plan pairs are DERIVED from both vocabularies rather than
+    // listed: a hand list judged the member it happened to name and let a new
+    // member, or a reworded clause, render a line nobody checked.
+    let mut classes = vec![
+        ("succeeded".to_string(), Role::Ok),
+        ("actions failed".to_string(), Role::Fail),
+        ("skipped".to_string(), Role::Skipped),
+        ("not attempted:".to_string(), Role::Skipped),
     ];
+    for subject in AfterPlan::ALL {
+        for state in AfterPlanState::ALL {
+            let tell = state.clause_tell(subject);
+            // `changed nothing` and `failed` word themselves per OUTCOME, so two
+            // members claim one tell; the line still proves that state's role.
+            // What keeps the shared tell safe is `after_plan_clauses` itself: a
+            // branchless double loop over the same two `ALL` arrays, so no
+            // member's clause can be dropped or reworded without editing the
+            // emitter, and every pair rendered below is role-checked.
+            if !classes.iter().any(|(word, _)| *word == tell) {
+                classes.push((tell, state.clause_role()));
+            }
+        }
+    }
     let theme = crate::output::Theme::default();
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for status in [
         ApplyStatus::Success,
         ApplyStatus::Partial,
@@ -485,6 +519,15 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
     ] {
         // Every class nonzero at once, which is the shape that fused them.
         let tally = RunTally {
+            // Every member of the after-plan vocabulary in every state, so the
+            // walk sees each of its clauses rather than whichever one the first
+            // member happens to produce.
+            after_plan: AfterPlan::ALL
+                .into_iter()
+                .flat_map(|subject| {
+                    AfterPlanState::ALL.map(|state| AfterPlanOutcome { subject, state })
+                })
+                .collect(),
             succeeded: 20,
             skipped: 1,
             not_attempted: vec![crate::NO_SESSION_MANAGER.to_string()],
@@ -497,7 +540,7 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
         render_run_rollup(&tally, RunTitle::Apply, &printer, None);
         drop(printer);
         let out = crate::test_helpers::captured_text(&buf);
-        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+        for (index, line) in out.lines().filter(|l| !l.trim().is_empty()).enumerate() {
             // The abort line is a SENTENCE about an interrupted run, not a
             // count list: it accounts for everything on the one line a reader
             // keeps, and it is `Role::Warn`, so it paints no non-success count
@@ -510,23 +553,29 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             if line.starts_with(theme.icon_arrow.as_str()) {
                 continue;
             }
-            let named: Vec<&str> = classes
+            let named: Vec<(&str, Role)> = classes
                 .iter()
-                .map(|(word, _)| *word)
-                .filter(|word| line.contains(word))
+                .filter(|(word, _)| line.contains(word.as_str()))
+                .map(|(word, role)| (word.as_str(), *role))
                 .collect();
             assert!(
                 named.len() <= 1,
                 "{status:?}: one line states {named:?} — two outcome classes \
                  under one role: {out:?}"
             );
-            let Some(word) = named.first() else { continue };
-            seen.push(word);
-            let (_, role) = classes
-                .iter()
-                .find(|(w, _)| w == word)
-                .copied()
-                .unwrap_or(("", Role::Info));
+            let Some((word, role)) = named.first().copied() else {
+                // The rollup's FIRST line is the run's own verdict sentence,
+                // which reports the run rather than one outcome class; every
+                // line under it is a clause, so an unclaimed one is a class
+                // whose role nothing checked rather than a line to skip.
+                assert_eq!(
+                    index, 0,
+                    "{status:?}: no outcome class claims this rollup line, so \
+                     nothing checked its role: {line:?}"
+                );
+                continue;
+            };
+            seen.push(word.to_string());
             let (glyph, _) = crate::output::renderer::role_glyph(&theme, role);
             assert!(
                 glyph.is_some_and(|g| line.starts_with(g)),
@@ -535,9 +584,9 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
             );
         }
     }
-    for (word, _) in classes {
+    for (word, _) in &classes {
         assert!(
-            seen.contains(&word),
+            seen.contains(word),
             "the walk never rendered a {word:?} line, so it proved nothing about it"
         );
     }
@@ -548,6 +597,7 @@ fn every_outcome_class_in_a_rollup_carries_its_own_role() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(
         &RunTally {
+            after_plan: Vec::new(),
             succeeded: 1,
             skipped: 0,
             not_attempted: Vec::new(),
@@ -592,23 +642,17 @@ fn every_rollup_line_reserves_the_glyph_column() {
         ApplyStatus::InProgress,
         ApplyStatus::Aborted,
     ];
-    let titles = [
-        RunTitle::Plan,
-        RunTitle::Apply,
-        RunTitle::Reconcile,
-        RunTitle::Backup,
-        RunTitle::Restore,
-        RunTitle::Rollback,
-    ];
+    let titles = RunTitle::ALL;
     // Two shapes per arm: one that reached what it planned, and one that fell
     // short — the shortfall line is pushed by the renderer, outside
     // `rollup_lines`, and the `nothing_attempted` arm only exists in the second.
     let shapes = [(2usize, 1usize, 3usize), (0, 0, 3)];
     let mut checked = 0usize;
     for status in &statuses {
-        for title in titles {
+        for title in titles.iter().copied() {
             for (succeeded, failed, planned_total) in shapes {
                 let tally = RunTally {
+                    after_plan: Vec::new(),
                     succeeded,
                     skipped: 0,
                     not_attempted: Vec::new(),
@@ -666,6 +710,7 @@ fn every_rollup_line_reserves_the_glyph_column() {
 #[test]
 fn tally_merge_adds_counts_and_takes_the_worse_status() {
     let mut base = RunTally {
+        after_plan: Vec::new(),
         succeeded: 3,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -675,6 +720,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
         aborted: None,
     };
     base.merge(RunTally {
+        after_plan: Vec::new(),
         succeeded: 1,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -690,6 +736,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
 
     // A lesser status never masks a higher-severity one.
     let mut failed = RunTally {
+        after_plan: Vec::new(),
         succeeded: 0,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -699,6 +746,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
         aborted: None,
     };
     failed.merge(RunTally {
+        after_plan: Vec::new(),
         succeeded: 1,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -726,7 +774,8 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     skipped_that_ran.skipped = true;
     result.action_results.push(skipped_that_ran);
     result.action_results.push(ActionResult {
-        phase: "prerequisites".to_string(),
+        after_plan: None,
+        phase: "bootstrap".to_string(),
         description: "env:refresh".to_string(),
         success: true,
         error: None,
@@ -795,6 +844,350 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     });
 }
 
+/// A result for work the plan could not name, at the subject that says which
+/// class it belongs to and the RECORD that settles its state.
+///
+/// Two producers write the three shapes, so both are named here: the performed
+/// and skipped records are `merge_env_result`'s (`success: true` with
+/// `skipped: !changed`, the literal it always pushes, pinned against it by
+/// `reconciler::tests::an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip`),
+/// while the FAILED record is the regeneration's own `Err(e)` arm, which is the
+/// only site that ever writes `success: false` for an env surface. An edit to
+/// either producer moves a shape this helper stands in for.
+fn after_plan_result(subject: AfterPlan, state: AfterPlanState) -> ActionResult {
+    let success = state != AfterPlanState::Failed;
+    let changed = state == AfterPlanState::Performed;
+    ActionResult {
+        after_plan: Some(subject),
+        phase: "bootstrap".to_string(),
+        description: "env:write:/home/me/.cfgd.env".to_string(),
+        success,
+        error: (!success).then(|| "permission denied".to_string()),
+        changed,
+        skipped: success && !changed,
+        not_attempted: None,
+        installed: None,
+        versions: Default::default(),
+        drift_rows: Vec::new(),
+    }
+}
+
+/// The header promises what the PLAN knew, and the run may learn it has more to
+/// do: a secret that resolved, a PATH directory npm only reports once its
+/// install finished, an `onChange` hook whose condition is this very run. Those
+/// results were counted as successes, so a run whose plan held one action closed
+/// on `Actions 1 planned` above `4 succeeded` — three numbers from one account
+/// that no reader can reconcile.
+///
+/// They are their own class instead: outside `planned_total`, outside the three
+/// counts that partition it, on a line of their own that says what they were.
+#[test]
+fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
+    let plan = plan_of(vec![phase(
+        PhaseName::Files,
+        vec![create("/tmp/one"), create("/tmp/two")],
+    )]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &plan).header(&printer);
+    drop(printer);
+    let header = crate::test_helpers::captured_text(&buf);
+    assert!(
+        header.contains("Actions  2 planned"),
+        "the header promises the plan's own count: {header:?}"
+    );
+
+    let mut result = apply_result(2, 0, ApplyStatus::Success, 2);
+    for _ in 0..3 {
+        result.action_results.push(after_plan_result(
+            AfterPlan::EnvSurface,
+            AfterPlanState::Performed,
+        ));
+    }
+    result.action_results.push(after_plan_result(
+        AfterPlan::ChangeHook,
+        AfterPlanState::Performed,
+    ));
+
+    let tally = result.tally();
+    assert_eq!(
+        tally.succeeded + tally.skipped + tally.failed,
+        tally.planned_total,
+        "the planned classes sum to what the header promised"
+    );
+    let class_count = |subject| {
+        tally
+            .after_plan
+            .iter()
+            .filter(|outcome| outcome.subject == subject)
+            .count()
+    };
+    let (converged, hooks) = (
+        class_count(AfterPlan::EnvSurface),
+        class_count(AfterPlan::ChangeHook),
+    );
+    // `planned` and `succeeded` ARE one number on a clean all-success run, so
+    // that pair is outside the premise: a forced pair exempts the pair, not the
+    // whole set. The four below are forced by nothing, every one is read off the
+    // tally, and every sentence asserted below states those same values, so the
+    // set proved distinct is the set asserted.
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("succeeded", tally.succeeded),
+        ("class total", tally.after_plan.len()),
+        ("converged", converged),
+        ("onChange hooks", hooks),
+    ]);
+    assert_eq!(tally.after_plan.len(), 4, "priced as its own class");
+    assert_eq!(
+        outcome_counts(&tally),
+        format!(
+            "{} actions succeeded, {converged} env surfaces converged after the \
+             plan, {hooks} onChange hook ran after the plan",
+            tally.succeeded
+        ),
+        "the daemon's one-line account names the class too"
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(
+        &tally,
+        RunTitle::Apply,
+        &printer,
+        Some(Duration::from_millis(278_200)),
+    );
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert_eq!(
+        out.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        vec![
+            format!(
+                "\u{2713} Apply complete — {} actions succeeded (278.2s wall)",
+                tally.succeeded
+            ),
+            format!("\u{2713} {converged} env surfaces converged after the plan"),
+            format!("\u{2713} {hooks} onChange hook ran after the plan"),
+        ],
+        "each class states itself on its own line: {out:?}"
+    );
+}
+
+/// The class states its own trouble, and the planned failure line stays silent
+/// about a failure the plan had none of: a run turned `Partial` by an env
+/// surface alone rendered `0 actions failed` above it, naming a failure no
+/// planned action had.
+#[test]
+fn a_failure_after_the_plan_is_stated_by_its_own_class_and_by_no_other_line() {
+    let mut result = apply_result(2, 0, ApplyStatus::Partial, 2);
+    result.action_results.push(after_plan_result(
+        AfterPlan::EnvSurface,
+        AfterPlanState::Failed,
+    ));
+    let tally = result.tally();
+    assert_eq!((tally.failed, tally.succeeded), (0, 2));
+    // The pair the positive assertion below rests on is the class's own failure
+    // count against the PLANNED success count, not the `(failed, succeeded)`
+    // tuple above: a class clause built from the planned count renders the very
+    // number the assertion reads unless the two differ.
+    let failed_after = tally
+        .after_plan
+        .iter()
+        .filter(|outcome| outcome.state == AfterPlanState::Failed)
+        .count();
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("succeeded", tally.succeeded),
+        ("failed after the plan", failed_after),
+    ]);
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains(&format!("{failed_after} env surface failed after the plan")),
+        "the class names its own failure: {out:?}"
+    );
+    assert!(
+        !out.contains("0 actions failed"),
+        "no planned action failed, so no line says one did: {out:?}"
+    );
+
+    // A run whose every planned action failed lists no clauses at all, and the
+    // class is then the only news there is about what else the run did.
+    let mut all_failed = apply_result(0, 2, ApplyStatus::Failed, 2);
+    all_failed.action_results.push(after_plan_result(
+        AfterPlan::EnvSurface,
+        AfterPlanState::Performed,
+    ));
+    let failed_tally = all_failed.tally();
+    // Same pairing the other way round: the planned failure count against the
+    // class's converged count, which coincide at one apiece.
+    let converged_after = failed_tally
+        .after_plan
+        .iter()
+        .filter(|outcome| outcome.state == AfterPlanState::Performed)
+        .count();
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("failed", failed_tally.failed),
+        ("converged after the plan", converged_after),
+    ]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&failed_tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains(&format!("{} actions failed", failed_tally.failed))
+            && out.contains(&format!(
+                "{converged_after} env surface converged after the plan"
+            )),
+        "a failed run still accounts for what it converged: {out:?}"
+    );
+}
+
+/// An after-plan surface that changed NOTHING is a skip, never a performance.
+///
+/// The class was born pricing itself by `success` alone, so the live-session
+/// refresh whose `systemctl --user set-environment` publish failed — a result
+/// `merge_env_result` records `success: true, skipped: true` because the failure
+/// travels as a note — was counted inside
+/// `6 env surfaces converged after the plan`, a green verdict standing one line
+/// under its own warning. The planned counts have obeyed the opposite rule all
+/// along: a successful action that changed nothing is skipped, not done.
+///
+/// One run, all three outcomes, through the real render path: each states itself
+/// on its own line at its own role, and the converged line counts only what
+/// converged.
+///
+/// No two counts in this fixture are equal, and the premise is EXECUTED by
+/// `assert_slots_discriminate` rather than recited here: a clause built with a
+/// sibling's count, or a planned count reaching a class line, has nowhere to
+/// hide. Both grammatical numbers are exercised with them.
+#[test]
+fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
+    let (succeeded, planned_failed, planned) = (4, 6, 10);
+    let class = [
+        (AfterPlanState::Performed, 2),
+        (AfterPlanState::Skipped, 1),
+        (AfterPlanState::Failed, 3),
+    ];
+    crate::test_helpers::assert_slots_discriminate(&[
+        ("planned", planned),
+        ("succeeded", succeeded),
+        ("planned failed", planned_failed),
+        ("converged", class[0].1),
+        ("changed nothing", class[1].1),
+        ("failed after the plan", class[2].1),
+    ]);
+    let mut result = apply_result(succeeded, planned_failed, ApplyStatus::Partial, planned);
+    for (state, count) in class {
+        for _ in 0..count {
+            result
+                .action_results
+                .push(after_plan_result(AfterPlan::EnvSurface, state));
+        }
+    }
+    let tally = result.tally();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let theme = crate::output::Theme::default();
+    // The skip leads: it is the line the defect erased, so a regression must be
+    // reported as the missing line rather than as a neighbour's wrong count.
+    for (state, clause) in [
+        (
+            AfterPlanState::Skipped,
+            format!("{} env surface changed nothing after the plan", class[1].1),
+        ),
+        (
+            AfterPlanState::Performed,
+            format!("{} env surfaces converged after the plan", class[0].1),
+        ),
+        (
+            AfterPlanState::Failed,
+            format!("{} env surfaces failed after the plan", class[2].1),
+        ),
+    ] {
+        let line = out
+            .lines()
+            .find(|l| l.contains(&clause))
+            .unwrap_or_else(|| panic!("{state:?} states itself on its own line: {out:?}"));
+        let (glyph, _) = crate::output::renderer::role_glyph(&theme, state.clause_role());
+        assert!(
+            glyph.is_some_and(|g| line.starts_with(g)),
+            "{state:?} wears its own role's glyph ({glyph:?}): {line:?}"
+        );
+    }
+    let whole_class: usize = class.iter().map(|(_, count)| count).sum();
+    assert!(
+        !out.contains(&format!("{} env surfaces converged", class[2].1))
+            && !out.contains(&format!("{whole_class} env surfaces converged")),
+        "the converged line counts what converged, not what also ran or the \
+         whole class: {out:?}"
+    );
+    let mut states: Vec<(AfterPlanState, usize)> = Vec::new();
+    for state in tally.after_plan.iter().map(|o| o.state) {
+        match states.last_mut() {
+            Some((last, n)) if *last == state => *n += 1,
+            _ => states.push((state, 1)),
+        }
+    }
+    assert_eq!(
+        states,
+        class.to_vec(),
+        "each line above came from a state read off its own record, not guessed \
+         from its success flag"
+    );
+    // The daemon keeps the one account the rendered rollup does, so a skip
+    // cannot read as converged on the journal line either.
+    assert_eq!(
+        outcome_counts(&tally),
+        format!(
+            "{succeeded} actions succeeded, {} env surfaces converged after the \
+             plan, {} env surface changed nothing after the plan, {} env surfaces \
+             failed after the plan",
+            class[0].1, class[1].1, class[2].1
+        )
+    );
+}
+
+/// The invariant the header's promise rests on, over every shape an apply path
+/// produces: the three counts partition the PLANNED total and never exceed it,
+/// whatever the run learned it had to do on top. `tally()` carries it as a
+/// `debug_assert`, so a result the plan did not name that forgets its
+/// [`AfterPlan`] subject trips every test build that renders a rollup.
+#[test]
+fn the_counted_rollup_never_exceeds_what_the_header_promised() {
+    let shapes: Vec<(&str, ApplyResult)> = vec![
+        ("clean", apply_result(3, 0, ApplyStatus::Success, 3)),
+        ("partial", apply_result(2, 1, ApplyStatus::Partial, 3)),
+        // An abort and a failed pre-script come UNDER the promise, which is
+        // what the shortfall line exists to state.
+        ("aborted", apply_result(1, 0, ApplyStatus::Aborted, 4)),
+        ("all failed", apply_result(0, 2, ApplyStatus::Failed, 2)),
+    ];
+    for (label, mut result) in shapes {
+        for subject in AfterPlan::ALL {
+            for state in AfterPlanState::ALL {
+                result
+                    .action_results
+                    .push(after_plan_result(subject, state));
+            }
+        }
+        let tally = result.tally();
+        assert!(
+            tally.succeeded + tally.skipped + tally.failed <= tally.planned_total,
+            "{label}: the counts outgrew the header's promise: {tally:?}"
+        );
+        assert_eq!(
+            tally.after_plan.len(),
+            AfterPlan::ALL.len() * AfterPlanState::ALL.len(),
+            "{label}: every result the plan did not name is priced by its class"
+        );
+    }
+}
+
 /// The closing line carries ONE em-dash — the title's join to its detail — and
 /// ONE trailing parenthetical, the elapsed. The withheld clause used to bring a
 /// second of each: `(1 not attempted — no session manager) (278.2s)` nested an
@@ -803,6 +1196,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
 #[test]
 fn the_closing_line_holds_one_em_dash_and_one_trailing_parenthetical() {
     let tally = RunTally {
+        after_plan: Vec::new(),
         succeeded: 21,
         skipped: 0,
         not_attempted: vec![crate::NO_SESSION_MANAGER.to_string()],
@@ -838,6 +1232,7 @@ fn the_closing_line_holds_one_em_dash_and_one_trailing_parenthetical() {
 
 fn tally_with_reasons(reasons: &[&str], check: impl FnOnce(String)) {
     let tally = RunTally {
+        after_plan: Vec::new(),
         succeeded: 2,
         skipped: 0,
         not_attempted: reasons.iter().map(|r| r.to_string()).collect(),
@@ -867,7 +1262,7 @@ fn apply_result_tally_reads_the_reconcilers_planned_total() {
 fn report_align_width_spans_every_phase() {
     let wide = plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![install("apt", &["a-very-long-package-name-indeed"])],
         ),
         phase(
@@ -876,7 +1271,7 @@ fn report_align_width_spans_every_phase() {
         ),
     ]);
     let narrow = plan_of(vec![
-        phase(PhaseName::Prerequisites, vec![install("apt", &["sl"])]),
+        phase(PhaseName::Bootstrap, vec![install("apt", &["sl"])]),
         phase(
             PhaseName::Packages,
             vec![module_install("nvim", "brew", "neovim")],
@@ -936,7 +1331,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     // A far longer sibling in the SAME report, so the column the short rows
     // pad to is one their own width would never have produced.
     let plan = plan_of(vec![phase(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![
             write_env,
             deploy,
@@ -970,7 +1365,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     // executed line commits, under a report that claimed the same column.
     let settled = dash_column(&|printer| {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("cfgd", "env"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1034,7 +1429,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
     let previewed_child = child_dash_column(&|printer| render_plan_tree(&plan, None, printer));
     let settled_child = child_dash_column(&|printer| {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1068,7 +1463,7 @@ fn every_detail_bearing_row_of_a_report_lands_in_the_reports_one_column() {
 fn report_align_width_ignores_a_filtered_out_phase() {
     let plan = plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![install("apt", &["a-very-long-package-name-indeed"])],
         ),
         phase(PhaseName::Files, vec![create("dotfile")]),
@@ -1650,14 +2045,14 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
 
     // The plan tree's arm, reached the way `render_plan_tree` reaches it.
     let planned = line(&|printer| {
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
         owner.action_status(Role::Skipped, subject).detail(reason);
     });
     // The apply tree's arm: the outcome `settle_action` records for the same
     // action, through the writer that commits every settled line.
     let settled = line(&|printer| {
-        let section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = section.section_owner(&OwnerLabel::new("cfgd", "env"));
         super::super::apply::emit_action_line(
             printer,
@@ -1718,7 +2113,7 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     // children pad to is one the deploy row's own six-character subject
     // would never have produced.
     let plan = plan_of(vec![phase(
-        PhaseName::Prerequisites,
+        PhaseName::Bootstrap,
         vec![deploy, install("apt", &["a-very-long-package-name-indeed"])],
     )]);
     let width = report_align_width(&plan, None, None, crate::output::theme::ICON_ARROW);
@@ -1751,7 +2146,7 @@ fn a_deploy_row_enumerates_every_file_with_its_method_at_the_reports_column() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     {
         let _column = printer.report_column(width);
-        let phase_section = printer.section_phase(&PhaseName::Prerequisites.section_label());
+        let phase_section = printer.section_phase(&PhaseName::Bootstrap.section_label());
         let owner = phase_section.section_owner(&OwnerLabel::new("module", "app"));
         owner.live_column(width);
         super::super::apply::emit_action_line(
@@ -1852,7 +2247,7 @@ fn a_one_file_deploy_still_enumerates_its_single_child() {
         "a one-file deploy still states a count, never the bare target"
     );
 
-    let plan = plan_of(vec![phase(PhaseName::Prerequisites, vec![deploy])]);
+    let plan = plan_of(vec![phase(PhaseName::Bootstrap, vec![deploy])]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_plan_tree(&plan, None, &printer);
     drop(printer);
@@ -2134,7 +2529,12 @@ fn sole_phase_renders_its_owner_groups_at_the_run_depth() {
 fn hooks_and_backups_labels_are_distinct_bare_names() {
     assert_eq!(HOOKS_PHASE_LABEL, "Drift Hooks");
     assert_eq!(BACKUPS_PHASE_LABEL, "Backups");
-    for label in [HOOKS_PHASE_LABEL, BACKUPS_PHASE_LABEL] {
+    assert_eq!(CHANGE_HOOKS_PHASE_LABEL, "Change Hooks");
+    for label in [
+        HOOKS_PHASE_LABEL,
+        BACKUPS_PHASE_LABEL,
+        CHANGE_HOOKS_PHASE_LABEL,
+    ] {
         assert!(
             !label.starts_with("Phase: "),
             "{label} must be the bare name PhaseLabel::new(...) takes, not a \
@@ -2299,7 +2699,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
         aliases: 1,
     });
     let plan = plan_of(vec![
-        phase(PhaseName::Prerequisites, vec![env]),
+        phase(PhaseName::Bootstrap, vec![env]),
         phase(PhaseName::Files, vec![deploy]),
     ]);
 
@@ -2341,15 +2741,9 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
 /// to be on screen is about a different subject.
 #[test]
 fn every_unfinished_verdict_closes_on_the_one_next_step() {
-    const TITLES: &[RunTitle] = &[
-        RunTitle::Plan,
-        RunTitle::Apply,
-        RunTitle::Reconcile,
-        RunTitle::Backup,
-        RunTitle::Restore,
-        RunTitle::Rollback,
-    ];
+    const TITLES: &[RunTitle] = RunTitle::ALL;
     let converged = |status: ApplyStatus| RunTally {
+        after_plan: Vec::new(),
         succeeded: 2,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -2359,6 +2753,7 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
         aborted: None,
     };
     let withheld = RunTally {
+        after_plan: Vec::new(),
         succeeded: 0,
         skipped: 0,
         not_attempted: vec!["no session manager".to_string()],
@@ -2389,7 +2784,10 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
                 !next.contains("<name>")
                     || matches!(
                         title,
-                        RunTitle::Backup | RunTitle::Restore | RunTitle::Rollback
+                        RunTitle::Backup
+                            | RunTitle::Restore
+                            | RunTitle::Rollback
+                            | RunTitle::Collect
                     ),
                 "only a run over one declared unit has a unit to name: {next:?}"
             );
@@ -2416,6 +2814,7 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
 #[test]
 fn a_failed_run_renders_its_next_step_under_the_verdict() {
     let tally = RunTally {
+        after_plan: Vec::new(),
         succeeded: 21,
         skipped: 0,
         not_attempted: Vec::new(),
@@ -2580,7 +2979,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
     });
     plan_of(vec![
         phase(
-            PhaseName::Prerequisites,
+            PhaseName::Bootstrap,
             vec![
                 Action::Manager(crate::reconciler::ManagerAction::RefreshIndex {
                     manager: "apt".to_string(),

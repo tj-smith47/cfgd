@@ -904,9 +904,12 @@ pub(crate) fn download_and_install_to(
         .into());
     }
 
-    // Make it executable (no-op on Windows)
-    crate::set_file_permissions(&new_binary, 0o755).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("set permissions: {}", e),
+    // Make it executable (no-op on Windows). No-follow: `sudo cfgd upgrade`
+    // would otherwise hand `0o755` to whatever a link standing here resolves to.
+    crate::set_file_permissions_nofollow(&new_binary, 0o755).map_err(|e| {
+        UpgradeError::InstallFailed {
+            message: format!("set permissions: {}", e),
+        }
     })?;
 
     // Install new binary over old.

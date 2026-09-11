@@ -12,10 +12,10 @@ Fields (under spec)
     name       <string>   (required)
     platforms  <[]string>
   backups   <[]BackupSpec>
-    destination  <string>
-    name         <string>        (required)
-    namePattern  <string>
-    postBackup   <[]ScriptEntry>
+    destination    <string>
+    name           <string>        (required)
+    namePattern    <string>
+    postBackup     <[]ScriptEntry>
       string
       ScriptCommand
         continueOnError  <boolean>
@@ -29,7 +29,7 @@ Fields (under spec)
         timeout          <string>
         unless           <string>
         workdir          <string>
-    preBackup    <[]ScriptEntry>
+    preBackup      <[]ScriptEntry>
       string
       ScriptCommand
         continueOnError  <boolean>
@@ -43,9 +43,11 @@ Fields (under spec)
         timeout          <string>
         unless           <string>
         workdir          <string>
-    retention    <integer>
-    schedule     <string>
-    source       <string>        (required)
+    retention      <integer>
+    schedule       <string>
+    scheduleOwner  <ScheduleOwner>
+      enum: Cluster, Local
+    source         <string>        (required)
   env       <[]EnvVar>
     name       <string>   (required)
     platforms  <[]string>

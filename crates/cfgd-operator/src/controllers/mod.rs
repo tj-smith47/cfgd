@@ -16,8 +16,9 @@ use kube::{Client, ResourceExt};
 use tracing::{debug, info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicy, Condition, ConfigPolicy, CosignSignature, DriftAlert, DriftSeverity,
-    LabelSelector, MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module, SelectorOperator,
+    BackupPolicy, ClusterConfigPolicy, Condition, ConfigPolicy, CosignSignature, DriftAlert,
+    DriftSeverity, LabelSelector, MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module,
+    SelectorOperator,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, ReconcileLabels};
@@ -31,6 +32,28 @@ use crate::crds::{
 
 pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
+/// Field manager for `MachineConfig.status.packageVersions`, the versions the
+/// DEVICE reports and the gateway writes on its behalf.
+///
+/// Distinct from [`FIELD_MANAGER_STATUS`]: the controller computes the rest of
+/// that status and preserves the device-reported maps, so a shared manager
+/// would let one side's apply take ownership of the other's fields.
+///
+/// Distinct from [`FIELD_MANAGER_GATEWAY_BACKUPS`] for the same reason one map
+/// down: a server-side apply removes the fields its manager stops naming, so a
+/// manager owning both maps would retire one whenever the device reported only
+/// the other. One field per manager makes an unreported map unreportable
+/// rather than blanked.
+///
+/// Both maps are `x-kubernetes-map-type: atomic` in the CRD schema, which is
+/// what makes the forced apply a whole-map takeover: a granular map tracks
+/// ownership per key, so a key an earlier release or a manual patch wrote would
+/// survive the apply instead of being retired.
+pub(crate) const FIELD_MANAGER_GATEWAY_PACKAGES: &str = "cfgd-operator/gateway/packages";
+/// Field manager for `MachineConfig.status.backupScheduleOwners`, the owner
+/// words the DEVICE reports; the backups half of the split
+/// [`FIELD_MANAGER_GATEWAY_PACKAGES`] describes.
+pub(crate) const FIELD_MANAGER_GATEWAY_BACKUPS: &str = "cfgd-operator/gateway/backups";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
 pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";
@@ -325,7 +348,7 @@ const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The watch-backed caches every controller reads cross-resource state from.
 ///
-/// Five of the six are the primary [`Store`] of the controller that roots that
+/// Six of the seven are the primary [`Store`] of the controller that roots that
 /// resource, so they cost no extra watch: the same stream that triggers a
 /// reconcile also populates the cache. `namespaces` is the exception — no
 /// controller roots a Namespace — and is fed by a dedicated reflector driven
@@ -334,11 +357,41 @@ const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct ControllerStores {
     pub machine_configs: Store<MachineConfig>,
     pub config_policies: Store<ConfigPolicy>,
+    pub backup_policies: Store<BackupPolicy>,
     pub cluster_config_policies: Store<ClusterConfigPolicy>,
     pub modules: Store<Module>,
     pub drift_alerts: Store<DriftAlert>,
     /// Metadata-only: the two reads are `metadata.labels` and `metadata.name`.
     pub namespaces: Store<PartialObjectMeta<Namespace>>,
+}
+
+/// The `BackupPolicy` watch cache, handed to a reader outside the controllers.
+///
+/// The device gateway answers every check-in with the cadences the cluster
+/// owns for that machine, and a namespaced LIST per check-in puts an API
+/// server round trip on the one request path a whole fleet drives. The
+/// controllers already keep a watch-backed cache of exactly those objects, so
+/// the gateway reads that instead.
+///
+/// The slot is REPLACED, never set once: [`run`] is retried, and each attempt
+/// builds its own watches, so a store left by an attempt that died would
+/// answer from a snapshot nothing updates any more. A reader that finds the
+/// slot empty, or a cache still completing its first list, lists for itself —
+/// an unpopulated cache is indistinguishable from a cluster that schedules
+/// nothing.
+#[derive(Clone, Default)]
+pub struct BackupPolicyCache(Arc<parking_lot::Mutex<Option<Store<BackupPolicy>>>>);
+
+impl BackupPolicyCache {
+    /// Publish the cache this controller run built, replacing any earlier one.
+    pub fn publish(&self, store: Store<BackupPolicy>) {
+        *self.0.lock() = Some(store);
+    }
+
+    /// The published cache, or `None` while no controller run has published one.
+    pub fn get(&self) -> Option<Store<BackupPolicy>> {
+        self.0.lock().clone()
+    }
 }
 
 /// Wait for `store` to have completed its initial list.
@@ -528,7 +581,11 @@ where
     Ok(())
 }
 
-pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
+pub async fn run(
+    client: Client,
+    metrics: Metrics,
+    backup_policy_cache: BackupPolicyCache,
+) -> Result<(), OperatorError> {
     let reporter = Reporter {
         controller: "cfgd-operator".into(),
         instance: std::env::var("POD_NAME").ok(),
@@ -540,6 +597,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let policies: Api<ConfigPolicy> = Api::all(client.clone());
     let cluster_policies: Api<ClusterConfigPolicy> = Api::all(client.clone());
     let modules: Api<Module> = Api::all(client.clone());
+    let backup_policies: Api<BackupPolicy> = Api::all(client.clone());
 
     // Each controller builder owns the reflector behind its primary watch, so
     // taking its store here is what lets every OTHER controller read that
@@ -549,6 +607,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let cp_builder = Controller::new(policies, WatcherConfig::default());
     let ccp_builder = Controller::new(cluster_policies, WatcherConfig::default());
     let mod_builder = Controller::new(modules, WatcherConfig::default());
+    let bp_builder = Controller::new(backup_policies, WatcherConfig::default());
 
     // Namespaces are read by the ClusterConfigPolicy controller but rooted by
     // no controller, so this cache carries its own reflector. It is a METADATA
@@ -577,9 +636,12 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         cluster_config_policies: ccp_builder.store(),
         modules: mod_builder.store(),
         drift_alerts: da_builder.store(),
+        backup_policies: bp_builder.store(),
         namespaces: ns_store,
     };
     let cp_store = stores.config_policies.clone();
+    let bp_store = stores.backup_policies.clone();
+    backup_policy_cache.publish(stores.backup_policies.clone());
 
     let ctx = Arc::new(ControllerContext {
         client: client.clone(),
@@ -596,9 +658,11 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let cp_ctx = Arc::clone(&ctx);
     let ccp_ctx = Arc::clone(&ctx);
     let mod_ctx = Arc::clone(&ctx);
+    let bp_ctx = Arc::clone(&ctx);
 
     info!(
-        "starting controllers: MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module"
+        "starting controllers: MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, \
+         Module, BackupPolicy"
     );
 
     let mc_controller = mc_builder
@@ -659,6 +723,30 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<Module>("Module"));
 
+    let bp_controller = bp_builder
+        .watches(
+            Api::<MachineConfig>::all(client.clone()),
+            WatcherConfig::default(),
+            move |mc| {
+                // A machine reports which of its backup units it pins locally
+                // in its own status, so a device flipping that ownership must
+                // requeue every policy that could be scheduling the unit.
+                let ns = mc.namespace().unwrap_or_default();
+                bp_store
+                    .state()
+                    .into_iter()
+                    .filter(move |bp| bp.namespace().as_deref() == Some(ns.as_str()))
+                    .map(|bp| ObjectRef::from_obj(&*bp))
+                    .collect::<Vec<_>>()
+            },
+        )
+        .run(
+            reconcile_backup_policy,
+            make_error_policy::<BackupPolicy>("backup_policy"),
+            bp_ctx,
+        )
+        .for_each(log_reconcile::<BackupPolicy>("BackupPolicy"));
+
     // The namespace cache joins the controllers rather than being spawned: a
     // reflector only advances while its stream is polled, and a cache nobody
     // drives never becomes ready.
@@ -668,6 +756,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         cp_controller,
         ccp_controller,
         mod_controller,
+        bp_controller,
         namespace_cache
     );
 
@@ -880,6 +969,7 @@ pub(super) async fn emit_event(
 // Submodule declarations
 // ---------------------------------------------------------------------------
 
+mod backup_policy;
 mod cluster_config_policy;
 mod config_policy;
 mod drift_alert;
@@ -887,6 +977,7 @@ mod machine_config;
 mod module;
 
 // Bring per-controller reconcile fns into scope so run() can wire them up.
+use backup_policy::reconcile_backup_policy;
 use cluster_config_policy::reconcile_cluster_config_policy;
 use config_policy::reconcile_config_policy;
 use drift_alert::reconcile_drift_alert;
@@ -945,6 +1036,8 @@ pub(crate) mod test_fixtures;
 pub(crate) mod test_kube_harness;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_backup_policy;
 #[cfg(test)]
 mod tests_cluster_config_policy;
 #[cfg(test)]

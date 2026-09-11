@@ -112,8 +112,11 @@ pub fn restore_file_from_backup(
         // hard-fail because rollback exists precisely to revert to a known
         // state — leaving SSH/age keys at 0644 because chmod failed silently
         // is exactly the security-relevant bug this guard prevents.
+        // The symlink case returned above, so this target is the regular file
+        // the write just created: a link here could only have been planted
+        // between the two, which is the swap the no-follow chmod refuses.
         if let Some(mode) = bk.permissions
-            && let Err(e) = crate::set_file_permissions(target, mode)
+            && let Err(e) = crate::set_file_permissions_nofollow(target, mode)
         {
             printer.status_simple(
                 Role::Warn,
@@ -209,11 +212,19 @@ fn restore_through_link(
         );
         return RestoreOutcome::Failed;
     }
-    // The recorded mode is the resolved file's, so it is set on the resolved
-    // file: chmod through a link changes the destination, which is the file
-    // whose mode was captured.
+    // The recorded mode is the RESOLVED file's, so the chmod names whatever the
+    // write above landed on, through the same resolution that write used: one
+    // recorded hop is not the file where the chain is longer than one link, and a
+    // relative destination (stow's default shape) belongs to the link's own
+    // directory rather than the process cwd. The whole step runs AFTER the write
+    // because where the recorded destination is gone the write lands at the link
+    // path itself: only then is there a regular file to chmod, and a live symlink
+    // is what the no-follow chmod refuses. Naming the resolved file is also what
+    // keeps the chmod off the link, which whoever owns the target's directory can
+    // re-point between the two calls.
     if let Some(mode) = bk.permissions
-        && let Err(e) = crate::set_file_permissions(target, mode)
+        && let Err(e) = crate::resolve_write_target(target)
+            .and_then(|resolved| crate::set_file_permissions_nofollow(&resolved, mode))
     {
         printer.status_simple(
             Role::Warn,
@@ -419,6 +430,125 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "rollback through a link must restore the destination's mode"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_link_applies_recorded_permissions_to_a_relative_destination() {
+        // `read_link` hands back whatever the link stores, and stow's default
+        // shape is relative, so the recorded destination is too. Resolved
+        // against the process cwd it names either nothing or a same-named
+        // stranger; only the link's own directory answers.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_file = tmp.path().join("real-target.txt");
+        std::fs::write(&real_file, b"current").unwrap();
+        std::fs::set_permissions(&real_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let link = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink("real-target.txt", &link).unwrap();
+
+        let mut bk = record(&link, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some("real-target.txt".to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&link, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            link.symlink_metadata().unwrap().file_type().is_symlink(),
+            "rollback through a link must leave the link intact"
+        );
+        assert_eq!(std::fs::read(&link).unwrap(), b"original");
+        let mode = std::fs::metadata(&real_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a relative destination resolves against the link's directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_a_chain_of_links_applies_the_mode_to_the_file_at_its_end() {
+        // A link pointing at a second link is an ordinary stow shape, and the
+        // write follows the whole chain, so the recorded mode belongs to the file
+        // at the end of it. The recorded destination is the FIRST hop, which is
+        // itself a link, and the no-follow chmod refuses a link outright.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_file = tmp.path().join("real-target.txt");
+        std::fs::write(&real_file, b"current").unwrap();
+        std::fs::set_permissions(&real_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mid = tmp.path().join("mid");
+        std::os::unix::fs::symlink("real-target.txt", &mid).unwrap();
+        let link = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink("mid", &link).unwrap();
+
+        let mut bk = record(&link, b"original", Some(0o600));
+        bk.was_symlink = true;
+        bk.symlink_target = Some("mid".to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&link, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            mid.symlink_metadata().unwrap().file_type().is_symlink(),
+            "the middle hop stays a link, it is not the file the mode belongs to"
+        );
+        assert_eq!(std::fs::read(&real_file).unwrap(), b"original");
+        let mode = std::fs::metadata(&real_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the recorded mode lands on the file at the end of the chain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_through_a_dangling_link_applies_the_mode_to_the_file_that_replaced_it() {
+        // The recorded destination is gone, so the write lands at the link path
+        // itself and severs the link (`atomic_write_resolved`'s dangling rule).
+        // Only after that write is there a regular file to carry the mode:
+        // chmodded first, the path is still a live symlink, which the no-follow
+        // chmod refuses, failing a rollback whose content already landed.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("linked-target.txt");
+        std::os::unix::fs::symlink("gone.txt", &target).unwrap();
+
+        // Not 0o600: that is the mode the temp file already carries, so a pin
+        // asserting it stays green with the chmod deleted.
+        let mut bk = record(&target, b"original", Some(0o640));
+        bk.was_symlink = true;
+        bk.symlink_target = Some("gone.txt".to_string());
+
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&target, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(
+            target.symlink_metadata().unwrap().file_type().is_file(),
+            "a write through a dangling link lands at the link path itself"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o640,
+            "the recorded mode lands on the file the write left behind"
+        );
+        assert!(
+            !tmp.path().join("gone.txt").exists(),
+            "a dangling destination is never created to satisfy the mode"
         );
     }
 

@@ -594,7 +594,12 @@ pub fn run_apply(
     // The units the run's `Backups` pseudo-phase will render. Built before the
     // run so the header's `Actions N planned` can count their hooks and
     // snapshots, which is the same enumeration the rollup reconciles against.
-    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = pending_backup_specs
+    let backup_projections = super::backup::recorded_projections(Some(state));
+    let projected_backup_specs: Vec<cfgd_core::config::BackupSpec> = pending_backup_specs
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &backup_projections))
+        .collect();
+    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = projected_backup_specs
         .iter()
         .map(|spec| {
             cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)
@@ -779,10 +784,15 @@ pub fn run_apply(
     let output = ApplyOutput {
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
+        // The PLANNED total, the same number the header printed: the three
+        // counts below partition it and `after_plan` sits outside it, so a
+        // consumer can reconcile the payload against the run it watched.
+        total: result.planned_total,
         succeeded: result.succeeded(),
         skipped: result.skipped(),
         failed: result.failed(),
         not_attempted: result.not_attempted().len(),
+        after_plan: AfterPlanCounts::of(&result),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its

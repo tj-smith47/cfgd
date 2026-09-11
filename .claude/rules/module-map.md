@@ -2,6 +2,7 @@
 
 ```
 crates/
+├── cfgd-schema/src/        # Leaf crate: config value types + shape validation shared by the parser and the CRDs (serde + schemars only)
 ├── cfgd-core/src/          # Core library crate
 │   ├── backup/             # Declarative backup engine (spec.backups[]): hooks, atomic copy, retention, schedule grammar + next-due seeding (schedule.rs)
 │   ├── config/             # YAML config loading, profile resolution, layer merging

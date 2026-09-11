@@ -167,6 +167,25 @@ after:
 
 # Independent workspaces for per-component release cadences.
 workspaces:
+  # --- cfgd-schema: shared config value types (crates.io only) ---
+  # Publishes ahead of cfgd-crd and cfgd-core: both depend on it, so the sparse
+  # index must carry its pinned version before either of them publishes.
+  - name: cfgd-schema
+    skip:
+      - announce
+    crates:
+      - name: cfgd-schema
+        path: crates/cfgd-schema
+        tag_template: "schema-v{{ Version }}"
+        version_sync:
+          enabled: true
+          mode: cargo
+        # A pure library with zero bin targets, so it produces no binary
+        # release artifact (mirrors cfgd-crd and cfgd-core).
+        builds:
+          - id: cfgd-schema
+            skip: true
+
   # --- cfgd-crd: CRD spec types + schemars (crates.io only) ---
   # Publishes ahead of cfgd-core: cfgd-core's `crd` feature depends on cfgd-crd,
   # so the sparse index must carry the pinned cfgd-crd version before cfgd-core
@@ -178,6 +197,7 @@ workspaces:
       - name: cfgd-crd
         path: crates/cfgd-crd
         tag_template: "crd-v{{ Version }}"
+        depends_on: [cfgd-schema]
         version_sync:
           enabled: true
           mode: cargo
@@ -197,7 +217,12 @@ workspaces:
       - name: cfgd-core
         path: crates/cfgd-core
         tag_template: "core-v{{ Version }}"
-        depends_on: [cfgd-crd]
+        # cfgd-schema is stated alongside cfgd-crd rather than left to travel
+        # through it: cfgd-crd is an OPTIONAL dependency here (the default `crd`
+        # feature), so a feature-gate change would silently take the only edge
+        # to cfgd-schema with it, while the dependency on cfgd-schema itself is
+        # unconditional.
+        depends_on: [cfgd-crd, cfgd-schema]
         version_sync:
           enabled: true
           mode: cargo

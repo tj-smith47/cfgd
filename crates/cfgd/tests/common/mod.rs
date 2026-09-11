@@ -47,6 +47,76 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// A tempdir-backed profile whose THREE file deploys trigger FOUR `onChange`
+/// hooks: three PLANNED actions, and four items of work the plan could not name,
+/// because a hook's condition is whether anything in this very run changed.
+///
+/// The second target is pre-created holding bytes cfgd never wrote, so that one
+/// deploy settles as a conflict skip under `--on-conflict skip` while the other
+/// two create their targets: `total` 3, `succeeded` 2, `skipped` 1, `failed` 0,
+/// `afterPlan` 4. Those are the smallest numbers that differ pairwise — with no
+/// failing action the partition forces `total == succeeded + skipped` — and the
+/// consumer asserts the premise rather than reciting it, through
+/// `cfgd_core::test_helpers::assert_slots_discriminate`. Each hook carries its
+/// own argument so the report shows four rows rather than one four times.
+///
+/// Returns `(config_dir, state_dir, [first target, second target, third target])`.
+pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, [PathBuf; 3]) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    std::fs::write(config_dir.path().join("files").join("second.txt"), "second").unwrap();
+    std::fs::write(config_dir.path().join("files").join("third.txt"), "third").unwrap();
+    let second = config_dir.path().join("out").join("second.txt");
+    let third = config_dir.path().join("out").join("third.txt");
+    // Pre-created holding bytes cfgd never wrote: the deploy is planned (the
+    // content differs) and then settles as a skip under `--on-conflict skip`,
+    // which is what keeps `total` and `succeeded` from being the same number.
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&second, "a stranger wrote this").unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true 1\"\n      - \"true 2\"\n      - \"true 3\"\n      - \"true 4\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n      - source: files/third.txt\n        target: {}\n        strategy: Copy\n",
+        target.display(),
+        second.display(),
+        third.display()
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
+    (config_dir, state_dir, [target, second, third])
+}
+
+/// A tempdir-backed profile whose `onChange` hooks are declared by TWO owners:
+/// the profile itself, and a module whose own planned work changed this run.
+///
+/// The module declares a `postApply` script as the work that changes, which is
+/// what makes it eligible: the hook loop admits a module only when a result
+/// whose description carries that module's own `module:<name>:` prefix changed,
+/// so a module that declares a hook and does nothing opens no group.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_and_module_with_on_change_hooks_setup()
+-> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let module_dir = config_dir.path().join("modules").join("hooked");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postApply:\n      - \"true applied\"\n    onChange:\n      - \"true module\"\n",
+    )
+    .unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - hooked\n  scripts:\n    onChange:\n      - \"true profile\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
+    (config_dir, state_dir, target)
+}
+
 /// Build a tempdir-backed profile that resolves to more modules than it
 /// declares: `editor` is the only name in `spec.modules`, and it `depends` on
 /// `core`.
@@ -89,7 +159,7 @@ pub fn profile_with_module_dependency_setup() -> (tempfile::TempDir, tempfile::T
 }
 
 /// Build a tempdir-backed profile whose plan carries every shape the phase
-/// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
+/// tree renders: a `Bootstrap` manager node, a `Packages` install, and a
 /// serially-applied file write.
 ///
 /// The caller must have a `CFGD_BREW_BIN` shim installed, which is what makes
@@ -345,9 +415,12 @@ pub fn backup_list_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 
 /// Write the shared `withbackups` profile (a schedule-less `docs` and a cron
 /// `weekly`) declaring `source` for both, plus the `cfgd.yaml` selecting it.
+///
+/// `weekly` pins `scheduleOwner: Local` so the listing goldens drive both arms
+/// of the field through the real command, config to cell to payload.
 fn write_backup_profile(config_dir: &tempfile::TempDir, source: &str) {
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      scheduleOwner: Local\n      retention: 3\n",
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -1593,4 +1666,57 @@ pub fn assert_nests_under(output: &str, header: &str, needle: &str) {
          under its header, not merely somewhere deeper \
          (header indent {header_indent}, settle indent {settled_indent}): {output}"
     );
+}
+
+/// Write a one-unit `withbackups` profile whose `docs` backup snapshots
+/// `source` into `destination`, plus the `cfgd.yaml` selecting it. Rewriting it
+/// with a second `destination` is how a test moves a unit the way an operator
+/// editing their config does.
+pub fn write_gc_profile(
+    config_dir: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) {
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      destination: {}\n      retention: 3\n",
+        cfgd_core::to_posix_string(source),
+        cfgd_core::to_posix_string(destination),
+    );
+    let profiles_dir = config_dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+    std::fs::write(
+        config_dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n",
+    )
+    .unwrap();
+}
+
+/// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
+/// and snapshot again — the prune that discovers the stranded payload and marks
+/// its row `orphaned`. Returns the path the first run wrote and what the second
+/// run printed, which is where the closing `cfgd backup gc` hint lands.
+pub fn strand_a_snapshot(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    source: &std::path::Path,
+) -> (PathBuf, String) {
+    let old = state_dir.join("old-backups");
+    write_gc_profile(config_dir, source, &old);
+    let cli = cli_for(config_dir, state_dir);
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let stranded = std::fs::read_dir(&old)
+        .expect("the first destination must exist after a run")
+        .map(|e| e.expect("entry").path())
+        .next()
+        .expect("the first run wrote a snapshot");
+
+    write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+    (stranded, cfgd_core::output::strip_ansi(&cap.human()))
 }

@@ -1,17 +1,6 @@
 # Gateway SSE streaming test (GW-21).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 
-# Helper: build auth header for admin API calls (redefine if not already present).
-if ! declare -f gw_admin_auth_header >/dev/null 2>&1; then
-    gw_admin_auth_header() {
-        if [ -n "$ADMIN_KEY" ]; then
-            echo "Authorization: Bearer $ADMIN_KEY"
-        else
-            echo "X-No-Auth: open-mode"
-        fi
-    }
-fi
-
 # =================================================================
 # GW-21: SSE event stream
 # =================================================================

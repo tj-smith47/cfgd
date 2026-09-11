@@ -20,7 +20,10 @@ use crate::errors::Result;
 use crate::state::{PendingDecision, StateStore};
 use crate::to_posix_string;
 
-use super::{Action, Plan, SystemAction, action_resource_info};
+use super::{
+    Action, ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, Plan, SystemAction,
+    action_resource_info,
+};
 
 /// Every resource a merged profile declares, in decision vocabulary.
 ///
@@ -2129,7 +2132,11 @@ impl DecisionExclusions {
             },
             // The env surface is withheld as a unit, so every per-item and
             // per-file spelling under it is a row the tick did not judge.
-            "env-var" | "alias" | "env" | "env-rc" | "env-session" => self.withholds_env_surface(),
+            "env-var"
+            | "alias"
+            | ENV_RESOURCE_TYPE
+            | ENV_RC_RESOURCE_TYPE
+            | ENV_SESSION_RESOURCE_TYPE => self.withholds_env_surface(),
             _ => false,
         }
     }
@@ -2330,11 +2337,9 @@ mod outranked_tests {
         let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let cli = core.join("../../cfgd/src");
         let mut offenders = Vec::new();
-        let mut files = Vec::new();
-        for root in [core, cli] {
-            rust_files(&root, &mut files);
-        }
-        assert!(files.len() > 100, "the walk reached {} files", files.len());
+        let mut files = crate::test_helpers::rust_sources_under(&core);
+        files.extend(crate::test_helpers::rust_sources_under(&cli));
+        let mut scanned = 0usize;
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
@@ -2342,9 +2347,10 @@ mod outranked_tests {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            scanned += 1;
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
@@ -2355,6 +2361,7 @@ mod outranked_tests {
                 }
             }
         }
+        assert!(scanned > 100, "the walk scanned {scanned} files");
         assert!(
             offenders.is_empty(),
             "a decisions section title composes through `pending_decisions_title` / \
@@ -2370,20 +2377,6 @@ mod outranked_tests {
             declined_decisions_title(2, DecisionsTitleScope::Listing),
             "Declined Decisions (2 items)"
         );
-    }
-
-    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
     }
 
     /// Every kind `decision_resource_content` recognizes is classified by

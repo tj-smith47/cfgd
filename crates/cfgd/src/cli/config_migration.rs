@@ -193,6 +193,7 @@ fn persist_xdg_pin(home: &Path) -> std::io::Result<Option<PathBuf>> {
 /// Mirrors the login/all-scope targeting in `reconciler::env_engine`; a direct
 /// export is written rather than routing through `~/.cfgd.env` (which the env
 /// engine regenerates wholesale from `spec.env`, and would clobber here).
+// basename-ok: writes an rc file, classifies no recorded row
 fn xdg_rc_target(home: &Path, shell_name: Option<&str>) -> XdgRcTarget {
     match shell_name {
         Some(s) if s.contains("zsh") => XdgRcTarget::PosixExport(home.join(".zshenv")),
@@ -290,7 +291,20 @@ fn migrate_legacy_data_dirs_at(
         .join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME)
         .exists()
     {
-        let _ = cfgd_core::set_file_permissions(new_state, 0o700);
+        // No-follow: the state dir sits under a HOME the invoking user owns, so
+        // a path-based chmod here lands on whatever a link they put in its place
+        // resolves to once the migration runs under `sudo`. A refusal is
+        // reported rather than dropped, because something replaced the directory
+        // the credential was just moved into.
+        if let Err(e) = cfgd_core::set_file_permissions_nofollow(new_state, 0o700) {
+            printer.status_simple(
+                Role::Warn,
+                cfgd_core::fold_home_in_text(&format!(
+                    "Could not restrict {} to owner-only access: {e}",
+                    new_state.posix()
+                )),
+            );
+        }
     }
 
     let legacy_sources = legacy.join("sources");

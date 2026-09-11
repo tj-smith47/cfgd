@@ -26,8 +26,8 @@ use tracing::{info, warn};
 // (the CLI's typed CRD-construction tests) exercise the exact same predicate
 // without pulling in axum/hyper.
 use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
-    MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
+    BackupPolicySpec, ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec,
+    DriftAlertSpec, MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
@@ -146,6 +146,10 @@ fn build_webhook_router(state: WebhookState) -> Router {
             post(handle_validate_cluster_config_policy),
         )
         .route("/validate-driftalert", post(handle_validate_drift_alert))
+        .route(
+            "/validate-backuppolicy",
+            post(handle_validate_backup_policy),
+        )
         .route("/validate-module", post(handle_validate_module))
         .route("/mutate-pods", post(handle_mutate_pods))
         .route("/healthz", axum::routing::get(liveness_ok))
@@ -224,6 +228,13 @@ async fn handle_validate_drift_alert(
     Json(review): Json<AdmissionReview<DynamicObject>>,
 ) -> Json<AdmissionReview<DynamicObject>> {
     handle_validate::<DriftAlertSpec>("validate_driftalert", &state.metrics, review)
+}
+
+async fn handle_validate_backup_policy(
+    axum::extract::State(state): axum::extract::State<WebhookState>,
+    Json(review): Json<AdmissionReview<DynamicObject>>,
+) -> Json<AdmissionReview<DynamicObject>> {
+    handle_validate::<BackupPolicySpec>("validate_backuppolicy", &state.metrics, review)
 }
 
 async fn handle_validate_module(
@@ -393,6 +404,42 @@ fn load_private_key(
 // ---------------------------------------------------------------------------
 
 const MODULES_ANNOTATION: &str = cfgd_core::MODULES_ANNOTATION;
+const SKIPPED_MODULES_ANNOTATION: &str = cfgd_core::SKIPPED_MODULES_ANNOTATION;
+
+/// Whether a `platforms:` list admits injection into a pod. A pod is a Linux
+/// container, so the webhook can answer an `os` tag and nothing else: a list
+/// naming anything but `linux` is the author saying "not here", and the gated
+/// entry is left out rather than injected regardless. The ONE predicate behind
+/// both gates the webhook applies — a module's own `spec.platforms` and each
+/// `spec.env[].platforms`.
+fn injects_on_linux(platforms: &[String]) -> bool {
+    platforms.is_empty() || platforms.iter().any(|tag| tag == "linux")
+}
+
+/// Whether a module reaches the pod's own containers: admitted by
+/// [`injects_on_linux`] AND mounted rather than merely staged. The ONE
+/// surviving-set predicate behind everything a mounted module gets — its
+/// volumeMount, its env, the `cfgd-scripts` emptyDir and the init container
+/// that reads it. A `Debug` module stages its volume and is reached only from
+/// an ephemeral container, so an init container built for one would mount an
+/// emptyDir the loop never added and the API server would reject the pod.
+fn mounts_into_containers(spec: &ModuleSpec) -> bool {
+    injects_on_linux(&spec.platforms) && spec.mount_policy != MountPolicy::Debug
+}
+
+/// The modules an injection reached, as the complement of the set it skipped.
+/// The handler logs both halves off this one split, so no module can be
+/// reported injected two frames after a `warn!` said it was not.
+fn injected_names<'m>(
+    modules: &'m [(String, String, ModuleSpec)],
+    skipped: &[&str],
+) -> Vec<&'m str> {
+    modules
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .filter(|name| !skipped.contains(name))
+        .collect()
+}
 
 /// Parse the `cfgd.io/modules` annotation value into (name, version) pairs.
 /// Format: `"name:version,name:version"` (commas separate, colons delimit name:version).
@@ -489,11 +536,12 @@ fn ptr(path: &str) -> jsonptr::PointerBuf {
     jsonptr::PointerBuf::parse(path).unwrap_or_else(|_| jsonptr::PointerBuf::default())
 }
 
-/// Build JSON patch operations to inject CSI volumes, volumeMounts, and env vars.
-fn build_injection_patches(
+/// The patch operations injecting `modules` into `pod`, and the names of the
+/// modules the platform gate skipped whole.
+fn build_injection_patches<'m>(
     pod: &serde_json::Value,
-    modules: &[(String, String, ModuleSpec)],
-) -> Vec<json_patch::PatchOperation> {
+    modules: &'m [(String, String, ModuleSpec)],
+) -> (Vec<json_patch::PatchOperation>, Vec<&'m str>) {
     let mut patches = Vec::new();
     let containers = pod
         .pointer("/spec/containers")
@@ -504,7 +552,7 @@ fn build_injection_patches(
     let has_init_containers = pod.pointer("/spec/initContainers").is_some();
 
     if modules.is_empty() {
-        return patches;
+        return (patches, Vec::new());
     }
 
     // Ensure /spec/volumes exists
@@ -514,8 +562,6 @@ fn build_injection_patches(
             value: serde_json::json!([]),
         }));
     }
-
-    let mut needs_scripts_emptydir = false;
 
     // Ensure volumeMounts and env arrays exist on each container
     for (i, container) in containers.iter().enumerate() {
@@ -533,7 +579,22 @@ fn build_injection_patches(
         }
     }
 
+    let mut skipped: Vec<&str> = Vec::new();
+
     for (name, version, spec) in modules {
+        // Judged ahead of the CSI volume and of `mountPolicy`, so a module the
+        // author gated away from Linux stages nothing at all — a `Debug` policy
+        // on it still puts no volume on the pod.
+        if !injects_on_linux(&spec.platforms) {
+            warn!(
+                module = name,
+                platforms = ?spec.platforms,
+                "module gated to another platform — not injected into pod"
+            );
+            skipped.push(name);
+            continue;
+        }
+
         let safe_name = cfgd_core::sanitize_k8s_name(name);
         let vol_name = format!("cfgd-module-{safe_name}");
         let mount_path = format!("/cfgd-modules/{safe_name}");
@@ -565,7 +626,7 @@ fn build_injection_patches(
 
         // Debug modules: volume only, no volumeMount/env on declared containers.
         // They are only accessible via ephemeral debug containers.
-        if spec.mount_policy == MountPolicy::Debug {
+        if !mounts_into_containers(spec) {
             continue;
         }
 
@@ -581,12 +642,7 @@ fn build_injection_patches(
             }));
 
             for env_var in &spec.env {
-                // A pod is a Linux container: the webhook can answer an `os`
-                // tag and nothing else, so an entry gated to anything but
-                // `linux` is not injected rather than injected regardless.
-                if !env_var.platforms.is_empty()
-                    && !env_var.platforms.iter().any(|tag| tag == "linux")
-                {
+                if !injects_on_linux(&env_var.platforms) {
                     continue;
                 }
                 if env_var.append {
@@ -608,16 +664,12 @@ fn build_injection_patches(
                 }
             }
         }
-
-        if spec.scripts.post_apply.is_some() {
-            needs_scripts_emptydir = true;
-        }
     }
 
     // Add init containers for modules with postApply scripts
     let script_modules: Vec<_> = modules
         .iter()
-        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some())
+        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some() && mounts_into_containers(spec))
         .collect();
 
     if !script_modules.is_empty() {
@@ -628,15 +680,13 @@ fn build_injection_patches(
             }));
         }
 
-        if needs_scripts_emptydir {
-            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
-                path: ptr("/spec/volumes/-"),
-                value: serde_json::json!({
-                    "name": "cfgd-scripts",
-                    "emptyDir": {}
-                }),
-            }));
-        }
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path: ptr("/spec/volumes/-"),
+            value: serde_json::json!({
+                "name": "cfgd-scripts",
+                "emptyDir": {}
+            }),
+        }));
 
         for (name, _version, spec) in &script_modules {
             let safe_name = cfgd_core::sanitize_k8s_name(name);
@@ -667,7 +717,22 @@ fn build_injection_patches(
         }
     }
 
-    patches
+    if !skipped.is_empty() {
+        if pod.pointer("/metadata/annotations").is_none() {
+            patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+                path: ptr("/metadata/annotations"),
+                value: serde_json::json!({}),
+            }));
+        }
+        let mut path = ptr("/metadata/annotations");
+        path.push_back(jsonptr::Token::new(SKIPPED_MODULES_ANNOTATION));
+        patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
+            path,
+            value: serde_json::Value::String(skipped.join(",")),
+        }));
+    }
+
+    (patches, skipped)
 }
 
 async fn handle_mutate_pods(
@@ -765,7 +830,7 @@ async fn handle_mutate_pods(
     }
 
     // Build JSON patches
-    let patches = build_injection_patches(&pod_obj, &resolved);
+    let (patches, skipped) = build_injection_patches(&pod_obj, &resolved);
 
     let resp = match AdmissionResponse::from(&req).with_patch(json_patch::Patch(patches)) {
         Ok(r) => r,
@@ -776,10 +841,10 @@ async fn handle_mutate_pods(
         }
     };
 
-    let module_names: Vec<_> = resolved.iter().map(|(n, _, _)| n.as_str()).collect();
     info!(
         namespace = namespace,
-        modules = ?module_names,
+        modules = ?injected_names(&resolved, &skipped),
+        skipped = ?skipped,
         "injected modules into pod"
     );
 
@@ -788,7 +853,7 @@ async fn handle_mutate_pods(
 }
 
 #[cfg(test)]
-mod test_router;
+pub(crate) mod test_router;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -639,6 +639,35 @@ pub fn file_url(path: &Path) -> String {
     crate::to_file_url(path)
 }
 
+/// A fixture root as code that FOLDS symlinks will judge it.
+///
+/// `std::env::temp_dir()` is itself reached through a symlink on macOS, where
+/// `/var` is a link to `private/var` and `$TMPDIR` lives under it, so the first
+/// link any ancestor walk meets under `tempfile::tempdir()` is that one and every
+/// path it goes on to compose carries a `/private` prefix. A fixture building its
+/// expectation out of the tempdir's own path is then comparing against a prefix
+/// the code under test cannot produce. Rebase the whole fixture on this root once
+/// and build every directory, link and expectation from it.
+///
+/// For the root only. A path that IS a symlink must not be passed: resolving it
+/// answers where it points, which is not what a fold of its own ancestors
+/// composes. A test asserting a path as the operator GAVE it keeps comparing
+/// against the unfolded path, that being the string its subject renders.
+///
+/// Unix only, and gated rather than documented: on Windows `canonicalize`
+/// answers with a `\\?\` verbatim path, which no expectation rendered through
+/// `display()` matches, so a fold there would hand every caller a root its own
+/// subject can never produce.
+#[cfg(unix)]
+pub fn folded_temp_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|e| {
+        panic!(
+            "{}: a fixture root must exist before it can be folded: {e}",
+            root.display()
+        )
+    })
+}
+
 /// Shared snapshot-golden assertion for output snapshot tests.
 ///
 /// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when
@@ -700,6 +729,37 @@ macro_rules! assert_snapshot_golden {
             env!("CARGO_PKG_VERSION"),
         )
     };
+}
+
+/// Fail when two of the slots a fixture asserts hold one value.
+///
+/// A fixture whose asserted counts are meant to tell its slots APART proves
+/// nothing about which slot holds which the moment two of them coincide: a
+/// producer that swapped `succeeded` and `skipped`, or wired a class count to
+/// its sibling's, renders exactly the numbers the assertion expects. Carrying
+/// that premise as a sentence in a doc comment is what let four fixtures claim
+/// a distinctness their own numbers refuted, so the premise runs here instead
+/// and the doc comment points at this call.
+///
+/// Pass every slot whose value a producer could read for another, with the name
+/// a reader of the failure would recognize. A ZERO slot is left out: its clause
+/// either renders nothing or renders `0`, so two of them are no coincidence,
+/// and only a value a wrong wiring could return in another slot's place is a
+/// hole.
+pub fn assert_slots_discriminate(slots: &[(&str, usize)]) {
+    assert!(
+        slots.len() >= 2,
+        "a distinctness premise needs two slots to tell apart, got {slots:?}"
+    );
+    for (index, (name, value)) in slots.iter().enumerate() {
+        for (other, other_value) in &slots[index + 1..] {
+            assert_ne!(
+                value, other_value,
+                "`{name}` and `{other}` both hold {value}, so a producer reading \
+                 one for the other renders the number this fixture expects: {slots:?}"
+            );
+        }
+    }
 }
 
 /// Initialize a minimal git repository at `dir` with an initial commit.
@@ -1841,6 +1901,7 @@ impl ToolShim {
     /// Windows log is stripped of `"` to read as the same unquoted join
     /// `"$*"` gives on Unix.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log, so an empty argv is honest.
         let raw = std::fs::read_to_string(&self.log_path).unwrap_or_default();
         #[cfg(windows)]
         return raw.replace('"', "");
@@ -1952,6 +2013,7 @@ impl PathShimLog {
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log.
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
     }
 
@@ -2472,6 +2534,42 @@ impl Drop for CommandPathMemoTtlGuard {
     }
 }
 
+/// RAII pin of the rate-limited retry ladder's first step, restoring the prior
+/// setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for a different
+/// reason: the ladder a 429 moves the gateway client onto is measured in seconds
+/// against the gateway's own enrollment quota, so a test proving that the client
+/// CHOSE that ladder (rather than the half-second transient one) would otherwise
+/// have to sleep the real wait to see it.
+///
+/// Pinning this one needs serialization: a test asserting that the UNPINNED
+/// accessor still answers the constant is measuring exactly what a concurrent pin
+/// displaces. Pair every use with `#[serial_test::serial(rate_limited_backoff)]`,
+/// the named group that assertion shares — named, so nothing else is held up.
+pub struct RateLimitedBackoffGuard {
+    prior: Option<u64>,
+}
+
+impl RateLimitedBackoffGuard {
+    /// Pin the first step of the rate-limited ladder to `step`, saturating at
+    /// the millisecond range. `u64::MAX` is the "no override" sentinel, so a pin
+    /// that would land on it saturates one below rather than silently restoring
+    /// the default it was called to displace.
+    pub fn pinned(step: std::time::Duration) -> Self {
+        let millis = u64::try_from(step.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::retry::set_rate_limited_backoff_override(Some(millis)),
+        }
+    }
+}
+
+impl Drop for RateLimitedBackoffGuard {
+    fn drop(&mut self) {
+        crate::retry::set_rate_limited_backoff_override(self.prior);
+    }
+}
+
 /// RAII pin of the installed-package enumeration memo's TTL, restoring the
 /// prior setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for the
 /// same reason and with the same three constructors: the enumeration memo also
@@ -2486,15 +2584,11 @@ impl Drop for CommandPathMemoTtlGuard {
 /// enumeration-count tests share — named, so nothing outside them is held up.
 ///
 /// Scope is the test BINARY, since the override atomic is process-global and a
-/// binary is a process. cfgd-core's own tests pin to zero, so every use here
-/// carries the group; the four count assertions in the `cfgd` crate omit it on
-/// purpose, because nothing in THAT binary pins the ceiling and a group key
-/// there would exclude nothing. That is a precondition on the `cfgd` binary
-/// rather than a property of this type: the first `cfgd`-crate test to pin
-/// `always_expired` has to add the group to all four in the same change
-/// (`cli/live_drift.rs`, `cli/doctor.rs`, `cli/diff.rs`,
-/// `generate/scan/tests.rs`), or it breaks them with nothing going red where
-/// the mistake was made.
+/// binary is a process, and every pin in either binary carries the group —
+/// `every_test_pinning_a_serialized_seam_joins_its_own_group` reads this seam
+/// off its own roster and fails any declaration that pins it, or that asserts
+/// on the unpinned ceiling, without the attribute. The group is demanded
+/// mechanically rather than by this paragraph.
 pub struct EnumerationMemoTtlGuard {
     prior: Option<u64>,
 }
@@ -2823,6 +2917,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then set it to `value`.
     pub fn set(key: &'static str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::set_var(key, value);
@@ -2833,6 +2928,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then remove it.
     pub fn unset(key: &'static str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::remove_var(key);
@@ -2841,8 +2937,23 @@ impl EnvVarGuard {
     }
 }
 
+/// `PATH` is read by every `command_path` resolution and by every spawn, so a
+/// write to it is only sound inside the window [`path_env_mutation_guard`]
+/// holds: the guard is what blocks a concurrent reader, and declaring it AFTER
+/// the `EnvVarGuard` leaves the restore outside the window it was supposed to
+/// bracket. Debug-only, so the guard's own restore path pays nothing in
+/// release, and it is a deterministic tell rather than a convention.
+fn refuse_unbracketed_path_write(key: &str) {
+    debug_assert!(
+        key != "PATH" || path_env_exclusive_guard_held(),
+        "a PATH write must sit inside path_env_mutation_guard()'s window; \
+         declare the mutation guard BEFORE the EnvVarGuard so it drops last"
+    );
+}
+
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
+        refuse_unbracketed_path_write(self.key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             match self.prior.take() {
@@ -3047,6 +3158,7 @@ impl CosignTestShim {
     /// disabled or the shim was never invoked.
     pub fn argv_log(&self) -> String {
         match (&self.argv_logging, &self.log_path) {
+            // absent-file-ok: a shim nothing ran wrote no log.
             (true, Some(path)) => std::fs::read_to_string(path).unwrap_or_default(),
             _ => String::new(),
         }
@@ -3261,7 +3373,7 @@ pub struct MockPackageManager {
     ///
     /// A real manager reports a package it just installed, and a mock that did
     /// not was the only reason a run could install one package twice without a
-    /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
+    /// test noticing: the `Bootstrap` phase provisions `npm` with `apt
     /// install npm`, and the `Packages` phase then asked apt for `npm` again.
     landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
     /// Whether `version_meets_minimum_checked` fails instead of answering —
@@ -3396,7 +3508,7 @@ impl MockPackageManager {
     }
 
     /// Name the tools this manager's bootstrap plan shells out to — the
-    /// population the `Prerequisites` phase draws a prerequisite node from.
+    /// population the `Bootstrap` phase draws a prerequisite node from.
     pub fn requiring(mut self, tools: &[&str]) -> Self {
         self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
         self
@@ -3833,7 +3945,7 @@ impl ReconcilerTestHarness {
     }
 
     /// Apply a plan under an active `--phase`/`--skip` filter — the shape a
-    /// test needs to reproduce "this run never reached the `Prerequisites`
+    /// test needs to reproduce "this run never reached the `Bootstrap`
     /// phase", since [`Self::apply`] always applies unfiltered.
     pub fn apply_with_filter(
         &self,
@@ -3946,6 +4058,62 @@ pub fn freeze_last_scan_at(
     store.freeze_last_scan_at(timestamp)
 }
 
+/// A recorded backup payload gc cannot remove, held that way for as long as the
+/// value lives.
+///
+/// The two operating systems refuse a removal for different reasons, so each
+/// gets the shape its own kernel actually refuses. On unix the snapshot's
+/// destination DIRECTORY is replaced with a file, so the recorded path runs
+/// through a file and yields `NotADirectory`; Windows reports that same path as
+/// `NotFound`, which the remover reads as a payload that was already gone, so
+/// there the snapshot file itself is opened granting no sharing at all and every
+/// `remove_file` against it — from this process or from a child running the real
+/// binary — fails with a sharing violation. Dropping the value releases the
+/// hold, so a caller binds it across the collection it is proving.
+pub struct UnremovablePayload {
+    /// What must still be on disk once gc has reported it could not remove the
+    /// payload: the stand-in file on unix, the held snapshot on Windows. Both
+    /// are files, so one question answers the claim on either OS.
+    witness: PathBuf,
+    #[cfg(windows)]
+    _held_open: std::fs::File,
+}
+
+impl UnremovablePayload {
+    /// Whether what was held unremovable is still there.
+    pub fn witness_survives(&self) -> bool {
+        self.witness.is_file()
+    }
+}
+
+/// Make the recorded snapshot at `payload` unremovable; see
+/// [`UnremovablePayload`] for the per-OS shape.
+pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
+    #[cfg(unix)]
+    {
+        let dir = payload
+            .parent()
+            .expect("a recorded snapshot lives under a destination")
+            .to_path_buf();
+        std::fs::remove_dir_all(&dir).expect("clear the old destination");
+        std::fs::write(&dir, b"an operator's file").expect("file in its place");
+        UnremovablePayload { witness: dir }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(payload)
+            .expect("hold the snapshot open");
+        UnremovablePayload {
+            witness: payload.to_path_buf(),
+            _held_open: held,
+        }
+    }
+}
+
 /// The production region of a Rust source file a walk-style pin reads: the file
 /// with EVERY top-level inline test module removed.
 ///
@@ -3976,8 +4144,9 @@ pub fn freeze_last_scan_at(
 /// — no such literal exists today, and `cli::tests::production_body` assumes
 /// the same shape.
 ///
-/// A walk over several files pairs this with a per-file floor on what it found,
-/// so a future re-blinding fails rather than passes quietly.
+/// A walk over several files reads through [`production_slice_of`] instead,
+/// which owns the read and the per-file floor that keeps a re-blinding from
+/// passing quietly.
 pub fn production_slice(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut lines = src.lines();
@@ -4008,6 +4177,46 @@ pub fn production_slice(src: &str) -> String {
     out
 }
 
+/// The whole text of a file a walk ENUMERATED, read here so the read failure
+/// cannot be separated from the population's floor.
+///
+/// A file a walk cannot open is otherwise indistinguishable from one holding
+/// nothing: the walk judges it by no rule, reports no offender and passes having
+/// read less than its floor promised. The WHOLE-file twin of
+/// [`production_slice_of`], for a walk whose subject is a source's test region,
+/// a golden or a markdown page rather than a source's production region. A read
+/// whose absence is a legitimate state — an artifact the test itself decided not
+/// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
+pub fn walked_file_body(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+}
+
+/// The production region of the Rust source at `path`, read here so the two
+/// halves a multi-file walk needs cannot be separated: a source the walk cannot
+/// read fails it, and a slice shorter than the lines preceding the file's first
+/// `#[cfg(test)]` fails it, because [`production_slice`] drops a trailing test
+/// module and nothing else, so a shorter read is a walk that went blind partway
+/// down the file. A walk over several files reads every one through this;
+/// [`production_slice`] stays the pure cut for a caller holding one body.
+pub fn production_slice_of(path: &Path) -> String {
+    let body = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
+    let production = production_slice(&body);
+    let before_tests = body
+        .lines()
+        .position(|l| l == "#[cfg(test)]")
+        .unwrap_or_else(|| body.lines().count());
+    let walked = production.lines().count();
+    assert!(
+        walked > 0 && walked >= before_tests,
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's test module",
+        path.display()
+    );
+    production
+}
+
 /// The workspace root: the directory holding `crates/`.
 ///
 /// `CARGO_MANIFEST_DIR` is resolved while THIS crate compiles, so it names
@@ -4017,6 +4226,228 @@ pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
+}
+
+/// Every file under `root`, at any depth, in whatever order the filesystem
+/// lists them.
+///
+/// The failure policy every walk in this module shares: a directory it cannot
+/// open, and an entry it cannot read, each fail the walk. Both are a walk gone
+/// blind over whatever was there, and the population a caller then judges is
+/// shorter than the one it claims to have read, which is a pass nobody asked
+/// for.
+fn files_under_root(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", dir.display())
+                })
+                .path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Every `.rs` source under `root`, sorted.
+///
+/// A directory the walk cannot open is a walk gone blind over whatever it held,
+/// and a fence built on a short list passes by reading less than it claims, so
+/// an unopenable directory and an empty result both fail here rather than
+/// shrinking the population in silence. The order is the sort, so a walk's own
+/// output and any message it builds read the same on every host.
+pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = files_under_root(root)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    assert!(
+        !out.is_empty(),
+        "{}: the walk found no sources, so it proves nothing",
+        root.display()
+    );
+    out.sort();
+    out
+}
+
+/// Every path-based chmod in the production sources of every crate under
+/// `crates_dir`, and the ones that do not say why following a symlink is safe.
+///
+/// One walk for the whole WORKSPACE, not one per crate: a walk reads source
+/// TEXT, so the crate graph does not bound it, and a per-crate body is how three
+/// crates (`cfgd-csi` above all, which runs as root on every node) ended up with
+/// no walk at all. The roots are derived by reading `crates_dir` rather than
+/// listed, so a crate added to the workspace joins the population with it, and
+/// each root is a crate's `src`: a bare `crates/` root would read
+/// `cfgd/tests/common/mod.rs` as production. A `build.rs` is outside the roots
+/// and outside the class — it runs as the building user in its own `OUT_DIR`,
+/// never elevated inside a directory another account owns.
+///
+/// `std::fs::set_permissions` resolves its path again and follows whatever link
+/// it finds. Under an elevated run inside a directory an unprivileged user owns,
+/// that is a read-anything primitive: unlink the file cfgd just wrote, plant a
+/// link at another user's private key, and root applies the mode to that
+/// instead. So a site either takes [`crate::set_file_permissions_nofollow`] /
+/// [`crate::widen_file_permissions_nofollow`], which chmod a descriptor and
+/// refuse a symlink outright, or carries a `// follow-ok: <why>` line on its own
+/// line or the line immediately above it, which is where this repo binds every
+/// other hatch: a wider window lets a marker written for one site drift above a
+/// second site and silently excuse it.
+///
+/// What counts and what offends are deliberately different sets.
+/// [`ChmodPopulation::chmods`] counts EVERY chmod-shaped call the walk read,
+/// no-follow ones included, because the follow-capable sites are the ones this
+/// rule drives to zero and flooring on those alone would turn a fully converted
+/// crate into a failure. Only the two path-based spellings can be misdirected,
+/// so only they are asked the question. A chmod through a descriptor
+/// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
+/// at a second file and is in neither set, and a `set_mode` on a `Permissions`
+/// value reaches the filesystem only through one of the calls already judged. A
+/// `.mode(0o…)` on an `OpenOptions` is outside both sets too (and outside the
+/// class): a create-with-mode that follows a planted link either writes the
+/// victim, which is `atomic_write`'s question, or creates cfgd's own file, and
+/// either way no existing file's mode moves. A
+/// COMMENT line counts for nothing either way: a doc sentence naming the
+/// primitive is documentation, not a call site, and a floor a rustdoc paragraph
+/// could hold up would let the real population shrink with the walk none the
+/// wiser. A function DECLARATION is skipped on the same grounds, and so is a
+/// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
+pub struct ChmodPopulation {
+    /// Crate `src` roots the walk read, workspace-relative.
+    ///
+    /// The NAMES rather than a count, so a caller can fail by name when a root
+    /// is renamed or moved out of `crates/`: a count is restored by any crate
+    /// that happens to appear, and the walk then reads a narrower population in
+    /// silence.
+    pub roots: Vec<String>,
+    /// Production sources the walk read.
+    pub files: usize,
+    /// Chmod-shaped calls it read, no-follow ones included.
+    pub chmods: usize,
+    /// Path-based chmods with no `// follow-ok:` above them, `<rel>:<line>` first.
+    pub offenders: Vec<String>,
+}
+
+/// Walk every `<crate>/src` under `crates_dir` for [`ChmodPopulation`]. Offender
+/// lines are workspace-relative, so one naming a file says which crate holds it.
+pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
+    // A tell inside a string literal is a message NAMING the primitive, not a
+    // call to it: `tracing::debug!("set_file_permissions is a no-op on Windows")`
+    // would otherwise hold this walk's floor up and be asked for a hatch a log
+    // line cannot carry.
+    fn names_outside_a_literal(line: &str, tell: &str) -> bool {
+        let mut quoted = false;
+        let mut chars = line.char_indices();
+        while let Some((idx, ch)) = chars.next() {
+            if !quoted && line[idx..].starts_with(tell) {
+                return true;
+            }
+            match ch {
+                '\\' if quoted => {
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                _ => {}
+            }
+        }
+        false
+    }
+    const COUNTED: &[&str] = &[
+        "set_file_permissions",
+        "widen_file_permissions",
+        "fs::set_permissions(",
+        "widen_world_readable(",
+        "carry_dir_mode(",
+    ];
+    let mut population = ChmodPopulation {
+        roots: Vec::new(),
+        files: 0,
+        chmods: 0,
+        offenders: Vec::new(),
+    };
+    let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    let workspace = workspace_root();
+    population.roots = roots
+        .iter()
+        .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
+        .collect();
+    for path in roots.iter().flat_map(|root| rust_sources_under(root)) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // A file that IS test scaffolding carries no `#[cfg(test)]` of its own
+        // for the slice to cut at, so it is named out here instead.
+        if name.starts_with("tests")
+            || name == "test_helpers.rs"
+            || path.parent().is_some_and(|p| p.ends_with("tests"))
+        {
+            continue;
+        }
+        let body = production_slice_of(&path);
+        population.files += 1;
+        let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            // A function DECLARATION carries the name of the primitive it is,
+            // not a call to it: `pub fn set_file_permissions(` is the chmod
+            // every judged site reaches, and asking it the question would ask
+            // the rule of itself.
+            if line.contains(" fn ") || line.trim_start().starts_with("fn ") {
+                continue;
+            }
+            if COUNTED
+                .iter()
+                .any(|tell| names_outside_a_literal(line, tell))
+            {
+                population.chmods += 1;
+            }
+            if !(names_outside_a_literal(line, "set_file_permissions(")
+                || names_outside_a_literal(line, "fs::set_permissions("))
+            {
+                continue;
+            }
+            if lines[idx.saturating_sub(1)..=idx]
+                .iter()
+                .any(|l| l.contains("follow-ok:"))
+            {
+                continue;
+            }
+            population.offenders.push(format!(
+                "{relative}:{}: chmods a path that may be a symlink, take \
+                 `set_file_permissions_nofollow` (or \
+                 `widen_file_permissions_nofollow`), else mark it \
+                 `// follow-ok: <the ownership fact that makes the follow safe>`",
+                idx + 1
+            ));
+        }
+    }
+    population
 }
 
 /// Every snapshot-golden root in the workspace, workspace-relative.
@@ -4061,10 +4492,13 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut stack = vec![root.join("crates")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -4093,21 +4527,10 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
 /// the COMPLEMENT of, so a render captured under a new extension is
 /// classified rather than skipped in silence.
 pub fn snapshot_root_files() -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = snapshot_golden_roots();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
+    let mut files: Vec<PathBuf> = snapshot_golden_roots()
+        .iter()
+        .flat_map(|root| files_under_root(root))
+        .collect();
     files.sort();
     files
 }
@@ -5375,7 +5798,7 @@ mod tests {
             assert_eq!(
                 plan.total_actions(),
                 2,
-                "the install, plus the `Prerequisites` node refreshing the index it reads"
+                "the install, plus the `Bootstrap` node refreshing the index it reads"
             );
         }
 

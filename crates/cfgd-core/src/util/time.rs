@@ -78,23 +78,10 @@ pub fn utc_now_backup_stamp() -> String {
 
 /// Parse a duration string like "30s", "5m", "1h", or a plain number (as seconds).
 ///
-/// Returns an error description on invalid input.
-pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
-    let s = s.trim();
-    const SUFFIXES: &[(char, u64)] = &[('s', 1), ('m', 60), ('h', 3600), ('d', 86400)];
-    for &(suffix, multiplier) in SUFFIXES {
-        if let Some(n) = s.strip_suffix(suffix) {
-            return n
-                .trim()
-                .parse::<u64>()
-                .map(|v| std::time::Duration::from_secs(v * multiplier))
-                .map_err(|_| format!("invalid timeout: {}", s));
-        }
-    }
-    s.parse::<u64>()
-        .map(std::time::Duration::from_secs)
-        .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
-}
+/// Lives in `cfgd-schema` because the backup schedule grammar is shared with the
+/// cluster-side `BackupPolicy`, which cannot reach into this crate; re-exported
+/// here so every caller keeps `cfgd_core::parse_duration_str`.
+pub use cfgd_schema::parse_duration_str;
 
 /// Render the age of an ISO 8601 timestamp relative to `now` as a short
 /// "Xs ago" / "Xm ago" / "Xh ago" / "Xd ago" string, or `None` when `ts` or `now` fails

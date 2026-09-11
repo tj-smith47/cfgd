@@ -1,0 +1,31 @@
+# Leaf crate: the config value types whose shape the local YAML parser and the
+# Module CRD schema must agree on. Depends on no cfgd crate and on neither kube
+# nor k8s-openapi, so the CSI node plugin (which builds cfgd-core with
+# `default-features = false`) still resolves these types without the stack
+# cfgd-crd carries.
+[package]
+name = "cfgd-schema"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Shared cfgd config value types and cross-field shape validation"
+keywords = ["config", "schema", "serde", "cfgd"]
+categories = ["config"]
+
+[lib]
+name = "cfgd_schema"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = "1.2"
+thiserror = "2"
+# The backup schedule grammar is one function both the local parser and the
+# BackupPolicy CRD call, so the cron half lives beside the interval half here.
+croner = "4"

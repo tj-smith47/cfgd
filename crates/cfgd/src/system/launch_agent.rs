@@ -102,6 +102,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 format!("Writing launch agent: {}", plist_path.posix()),
             );
 
+            // user-scope-ok: the user's own LaunchAgent plist under their own home, written by their own unprivileged run
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
             // Unload existing agent (best-effort — may not be loaded yet)

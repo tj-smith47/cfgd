@@ -254,6 +254,16 @@ pub enum ApplySummary {
         /// what the run attempted, and outside `skipped`, which ran.
         #[serde(default, skip_serializing_if = "is_zero")]
         not_attempted: usize,
+        /// How many items of work the run did that its plan could not name — an
+        /// env surface a late input forced it to rewrite, an `onChange` hook.
+        /// Outside `total`, which is what the header promised before the run
+        /// began, and outside the three counts that partition it. The whole
+        /// class, not its successes: a recalled run states one number here
+        /// because the per-outcome split (performed / changed nothing / failed)
+        /// is the live rollup's own after-plan lines, which a stored row cannot
+        /// reproduce.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        after_plan: usize,
         /// Actions the run planned and never reached, recorded only by the
         /// cooperative-abort close.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +315,7 @@ impl std::fmt::Display for ApplySummary {
                 skipped,
                 failed,
                 not_attempted,
+                after_plan,
                 not_run,
                 aborted,
                 ..
@@ -322,6 +333,9 @@ impl std::fmt::Display for ApplySummary {
                 }
                 if *not_attempted > 0 {
                     write!(f, ", {not_attempted} not attempted")?;
+                }
+                if *after_plan > 0 {
+                    write!(f, ", {after_plan} after the plan")?;
                 }
                 if let Some(not_run) = not_run.filter(|n| *n > 0) {
                     write!(f, ", {not_run} not run")?;
@@ -520,10 +534,16 @@ impl DriftVerdict {
     }
 }
 
-/// The human vocabulary for a module's state — the ONE derivation of the word
-/// a person reads from the token the state store holds, so `cfgd status`,
-/// `cfgd status --module` and `cfgd module list` can never call one machine
-/// state by three names.
+/// The human vocabulary for a module's state on a surface REPORTING ON THE
+/// MACHINE — the ONE derivation of the word `cfgd status` and
+/// `cfgd status --module` read from the token the state store holds, so those
+/// surfaces can never call one machine state by two names.
+///
+/// The fact this vocabulary states is "cfgd put this here, and here is what a
+/// check since says about it". [`module_listing_display`] is its sibling for
+/// the surfaces stating a different fact — `cfgd module list` / `module show`
+/// answer whether a module is ON the machine at all — and the two differ in
+/// exactly the arm no check has answered.
 ///
 /// The stored tokens are untouched WIRE values ([`MODULE_STATUS_INSTALLED`] /
 /// [`MODULE_STATUS_ERROR`], pinned by
@@ -555,22 +575,46 @@ pub fn module_status_display(stored: &str, drift: DriftVerdict) -> (&'static str
         // The record's own fact, with the record's confidence: this module's
         // last apply completed, and nothing has since checked whether the
         // machine still agrees. `Synced` here is the claim the record cannot
-        // make.
-        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Installed", Role::Ok),
+        // make, and `Installed` is the claim `module list` makes about a
+        // DIFFERENT fact — so this surface says what it actually knows.
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Applied", Role::Ok),
         _ => ("NotApplied", Role::Pending),
+    }
+}
+
+/// The same vocabulary for `cfgd module list` and `cfgd module show`, which
+/// state a DIFFERENT fact: whether the module is on this machine.
+///
+/// Identical to [`module_status_display`] in every arm but the unchecked one.
+/// Both surfaces run no check of their own, so that arm is the one they
+/// almost always land in, and the word they want there is `Installed` — the
+/// listing's question is presence, not agreement. `module_status_display`'s
+/// `Applied` answers the other question, and one word doing both let a reader
+/// take a dashboard row's silence about drift for a claim about presence.
+pub fn module_listing_display(stored: &str, drift: DriftVerdict) -> (&'static str, Role) {
+    match (stored, drift) {
+        (MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked) => ("Installed", Role::Ok),
+        other => module_status_display(other.0, other.1),
     }
 }
 
 #[cfg(test)]
 mod apply_summary_tests {
     use super::*;
+    use crate::test_helpers::assert_slots_discriminate;
 
     /// The stored column is a wire shape and the human column is a sentence.
     /// `Summary  {"failed":0,"succeeded":22,"total":22}` was the stored value
     /// printed verbatim.
+    ///
+    /// Every arm whose sentence states more than one count holds counts that
+    /// differ pairwise, executed through `assert_slots_discriminate`: a clause
+    /// built from a sibling's field renders the very number the arm expects
+    /// otherwise. The clean arm is the one exception and says why.
     #[test]
     fn a_stored_summary_reads_back_as_prose_on_a_human_surface() {
         let clean = ApplySummary::Actions {
+            after_plan: 0,
             total: 22,
             succeeded: 22,
             skipped: 0,
@@ -579,50 +623,108 @@ mod apply_summary_tests {
             not_run: None,
             aborted: false,
         };
+        // A clean run's `total` and `succeeded` ARE one number, and its
+        // sentence states a single count, so there is nothing to tell apart.
         assert_eq!(ApplySummary::prose(&clean.to_column()), "22 succeeded");
 
+        // Each count is bound ONCE and read by all three: the stored row, the
+        // distinctness premise and the expected sentence. A number typed a
+        // second time is a number the premise does not cover.
+        let (total, succeeded, skipped) = (13, 12, 1);
         let split = ApplySummary::Actions {
-            total: 13,
-            succeeded: 12,
-            skipped: 1,
+            after_plan: 0,
+            total,
+            succeeded,
+            skipped,
             failed: 0,
             not_attempted: 0,
             not_run: None,
             aborted: false,
         };
+        assert_slots_discriminate(&[
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+        ]);
         assert_eq!(
             ApplySummary::prose(&split.to_column()),
-            "12 succeeded, 1 skipped"
+            format!("{succeeded} succeeded, {skipped} skipped")
         );
 
+        let (total, succeeded, failed, not_run) = (10, 4, 1, 5);
         let aborted = ApplySummary::Actions {
-            total: 9,
-            succeeded: 4,
+            after_plan: 0,
+            total,
+            succeeded,
             skipped: 0,
-            failed: 1,
+            failed,
             not_attempted: 0,
-            not_run: Some(4),
+            not_run: Some(not_run),
             aborted: true,
         };
+        assert_slots_discriminate(&[
+            ("total", total),
+            ("succeeded", succeeded),
+            ("failed", failed),
+            ("not run", not_run),
+        ]);
         assert_eq!(
             ApplySummary::prose(&aborted.to_column()),
-            "4 succeeded, 1 failed, 4 not run (aborted)"
+            format!("{succeeded} succeeded, {failed} failed, {not_run} not run (aborted)")
+        );
+
+        // Work the run learned it had to do is outside `total` too, and the
+        // recalled sentence says so in its own clause: a row whose prose folded
+        // it into `succeeded` read `4 succeeded` for a run the header promised
+        // one action of.
+        let (total, succeeded, skipped, after_plan_count) = (6, 1, 5, 3);
+        let after_plan = ApplySummary::Actions {
+            after_plan: after_plan_count,
+            total,
+            succeeded,
+            skipped,
+            failed: 0,
+            not_attempted: 0,
+            not_run: None,
+            aborted: false,
+        };
+        assert_slots_discriminate(&[
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+            ("after the plan", after_plan_count),
+        ]);
+        assert_eq!(
+            ApplySummary::prose(&after_plan.to_column()),
+            format!("{succeeded} succeeded, {skipped} skipped, {after_plan_count} after the plan")
+        );
+        assert!(
+            !clean.to_column().contains("afterPlan"),
+            "a run that learned nothing extra carries no field for it"
         );
 
         // A withheld action is outside `total` and named after the counts
         // that reconcile against it; a row with none carries no field for it.
+        let (total, succeeded, skipped, not_attempted) = (5, 2, 3, 1);
         let withheld = ApplySummary::Actions {
-            total: 2,
-            succeeded: 2,
-            skipped: 0,
+            after_plan: 0,
+            total,
+            succeeded,
+            skipped,
             failed: 0,
-            not_attempted: 1,
+            not_attempted,
             not_run: None,
             aborted: false,
         };
+        assert_slots_discriminate(&[
+            ("total", total),
+            ("succeeded", succeeded),
+            ("skipped", skipped),
+            ("not attempted", not_attempted),
+        ]);
         assert_eq!(
             ApplySummary::prose(&withheld.to_column()),
-            "2 succeeded, 1 not attempted"
+            format!("{succeeded} succeeded, {skipped} skipped, {not_attempted} not attempted")
         );
         assert!(
             !clean.to_column().contains("notAttempted"),
@@ -672,9 +774,11 @@ mod apply_summary_tests {
             ("not_attempted", "not attempted"),
             ("not_run", "not run"),
             ("aborted", "(aborted)"),
+            ("after_plan", "after the plan"),
         ];
 
         let build = |slot: &str| ApplySummary::Actions {
+            after_plan: (slot == "after_plan") as usize,
             total: 4,
             succeeded: 4,
             skipped: (slot == "skipped") as usize,
@@ -702,6 +806,7 @@ mod apply_summary_tests {
         assert_eq!(build("none").to_string(), "4 succeeded");
         assert_eq!(
             ApplySummary::Actions {
+                after_plan: 0,
                 total: 2,
                 succeeded: 0,
                 skipped: 0,
@@ -759,6 +864,11 @@ mod module_status_tests {
     /// `-o json` payload, so a machine consumer matches on them. A reword is a
     /// wire break and has to be made on purpose here rather than land as an
     /// incidental find-and-replace.
+    ///
+    /// [`module_listing_display`] is pinned in the same test because the two
+    /// are one vocabulary with two facts: the walk below drives every arm of
+    /// both and states where they deliberately part, so a reword of either
+    /// cannot quietly re-collide them.
     #[test]
     fn module_status_display_words_are_a_pinned_wire_contract() {
         assert_eq!(
@@ -783,8 +893,29 @@ mod module_status_tests {
         );
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked).0,
-            "Installed"
+            "Applied"
         );
+
+        // The listing vocabulary answers "is it on the machine", so the one
+        // arm no check covers is where the two words part.
+        assert_eq!(
+            module_listing_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
+            ("Installed", Role::Ok)
+        );
+        for (stored, drift) in [
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Clean),
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Drifted),
+            (MODULE_STATUS_INSTALLED, DriftVerdict::Unknown),
+            (MODULE_STATUS_ERROR, DriftVerdict::Clean),
+            (MODULE_STATUS_ERROR, DriftVerdict::Unchecked),
+            ("", DriftVerdict::Clean),
+        ] {
+            assert_eq!(
+                module_listing_display(stored, drift),
+                module_status_display(stored, drift),
+                "{stored:?}/{drift:?} is one fact, worded once"
+            );
+        }
     }
 
     #[test]
@@ -812,7 +943,7 @@ mod module_status_tests {
         // claim about the machine agreeing with it is missing.
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
-            ("Installed", Role::Ok)
+            ("Applied", Role::Ok)
         );
         // A failed apply still outranks the absence of a check.
         assert_eq!(
@@ -929,11 +1060,11 @@ pub struct FileBackupRecord {
 
 /// Outcome of one declarative backup run (`spec.backups[]`).
 ///
-/// Only two outcomes exist because the artifact is what the operator cares
-/// about: either a snapshot was written (`Success`) or none was
-/// (`Failed`). A `postBackup` hook that fails *after* a good copy leaves the
-/// run `Success` with [`BackupRunRecord::error`] populated — see
-/// [`crate::backup::run_backup`] for why.
+/// Two of the three are what the run itself produced: either a snapshot was
+/// written (`Success`) or none was (`Failed`). A `postBackup` hook that fails
+/// *after* a good copy leaves the run `Success` with
+/// [`BackupRunRecord::error`] populated — see [`crate::backup::run_backup`]
+/// for why. `Orphaned` is the one a LATER run assigns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BackupRunStatus {
@@ -941,6 +1072,17 @@ pub enum BackupRunStatus {
     Success,
     /// No snapshot was written: a `preBackup` hook failed, or the copy did.
     Failed,
+    /// The snapshot this row records sits outside the unit's current
+    /// destination, so the unit's `destination:` moved after it was written.
+    ///
+    /// Assigned by the retention prune, which used to DROP such a row — and
+    /// with the row went the only proof the path was ever cfgd's, leaving the
+    /// payload uncollectable by anything but the operator's own `rm`. The row
+    /// is the proof, so it is kept and re-classified instead:
+    /// [`crate::backup::collect_orphans`] is what removes the recorded path
+    /// and then the row. It is no longer a restorable snapshot
+    /// ([`BackupRunRecord::has_artifact`]) and occupies no retention slot.
+    Orphaned,
 }
 
 impl BackupRunStatus {
@@ -950,6 +1092,7 @@ impl BackupRunStatus {
         match self {
             BackupRunStatus::Success => "success",
             BackupRunStatus::Failed => "failed",
+            BackupRunStatus::Orphaned => "orphaned",
         }
     }
 
@@ -958,6 +1101,7 @@ impl BackupRunStatus {
     pub(in crate::state) fn from_str(s: &str) -> Self {
         match s {
             "success" => BackupRunStatus::Success,
+            "orphaned" => BackupRunStatus::Orphaned,
             _ => BackupRunStatus::Failed,
         }
     }
@@ -980,6 +1124,10 @@ pub fn backup_run_status_display(stored: &str) -> (&str, Role) {
         ("Success", Role::Ok)
     } else if stored == BackupRunStatus::Failed.as_str() {
         ("Failed", Role::Fail)
+    } else if stored == BackupRunStatus::Orphaned.as_str() {
+        // Warn, not Fail: the run itself succeeded, and what needs attention is
+        // a payload sitting where nothing prunes it.
+        ("Orphaned", Role::Warn)
     } else {
         (stored, Role::Pending)
     }
@@ -1036,9 +1184,15 @@ impl BackupRunRecord {
         self.status == BackupRunStatus::Success && self.error.is_none()
     }
 
-    /// Whether this run left a snapshot on disk.
+    /// Whether this run left a snapshot on disk that still belongs to its
+    /// unit — the predicate every restorable-snapshot reader and the retention
+    /// accounting ask.
+    ///
+    /// An [`BackupRunStatus::Orphaned`] row still NAMES a path, and that path
+    /// is what `cfgd backup gc` removes; it is not one of the unit's snapshots
+    /// any more, so it is neither restorable nor allowed to evict one that is.
     pub fn has_artifact(&self) -> bool {
-        self.destination_path.is_some()
+        self.destination_path.is_some() && self.status != BackupRunStatus::Orphaned
     }
 }
 

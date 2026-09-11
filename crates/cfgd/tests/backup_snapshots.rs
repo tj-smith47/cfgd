@@ -20,6 +20,16 @@
 //!     does not depend on the host's temp root.
 //!   - `backup/rollback_list_empty.txt`   — the same listing on a machine where
 //!     nothing has been displaced.
+//!   - `backup/gc.{txt}`                  — `cfgd backup gc` after a
+//!     `destination:` change stranded a snapshot: one `backup:docs` group, the
+//!     `remove` row and its `destination changed` detail, and the rollup. Its
+//!     `-o json` shape is asserted beside it rather than pinned as a golden,
+//!     the recorded path being a tempdir.
+//!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
+//!     has moved no destination.
+//!   - `backup/run_orphan_hint.txt`        — the `cfgd backup run` that moves a
+//!     `destination:`, whose group carries the snapshot row it wrote and then
+//!     the hint naming what the move stranded.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -40,8 +50,8 @@ use std::path::Path;
 
 use cfgd::cli::apply::run_apply;
 use cfgd::cli::backup::{
-    RestoreArgs, build_backup_list_doc, build_backup_rollback_list_doc, cmd_backup_list,
-    cmd_backup_rollback, cmd_backup_run, run_backup_restore, run_backup_rollback,
+    RestoreArgs, build_backup_list_doc, build_backup_rollback_list_doc, cmd_backup_gc,
+    cmd_backup_list, cmd_backup_rollback, cmd_backup_run, run_backup_restore, run_backup_rollback,
 };
 use cfgd::cli::output_types::{BackupListEntry, BackupRollbackEntry};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
@@ -50,7 +60,7 @@ use pretty_assertions::assert_eq;
 
 use common::{
     apply_args, apply_args_dry_run, backup_list_profile_setup, backup_profile_setup,
-    backup_profile_with_one_failure_setup, cli_for,
+    backup_profile_with_one_failure_setup, cli_for, strand_a_snapshot,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -482,6 +492,151 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
 }
 
 #[test]
+fn backup_list_names_the_schedule_owner_of_every_unit() {
+    // The word is the unit's own, not the listing's: a cluster `BackupPolicy`
+    // may reschedule the first and never the second, and the column is the
+    // only place a reader can tell them apart.
+    let entries = vec![
+        BackupListEntry {
+            name: "docs".to_string(),
+            source: "/home/t/docs".to_string(),
+            schedule: None,
+            schedule_owner: "cluster".to_string(),
+            effective_schedule: None,
+            effective_retention: None,
+            retention: 3,
+            last_run_status: None,
+            last_run_at: None,
+            last_run_clean: None,
+            next_run_at: None,
+            snapshots: None,
+            orphaned: None,
+        },
+        BackupListEntry {
+            name: "keys".to_string(),
+            source: "/home/t/keys".to_string(),
+            schedule: Some("0 3 * * *".to_string()),
+            schedule_owner: "local".to_string(),
+            effective_schedule: None,
+            effective_retention: None,
+            retention: 3,
+            last_run_status: None,
+            last_run_at: None,
+            last_run_clean: None,
+            next_run_at: None,
+            snapshots: None,
+            orphaned: None,
+        },
+    ];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
+    drop(printer);
+
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    let header = human
+        .lines()
+        .find(|l| l.trim_start().starts_with("Name"))
+        .unwrap_or_else(|| panic!("no header in:\n{human}"));
+    let owner_col = header
+        .find("Schedule Owner")
+        .unwrap_or_else(|| panic!("no Schedule Owner column in: {header}"));
+    for (name, owner) in [("docs", "cluster"), ("keys", "local")] {
+        let row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{human}"));
+        let cell = row
+            .get(owner_col..)
+            .unwrap_or_else(|| panic!("{name}'s row ends before the column: {row}"));
+        assert!(
+            cell.starts_with(owner),
+            "{name}'s owner must sit under the Schedule Owner column: {row}"
+        );
+    }
+}
+
+/// One `BackupListEntry` with everything but the two counts under test held
+/// constant, so a column claim reads as a claim about those counts alone.
+fn list_entry(name: &str, orphaned: Option<usize>) -> BackupListEntry {
+    BackupListEntry {
+        name: name.to_string(),
+        source: format!("/home/t/{name}"),
+        schedule: None,
+        schedule_owner: "local".to_string(),
+        effective_schedule: None,
+        effective_retention: None,
+        retention: 3,
+        last_run_status: Some("success".to_string()),
+        last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
+        last_run_clean: Some(true),
+        next_run_at: None,
+        snapshots: Some(1),
+        orphaned,
+    }
+}
+
+fn rendered_list(entries: &[BackupListEntry]) -> String {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_backup_list_doc(entries, "2026-01-01T02:00:00Z"));
+    drop(printer);
+    cfgd_core::output::strip_ansi(&cap.human())
+}
+
+fn list_header(human: &str) -> String {
+    human
+        .lines()
+        .find(|l| l.trim_start().starts_with("Name"))
+        .unwrap_or_else(|| panic!("no header in:\n{human}"))
+        .to_string()
+}
+
+#[test]
+fn backup_list_counts_what_a_destination_change_stranded_after_the_snapshots_it_holds() {
+    // The column earns its place from the unit that HAS an orphan; the unit
+    // beside it reads `-`, because a zero is nothing to collect rather than a
+    // count worth a cell.
+    let human = rendered_list(&[list_entry("docs", Some(2)), list_entry("keys", Some(0))]);
+    let header = list_header(&human);
+
+    let snapshots = header
+        .find("Snapshots")
+        .unwrap_or_else(|| panic!("no Snapshots column in: {header}"));
+    let orphaned = header
+        .find("Orphaned")
+        .unwrap_or_else(|| panic!("no Orphaned column in: {header}"));
+    let status = header
+        .find("Status")
+        .unwrap_or_else(|| panic!("no Status column in: {header}"));
+    assert!(
+        snapshots < orphaned && orphaned < status,
+        "Orphaned belongs between the count it extends and the verdict: {header}"
+    );
+
+    for (name, cell) in [("docs", "2"), ("keys", cfgd_core::ABSENT)] {
+        let row = human
+            .lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{human}"));
+        let under = row
+            .get(orphaned..)
+            .unwrap_or_else(|| panic!("{name}'s row ends before the column: {row}"));
+        assert!(
+            under.starts_with(cell),
+            "{name} must read {cell} under Orphaned: {row}"
+        );
+    }
+}
+
+#[test]
+fn backup_list_drops_the_orphaned_column_on_a_machine_that_has_none() {
+    let human = rendered_list(&[list_entry("docs", Some(0)), list_entry("keys", Some(0))]);
+    assert!(
+        !list_header(&human).contains("Orphaned"),
+        "a column every row reads `-` in is dropped, not padded:\n{human}"
+    );
+}
+
+#[test]
 fn build_backup_list_doc_json_matches_serde_roundtrip() {
     // Pure data-roundtrip test on `BackupListEntry`/`build_backup_list_doc` —
     // pins the `-o json` shape without standing up config/state fixtures.
@@ -489,12 +644,16 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         name: "docs".to_string(),
         source: "/home/t/docs".to_string(),
         schedule: None,
+        schedule_owner: "cluster".to_string(),
+        effective_schedule: None,
+        effective_retention: None,
         retention: 3,
         last_run_status: Some("success".to_string()),
         last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
         last_run_clean: Some(true),
         next_run_at: None,
         snapshots: Some(2),
+        orphaned: None,
     }];
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
@@ -505,6 +664,11 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
     assert_eq!(
         actual, expected,
         "emit -o json must match serde_json::to_value(Vec<BackupListEntry>)"
+    );
+    assert_eq!(
+        actual[0]["scheduleOwner"],
+        serde_json::json!("cluster"),
+        "the owning layer is a constant key, present on every unit: {actual}"
     );
 }
 
@@ -1103,6 +1267,214 @@ fn apply_dry_run_human_shows_pending_backups() {
     );
 }
 
+#[test]
+fn backup_gc_renders_one_group_per_unit_with_an_orphan() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    assert!(stranded.exists(), "the moved destination lost its payload");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    assert!(
+        !stranded.exists(),
+        "gc left the snapshot its row recorded on disk"
+    );
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::output::strip_ansi(&cap.human()),
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/gc.txt", &normalized);
+}
+
+#[test]
+fn backup_gc_json_lists_what_it_collected() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("backup gc doc carries a payload");
+    let collected = payload["collected"].as_array().expect("collected array");
+    assert_eq!(collected.len(), 1, "{payload}");
+    assert_eq!(collected[0]["name"], "docs");
+    assert_eq!(collected[0]["sizeBytes"], 12);
+    assert!(
+        collected[0]["path"]
+            .as_str()
+            .expect("path")
+            .contains("old-backups"),
+        "the collected path must be the one the row recorded: {payload}"
+    );
+    assert_eq!(payload["skipped"], serde_json::json!([]));
+    assert_eq!(payload["failed"], serde_json::json!([]));
+}
+
+#[test]
+fn backup_gc_with_nothing_to_collect_says_so() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::output::strip_ansi(&cap.human()),
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/gc_nothing.txt",
+        &normalized
+    );
+}
+
+#[test]
+fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    // The run that MOVED the destination is the one that discovers the rows the
+    // move stranded, so its own snapshot row and the hint about them share a
+    // group — and the hint has to come second, or it names work the reader has
+    // not been told about yet.
+    let (_, moved_run) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+
+    let config_file = config_dir.path().join("cfgd.yaml");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &moved_run,
+        &[
+            (&config_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    );
+    let normalized =
+        cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/run_orphan_hint.txt",
+        &normalized
+    );
+}
+
+#[test]
+fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    // The read that says how many rows there are to collect runs before the
+    // header can state a count, so its degraded row is the one that can end up
+    // above the heading it belongs under.
+    cfgd_core::state::StateStore::open_in_dir(state_dir.path())
+        .expect("state store")
+        .drop_backup_runs_table()
+        .expect("take the history away");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    // `cmd_backup_gc` would exit the process on this run, so the body is driven
+    // directly; the exit code itself is pinned against the real binary in
+    // `tests/backup_exit_code.rs`.
+    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+    let mut lines = human.lines().filter(|l| !l.trim().is_empty());
+    assert_eq!(
+        lines.next(),
+        Some("Collect"),
+        "the run's heading must open its own report:\n{human}"
+    );
+    assert!(
+        human.lines().any(|l| l
+            .trim_start()
+            .starts_with("✗ backup:docs: history unavailable")),
+        "a unit whose history could not be read must still say so, as a failure:\n{human}"
+    );
+    assert!(
+        human.contains("Actions  2 planned"),
+        "the header must plan every unit the rollup prices:\n{human}"
+    );
+    assert!(
+        human.contains("2 actions failed"),
+        "each unit nothing could be asked about is a failure of the run:\n{human}"
+    );
+    assert!(
+        !human.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "no verdict claims a state no read earned:\n{human}"
+    );
+    assert_eq!(outcome.tally().failed, 2, "{outcome:?}");
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("backup gc doc carries a payload");
+    assert_eq!(
+        payload["unreadable"],
+        serde_json::json!(["docs", "weekly"]),
+        "the payload must name what could not be asked: {payload}"
+    );
+}
+
+#[test]
+fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    let held = cfgd_core::test_helpers::hold_payload_unremovable(&stranded);
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, _cap) = Printer::for_test_doc();
+    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    drop(printer);
+
+    // `cmd_backup_gc` turns exactly this into an exit, and it exits the
+    // process, so this drives the body and pins what it found; the exit code
+    // the same setup produces is pinned against the real binary in
+    // `tests/backup_exit_code.rs`.
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
+}
+
 // ─────────────────────────────────────────────────────
 // snapshot helpers — local to keep tests/output_snapshots/ self-contained
 // ─────────────────────────────────────────────────────
@@ -1470,6 +1842,47 @@ fn backup_list_counts_the_snapshots_a_unit_actually_holds() {
         counts,
         vec![("docs".to_string(), 1), ("weekly".to_string(), 0)],
         "each row counts its own unit's snapshots: {payload}"
+    );
+}
+
+#[test]
+fn backup_list_counts_what_a_stranded_destination_left_orphaned() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "hello backup").unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
+    // A third run, so the orphan count and its complement differ: with one
+    // orphaned row and two successful ones, a filter reading the wrong side of
+    // the status answers 2 where the column must say 1.
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("payload");
+    let entries = payload.as_array().expect("array payload");
+    assert_eq!(entries.len(), 1, "{payload}");
+    assert_eq!(entries[0]["name"], "docs");
+    assert_eq!(
+        entries[0]["orphaned"].as_i64(),
+        Some(1),
+        "the column counts the rows a destination change stranded: {payload}"
+    );
+    assert_eq!(
+        entries[0]["snapshots"].as_i64(),
+        Some(2),
+        "an orphaned row is no longer one of the unit's snapshots: {payload}"
+    );
+    assert_eq!(
+        entries[0]["lastRunStatus"], "success",
+        "the last run is the newest row, not the oldest: {payload}"
     );
 }
 
@@ -2080,5 +2493,119 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
             "declined": true,
         }),
         "a decline exits 0, so it must not claim `clean: false` — the key is absent entirely"
+    );
+}
+
+/// What a check-in answered with reaches the listing: a unit the machine left
+/// open runs on the cluster's cadence, and the Schedule Owner cell says whether
+/// that answer REPLACED what the profile declared (`projected`), merely
+/// restated it (`cluster`), or was ignored because the unit is pinned
+/// (`local`). `-o json` carries both the declared and the effective values and
+/// keeps `scheduleOwner` at the two words the schema spells, so the third word
+/// is the human listing's alone.
+#[test]
+fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
+    let (config_dir, state_dir) = backup_list_profile_setup();
+    // A third unit the cluster owns and DECLARES a cadence for, so the answer
+    // that restates that cadence has something to restate.
+    std::fs::write(
+        config_dir.path().join("profiles").join("withbackups.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: /var/lib/app/notes.txt\n      retention: 3\n    - name: weekly\n      source: /var/lib/app/notes.txt\n      schedule: \"0 3 * * *\"\n      scheduleOwner: Local\n      retention: 3\n    - name: mirrors\n      source: /var/lib/app/notes.txt\n      schedule: \"0 2 * * *\"\n      retention: 3\n",
+    )
+    .unwrap();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    // Both units are projected, so the pinned one is ignored on merit rather
+    // than for want of a projection to ignore.
+    let projection =
+        |schedule: &str, retention: Option<u32>| cfgd_core::backup::BackupScheduleProjection {
+            schedule: schedule.to_string(),
+            retention,
+        };
+    {
+        let store = cfgd_core::state::StateStore::open_in_dir(state_dir.path()).unwrap();
+        store
+            .record_cluster_backup_schedules(
+                &[
+                    ("docs".to_string(), projection("0 4 * * *", Some(30))),
+                    ("weekly".to_string(), projection("*/5 * * * *", Some(1))),
+                    ("mirrors".to_string(), projection("0 2 * * *", Some(3))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap();
+    }
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+    let human = cfgd_core::output::strip_ansi(&cap.human());
+
+    let row = |name: &str| {
+        human
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no {name} row in: {human}"))
+            .to_string()
+    };
+    let docs = row("docs");
+    assert!(
+        docs.contains("0 4 * * *") && docs.contains("projected") && docs.contains(" 30 "),
+        "a unit the cluster's answer replaced reads `projected`: {docs}"
+    );
+    let weekly = row("weekly");
+    assert!(
+        weekly.contains("0 3 * * *") && weekly.contains("local") && !weekly.contains("*/5"),
+        "a locally pinned unit keeps its declared cadence: {weekly}"
+    );
+    let mirrors = row("mirrors");
+    assert!(
+        mirrors.contains("0 2 * * *")
+            && mirrors.contains("cluster")
+            && !mirrors.contains("projected"),
+        "a cluster answer that restates the declared cadence still reads `cluster`: {mirrors}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("backup list doc carries a payload");
+    let unit = |name: &str| {
+        payload
+            .as_array()
+            .expect("the payload is the entry array")
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} entry in: {payload}"))
+            .clone()
+    };
+    let docs = unit("docs");
+    assert_eq!(docs["effectiveSchedule"], "0 4 * * *");
+    assert_eq!(docs["effectiveRetention"], 30);
+    assert_eq!(
+        docs["scheduleOwner"], "cluster",
+        "`projected` is the listing's word; the wire keeps the declared owner"
+    );
+    assert_eq!(docs["retention"], 3, "the declared value stays readable");
+    assert!(docs["schedule"].is_null(), "docs declares no schedule");
+    let weekly = unit("weekly");
+    assert_eq!(weekly["schedule"], "0 3 * * *");
+    assert!(
+        weekly.get("effectiveSchedule").is_none(),
+        "a pinned unit carries no effective override: {weekly}"
+    );
+    // The presence of either effective slot is the claim "the cluster changed
+    // this", so an answer restating what the profile already declared leaves
+    // both out.
+    let mirrors = unit("mirrors");
+    assert_eq!(mirrors["schedule"], "0 2 * * *");
+    assert!(
+        mirrors.get("effectiveSchedule").is_none(),
+        "an answer restating the declared cadence overrode nothing: {mirrors}"
+    );
+    assert!(
+        mirrors.get("effectiveRetention").is_none(),
+        "an answer restating the declared retention overrode nothing: {mirrors}"
     );
 }

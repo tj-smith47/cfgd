@@ -47,7 +47,8 @@ pub use env_engine::{
 };
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
-    EnvHostProbeOverride, EnvHostProbeOverrideGuard, with_env_host_probe_override_guard,
+    EnvHostProbeOverride, EnvHostProbeOverrideGuard, env_target_basenames,
+    with_env_host_probe_override_guard,
 };
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
@@ -77,22 +78,24 @@ pub use pending::{
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
-    ApplyRun, BACKUPS_PHASE_LABEL, ComposedSource, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO,
-    PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
-    ScopedGroup, ScopedPhase, align_width_of, in_scope_tree, nothing_to_do_verdict, outcome_counts,
-    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup, report_align_width,
-    report_subject_budget, run_next_step, sole_phase,
+    ApplyRun, BACKUPS_PHASE_LABEL, CHANGE_HOOKS_PHASE_LABEL, ComposedSource, Confirm,
+    HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO, PhaseCoverage, PseudoPhase, RunContext, RunDisposition,
+    RunExecutor, RunTally, RunTitle, ScopedGroup, ScopedPhase, align_width_of, in_scope_tree,
+    nothing_to_do_verdict, outcome_counts, pseudo_phase, render_apply_result, render_plan_tree,
+    render_run_rollup, report_align_width, report_subject_budget, run_next_step, sole_phase,
 };
 pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
-    Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP,
-    ENV_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP, MODULE_FACET_FILES_REFUSED, ManagerAction,
-    ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
-    Plan, ReconcileContext, RollbackResult, SESSION_GROUP, ScriptAction, ScriptPhase, SystemAction,
-    Tier, action_drift_rows, apply_heals_action_rows, attempted_count, module_files_unprobed,
-    module_skipped_whole, package_action_drift_rows, package_drift_resource_id,
-    package_entry_drift_id, split_package_drift_resource_id,
+    Action, ActionResult, AfterPlan, AfterPlanOutcome, AfterPlanState, ApplyResult,
+    CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
+    ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
+    MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
+    OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult,
+    SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier, action_drift_rows,
+    apply_heals_action_rows, attempted_count, module_files_unprobed, module_skipped_whole,
+    package_action_drift_rows, package_drift_resource_id, package_entry_drift_id,
+    split_package_drift_resource_id,
 };
 pub use verify::{
     EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,
@@ -217,7 +220,7 @@ pub struct Reconciler<'a> {
     unprovisioned: std::cell::RefCell<Vec<String>>,
     /// Managers a node of THIS run has already PUT on the machine — the
     /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
-    /// own `Prerequisites` phase already deliver this tool".
+    /// own `Bootstrap` phase already deliver this tool".
     ///
     /// A module entry naming a tool cfgd bootstraps (`- name: npm`) with no
     /// `prefer` and no `aliases` is not a route

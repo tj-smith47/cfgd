@@ -13,6 +13,8 @@
 //!   - `apply/dry_run.txt`      — `--dry-run` path through real
 //!     `cmd_apply` (so `display_plan_preview` drift is caught).
 //!   - `apply/nothing_to_do.txt`— plan is empty.
+//!   - `apply/change_hooks_owners.txt` — the `Change Hooks` phase over TWO
+//!     declaring owners: the profile and a module whose own work changed.
 //!   - `apply/with_failures.txt`— one file action fails (parent path is
 //!     a regular file, so `create_dir_all` errors at apply time). The
 //!     failure status renders INSIDE the phase section — the
@@ -26,17 +28,21 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cfgd::cli::ApplyArgs;
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
-use cfgd::cli::output_types::ApplyOutput;
+use cfgd::cli::output_types::{AfterPlanCounts, ApplyOutput};
 use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::reconciler::{ActionResult, AfterPlan, ApplyResult};
+use cfgd_core::test_helpers::assert_slots_discriminate;
 use pretty_assertions::assert_eq;
 
 use common::profile_with_packages_setup;
 use common::{
-    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
-    tiny_profile_setup,
+    apply_args, apply_args_dry_run, cli_for, plan_args,
+    profile_and_module_with_on_change_hooks_setup, profile_with_on_change_hook_setup,
+    profile_with_one_failure_setup, tiny_profile_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -45,8 +51,10 @@ fn happy_output() -> ApplyOutput {
     let mut source_commits = BTreeMap::new();
     source_commits.insert("team-config".to_string(), "abc1234".to_string());
     ApplyOutput {
+        after_plan: AfterPlanCounts::default(),
         status: "success".to_string(),
         apply_id: Some(42),
+        total: 3,
         succeeded: 3,
         skipped: 0,
         failed: 0,
@@ -222,6 +230,175 @@ fn apply_nothing_to_do_human() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/nothing_to_do.txt");
 }
 
+/// The header's `Actions N planned` and the rollup's tally are one account, on
+/// a run that did work its plan could not name: the `onChange` hook fires on
+/// whether THIS run changed anything, so no plan holds it. Counted as a planned
+/// success it rendered `3 succeeded` under a header promising two, and the
+/// `-o json` payload carried the same inflated count with no total to reconcile
+/// it against.
+///
+/// Every number the payload states is different from every other one, and the
+/// premise RUNS rather than being recited here: `assert_slots_discriminate`
+/// fails the moment an edit makes two of the asserted slots coincide, because a
+/// fixture whose counts coincide proves nothing about which field holds which
+/// and a swap between two equal ones passes.
+///
+/// The class's own split is on the wire too, and the second half of this test is
+/// what proves it: `-o json` emits no rollup, so a consumer of a lone class
+/// total cannot tell a surface that converged from one that changed nothing or
+/// failed — the conflation this whole class exists to end, on the surface with
+/// no human reader to catch it.
+#[test]
+#[cfg(unix)]
+fn apply_after_plan_work_human_and_json() {
+    let (config_dir, state_dir, targets) = profile_with_on_change_hook_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    let args = ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Skip,
+        ..apply_args()
+    };
+
+    cmd_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    // Three planned deploys of which one settles as a conflict skip, and four
+    // hooks: the smallest shape whose every asserted number differs from every
+    // other, since `failed` 0 forces `total == succeeded + skipped`.
+    let slots = [
+        ("total", 3),
+        ("succeeded", 2),
+        ("skipped", 1),
+        ("afterPlan", 4),
+    ];
+    assert_slots_discriminate(&slots);
+
+    let payload = cap.json().expect("apply emits its payload");
+    for (slot, count) in slots {
+        assert_eq!(
+            payload[slot], count,
+            "`{slot}` holds the one value no other asserted slot holds: {payload}"
+        );
+    }
+    assert_eq!(
+        payload["failed"], 0,
+        "nothing failed, so the two planned counts partition the total: {payload}"
+    );
+    assert!(
+        payload.get("afterPlanSkipped").is_none() && payload.get("afterPlanFailed").is_none(),
+        "every hook performed work, so neither sibling reaches the wire: {payload}"
+    );
+
+    let normalized = normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[
+            (&targets[0], "<TARGET>"),
+            (&targets[1], "<SECOND>"),
+            (&targets[2], "<THIRD>"),
+        ],
+    );
+    // The alignment column is measured on the REAL subjects, and the skip row's
+    // reason makes this report's widest one, so the padding beside the deploy
+    // encodes this host's temp-dir length: collapse it, as the other apply
+    // goldens do.
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
+    assert!(
+        stripped.contains("Actions  3 planned")
+            && stripped.contains("4 onChange hooks ran after the plan"),
+        "the header's promise and the class's own line: {stripped}"
+    );
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/after_plan.txt", &stripped);
+
+    // The same payload slots, filled from a run whose class holds one skip and
+    // TWO failures, so the three asserted counts differ: a swapped filter pair,
+    // and either field wired to the other's count, each render a number the
+    // assertion rejects. The records are the shape `merge_env_result` writes,
+    // pinned against that producer by cfgd-core's
+    // `an_unchanged_env_regeneration_is_recorded_as_an_after_plan_skip`.
+    let four_states = ApplyResult {
+        action_results: [(true, false), (true, true), (false, false), (false, false)]
+            .into_iter()
+            .map(|(success, skipped)| ActionResult {
+                after_plan: Some(AfterPlan::EnvSurface),
+                phase: "bootstrap".to_string(),
+                description: "env:write:/home/me/.cfgd.env".to_string(),
+                success,
+                error: (!success).then(|| "permission denied".to_string()),
+                changed: success && !skipped,
+                skipped,
+                not_attempted: None,
+                installed: None,
+                versions: Default::default(),
+                drift_rows: Vec::new(),
+            })
+            .collect(),
+        status: cfgd_core::state::ApplyStatus::Success,
+        apply_id: 1,
+        aborted: None,
+        planned_total: 0,
+        caveats: Vec::new(),
+    };
+    let slots = [
+        ("afterPlan", 4),
+        ("afterPlanSkipped", 1),
+        ("afterPlanFailed", 2),
+    ];
+    assert_slots_discriminate(&slots);
+    let split = serde_json::to_value(AfterPlanCounts::of(&four_states)).unwrap();
+    for (slot, count) in slots {
+        assert_eq!(
+            split[slot], count,
+            "a machine consumer reads the class's three outcomes, not one total: {split}"
+        );
+    }
+    assert_eq!(
+        split.as_object().map(serde_json::Map::len),
+        Some(slots.len()),
+        "and reads no field beside them: {split}"
+    );
+}
+
+/// The `Change Hooks` phase opens ONE owner group per declaring thing, the
+/// module half included.
+///
+/// `docs/cli-reference.md` promises each hook "under the owner that declared
+/// it", and the sibling golden renders a profile group alone, so the module arm
+/// was a documented shape no capture reached: a hook row that names no owner
+/// leaves which module declared it unstated on a surface whose job is
+/// attribution, and deleting the module owner would have regressed silently.
+#[test]
+#[cfg(unix)]
+fn apply_change_hooks_open_one_group_per_declaring_owner() {
+    let (config_dir, state_dir, target) = profile_and_module_with_on_change_hooks_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
+    // Both owners under the ONE phase, read off the phase's own region rather
+    // than the whole capture, where `module:hooked` also heads its planned work.
+    let hooks = stripped
+        .split_once("Phase: Change Hooks")
+        .expect("the run did work its plan could not name")
+        .1;
+    assert!(
+        hooks.contains("profile:tiny") && hooks.contains("module:hooked"),
+        "each hook renders under the owner that declared it: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "apply/change_hooks_owners.txt",
+        &stripped
+    );
+}
+
 #[test]
 fn apply_with_failures_human() {
     // Indent-invariant anchor under real apply data: the failure Status
@@ -270,7 +447,7 @@ fn apply_with_failures_human() {
     );
 }
 
-/// The phase tree at the CLI boundary: a `Prerequisites` phase whose one lane
+/// The phase tree at the CLI boundary: a `Bootstrap` phase whose one lane
 /// group is labelled above its nodes, a `Packages` phase whose install renders
 /// under the profile's own label, and a serial `Files` phase below both. The
 /// golden pins structure, order and labels — a capture sink never wraps, so
@@ -302,6 +479,72 @@ fn apply_phase_tree_human() {
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
+}
+
+/// The env work of one apply falls into THREE owner groups, in the order the
+/// tree heads them with: the files cfgd authors, the lines cfgd plants in
+/// files the user owns, then the session cfgd publishes into.
+///
+/// A single group over all three said cfgd owns `~/.bashrc` the way it owns
+/// `~/.cfgd.env`, and left `--skip bootstrap.shell` — write the env file,
+/// touch no rc file — inexpressible. The grouping is what a reader steers by,
+/// so it is pinned as rendered bytes rather than as an owner list.
+///
+/// Every free variable of the row SET is pinned, because a golden holds one
+/// render for every machine that runs it: the shell probe decides which rc
+/// files are targets, and the `systemctl` shim decides whether this host has
+/// a live-session manager at all (without one the publish is withheld with a
+/// reason, which is a different row). Linux-only for the same reason the
+/// composed-source plan golden is POSIX-only — macOS adds a LaunchAgent and
+/// Windows writes PowerShell profiles, so the row set is a property of the
+/// platform, not of this grouping.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial]
+fn apply_env_owner_groups_human() {
+    let _systemctl = cfgd_core::test_helpers::ToolShim::install("CFGD_SYSTEMCTL_BIN", 0, "", "");
+    // The env targets hang off `$HOME`; an unguarded test home is named after
+    // the pid and would not be host-stable.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: true,
+        },
+    );
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("shell.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shell\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n    - name: PAGER\n      value: less\n    - name: VISUAL\n      value: nvim\n  aliases:\n    - name: gs\n      command: git status\n    - name: ll\n      command: ls -la\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: shell\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    run_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = collapse_alignment_padding(&normalize_duration(&strip_ansi(&normalized)));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "apply/env_owner_groups.txt",
+        &stripped
+    );
 }
 
 #[test]

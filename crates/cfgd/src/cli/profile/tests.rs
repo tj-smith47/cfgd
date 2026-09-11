@@ -4752,7 +4752,7 @@ fn profile_migrate_all_moves_every_legacy_profile() {
 
 #[cfg(unix)]
 #[test]
-fn profile_migrate_all_unreadable_dir_errors() {
+fn profile_migrate_all_unreadable_dir_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
     if cfgd_core::is_root() {
         return; // root bypasses mode bits; the denial cannot be simulated

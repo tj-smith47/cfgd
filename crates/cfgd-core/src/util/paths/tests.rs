@@ -847,3 +847,41 @@ fn normalize_path_entry_leaves_case_alone_off_windows() {
         "/opt/Tools"
     );
 }
+
+/// A symlink standing where a copy put a directory keeps its target's mode.
+///
+/// [`super::carry_dir_mode`] is the one chmod in this file, and it runs at the
+/// end of a recursive copy, against a path whose parent an unprivileged user may
+/// own. A path-based chmod there hands `src`'s mode to whatever the link
+/// resolves to, which under `sudo cfgd apply` is any directory on the machine;
+/// the no-follow chmod refuses the link instead and the best-effort contract
+/// keeps the copy green, so this asserts the VICTIM rather than a return value.
+#[test]
+#[cfg(unix)]
+fn carry_dir_mode_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).expect("create src");
+    crate::set_file_permissions(&src, 0o777).expect("chmod src");
+
+    let victim = tmp.path().join("victim");
+    std::fs::create_dir(&victim).expect("create victim");
+    crate::set_file_permissions(&victim, 0o700).expect("chmod victim");
+
+    let dst = tmp.path().join("dst");
+    std::os::unix::fs::symlink(&victim, &dst).expect("symlink");
+
+    super::carry_dir_mode(&src, &dst);
+
+    let mode = std::fs::metadata(&victim)
+        .expect("stat victim")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "the directory the planted link points at must keep its own mode"
+    );
+}

@@ -81,10 +81,10 @@ use simple::{
 /// `package_identity` so a manager whose install argument differs from its
 /// listed name (e.g. go: `rsc.io/2fa` → `2fa`) compares like with like; the
 /// returned values are identities, which is exactly what `uninstall` expects.
-fn uninstall_for_manager(
+fn uninstall_for_manager<'a>(
     manager: &dyn PackageManager,
     desired: &[String],
-    installed: &HashSet<String>,
+    installed: impl Iterator<Item = &'a str>,
     cfgd_installed: &HashSet<String>,
 ) -> Vec<String> {
     let desired_identities: HashSet<String> = desired
@@ -93,18 +93,17 @@ fn uninstall_for_manager(
         .collect();
     let name = manager.name();
     installed
-        .iter()
         .filter(|pkg| {
             !desired_identities.contains(*pkg)
                 && cfgd_installed.contains(&cfgd_core::state::package_resource_id(name, pkg))
         })
-        .cloned()
+        .map(str::to_owned)
         .collect()
 }
 
 /// Plan package actions by diffing installed vs desired for all managers.
 /// An unavailable manager that can be bootstrapped still gets its Install
-/// action planned here; provisioning the manager itself is the Prerequisites
+/// action planned here; provisioning the manager itself is the Bootstrap
 /// phase's job (`ManagerAction::Provision`), planned separately.
 ///
 /// `cfgd_installed` carries the set of packages cfgd itself installed, as
@@ -266,7 +265,6 @@ pub fn plan_packages_observed(
             // enumeration reports no version record `None`, and a pinned item
             // under them stays pending (fail-closed).
             let enumerated = cx.installed_for(*manager)?;
-            let installed = enumerated.identities();
             actual.record_enumeration(
                 manager.name(),
                 enumerated
@@ -295,7 +293,7 @@ pub fn plan_packages_observed(
             // module path.
             let to_install: Vec<String> = desired
                 .iter()
-                .filter(|p| !installed.contains(&manager.package_identity(p)))
+                .filter(|p| !enumerated.contains(&manager.package_identity(p)))
                 .cloned()
                 .collect();
             if !to_install.is_empty() {
@@ -306,7 +304,8 @@ pub fn plan_packages_observed(
                 });
             }
 
-            let to_uninstall = uninstall_for_manager(*manager, &desired, installed, cfgd_installed);
+            let to_uninstall =
+                uninstall_for_manager(*manager, &desired, enumerated.identities(), cfgd_installed);
             if !to_uninstall.is_empty() {
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
@@ -320,7 +319,7 @@ pub fn plan_packages_observed(
             // safely prune — leave its packages untouched.
             continue;
         } else if manager.can_bootstrap() {
-            // Unavailable but bootstrappable: the Prerequisites phase plans
+            // Unavailable but bootstrappable: the Bootstrap phase plans
             // provisioning this manager separately (`ManagerAction::Provision`).
             // Install all desired packages so they land once it lands.
             actions.push(PackageAction::Install {

@@ -128,14 +128,17 @@ fn brew_manager_path_dirs_returns_vec() {
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let dirs = mgr.path_dirs(&cx);
-    // On Linux CI, should return linuxbrew paths
-    // On macOS, should return /opt/homebrew or /usr/local paths
-    // On Windows, should return empty
-    if cfg!(target_os = "windows") {
-        assert!(dirs.is_empty());
-    } else if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") {
         assert_eq!(dirs.len(), 2);
         assert!(dirs[0].contains("linuxbrew"));
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(dirs.len(), 2, "a prefix's bin and sbin, got: {dirs:?}");
+        assert!(
+            dirs[0].ends_with("/bin") && dirs[1].ends_with("/sbin"),
+            "{dirs:?}"
+        );
+    } else {
+        assert!(dirs.is_empty(), "brew has no prefix here, got: {dirs:?}");
     }
 }
 
@@ -1098,7 +1101,7 @@ mod brew_shim {
     /// by the linuxbrew tests below).
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_runs_bash_install_pipeline_ok() {
+    fn brew_manager_bootstrap_runs_bash_install_pipeline_ok_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
@@ -1111,7 +1114,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_propagates_bash_failure() {
+    fn brew_manager_bootstrap_propagates_bash_failure_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
@@ -1167,60 +1170,63 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_path_success() {
+    fn brew_manager_bootstrap_path_success_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 0),
             ("sudo", 0),
             ("bash", 0),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect("bootstrap ok with shim");
-        }
+        BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect("bootstrap ok with shim");
     }
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_useradd_failure_returns_err() {
+    fn brew_manager_bootstrap_useradd_failure_returns_err_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 1),
             ("sudo", 0),
             ("bash", 0),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            let err = BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect_err("useradd exit 1 → BootstrapFailed");
-            assert!(
-                err.to_string().contains("brew"),
-                "error must reference brew manager: {}",
-                err
-            );
-        }
+        let err = BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect_err("useradd exit 1 → BootstrapFailed");
+        assert!(
+            err.to_string().contains("brew"),
+            "error must reference brew manager: {}",
+            err
+        );
     }
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_install_script_failure_returns_err() {
+    fn brew_manager_bootstrap_install_script_failure_returns_err_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 0),
             ("sudo", 1),
             ("bash", 1),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            let err = BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect_err("sudo exit 1 → BootstrapFailed");
-            assert!(
-                err.to_string().contains("brew"),
-                "error must reference brew manager: {}",
-                err
-            );
-        }
+        let err = BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect_err("sudo exit 1 → BootstrapFailed");
+        assert!(
+            err.to_string().contains("brew"),
+            "error must reference brew manager: {}",
+            err
+        );
     }
 }
 

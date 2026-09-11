@@ -67,8 +67,13 @@ pub(super) fn apply_file_action_direct(
             }
             Ok(())
         }
-        FileAction::SetPermissions { target, mode, .. } => {
-            crate::set_file_permissions(target, *mode)?;
+        FileAction::SetPermissions {
+            target,
+            mode,
+            chmod_path,
+            ..
+        } => {
+            crate::set_file_permissions_nofollow(chmod_path.as_deref().unwrap_or(target), *mode)?;
             Ok(())
         }
         FileAction::Skip { .. } => Ok(()),
@@ -119,10 +124,12 @@ impl FileAction {
                 target,
                 mode,
                 origin,
+                chmod_path,
             } => FileAction::SetPermissions {
                 target: target.clone(),
                 mode: *mode,
                 origin: origin.clone(),
+                chmod_path: chmod_path.clone(),
             },
             FileAction::Skip {
                 target,
@@ -130,6 +137,7 @@ impl FileAction {
                 origin,
             } => FileAction::Skip {
                 target: target.clone(),
+                // file-skip-reason-unreadable-ok: a structural rebuild of a reason judged at the mint that stated it
                 reason: reason.clone(),
                 origin: origin.clone(),
             },

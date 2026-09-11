@@ -19,7 +19,7 @@ pub struct SnapManager;
 
 /// What a mediator installs to deliver snap. There is no brew arm: snapd is a
 /// Linux service, not a formula.
-const SNAP_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"]);
+const SNAP_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"], &[]);
 
 pub(super) fn find_snap() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("snap", &[])
@@ -58,7 +58,7 @@ impl PackageManager for SnapManager {
         {
             // `None` rather than a hopeful name when no system manager can run
             // it: the method a plan carries is binding at execution.
-            detect_system_method(delivered).map(BootstrapPlan::new)
+            detect_system_method(&SNAP_MEDIATED, delivered).map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -68,7 +68,7 @@ impl PackageManager for SnapManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        bootstrap_via_system_manager(cx, SNAP_MEDIATED.system[0], "snap")
+        bootstrap_via_system_manager(cx, &SNAP_MEDIATED, "snap")
     }
 
     fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {

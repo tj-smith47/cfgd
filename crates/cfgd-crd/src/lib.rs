@@ -1,14 +1,15 @@
 //! cfgd Custom Resource Definition spec types.
 //!
 //! This crate hosts the `cfgd.io/v1alpha1` CRD spec types (`MachineConfig`,
-//! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`), their
+//! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`,
+//! `BackupPolicy`), their
 //! `schemars`-derived JSON schemas, and the cross-field `validate()` impls used
 //! by both the admission webhook and the CLI. It sits at the bottom of the
 //! workspace dependency graph (depended on by `cfgd-core`), so it carries no
 //! Kubernetes client/runtime, no HTTP server, and no telemetry — only the
 //! schema-bearing types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -131,9 +132,21 @@ pub struct MachineConfigStatus {
     pub observed_generation: Option<i64>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
-    /// Reported installed versions keyed by package name (e.g. {"kubectl": "1.28.3"}).
+    /// Installed versions of the packages the machine declares, keyed
+    /// `<manager>/<package>` (e.g. {"brew/kubectl": "1.28.3"}). The manager
+    /// qualifies the name because two managers may hold the same package at
+    /// different versions, so a `ConfigPolicy` version requirement naming that
+    /// package is met only when EVERY reported copy of it satisfies the
+    /// requirement. Device-reported: written by the device gateway on every
+    /// check-in, and a reconcile that cannot observe it preserves it.
     #[serde(default)]
     pub package_versions: BTreeMap<String, String>,
+    /// Which layer owns each backup unit's schedule ON THIS MACHINE, keyed by
+    /// unit name (`{"dotfiles": "local"}`). Device-reported, like
+    /// `packageVersions`: no controller computes it, and a reconcile that
+    /// cannot observe it preserves it.
+    #[serde(default)]
+    pub backup_schedule_owners: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -153,7 +166,7 @@ pub struct Condition {
 // ConfigPolicy
 // ---------------------------------------------------------------------------
 
-/// Kubernetes-style label selector with match_labels and match_expressions.
+/// Kubernetes-style label selector with `matchLabels` and `matchExpressions`.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {
@@ -238,11 +251,11 @@ pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
     /// `namespace/name` of the MachineConfigs currently violating this policy,
-    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-    /// `PolicyViolation` event fires on the transition into violation rather
-    /// than once per observation — an in-process memory would re-announce every
-    /// machine after an operator restart. `nonCompliantCount` is the exact
-    /// total and is never capped.
+    /// sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+    /// fires on the transition into violation rather than once per observation —
+    /// an in-process memory would re-announce every machine after an operator
+    /// restart. `nonCompliantCount` is the exact total and is never capped.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
     #[serde(default)]
     #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
@@ -403,11 +416,11 @@ pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
     /// `namespace/name` of the MachineConfigs currently violating this policy,
-    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
-    /// `PolicyViolation` event fires on the transition into violation rather
-    /// than once per observation — an in-process memory would re-announce every
-    /// machine after an operator restart. `nonCompliantCount` is the exact
-    /// total and is never capped.
+    /// sorted and capped at 500 entries. Persisted so a `PolicyViolation` event
+    /// fires on the transition into violation rather than once per observation —
+    /// an in-process memory would re-announce every machine after an operator
+    /// restart. `nonCompliantCount` is the exact total and is never capped.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
     #[serde(default)]
     #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
@@ -419,27 +432,68 @@ pub struct ClusterConfigPolicyStatus {
 // Module
 // ---------------------------------------------------------------------------
 
-/// An entry in a Module's package list with optional per-platform overrides.
+/// An entry in a Module's package list: the package to install plus the hints
+/// that decide which manager on a machine installs it.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
-    /// Default package name, used on every platform `platforms` names no
+    /// Default package name, used on every manager `aliases` names no
     /// override for.
     pub name: String,
-    /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
+    /// Per-manager package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"})
+    /// for a package spelled differently by each manager.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub platforms: BTreeMap<String, String>,
+    pub aliases: BTreeMap<String, String>,
+    /// Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+    /// An installed copy below this is treated as not satisfying the module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+    /// Manager preference order for this package, overriding the machine's
+    /// default manager priority (e.g. `[brew, apt]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefer: Vec<String>,
+    /// Package managers never used for this package, even where one is
+    /// available and the machine's own priority would pick it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+    /// Platform tags gating this package alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
 }
 
 /// A file managed by a Module.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleFileSpec {
-    /// Path to the file inside the module artifact.
+    /// Path to the file inside the module artifact. Empty only when
+    /// `strategy` is `Patch`, which rewrites the target's own content and
+    /// reads no source.
+    #[serde(default)]
     pub source: String,
     /// Destination path the file is deployed to inside the pod or on the
     /// machine.
     pub target: String,
+    /// Per-file deployment strategy override. Omitted, the machine-wide
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<cfgd_schema::FileStrategy>,
+    /// The source file is local-only: auto-added to .gitignore, and silently
+    /// skipped on a machine where it does not exist. Default: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// Encryption the source file must satisfy. Rejected on a `Patch` entry,
+    /// which has no source to encrypt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<cfgd_schema::EncryptionSpec>,
+    /// Unix permission bits (e.g. "600", "644") applied after deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    /// Structured merge or rewriting script for `strategy: Patch`. Required
+    /// when `strategy` is `Patch`, rejected otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<cfgd_schema::PatchSpec>,
 }
 
 /// Scripts that run during module lifecycle.
@@ -470,6 +524,23 @@ pub struct ModuleEnvVar {
     /// Linux container, so the pod-mutating webhook injects an entry only when
     /// this is empty or names `linux` — nothing about a pod can answer a
     /// distro or arch tag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+}
+
+/// A shell alias a Module contributes.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleAlias {
+    /// Alias name, as typed at the shell prompt.
+    pub name: String,
+    /// Command the alias expands to, written in the syntax of the shell it is
+    /// generated for. cfgd quotes the whole value per dialect when it writes
+    /// the alias definition, so the text reaches the shell exactly as declared.
+    pub command: String,
+    /// Platform tags gating this entry alone. Empty means every platform the
+    /// declaring module is not already gated off of. Tags are matched against
+    /// the machine's OS, distro, and arch; use `macos` for macOS.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 }
@@ -518,8 +589,10 @@ pub struct ModuleSignature {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSpec {
-    /// Packages this module installs, each with optional per-platform name
-    /// overrides.
+    /// Packages this module installs. Each entry names the package and the
+    /// hints that decide which manager installs it: per-manager name
+    /// overrides, a version floor, a manager preference order, a manager
+    /// denylist, and the platform tags gating the entry.
     #[serde(default)]
     pub packages: Vec<PackageEntry>,
     /// Files this module deploys out of its artifact.
@@ -550,6 +623,29 @@ pub struct ModuleSpec {
     ///   Only accessible via ephemeral debug containers (`kubectl cfgd debug`).
     #[serde(default)]
     pub mount_policy: MountPolicy,
+    /// Platform tags gating the whole module on a machine reconciling it.
+    /// When non-empty and the machine matches none of them, the module is
+    /// skipped entirely (it appears as a skipped action rather than
+    /// vanishing). Tags are matched against the machine's OS, distro, and
+    /// arch; use `macos` for macOS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+    /// Shell aliases this module contributes to the machines that apply it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<ModuleAlias>,
+    /// System configurator settings this module contributes, keyed by
+    /// configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged
+    /// into the profile's system map, module values winning at leaf level.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub system: BTreeMap<String, serde_json::Value>,
+    /// Lifecycle hooks the cfgd agent runs around this module's deployment,
+    /// each a list of inline command bodies with their own guards and
+    /// timeouts. Distinct from `scripts.postApply`, which is a script PATH
+    /// inside the artifact that the pod-mutating webhook runs in an init
+    /// container: these bodies are for the agent applying the module to a
+    /// machine, and nothing in a pod runs them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<cfgd_schema::ScriptSpec>,
 }
 
 /// Controls how a module is exposed to pod containers.
@@ -629,6 +725,145 @@ impl ModuleStatus {
     #[must_use]
     pub fn summarize_platforms(platforms: &[String]) -> Option<String> {
         (!platforms.is_empty()).then(|| platforms.join(", "))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BackupPolicy
+// ---------------------------------------------------------------------------
+
+/// Which layer owns a backup unit's schedule. Re-exported from `cfgd-schema`
+/// so the word a policy status reports and the word the machine's own
+/// `spec.backups[].scheduleOwner` serializes are one vocabulary.
+pub use cfgd_schema::ScheduleOwner;
+
+/// A fleet-wide backup schedule, applied to the machines its selector matches.
+///
+/// A policy overrides the cadence of a backup unit the machine's own profile
+/// already defines; it never defines the unit. `source` and `destination` are
+/// machine-local paths a cluster object cannot know, so a unit this policy
+/// names on a machine whose profile does not define it is reported and
+/// otherwise left alone.
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[kube(
+    group = "cfgd.io",
+    version = "v1alpha1",
+    kind = "BackupPolicy",
+    namespaced,
+    status = "BackupPolicyStatus",
+    shortname = "bpol",
+    category = "cfgd",
+    printcolumn = r#"{"name": "Units", "type": "string", "jsonPath": ".status.unitsSummary"}"#,
+    printcolumn = r#"{"name": "Machines", "type": "integer", "jsonPath": ".status.machinesMatched"}"#,
+    printcolumn = r#"{"name": "Applied", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Applied\")].status"}"#,
+    printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
+)]
+// See the note on ConfigPolicySpec: `deny_unknown_fields` stays off so schemars
+// does not emit `additionalProperties: false`, which the API server rejects
+// beside `properties:`.
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicySpec {
+    /// Which MachineConfigs in this namespace the policy schedules backups
+    /// for. Empty, it applies to all of them.
+    #[serde(default)]
+    pub selector: LabelSelector,
+    /// Schedule overrides, each naming a backup unit the matched machine's own
+    /// profile defines. Required, and at least one entry: a policy that
+    /// schedules nothing sets no cadence anywhere.
+    pub units: Vec<BackupPolicyUnit>,
+}
+
+/// One backup unit's cluster-side schedule.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyUnit {
+    /// Name of the unit in the machine's own `spec.backups[]` this entry
+    /// schedules. Unique within the list.
+    pub name: String,
+    /// Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on,
+    /// evaluated against the machine's local clock — a nightly window means
+    /// 3am where each machine sits, not 3am in the cluster's timezone.
+    pub schedule: String,
+    /// How many snapshots the unit keeps. Omitted, the machine's own profile
+    /// decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyStatus {
+    /// The `metadata.generation` every other field here was computed from. A
+    /// status whose `observedGeneration` is behind `metadata.generation`
+    /// describes the PREVIOUS spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+    /// Sorted by (hostname, name) and capped at 500 rows; `machinesMatched`
+    /// stays exact.
+    // The cap is MAX_NON_COMPLIANT_MACHINES, the shared etcd enumeration ceiling.
+    #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
+    pub units: Vec<BackupPolicyUnitStatus>,
+    /// The unit names in `units`, deduplicated and comma-joined, and the only
+    /// field the `Units` printer column may be bound to: a column resolving to
+    /// an array prints the Go rendering of the slice, so an empty one reads as
+    /// the literal `[]` where an absent value leaves the cell empty. Absent
+    /// when no unit has been reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units_summary: Option<String>,
+    /// How many machines the selector matched, exact and never capped.
+    pub machines_matched: u32,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+}
+
+/// One machine's copy of one backup unit, as the policy last observed it.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPolicyUnitStatus {
+    /// Name of the backup unit.
+    pub name: String,
+    /// Hostname of the machine this row reports on.
+    pub hostname: String,
+    /// Which layer owns this unit's schedule on that machine: `cluster` when
+    /// this policy's schedule projects onto it, `local` when the machine's own
+    /// profile pinned the unit with `scheduleOwner: Local` and the policy
+    /// reports it without scheduling it.
+    pub owner: String,
+    /// The schedule the machine reported running the unit on: the one this
+    /// policy projected onto it where `owner` is `cluster`, the one the
+    /// machine's own profile declared where `owner` is `local`. Absent while
+    /// the machine has not reported the unit yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// The retention the machine reported, on the same terms as `schedule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<u32>,
+    /// When the unit last ran, as an RFC 3339 timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<String>,
+    /// When the unit is next due, as an RFC 3339 timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run: Option<String>,
+    /// Why this row is not what the policy asked for: the machine pinned the
+    /// unit's schedule itself, or it reported an owner for the unit that no
+    /// layer spells. Absent on a row the policy scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl BackupPolicyStatus {
+    /// The ONE derivation of [`BackupPolicyStatus::units_summary`] from
+    /// [`BackupPolicyStatus::units`]. Every writer of the status goes through
+    /// it, so the column and the list it summarizes cannot disagree. One unit
+    /// spans one row per machine, so the names are deduplicated; they are
+    /// ordered by name rather than by the list's (hostname, name) order, which
+    /// would otherwise reshuffle the cell whenever the matched machine set
+    /// changed.
+    #[must_use]
+    pub fn summarize_units(units: &[BackupPolicyUnitStatus]) -> Option<String> {
+        let names: BTreeSet<&str> = units.iter().map(|u| u.name.as_str()).collect();
+        (!names.is_empty()).then(|| names.into_iter().collect::<Vec<_>>().join(", "))
     }
 }
 
@@ -771,6 +1006,41 @@ impl ClusterConfigPolicySpec {
     }
 }
 
+impl BackupPolicySpec {
+    /// Validate the spec, returning all validation errors found.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        if self.units.is_empty() {
+            errors.push(
+                "spec.units must declare at least one unit; a policy that schedules nothing sets no cadence anywhere"
+                    .to_string(),
+            );
+        }
+        let mut seen = HashSet::with_capacity(self.units.len());
+        for (i, unit) in self.units.iter().enumerate() {
+            // The name is matched against a unit the machine's own profile
+            // defines, so a name no local profile could legally carry is
+            // refused here rather than reported per machine forever after.
+            if let Err(why) = cfgd_schema::validate_backup_unit_name(&unit.name) {
+                errors.push(format!("spec.units[{i}].name: {why}"));
+            }
+            if let Err(e) =
+                cfgd_schema::validate_backup_unit_shape(&unit.name, unit.retention, &mut seen)
+            {
+                errors.push(format!("spec.units[{i}].{e}"));
+            }
+            if let Err(why) = cfgd_schema::validate_backup_schedule_grammar(&unit.schedule) {
+                errors.push(format!("spec.units[{i}].{why}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
 impl DriftAlertSpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -789,6 +1059,16 @@ impl DriftAlertSpec {
     }
 }
 
+/// Collect a `platforms:` list's refusals under the field path that holds it,
+/// so a tag no host can match is named where it was written.
+fn push_tag_errors(errors: &mut Vec<String>, subject: impl Fn() -> String, tags: &[String]) {
+    for (i, tag) in tags.iter().enumerate() {
+        if let Err(e) = cfgd_schema::validate_platform_tag(tag) {
+            errors.push(format!("{}[{i}]: {e}", subject()));
+        }
+    }
+}
+
 impl ModuleSpec {
     /// Validate the spec, returning all validation errors found.
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -797,6 +1077,49 @@ impl ModuleSpec {
             if pkg.name.is_empty() {
                 errors.push(format!("spec.packages[{i}].name must not be empty"));
             }
+            push_tag_errors(
+                &mut errors,
+                || format!("spec.packages[{i}].platforms"),
+                &pkg.platforms,
+            );
+        }
+        let mut seen_targets = std::collections::HashMap::with_capacity(self.files.len());
+        for (i, file) in self.files.iter().enumerate() {
+            let subject = format!("spec.files[{i}]");
+            if let Err(e) =
+                cfgd_schema::validate_file_target(&subject, &file.target, &mut seen_targets)
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = cfgd_schema::validate_file_patch_shape(
+                &subject,
+                file.source.is_empty(),
+                file.strategy,
+                file.patch.as_ref(),
+                file.encryption.is_some(),
+                file.private,
+            ) {
+                errors.push(e.to_string());
+            }
+        }
+        push_tag_errors(
+            &mut errors,
+            || "spec.platforms".to_string(),
+            &self.platforms,
+        );
+        for (i, alias) in self.aliases.iter().enumerate() {
+            push_tag_errors(
+                &mut errors,
+                || format!("spec.aliases[{i}].platforms"),
+                &alias.platforms,
+            );
+        }
+        for (i, var) in self.env.iter().enumerate() {
+            push_tag_errors(
+                &mut errors,
+                || format!("spec.env[{i}].platforms"),
+                &var.platforms,
+            );
         }
         for (i, dep) in self.depends.iter().enumerate() {
             if dep.is_empty() {
@@ -866,6 +1189,12 @@ impl Validatable for DriftAlertSpec {
 impl Validatable for ModuleSpec {
     fn validate(&self) -> Result<(), Vec<String>> {
         ModuleSpec::validate(self)
+    }
+}
+
+impl Validatable for BackupPolicySpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        BackupPolicySpec::validate(self)
     }
 }
 

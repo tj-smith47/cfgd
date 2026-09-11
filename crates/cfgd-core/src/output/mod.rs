@@ -402,18 +402,25 @@ pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Dis
 /// The word a drift row reads for a stored `resource_type`.
 ///
 /// The stored types are a state-matching vocabulary and never move
-/// (`drift_events.resource_type` is half of the UPSERT key); two of them are
+/// (`drift_events.resource_type` is half of the UPSERT key); four of them are
 /// re-worded here. `env-var` is internal jargon rather than a word a reader of
 /// the report would use, so the display says `env` and the store keeps
 /// `env-var`. `env` is the managed env FILE, and letting it inherit that same
 /// word puts `env: EDITOR` and `env: /home/u/.cfgd.env` side by side in one
 /// report — two different kinds under one label — so the file row reads
-/// `env file`. Every other kind is already the word, and passes through.
+/// `env file`. `env-rc` and `env-session` read the nouns every other surface
+/// calls those two resources (`rc line`, `live session`), so a reader moving
+/// between `verify` and `status` meets one word per thing. Every other kind is
+/// already the word, and passes through.
 #[must_use]
 pub fn drift_kind_label(resource_type: &str) -> &str {
+    use crate::reconciler::{ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE};
+
     match resource_type {
         "env-var" => "env",
-        "env" => "env file",
+        ENV_RESOURCE_TYPE => "env file",
+        ENV_RC_RESOURCE_TYPE => "rc line",
+        ENV_SESSION_RESOURCE_TYPE => "live session",
         other => other,
     }
 }
@@ -427,7 +434,13 @@ pub fn drift_kind_label(resource_type: &str) -> &str {
 /// redundant.
 #[must_use]
 pub fn is_shell_drift_kind(resource_type: &str) -> bool {
-    matches!(resource_type, "env" | "env-rc" | "env-var" | "alias")
+    matches!(
+        resource_type,
+        crate::reconciler::ENV_RESOURCE_TYPE
+            | crate::reconciler::ENV_RC_RESOURCE_TYPE
+            | "env-var"
+            | "alias"
+    )
 }
 
 /// The subject a drift/verify item row reads.
@@ -437,13 +450,19 @@ pub fn is_shell_drift_kind(resource_type: &str) -> bool {
 /// sentence; every other kind keeps the `<kind> <id>` shape the id itself
 /// completes (`package ripgrep`, `file ~/.zshrc`). One composer so the three
 /// surfaces cannot spell one row two ways.
+///
+/// The id is a stored key and spells the home directory absolutely; the subject
+/// is a display slot and folds it, here rather than at each caller, so no
+/// surface can render the one row `~/.bashrc` and `/home/tj/.bashrc` depending
+/// on which of them built it.
 #[must_use]
 pub fn drift_item_subject(resource_type: &str, resource_id: &str) -> String {
     let label = drift_kind_label(resource_type);
+    let id = crate::fold_home_in_text(resource_id);
     if is_shell_drift_kind(resource_type) {
-        format!("{label}: {resource_id}")
+        format!("{label}: {id}")
     } else {
-        format!("{label} {resource_id}")
+        format!("{label} {id}")
     }
 }
 
@@ -780,9 +799,25 @@ mod drift_vocabulary_tests {
     #[test]
     fn the_stored_env_var_type_reads_as_env_and_every_other_kind_passes_through() {
         assert_eq!(drift_kind_label("env-var"), "env");
-        for kind in ["alias", "env-rc", "package", "file", "system"] {
+        for kind in ["alias", "package", "file", "system"] {
             assert_eq!(drift_kind_label(kind), kind);
         }
+    }
+
+    /// Each of cfgd's three env surfaces is named by WHAT it is, so a reader
+    /// moving between `verify`, `status` and the plan meets one word per
+    /// thing. The stored types stay the matching keys they were: `env-rc` and
+    /// `env-session` are producers' literals, and only the display folds.
+    #[test]
+    fn each_env_surface_is_named_by_what_it_is() {
+        let labels = ["env", "env-rc", "env-session"].map(drift_kind_label);
+        assert_eq!(labels, ["env file", "rc line", "live session"]);
+        // No two of the three read alike, and none reads back as its own
+        // stored key — a passed-through key is a kind nobody worded.
+        let mut seen = labels.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "{labels:?}");
     }
 
     /// The item rows and the FILE row are two different kinds; one label for
@@ -1091,20 +1126,10 @@ mod condense_script_label_tests {
         }
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        let mut pending = vec![root.join("output")];
-        while let Some(dir) = pending.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && path.file_name().is_none_or(|n| n != "tests.rs")
-                {
-                    files.push(path);
-                }
-            }
-        }
+        let mut files: Vec<_> = crate::test_helpers::rust_sources_under(&root.join("output"))
+            .into_iter()
+            .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+            .collect();
         files.push(root.join("reconciler/format.rs"));
         let idioms = [
             "chars().take(",

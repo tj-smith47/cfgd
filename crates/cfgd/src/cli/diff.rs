@@ -382,7 +382,7 @@ pub fn cmd_diff(
                     break;
                 }
                 sys_group
-                    .status(Role::Warn, err.key.clone())
+                    .status(Role::Warn, err.subject())
                     .qualifier("error checking drift")
                     .detail(&err.error);
                 errors.next();
@@ -403,7 +403,7 @@ pub fn cmd_diff(
         }
         for err in errors {
             sys_group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
@@ -740,7 +740,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_payload.packages.push(version_package_drift(row));
                 } else if let Some(err) = package_check_errors.iter().find(|e| e.key == id) {
                     group
-                        .status(Role::Warn, err.key.clone())
+                        .status(Role::Warn, err.subject())
                         .qualifier("error checking drift")
                         .detail(&err.error);
                 }
@@ -869,7 +869,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             // probe that could not run is never read as clean; the path folds
             // to `~/` like every display slot, the payload keeps it absolute.
             env_sec
-                .status(Role::Warn, cfgd_core::fold_home_in_text(&err.key))
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
             diff_payload.env_check_error = Some(err.error.clone());
@@ -988,7 +988,7 @@ pub(super) fn package_missing_drift(
 /// Render the package half of a drift report, one owner group per owner.
 ///
 /// `manager_actions` is the same `ManagerAction` planner output the
-/// Prerequisites phase runs (`reconciler::plan_managers`) — a missing manager
+/// Bootstrap phase runs (`reconciler::plan_managers`) — a missing manager
 /// this run would provision, or refuses to, is drift the same way a missing
 /// package is, and reads under `cfgd:managers` exactly as it would in the
 /// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an
@@ -1142,7 +1142,7 @@ pub(super) fn print_package_drift(
         // and every structured consumer read.
         for err in check_errors {
             group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
@@ -2696,12 +2696,12 @@ mod tests {
         let output = strip_ansi(&cap.human());
         assert!(
             output.contains("pipx: not installed")
-                && output.contains("can bootstrap via pip install pipx"),
+                && output.contains("can provision via pip install pipx"),
             "should show the bootstrap need and its method, got: {output}"
         );
         assert!(
             output.contains("snap: not installed")
-                && output.contains("cannot bootstrap: no available system manager"),
+                && output.contains("cannot provision: no available system manager"),
             "should show the refusal and its reason with a single separator \
              (the status renderer already supplies ' — ' before the detail), \
              got: {output}"
@@ -2837,11 +2837,13 @@ mod tests {
     // call re-ran the manager's listing, which is the ~13s scan; with it the
     // manager answers once however many packages are checked.
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn package_missing_drift_asks_a_manager_once_for_every_package_it_owns() {
         // The count is a memo-hit claim, so the memo's age ceiling is pinned out
-        // of reach — unpinned it rests on the 30s wall clock. No serialization:
-        // nothing in this crate's test binary pins the ceiling to zero, and a
-        // longer ceiling can only let another test's entries live longer.
+        // of reach — unpinned it rests on the 30s wall clock. The group is the one
+        // every other pin of this ceiling joins: two pins alive at once restore
+        // each other's saved value, leaving the seam pinned for the rest of the
+        // binary with nothing going red where the second pin was written.
         let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")

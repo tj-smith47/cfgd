@@ -501,6 +501,7 @@ mod tests {
         );
         // Everything above the test module: this module's own calls must not
         // stand in for the install paths' calls.
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
         let production = cfgd_core::test_helpers::production_slice(source);
         assert_eq!(
             production.matches("printer.emit(upgraded_doc(").count(),
@@ -564,6 +565,7 @@ mod tests {
     #[test]
     fn the_installed_path_payload_takes_the_fs_key_fold() {
         let source = include_str!("upgrade.rs");
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
         let production = cfgd_core::test_helpers::production_slice(source);
         // Split so this test's own literals are not what it counts.
         let unconditional = format!("to_posix_{}", "string(");

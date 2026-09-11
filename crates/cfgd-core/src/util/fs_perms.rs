@@ -137,6 +137,10 @@ pub fn parse_octal_mode(s: &str) -> Result<u32, crate::errors::ConfigError> {
 #[cfg(unix)]
 pub fn set_file_permissions(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    // A caller whose declared mode belongs to the file a link points at reaches
+    // the filesystem here; every other site takes the no-follow pair below. The
+    // workspace chmod walk is what asks each of those callers the question.
+    // follow-ok: this IS the following primitive, resolving the path its caller named.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
@@ -144,6 +148,96 @@ pub fn set_file_permissions(path: &std::path::Path, mode: u32) -> std::io::Resul
 pub fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
     tracing::debug!("set_file_permissions is a no-op on Windows (NTFS uses inherited ACLs)");
     Ok(())
+}
+
+/// Set Unix permission mode bits on a file WITHOUT following a final symlink.
+///
+/// Reach for this instead of [`set_file_permissions`] wherever an elevated run
+/// chmods a path inside a directory an unprivileged user owns: their own home,
+/// their `~/.ssh`, the directory a displaced target sat in. `std::fs::set_permissions`
+/// resolves the path again and follows whatever link it finds, so between cfgd
+/// writing a file and cfgd chmodding it the owner of that directory can unlink it
+/// and plant a symlink at another user's private key. The mode then lands on the
+/// link's target. Here the path is resolved once, `O_NOFOLLOW` refuses a symlink
+/// outright (`ELOOP`), and the mode is set through that descriptor, so a swap
+/// after the open cannot move it either.
+///
+/// A symlink at `path` is an error, never a follow. That is the point: a caller
+/// whose declared mode belongs to the file a link points at names THAT file
+/// (a `strategy: Symlink` entry names its source, a rollback the destination it
+/// recorded) and still chmods it here, rather than letting the chmod resolve a
+/// link whose owner may have re-pointed it.
+///
+/// No-op on Windows, like [`set_file_permissions`].
+#[cfg(unix)]
+pub fn set_file_permissions_nofollow(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let file = open_nofollow(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(windows)]
+pub fn set_file_permissions_nofollow(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    tracing::debug!(
+        "set_file_permissions_nofollow is a no-op on Windows (NTFS uses inherited ACLs)"
+    );
+    Ok(())
+}
+
+/// OR `bits` onto the mode a file already carries, reading and writing it through
+/// ONE [`set_file_permissions_nofollow`]-style descriptor.
+///
+/// The read and the write must share a descriptor: reading the mode by path and
+/// setting it by path resolves twice, which is the race the no-follow open exists
+/// to close. The OR is what keeps a mode its owner chose (a `0o664`
+/// `/etc/environment`) rather than stamping an absolute one.
+///
+/// No-op on Windows, where there are no mode bits to widen.
+#[cfg(unix)]
+pub fn widen_file_permissions_nofollow(path: &std::path::Path, bits: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let file = open_nofollow(path)?;
+    let mode = file.metadata()?.permissions().mode();
+    file.set_permissions(std::fs::Permissions::from_mode(mode | bits))
+}
+
+#[cfg(windows)]
+pub fn widen_file_permissions_nofollow(_path: &std::path::Path, _bits: u32) -> std::io::Result<()> {
+    tracing::debug!("widen_file_permissions_nofollow is a no-op on Windows");
+    Ok(())
+}
+
+/// Open `path` for reading, refusing a final symlink.
+///
+/// Read-only because `fchmod(2)` needs no write access, and a key file cfgd is
+/// about to tighten may well be unwritable. The open still needs READ access,
+/// which `chmod(2)` did not: a target, or the source a `strategy: Symlink` entry
+/// names, left unreadable by its owner (`0o000`, `0o200`, `0o300`) can no longer
+/// have its mode set. A linked entry's declared mode belongs to the source file,
+/// so the source is the path the chmod names and the refusal reaches it on the
+/// same terms as any target.
+///
+/// That is a narrow, loud and recoverable price for the property. The declared
+/// mode is chmodded only where it differs from the file's current one (or on a
+/// re-link), so a file already AT its read-less mode is never chmodded again; the
+/// case that fails fails with the real `EACCES` on its own action rather than
+/// silently, and `chmod +r` on the named file clears it for the next run. An
+/// elevated run is unaffected, root bypassing the read check, and that is the run
+/// the no-follow open exists for.
+///
+/// The portable alternatives are worse. Linux's `fchmodat` rejects
+/// `AT_SYMLINK_NOFOLLOW` and an `O_PATH` descriptor cannot be `fchmod`ded, so the
+/// only ways back are a path-based chmod (the misdirection this primitive exists
+/// to refuse) or a Linux-only `/proc/self/fd` hop beside a separate macOS
+/// `lchmod` arm: new `libc` surface on two platforms, plus a `/proc` a container
+/// need not mount, to serve a mode nobody can read.
+#[cfg(unix)]
+fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
 /// Check if a file is executable.
@@ -322,5 +416,75 @@ mod tests {
     fn parse_octal_mode_overflow_errs() {
         // "10000" parses as 0o10000 which exceeds 0o7777.
         assert!(parse_octal_mode("10000").is_err());
+    }
+
+    /// Both no-follow chmods refuse a symlink, and the file it points at keeps
+    /// its mode.
+    ///
+    /// `O_NOFOLLOW` is the whole of the defence, and it lives in this crate: a
+    /// caller's own pin stays green while the flag is gone, because the chmod it
+    /// asserts still succeeds on the regular file it planted. What breaks without
+    /// the flag is the link case, so the link case is pinned beside the flag.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_by_both_nofollow_chmods_and_keeps_its_targets_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("id_ed25519");
+        std::fs::write(&secret, b"private").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = tmp.path().join("declared");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let declared = super::set_file_permissions_nofollow(&link, 0o644);
+        assert!(
+            declared.is_err(),
+            "a declared mode must refuse a symlink, got {declared:?}"
+        );
+        let widened = super::widen_file_permissions_nofollow(&link, 0o044);
+        assert!(
+            widened.is_err(),
+            "a widen must refuse a symlink, got {widened:?}"
+        );
+        let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the file the link points at must keep its mode"
+        );
+    }
+
+    /// A target its owner left unreadable is answered, never silently skipped.
+    ///
+    /// The no-follow pair opens the file before it chmods the descriptor, so it
+    /// needs READ access where `chmod(2)` needed none. A caller that cannot open
+    /// the target gets the error, and the mode it asked for is not reported as
+    /// applied.
+    #[cfg(unix)]
+    #[test]
+    fn a_target_left_unreadable_is_answered_rather_than_silently_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("id_ed25519");
+        std::fs::write(&key, b"private").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let declared = super::set_file_permissions_nofollow(&key, 0o600);
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        if crate::is_root() {
+            // An elevated run's open bypasses the mode bits, so the chmod lands.
+            assert!(
+                declared.is_ok(),
+                "root must still set the mode, got {declared:?}"
+            );
+            assert_eq!(mode, 0o600);
+        } else {
+            assert!(
+                declared.is_err(),
+                "an unopenable target must refuse, got {declared:?}"
+            );
+            assert_eq!(mode, 0o000, "a refused chmod moves nothing");
+        }
     }
 }

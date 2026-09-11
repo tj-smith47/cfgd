@@ -54,6 +54,15 @@ tasks:
       - sh: '[ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
+  _check:mem-headroom:
+    internal: true
+    desc: "Precondition: rustdoc over this workspace peaks near 10 GB; refuse to start it with less available, so it fails here instead of the kernel killing whatever else is largest."
+    preconditions:
+      # MemAvailable is in kB; 10 GB = 10485760 kB. Only Linux exposes /proc/meminfo;
+      # the macOS and Windows runners are never short of it for this step.
+      - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 10485760 ]'
+        msg: "Under 10 GB of memory available: rustdoc for this workspace peaks near 10 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate and `task push`'s; run it there, or free the memory first."
+
   # --- Build ---
 
   build:
@@ -83,11 +92,10 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, doc, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate runs in CI and ahead of `task push`
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: test
       - task: audit
 
@@ -108,8 +116,8 @@ tasks:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
-    desc: Build rustdoc for the workspace, denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...)
-    deps: [_check:tmp-headroom]
+    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). No local chain but `task push` runs it; it refuses to start with under 10 GB of memory available."
+    deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
       # The cfgd and cfgd-operator rustdocs each peak near 10 GB; two in flight on a
@@ -180,6 +188,21 @@ tasks:
             echo "==> powering off FreeBSD VM {{.VMID}}"
             ssh {{.HOST}} 'shutdown -p now' || true
           fi
+
+  test:freebsd:npm-prefix:
+    desc: "Real-host proof of the unprivileged npm global-prefix fallback (FreeBSD only, needs root). BIN overrides the cfgd binary under test."
+    vars:
+      BIN: '{{.BIN | default "target/debug/cfgd"}}'
+    cmds:
+      - cmd: |
+          # No RUNNER_OS inside the vmactions guest, so discriminate on uname
+          # like `test:ci` does. Every other host has a writable npm prefix or
+          # no `www/npm` at all, so there is nothing for the check to observe.
+          if [ "$(uname -s)" != "FreeBSD" ]; then
+            echo "==> skipping test:freebsd:npm-prefix: FreeBSD only (uname -s is $(uname -s))"
+            exit 0
+          fi
+          sh tests/real-host/freebsd-npm-prefix.sh '{{.BIN}}'
 
   test:threads:
     desc: "Thread-model leg: plain `cargo test` (not nextest) at a high thread count, run by `task ci` and CI's dedicated ubuntu-only job."
@@ -277,7 +300,7 @@ tasks:
           trap 'rm -rf "$tmp"' EXIT
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir "$tmp"
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds > "$tmp/crds.yaml"
-          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules; do
+          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules backuppolicies; do
             for tree in chart/cfgd/crds ecosystem/olm/manifests; do
               if ! diff -u "$tree/$f.yaml" "$tmp/$f.yaml"; then
                 echo ""
@@ -450,7 +473,7 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in `task ci` and CI, not here
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
     cmds:
       - task: tidy
       - task: clippy
@@ -531,22 +554,24 @@ tasks:
       - cargo check --target x86_64-pc-windows-gnu -p cfgd-core -p cfgd
 
   push:
-    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    desc: "Rustdoc- and coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.
       - sh: git diff --quiet && git diff --cached --quiet
         msg: "Working tree is dirty — commit your changes before task push."
     cmds:
+      # The rustdoc gate is otherwise CI's alone; a push is the one local step
+      # that should not learn about a broken doc link from CI.
+      - task: doc
       - task: coverage:gate
       - git push {{.CLI_ARGS | default "origin master"}}
 
   ci:
-    desc: Run all CI checks (everything except cross-platform builds)
+    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which CI and `task push` run)
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: schema:check
       - task: gen:crds:check
       - task: version-files:check

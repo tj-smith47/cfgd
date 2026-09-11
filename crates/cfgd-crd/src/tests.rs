@@ -26,6 +26,7 @@ fn api_version_helper_matches_every_kind_derive() {
         ClusterConfigPolicy::api_version(&()),
         DriftAlert::api_version(&()),
         Module::api_version(&()),
+        BackupPolicy::api_version(&()),
     ] {
         assert_eq!(got, shared, "every cfgd CRD kind must share one apiVersion");
     }
@@ -468,7 +469,12 @@ fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
         .expect("the operator's controllers directory is checked out")
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
-        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .map(|e| {
+            let path = e.path();
+            std::fs::read_to_string(&path).unwrap_or_else(|err| {
+                panic!("{}: the walk must read every file: {err}", path.display())
+            })
+        })
         .collect();
 
     let crds = [
@@ -623,11 +629,16 @@ fn module_validate_accepts_full() {
     let spec = ModuleSpec {
         packages: vec![PackageEntry {
             name: "vim".to_string(),
-            platforms: BTreeMap::new(),
+            aliases: BTreeMap::new(),
+            min_version: Some("9.0".to_string()),
+            prefer: vec!["brew".to_string()],
+            deny: vec!["snap".to_string()],
+            platforms: vec!["macos".to_string()],
         }],
         files: vec![ModuleFileSpec {
             source: "vimrc".to_string(),
             target: "~/.vimrc".to_string(),
+            ..Default::default()
         }],
         scripts: ModuleScripts {
             post_apply: Some("echo done".to_string()),
@@ -652,15 +663,179 @@ fn module_validate_accepts_full() {
 }
 
 #[test]
+fn module_spec_rejects_a_patch_file_with_no_patch_block() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            target: "~/.gitconfig".to_string(),
+            strategy: Some(cfgd_schema::FileStrategy::Patch),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a patch file with no patch block must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec.files[0]: strategy 'patch' requires a 'patch' block".to_string()],
+        "the CRD states a file-shape refusal in the words the local parser uses, so a \
+         module rejected on a machine is rejected in the cluster with the same sentence"
+    );
+}
+
+#[test]
+fn module_spec_rejects_encryption_on_a_patch_file() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            target: "~/.gitconfig".to_string(),
+            strategy: Some(cfgd_schema::FileStrategy::Patch),
+            patch: Some(cfgd_schema::PatchSpec {
+                format: None,
+                ensure: None,
+                script: Some("cat".to_string()),
+                blocked_by: None,
+            }),
+            encryption: Some(cfgd_schema::EncryptionSpec {
+                backend: "sops".to_string(),
+                mode: cfgd_schema::EncryptionMode::InRepo,
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("encryption on a patch file must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec.files[0]: 'encryption' is not supported with strategy 'patch'".to_string()],
+    );
+}
+
+#[test]
 fn module_validate_rejects_empty_package_name() {
     let spec = ModuleSpec {
         packages: vec![PackageEntry {
             name: String::new(),
-            platforms: BTreeMap::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
     assert!(spec.validate().is_err());
+}
+
+/// `spec.files` is a server-side-apply map keyed on `target`, so a target the
+/// merge cannot key on has to be refused where the message can still name the
+/// entry: an empty one keys nothing, and two entries sharing one make the API
+/// server reject the whole resource naming neither.
+#[test]
+fn module_validate_rejects_an_empty_file_target() {
+    let spec = ModuleSpec {
+        files: vec![ModuleFileSpec {
+            source: "vimrc".to_string(),
+            target: String::new(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("an empty SSA map key must be refused");
+
+    assert!(
+        errors.contains(&"spec.files[0]: target must not be empty".to_string()),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn module_validate_rejects_two_files_claiming_one_target() {
+    let entry = |source: &str| ModuleFileSpec {
+        source: source.to_string(),
+        target: "~/.vimrc".to_string(),
+        ..Default::default()
+    };
+    let spec = ModuleSpec {
+        files: vec![entry("vimrc"), entry("vimrc.local")],
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a duplicate SSA map key must be refused");
+
+    assert!(
+        errors.contains(&"spec.files[1]: target '~/.vimrc' duplicates spec.files[0]".to_string()),
+        "{errors:?}"
+    );
+}
+
+/// A platform tag no host can ever match gates its entry off every machine
+/// silently, so every list carrying one is validated by the rule the local
+/// parser refuses a tag by.
+#[test]
+fn module_validate_rejects_a_bad_platform_tag_on_every_gated_field() {
+    let bad = vec!["Linux!".to_string()];
+    let cases: [(&str, ModuleSpec); 4] = [
+        (
+            "spec.platforms[0]",
+            ModuleSpec {
+                platforms: bad.clone(),
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.packages[0].platforms[0]",
+            ModuleSpec {
+                packages: vec![PackageEntry {
+                    name: "vim".to_string(),
+                    platforms: bad.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.aliases[0].platforms[0]",
+            ModuleSpec {
+                aliases: vec![ModuleAlias {
+                    name: "ll".to_string(),
+                    command: "ls -la".to_string(),
+                    platforms: bad.clone(),
+                }],
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.env[0].platforms[0]",
+            ModuleSpec {
+                env: vec![ModuleEnvVar {
+                    name: "EDITOR".to_string(),
+                    value: "vim".to_string(),
+                    append: false,
+                    platforms: bad.clone(),
+                }],
+                ..Default::default()
+            },
+        ),
+    ];
+
+    for (subject, spec) in cases {
+        let errors = spec
+            .validate()
+            .expect_err("a malformed platform tag must be refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with(&format!("{subject}: "))),
+            "{subject} accepted a tag no host can match: {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -774,5 +949,183 @@ fn the_driftalert_schema_names_the_class_of_drift_a_device_reports() {
     assert!(
         details.to_lowercase().contains("system setting"),
         "driftDetails must name what each entry is: {details}"
+    );
+}
+
+fn policy_unit(name: &str, schedule: &str) -> BackupPolicyUnit {
+    BackupPolicyUnit {
+        name: name.to_string(),
+        schedule: schedule.to_string(),
+        retention: None,
+    }
+}
+
+fn backup_policy(units: Vec<BackupPolicyUnit>) -> BackupPolicySpec {
+    BackupPolicySpec {
+        selector: LabelSelector::default(),
+        units,
+    }
+}
+
+/// A policy exists to set a cadence. One declaring no units matches machines,
+/// reports an empty projection and changes nothing, which reads as a policy
+/// that applied — so it is refused where it is written.
+#[test]
+fn backup_policy_rejects_no_units() {
+    let errs = backup_policy(Vec::new()).validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units")),
+        "should name the empty unit list: {errs:?}"
+    );
+    assert!(
+        backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")])
+            .validate()
+            .is_ok(),
+        "one unit is enough"
+    );
+}
+
+#[test]
+fn backup_policy_rejects_a_unit_with_an_empty_name_or_schedule() {
+    let errs = backup_policy(vec![
+        policy_unit("", "0 3 * * *"),
+        policy_unit("notes", "  "),
+    ])
+    .validate()
+    .unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units[0].name")),
+        "should name the empty unit name: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("spec.units[1].schedule")),
+        "should name the blank schedule: {errs:?}"
+    );
+}
+
+/// Two units sharing a name leave no answer to "which schedule does `dotfiles`
+/// run on", and the rendered CRD merges `spec.units` by that same name.
+#[test]
+fn backup_policy_rejects_two_units_sharing_a_name() {
+    let errs = backup_policy(vec![
+        policy_unit("dotfiles", "0 3 * * *"),
+        policy_unit("dotfiles", "6h"),
+    ])
+    .validate()
+    .unwrap_err();
+    // Ground truth is the shared rule the machine's own `spec.backups[]`
+    // parser answers to; the policy only prefixes the field path.
+    let mut seen = std::collections::HashSet::from(["dotfiles"]);
+    let shared = cfgd_schema::validate_backup_unit_shape("dotfiles", None, &mut seen)
+        .expect_err("a name a sibling already took")
+        .to_string();
+    assert!(
+        errs.contains(&format!("spec.units[1].{shared}")),
+        "should state the shared rule at the duplicate's own index: {errs:?}"
+    );
+}
+
+/// A policy overrides a cadence; the unit it names is defined on the machine,
+/// so a policy that states no retention leaves the profile's own standing.
+#[test]
+fn backup_policy_accepts_a_unit_that_omits_retention() {
+    let spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);
+    assert_eq!(spec.units[0].retention, None);
+    assert!(spec.validate().is_ok(), "{:?}", spec.validate());
+}
+
+#[test]
+fn backup_policy_rejects_a_retention_of_zero() {
+    let mut spec = backup_policy(vec![policy_unit("dotfiles", "0 3 * * *")]);
+    spec.units[0].retention = Some(0);
+    let errs = spec.validate().unwrap_err();
+    let shared = cfgd_schema::validate_backup_unit_shape(
+        "dotfiles",
+        Some(0),
+        &mut std::collections::HashSet::new(),
+    )
+    .expect_err("a retention that keeps nothing")
+    .to_string();
+    assert!(
+        errs.contains(&format!("spec.units[0].{shared}")),
+        "should state the shared rule about the zero retention: {errs:?}"
+    );
+    spec.units[0].retention = Some(1);
+    assert!(spec.validate().is_ok(), "1 is the smallest kept snapshot");
+}
+
+/// A policy exists only to set a cadence, so a schedule the machine's own
+/// scheduler cannot parse is refused where it is written rather than projecting
+/// onto a unit that then silently never fires. Ground truth is the shared
+/// grammar itself, which the local `spec.backups[]` parser calls too.
+#[test]
+fn backup_policy_refuses_a_schedule_the_machine_cannot_parse() {
+    let expected = cfgd_schema::validate_backup_schedule_grammar("nightly")
+        .expect_err("'nightly' is neither an interval nor a cron expression")
+        .to_string();
+    let errs = backup_policy(vec![policy_unit("dotfiles", "nightly")])
+        .validate()
+        .unwrap_err();
+    assert!(
+        errs.contains(&format!("spec.units[0].{expected}")),
+        "the policy states the shared grammar's own refusal: {errs:?}"
+    );
+    for good in ["0 3 * * *", "6h", "90"] {
+        assert!(
+            backup_policy(vec![policy_unit("dotfiles", good)])
+                .validate()
+                .is_ok(),
+            "{good} is a schedule the machine parses"
+        );
+    }
+}
+
+/// The name is matched against a unit the machine's own profile defines, so a
+/// name no local profile could legally carry matches nothing anywhere. The
+/// duplicate check keys on the trimmed name for the same reason: one unit
+/// written twice is one unit, whatever the whitespace around it.
+#[test]
+fn backup_policy_refuses_a_unit_name_no_local_profile_could_carry() {
+    let errs = backup_policy(vec![policy_unit("daily/2026", "6h")])
+        .validate()
+        .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("spec.units[0].name:") && e.contains("path separators")),
+        "a nested name is refused by the shared grammar: {errs:?}"
+    );
+
+    let errs = backup_policy(vec![
+        policy_unit("dotfiles", "6h"),
+        policy_unit(" dotfiles ", "0 3 * * *"),
+    ])
+    .validate()
+    .unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("spec.units[1].name") && e.contains("twice")),
+        "the duplicate check keys on the trimmed name: {errs:?}"
+    );
+}
+
+/// One unit spans one status row per machine, so the summary the `Units`
+/// column reads names each unit once, ordered by name rather than by the
+/// list's own (hostname, name) order.
+#[test]
+fn backup_policy_units_summary_names_each_unit_once() {
+    let row = |name: &str, hostname: &str| BackupPolicyUnitStatus {
+        name: name.to_string(),
+        hostname: hostname.to_string(),
+        owner: ScheduleOwner::Cluster.label().to_string(),
+        ..Default::default()
+    };
+    assert_eq!(BackupPolicyStatus::summarize_units(&[]), None);
+    assert_eq!(
+        BackupPolicyStatus::summarize_units(&[
+            row("notes", "nuc-01"),
+            row("dotfiles", "nuc-01"),
+            row("notes", "nuc-02"),
+        ]),
+        Some("dotfiles, notes".to_string())
     );
 }

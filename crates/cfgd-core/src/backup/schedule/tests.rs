@@ -21,6 +21,40 @@ fn parse_accepts_intervals_and_both_cron_arities() {
     assert!(BackupSchedule::parse("every tuesday").is_none());
 }
 
+/// The machine's parser and the cluster's admission grammar answer the same
+/// question about the same string.
+///
+/// `BackupSchedule::parse` returns the parsed value rather than a verdict, so
+/// it cannot delegate to `validate_backup_schedule_grammar`; the two spell the
+/// same two arms instead. A schedule admission accepts but the daemon cannot
+/// parse is a unit that never runs, and one the daemon parses but admission
+/// refuses is a policy the cluster rejects for no reason.
+#[test]
+fn every_schedule_the_grammar_admits_is_one_the_machine_parses() {
+    for schedule in [
+        "6h",
+        "30s",
+        "90",
+        "0",
+        "0 3 * * *",
+        "30 0 3 * * *",
+        "*/15 * * * *",
+        "@daily",
+        "",
+        "  ",
+        "nightly",
+        "0 3 * *",
+        "every day",
+        "every tuesday",
+    ] {
+        assert_eq!(
+            BackupSchedule::parse(schedule).is_some(),
+            cfgd_schema::validate_backup_schedule_grammar(schedule).is_ok(),
+            "the parser and the admission grammar disagree about {schedule:?}"
+        );
+    }
+}
+
 #[test]
 fn parse_floors_a_zero_interval() {
     // `parse_duration_str` accepts `0`, which would spin the daemon's timer.

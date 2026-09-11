@@ -705,6 +705,77 @@ pub fn collect_system_diffs(
         .collect()
 }
 
+/// What every available manager reports installed for the packages this
+/// machine DECLARES, keyed by [`crate::state::package_resource_id`]
+/// (`<manager>/<package>`), or `None` when the map was not observed whole.
+///
+/// The device half of `MachineConfig.status.packageVersions`, which a
+/// `ConfigPolicy` reads to judge a version pin. The declared set alone, never a
+/// full listing: a machine's whole `brew list` is thousands of rows nothing in
+/// the cluster asked about, and etcd holds the answer. A manager that states no
+/// version for a package ([`crate::providers::UNKNOWN_PACKAGE_VERSION`])
+/// contributes no entry rather than a placeholder a policy would compare
+/// against.
+///
+/// A manager holding at least one declared package that could not be queried
+/// withholds the WHOLE map. The gateway applies what it is sent as an
+/// observation of everything this machine declares, retiring every key the
+/// body leaves out, so a map missing one locked package database would flip
+/// that manager's every version pin to non-compliant. `None` is sent as no
+/// `packageVersions` key at all, which leaves the versions the cluster already
+/// holds where they are. A manager holding no declared package is never
+/// consulted and so can never withhold the map.
+pub fn declared_package_versions(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    registry: &ProviderRegistry,
+    cx: &PackageContext<'_>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut by_manager: HashMap<String, Vec<String>> = HashMap::new();
+    for ep in crate::effective::effective_desired_packages(
+        profile,
+        modules,
+        Some(&registry.manager_map()),
+    ) {
+        by_manager.entry(ep.manager).or_default().push(ep.name);
+    }
+
+    let mut reported = BTreeMap::new();
+    for pm in registry.available_package_managers() {
+        let Some(declared) = by_manager.get(pm.name()) else {
+            continue;
+        };
+        let installed = match cx.installed_for(pm) {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!(
+                    manager = pm.name(),
+                    error = %e,
+                    "{} could not be queried, withholding packageVersions from the check-in",
+                    pm.name()
+                );
+                return None;
+            }
+        };
+        for package in declared {
+            let Some(entry) = installed.entry_for(pm, package) else {
+                continue;
+            };
+            let version = entry.version.trim();
+            if version.is_empty() || version == crate::providers::UNKNOWN_PACKAGE_VERSION {
+                continue;
+            }
+            reported.insert(
+                crate::state::package_resource_id(pm.name(), package),
+                version.to_string(),
+            );
+        }
+    }
+    Some(reported)
+}
+
 /// Every drift the collected answers carry, each paired with the configurator
 /// that reported it, in the order they were collected.
 ///
@@ -928,10 +999,9 @@ fn collect_watched_package_manager_checks(
 
     let mut checks: Vec<ComplianceCheck> = installed
         .identities()
-        .iter()
         .map(|pkg| ComplianceCheck {
             category: "watchPackage".into(),
-            name: Some(pkg.clone()),
+            name: Some(pkg.to_owned()),
             manager: Some(manager_name.to_owned()),
             status: ComplianceStatus::Compliant,
             detail: Some("installed".into()),

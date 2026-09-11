@@ -264,7 +264,7 @@ pub enum FileError {
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
     // The manager IS registered, and two paths reach it: a `--phase packages`
-    // run that bypassed the `Prerequisites` phase, and an unfiltered run whose
+    // run that bypassed the `Bootstrap` phase, and an unfiltered run whose
     // provision node FAILED — the install is not a dependent of that node, so
     // it is still dispatched and still asks. Naming a filter is therefore a
     // guess, and it read as one ("or drop --phase" against a command line
@@ -272,7 +272,7 @@ pub enum PackageError {
     // provisioning, which is where the filtered run's recovery and the failed
     // run's reason both live.
     #[error(
-        "{manager} is not provisioned — provisioning is the Prerequisites phase's: `cfgd apply --phase prerequisites.managers`"
+        "{manager} is not provisioned — provisioning is the Bootstrap phase's: `cfgd apply --phase bootstrap.managers`"
     )]
     ManagerNotAvailable { manager: String },
 
@@ -302,7 +302,7 @@ pub enum PackageError {
 
     // The manager is not registered at all — no phase can provision a name
     // that does not exist, so this carries no phase-run guidance (unlike
-    // `ManagerNotAvailable`, whose recovery is always the `Prerequisites`
+    // `ManagerNotAvailable`, whose recovery is always the `Bootstrap`
     // phase).
     #[error("package manager '{manager}' not available")]
     ManagerNotFound { manager: String },
@@ -331,7 +331,7 @@ pub enum PackageError {
     #[error("{manager} lane ended without reporting — this action never ran to completion")]
     LaneLost { manager: String },
 
-    // A `Prerequisites` node whose dependency failed. It never ran: what it was
+    // A `Bootstrap` node whose dependency failed. It never ran: what it was
     // waiting to be handed does not exist, so running it anyway would be the
     // silent bootstrap that phase exists to replace. Named after the ROOT
     // failure rather than the nearest link, so the line points at what to fix.

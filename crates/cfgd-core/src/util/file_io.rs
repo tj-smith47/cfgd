@@ -93,7 +93,22 @@ pub struct FileState {
 /// failure (`EACCES` on an intermediate directory, `ELOOP`) is propagated: those
 /// are not "no link target", and degrading them to replacing the link destroys
 /// the link on exactly the paths cfgd understands least.
-fn resolve_write_target(
+///
+/// A caller re-applying a RECORDED mode resolves through here too, rather than
+/// chmodding the path it wrote: the mode belongs to the file the write landed
+/// on, and a chain (`link -> mid -> real`) names another link at its first hop,
+/// which the no-follow chmod refuses outright. Resolving the chain for a chmod
+/// does not re-open the elevated-chmod hazard, because the uid guard refuses a
+/// destination another user owns and both that guard's own read-back and the
+/// chmod open with `O_NOFOLLOW`: a FINAL component swapped to a link after the
+/// canonicalization is an `ELOOP` error rather than a hop onto a third file. An
+/// intermediate DIRECTORY swapped for a link in that window is re-traversed, the
+/// same window `guard_resolved_owner` already documents for the `rename(2)`
+/// the write path ends on. An elevated run reaches the chmod at all because
+/// `preserve_target_ownership` gives the written file back to the
+/// destination's own owner before that rename, so the uid guard's second pass
+/// still sees the link's uid rather than root's.
+pub(crate) fn resolve_write_target(
     path: &std::path::Path,
 ) -> std::result::Result<std::path::PathBuf, std::io::Error> {
     let link_meta = match std::fs::symlink_metadata(path) {
@@ -119,8 +134,11 @@ fn resolve_write_target(
 /// a second `stat`: canonicalization and the check are separate syscalls, and
 /// `O_NOFOLLOW` makes a final component swapped to a symlink in that window an
 /// `ELOOP` error instead of a silent hop to a third file. The rename that
-/// follows never re-traverses a link either — `rename(2)` operates on the final
-/// component itself — so the path checked here is the path written.
+/// follows reaches the same FINAL component directly — `rename(2)` does not
+/// resolve a link there — so the final component checked here is the final
+/// component written. An intermediate DIRECTORY swapped for a link in that
+/// window is re-traversed by this check's own open and by the rename alike,
+/// which is the window [`resolve_write_target`] states.
 #[cfg(unix)]
 fn guard_resolved_owner(
     link: &std::path::Path,

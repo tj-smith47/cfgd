@@ -2,11 +2,12 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use cfgd_schema::{BackupSpec, ScriptSpec};
+
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    BackupSpec, EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec,
-    SecretSpec, SystemSettings, validate_backup_specs, validate_managed_file_specs,
-    validate_secret_specs,
+    EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, SecretSpec, SystemSettings,
+    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};

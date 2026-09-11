@@ -3,14 +3,14 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
+# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 ERRORS=0
 WARNINGS=0
 
-SRC_ROOTS=(crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
+SRC_ROOTS=(crates/cfgd-schema/src crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---
 
@@ -25,6 +25,12 @@ log_error()   { _red;    printf "ERROR"; _reset; printf ": %s\n" "$1"; ERRORS=$(
 log_warn()    { _yellow; printf "WARN";  _reset; printf ":  %s\n" "$1"; WARNINGS=$((WARNINGS + 1)); }
 log_ok()      { _green;  printf "OK";    _reset; printf ":    %s\n" "$1"; }
 log_section() { printf "\n--- %s ---\n" "$1"; }
+
+# Bound a report to its first `n` lines. `head` closes the pipe as soon as it
+# has them, and the SIGPIPE that follows fails the pipeline under `set -o
+# pipefail` — aborting the audit precisely on the runs with the most to say.
+# awk drains its input instead, so the producer always finishes writing.
+first_lines() { awk -v n="$1" 'NR <= n'; }
 
 # --- Shared awk library ---
 # Prepend to any awk program that counts braces or honours an `<x>-ok:` marker,
@@ -446,7 +452,7 @@ check_pattern() {
             error) log_error "$label" ;;
             warn)  log_warn "$label"  ;;
         esac
-        echo "$results" | head -20
+        echo "$results" | first_lines 20
     else
         log_ok "$label"
     fi
@@ -481,7 +487,7 @@ check_core_boundary() {
 
     if [[ -n "$results" ]]; then
         log_error "$module/ must not import ${forbidden//:/, }"
-        echo "$results" | head -10
+        echo "$results" | first_lines 10
     fi
 }
 
@@ -542,10 +548,11 @@ log_section "No Unwrap in Library Code"
 #     to unwrap freely (matches the anodizer anti-patterns convention).
 #   - test_*.rs / tests_*.rs: test-only modules gated by #![cfg(test)]
 #     (e.g. test_kube_harness.rs, tests_drift_alert.rs).
+#   - src/**/tests/*.rs: a directory declared `#[cfg(test)] mod tests;` from its parent
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:'
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status
@@ -616,7 +623,7 @@ done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
     log_error "tracing::info!/warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
-    echo "$advisory_violations" | head -20
+    echo "$advisory_violations" | first_lines 20
 else
     log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
 fi
@@ -658,7 +665,7 @@ done < <(find "${narration_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 narration_violations=$(echo "$narration_violations" | sed '/^$/d')
 if [[ -n "$narration_violations" ]]; then
     log_error "tracing::info! outside daemon/ (a second copy of a line the Printer already prints, on the stream the live region repaints — demote to debug!, delete it, or mark // tracing-ok: <why>):"
-    echo "$narration_violations" | head -20
+    echo "$narration_violations" | first_lines 20
 else
     log_ok "No tracing::info! outside daemon/"
 fi
@@ -715,7 +722,7 @@ done < <(find crates -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
     log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/a review-finding tag like B1 beside \"finding\"|\"review\"|\"proved\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
-    echo "$comment_voice_violations" | head -20
+    echo "$comment_voice_violations" | first_lines 20
 else
     log_ok "No session-narrative or self-citation comments"
 fi
@@ -829,7 +836,10 @@ for errors_file in $(errors_file_candidates); do
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
-        if echo "$from_variants" | grep -qw "$variant" 2>/dev/null; then
+        # A here-string, not a pipe: `grep -q` exits on its first match, and
+        # under `pipefail` the producer it kills with SIGPIPE makes the whole
+        # pipeline report failure — a match would read as a miss.
+        if grep -qw "$variant" <<<"$from_variants" 2>/dev/null; then
             continue
         fi
         uses=$(production_construction_sites "$variant")
@@ -868,7 +878,7 @@ done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
-    | head -5 || true)
+    | first_lines 5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
     echo "$dupes"
@@ -911,6 +921,10 @@ log_section "DRY — Duplicated Function Definitions"
 # `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
 # re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
 # rendered payload's fields, not the reconciler types they name.
+# `CollectOutcome`'s `tally`, `action_count` and `role` answer for a gc run
+# what `ApplyRun`, `Phase` and the status rows answer for theirs, each on its
+# own type; `cli::output_types::is_zero` is a private serde predicate with one
+# user, the twin of `state::types`'s, and `*n == 0` carries no rule to drift.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "is_clean crates/cfgd-core/src/backup/mod.rs"
@@ -920,6 +934,10 @@ ALLOWED_FN_PAIRS=(
     "source crates/cfgd-core/src/reconciler/types.rs"
     "execute crates/cfgd-core/src/reconciler/run.rs"
     "lane crates/cfgd-core/src/providers/mod.rs"
+    "tally crates/cfgd-core/src/backup/gc.rs"
+    "action_count crates/cfgd-core/src/backup/gc.rs"
+    "role crates/cfgd-core/src/backup/gc.rs"
+    "is_zero crates/cfgd/src/cli/output_types.rs"
     "node_id crates/cfgd-core/src/reconciler/managers.rs"
     "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
     "token crates/cfgd/src/cli/output_types.rs"
@@ -942,11 +960,19 @@ ALLOWED_FN_PAIRS=(
     # slice of sibling fields rather than a single source; a fourth unrelated
     # `of`. `Tier::of` still keeps the budget.
     "of crates/cfgd/src/cli/explain/mod.rs"
+    # `AfterPlanCounts::of` is that convention once more, over a finished
+    # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
+    # after-plan class into its wire counts.
+    "of crates/cfgd/src/cli/output_types.rs"
     "role crates/cfgd/src/cli/status.rs"
     "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
     "report crates/cfgd-core/src/reconciler/sidecar.rs"
     "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
     "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
+    # A third delegate: cfgd-schema owns the file shape rule so the Module CRD
+    # applies the same one, and this wrapper only re-labels its bare message as
+    # a ConfigError. cfgd-schema's definition keeps the budget.
+    "validate_file_patch_shape crates/cfgd-core/src/config/profile_spec.rs"
     # The names below were blanket-excused by NAME until the trait-impl skip
     # above landed. The skip covers each trait's IMPLS; what still collides is
     # the trait's own declaration against an unrelated inherent method, a free
@@ -1108,7 +1134,7 @@ done < <(audit_scan_files) \
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
-    echo "$fn_dupes" | head -10
+    echo "$fn_dupes" | first_lines 10
 else
     log_ok "No duplicated function definitions across files"
 fi
@@ -1129,7 +1155,7 @@ bad_renames=$(grep -rn '#\[serde(rename = "' "${SRC_ROOTS[@]}" --include='*.rs' 
     || true)
 if [[ -n "$bad_renames" ]]; then
     log_error "Found kebab-case explicit serde rename attributes (should be camelCase):"
-    echo "$bad_renames" | head -10
+    echo "$bad_renames" | first_lines 10
 else
     log_ok "No kebab-case explicit serde rename attributes"
 fi
@@ -1153,7 +1179,7 @@ if [[ -n "$config_fields" ]]; then
         || true)
     if [[ -n "$kebab_fields" ]]; then
         log_error "Found kebab-case config field names in string literals (should be camelCase):"
-        echo "$kebab_fields" | head -10
+        echo "$kebab_fields" | first_lines 10
     else
         log_ok "No kebab-case config field names in string literals"
     fi
@@ -1191,7 +1217,7 @@ while IFS= read -r -d '' rsfile; do
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
     log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or lockfile.rs (CLAUDE.md rule #5):"
-    printf "%s" "$config_parse_violations" | head -10
+    printf "%s" "$config_parse_violations" | first_lines 10
 else
     log_ok "Config parsing confined to config/, generate/, schema/, and lockfile.rs in cfgd-core"
 fi
@@ -1255,7 +1281,7 @@ done
 effective_violations=$(echo "$effective_violations" | sed '/^$/d')
 if [[ -n "$effective_violations" ]]; then
     log_error "Read path reads profile-only desired state (use cfgd_core::effective::* so module resources stay visible):"
-    echo "$effective_violations" | head -20
+    echo "$effective_violations" | first_lines 20
 else
     log_ok "Read paths route desired state through cfgd_core::effective::*"
 fi
@@ -1485,7 +1511,7 @@ raw_spawns=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
     log_error "Raw tokio::task::spawn_blocking (use cfgd_core::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
-    echo "$raw_spawns" | head -10
+    echo "$raw_spawns" | first_lines 10
 else
     log_ok "No raw spawn_blocking in workspace production code"
 fi
@@ -1514,7 +1540,7 @@ sleep_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$sleep_violations" ]]; then
     log_error "thread::sleep/tokio::time::sleep in test code (flaky timing sync — use the observables catalogued in shared-utils.md: ConcurrencyWitness, a channel/oneshot handshake, await_queued_path_writer, await_blocking_source_acquire, a bounded deadline-poll — or annotate // sleep-ok: <why no observable exists>):"
-    echo "$sleep_violations" | head -20
+    echo "$sleep_violations" | first_lines 20
 else
     log_ok "No unguarded sleep-as-synchronization in test code"
 fi
@@ -1551,7 +1577,7 @@ raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$raw_capture_violations" ]]; then
     log_error "Raw Printer capture-buffer read in test code (use cfgd_core::test_helpers::captured_text(&buf), or annotate // raw-capture-ok: <why>):"
-    echo "$raw_capture_violations" | head -20
+    echo "$raw_capture_violations" | first_lines 20
 else
     log_ok "No raw Printer capture-buffer reads in test code"
 fi
@@ -1789,6 +1815,81 @@ else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
 fi
 
+log_section "e2e compile-cache layering (every building job carries it)"
+# A Rust toolchain step is the tell that an e2e job COMPILES: a suite needing a
+# release `cfgd` builds it on the runner (`ensure_cfgd_binary`, or `cargo run
+# --release --bin cfgd-gen-crds`), and a suite that rides the setup job's images
+# needs no toolchain at all. A cold build is what the per-job timeout cannot
+# absorb, so the toolchain step and the four-part compile cache travel together:
+# `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER` for the job, `mozilla-actions/sccache-action`,
+# and `Swatinem/rust-cache` under a `key:` no sibling job shares — one key over two
+# jobs is one cache their different `target/` trees evict each other from. Raising
+# the timeout instead hides a missing cache.
+# The POPULATION is the glob, not a list: a new `e2e-<suite>.yml` joins the gate
+# by existing, and a glob matching nothing means the gate is watching no file.
+# The key map is judged across every scanned workflow at once, because two
+# workflows can hand GitHub the same cache key as easily as two jobs can.
+shopt -s nullglob
+e2e_wfs=(.github/workflows/e2e*.yml)
+shopt -u nullglob
+if (( ${#e2e_wfs[@]} == 0 )); then
+    log_error "e2e compile-cache gate could not run (no .github/workflows/e2e*.yml)"
+else
+    e2e_missing="$(awk '
+        # Per-file state: a job name is unique within its own workflow only, so
+        # every per-job fact is keyed by file AND job.
+        FNR == 1 { injobs = 0; job = "" }
+        /^jobs:[[:space:]]*$/ { injobs = 1; next }
+        # A job key may carry a trailing comment; read as a step line instead,
+        # its own steps are attributed to the job declared above it.
+        injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+            job = $0
+            sub(/^  /, "", job)
+            sub(/:[[:space:]]*(#.*)?$/, "", job)
+            order[++n] = FILENAME SUBSEP job
+            next
+        }
+        injobs && job != "" {
+            j = FILENAME SUBSEP job
+            if ($0 ~ /dtolnay\/rust-toolchain/)         toolchain[j] = 1
+            if ($0 ~ /mozilla-actions\/sccache-action/) sccache[j]   = 1
+            if ($0 ~ /Swatinem\/rust-cache/)            rustcache[j] = 1
+            if ($0 ~ /RUSTC_WRAPPER/)                   wrapper[j]   = 1
+            if ($0 ~ /SCCACHE_GHA_ENABLED/)             gha[j]       = 1
+            if ($0 ~ /^[[:space:]]+key:[[:space:]]*[^[:space:]]/) {
+                k = $0; sub(/^[[:space:]]*key:[[:space:]]*/, "", k); cachekey[j] = k
+            }
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                j = order[i]
+                if (!(j in toolchain)) continue
+                split(j, part, SUBSEP)
+                where = part[1] " " part[2]
+                miss = ""
+                if (!(j in gha))       miss = miss " SCCACHE_GHA_ENABLED"
+                if (!(j in wrapper))   miss = miss " RUSTC_WRAPPER"
+                if (!(j in sccache))   miss = miss " mozilla-actions/sccache-action"
+                if (!(j in rustcache)) miss = miss " Swatinem/rust-cache"
+                if (miss != "")
+                    print where ": compiles but carries no" miss
+                else if (!(j in cachekey))
+                    print where ": rust-cache carries no key:, so it shares one cache with its siblings"
+                else if (cachekey[j] in owner)
+                    print where ": rust-cache key " cachekey[j] " already belongs to " owner[cachekey[j]]
+                else
+                    owner[cachekey[j]] = part[1] " " part[2]
+            }
+        }
+    ' "${e2e_wfs[@]}")"
+    if [[ -n "$(printf '%s' "$e2e_missing" | grep . || true)" ]]; then
+        log_error "e2e jobs that compile without the full compile-cache layering:"
+        printf '%s\n' "$e2e_missing" | grep . | first_lines 20
+    else
+        log_ok "Every e2e job with a Rust toolchain carries sccache + rust-cache under its own key"
+    fi
+fi
+
 # --- One owner comparator ---
 # `Owner::sort_key` is the single rule for which owner precedes which, and it is
 # applied exactly once — where a phase's groups are built. A second call site is
@@ -1952,7 +2053,7 @@ for tape in demo/*.tape; do
         # (sync.tape) inherits that script's init; the script is the tape's
         # theme selector — either a `--theme` on its init or a `theme:` in the
         # config it seeds — and is checked in its place.
-        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | head -n1)
+        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | first_lines 1)
         if [ -z "$setup_script" ] || ! grep -Eq -- "(--theme|^ *theme:) ${DEMO_THEME}( |\"|'|\$)" "demo/scripts/${setup_script}"; then
             theme_gap="${theme_gap}${tape} (no cfgd init and no setup script selecting the ${DEMO_THEME} theme)"$'\n'
         fi
@@ -2021,6 +2122,64 @@ if [ -n "$catalog_gap" ]; then
     printf '%s\n' "$catalog_gap"
 else
     log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
+fi
+
+log_section "case_insensitive_enum! reaches serde through \$crate"
+
+# The macro is `#[macro_export]`ed, so its expansion lands in crates that carry
+# no serde dependency of their own. A bare `serde::` path in the expansion
+# compiles cleanly here — cfgd-schema has serde — and breaks only in such a
+# consumer, which no in-repo build would ever catch.
+enum_de_file="crates/cfgd-schema/src/enum_de.rs"
+if require_files "case_insensitive_enum! serde-path scan" "$enum_de_file"; then
+    bare_serde="$(grep -n 'serde::' "$enum_de_file" \
+        | grep -v '^[0-9]*:[[:space:]]*//' \
+        | sed 's/\$crate::serde::/ /g' \
+        | grep 'serde::' || true)"
+    if [ -n "$bare_serde" ]; then
+        log_error "case_insensitive_enum!'s expansion names serde directly (reach it through \`\$crate::serde\`, so a crate without serde can still invoke the macro):"
+        printf '%s\n' "$bare_serde" | first_lines 10
+    else
+        log_ok "case_insensitive_enum! names serde only through \$crate::serde"
+    fi
+fi
+
+log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
+
+# The CSI node plugin never touches a Kubernetes API object, so it builds
+# cfgd-core with `default-features = false` to leave the kube stack out of its
+# image. Any crate that slips into cfgd-core unconditionally — or into a new
+# leaf like cfgd-schema — reaches CSI too, and the weight comes back silently.
+# Resolved ONCE, and the resolution is judged before its content is: a `||
+# true` over the whole pipeline cannot tell "no kube crate" from "cargo
+# resolved nothing", so a cold cache or a renamed package would reach the same
+# green a clean tree does. The same vacuous-green shape require_dirs and the
+# ripgrep preamble above exist to prevent.
+# cargo announces a contended build lock on stderr ("Blocking waiting for file
+# lock on package cache"), and a merged stream splices that line into the
+# block-buffered stdout it interrupts: `awk '{print $1}'` then reads `Blocking`
+# where a crate name belongs, and the spliced line can equally hide a kube crate
+# from the grep below. The diagnostic is kept, on its own file, and printed only
+# where it explains a failure.
+csi_stderr="$(mktemp)"
+if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>"$csi_stderr")"; then
+    log_error "cargo tree -p cfgd-csi did not resolve, so the kube gate proved nothing:"
+    printf '%s\n' "$csi_tree"
+    cat "$csi_stderr"
+    rm -f "$csi_stderr"
+elif ! grep -qx 'cfgd-core' <<<"$(awk '{print $1}' <<<"$csi_tree")"; then
+    rm -f "$csi_stderr"
+    log_error "the resolution named no \`cfgd-core\` line, this gate's canary crate: a wrong tree, a polluted capture, or cfgd-csi genuinely no longer depending on it"
+else
+    rm -f "$csi_stderr"
+    csi_heavy="$(awk '{print $1}' <<<"$csi_tree" | sort -u \
+      | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
+    if [ -n "$csi_heavy" ]; then
+        log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"
+        printf '%s\n' "$csi_heavy"
+    else
+        log_ok "cfgd-csi's dependency tree carries no kube/k8s-openapi crate"
+    fi
 fi
 
 # --- Summary ---

@@ -137,8 +137,10 @@ CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
 ```
 
 The evidence is identical and no other reader can see the mutation. Scratch goes under
-`~/.cache/`, never `/tmp`, and the probe tree AND its target dir are deleted as soon as
-the probe's red run is captured — never left standing for a later probe to reuse.
+`~/.cache/`, never `/tmp`, and the probe TREE is deleted as soon as the probe's red run is
+captured, so nothing later reads a tree still carrying a deliberate defect. The shared
+target dir (`~/.cache/cfgd-debug/red-target`) is retained: a fresh tree is copied per
+probe, so what a kept target dir changes is rebuild cost, never what a probe measures.
 
 ## Fixture versions: use the 9.9.x sentinel range
 
@@ -158,3 +160,22 @@ Tests that DO assert against real `CARGO_PKG_VERSION` (e.g.
 `upgrade_check_up_to_date_human` exercising `cmd_upgrade`) keep their
 snapshots tracking the real version — those are correctly coupled.
 The sentinel rule applies only to test-body literal fixtures.
+
+## A pin that runs at one uid says so in its name
+
+A test whose first statement returns early on `cfgd_core::is_root()` executes nothing
+at the other uid, and its green line is indistinguishable from a pin that ran. The name
+carries which half executed, with a mechanical suffix read off the gate:
+
+| First statement | Suffix |
+|---|---|
+| `if !is_root() { return; }` | `_as_root` |
+| `if is_root() { return; }` | `_as_non_root` |
+| `if !(cfg!(target_os = "linux") && is_root()) { return; }` | `_as_linux_root` |
+| `if cfg!(target_os = "linux") && is_root() { return; }` | `_as_non_linux_root` |
+
+A pin that asserts in both arms (`if is_root() { assert A } else { assert B }`) takes no
+suffix: every run executes it. The suffix also binds the other way, so a name claiming a
+uid must open on that gate. `every_pin_that_runs_at_one_uid_says_so_in_its_name`
+(`output/tests/fences.rs`) walks every crate in both directions and floors each suffix
+at the count the workspace holds.

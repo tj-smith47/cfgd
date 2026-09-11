@@ -577,7 +577,7 @@ spec:
 
     #[cfg(unix)]
     #[test]
-    fn cmd_config_set_readonly_dir_yields_target_not_writable_with_path_and_hint() {
+    fn cmd_config_set_readonly_dir_yields_target_not_writable_with_path_and_hint_as_non_root() {
         use std::os::unix::fs::PermissionsExt;
 
         // Root bypasses mode bits; the probe (correctly) reports a 0o500 dir

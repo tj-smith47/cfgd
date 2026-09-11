@@ -747,10 +747,14 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
-/// Honors `CFGD_BREW_BIN` for tests.
+///
+/// A set `CFGD_BREW_BIN` answers alone, missing file included, matching
+/// [`cfgd_core::command_available_with_seam`]: a seam that fell through to the
+/// host when the file it names is absent is a seam that cannot say this host
+/// has no brew, which is exactly what a cascade test needs to say.
 pub(super) fn brew_available() -> bool {
-    if std::env::var(BREW_BIN_ENV).is_ok_and(|v| std::path::Path::new(&v).is_file()) {
-        return true;
+    if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
+        return std::path::Path::new(&seam).is_file();
     }
     if command_available("brew") {
         return true;
@@ -779,12 +783,16 @@ pub(super) fn brew_available() -> bool {
 type SystemArm = (&'static str, &'static str);
 
 /// The system arms of [`bootstrap_via_brew_then_system`].
-const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf")];
+const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf"), ("pkg", "pkg")];
 
 /// The arms of [`bootstrap_via_system_manager`], which reaches one manager more
 /// than the brew cascade does.
-const SYSTEM_MANAGER_ARMS: &[SystemArm] =
-    &[("apt", "apt-get"), ("dnf", "dnf"), ("zypper", "zypper")];
+const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
+    ("apt", "apt-get"),
+    ("dnf", "dnf"),
+    ("zypper", "zypper"),
+    ("pkg", "pkg"),
+];
 
 /// One manager's mediated bootstrap: the packages a mediating manager installs
 /// to deliver it, per mediator family.
@@ -798,14 +806,62 @@ const SYSTEM_MANAGER_ARMS: &[SystemArm] =
 pub(super) struct MediatedArms {
     /// The brew formula, or `None` for a manager with no brew arm.
     pub(super) brew: Option<&'static str>,
-    /// The package names the system arms install.
+    /// The package names the Linux system arms install.
     pub(super) system: &'static [&'static str],
+    /// The FreeBSD port origins the `pkg` arm installs, or empty for a manager
+    /// with no FreeBSD port. Distinct from [`Self::system`] because the ports
+    /// tree names these differently from every Linux distro — FreeBSD's Python
+    /// packages carry a version prefix (`py311-pipx`) that no generic name
+    /// resolves, and a port ORIGIN (`devel/py-pipx`) is version-free, so it
+    /// keeps naming the right package as the default Python flavour moves.
+    pub(super) pkg: &'static [&'static str],
     /// Which system arms deliver it — the same table the manager's own
     /// bootstrap cascade walks.
     pub(super) system_arms: &'static [SystemArm],
 }
 
 impl MediatedArms {
+    /// The packages the system arm `method` installs for this manager, or
+    /// `None` when this manager offers that arm nothing to install.
+    ///
+    /// The one place a mediator becomes a package list, so the cascade that
+    /// RUNS an arm and the batch that asks the same mediator for names cannot
+    /// answer differently. An empty list is how a manager declines an arm: no
+    /// FreeBSD port means no `pkg` arm, not a `pkg install` of the Linux names.
+    pub(super) fn system_packages_for(&self, method: &str) -> Option<&'static [&'static str]> {
+        if !self.system_arms.iter().any(|(arm, _)| *arm == method) {
+            return None;
+        }
+        let pkgs = if method == "pkg" {
+            self.pkg
+        } else {
+            self.system
+        };
+        (!pkgs.is_empty()).then_some(pkgs)
+    }
+
+    /// The system arms this manager actually offers, as prose an error names
+    /// (`apt, dnf, or pkg`). Read off [`Self::system_arms`] through
+    /// [`Self::system_packages_for`], so a failure sentence cannot claim a
+    /// mediator the cascade never tried.
+    ///
+    /// `None` for a manager that offers no system arm at all, so no caller can
+    /// compose a sentence that trails off after `via `.
+    pub(super) fn offered_arm_names(&self) -> Option<String> {
+        let offered: Vec<&str> = self
+            .system_arms
+            .iter()
+            .filter(|(method, _)| self.system_packages_for(method).is_some())
+            .map(|(method, _)| *method)
+            .collect();
+        match offered.split_last() {
+            None => None,
+            Some((last, [])) => Some((*last).to_string()),
+            Some((last, [first])) => Some(format!("{first} or {last}")),
+            Some((last, rest)) => Some(format!("{}, or {last}", rest.join(", "))),
+        }
+    }
+
     /// The packages `via` installs for this manager, or `None` when `via` is
     /// not a mediator these arms describe. Answered on `via`'s FAMILY, so
     /// `brew-cask` reads as brew — the same collapse the provision lane makes.
@@ -814,10 +870,8 @@ impl MediatedArms {
         if family == "brew" {
             return self.brew.map(|pkg| vec![pkg.to_string()]);
         }
-        self.system_arms
-            .iter()
-            .any(|(arm, _)| *arm == family)
-            .then(|| self.system.iter().map(|p| (*p).to_string()).collect())
+        self.system_packages_for(family)
+            .map(|pkgs| pkgs.iter().map(|p| (*p).to_string()).collect())
     }
 }
 
@@ -825,10 +879,12 @@ impl MediatedArms {
 pub(super) const fn brew_then_system_arms(
     brew: &'static str,
     system: &'static [&'static str],
+    pkg: &'static [&'static str],
 ) -> MediatedArms {
     MediatedArms {
         brew: Some(brew),
         system,
+        pkg,
         system_arms: BREW_SYSTEM_ARMS,
     }
 }
@@ -838,10 +894,12 @@ pub(super) const fn brew_then_system_arms(
 pub(super) const fn system_manager_arms(
     brew: Option<&'static str>,
     system: &'static [&'static str],
+    pkg: &'static [&'static str],
 ) -> MediatedArms {
     MediatedArms {
         brew,
         system,
+        pkg,
         system_arms: SYSTEM_MANAGER_ARMS,
     }
 }
@@ -853,8 +911,13 @@ pub(super) const fn system_manager_arms(
 /// this family reads the plan being built the same way; a system manager is
 /// never provisioned today, which makes the first half a no-op for these arms
 /// and keeps it from being a second rule when one is.
-fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    arms.iter()
+fn detect_system_arm(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    arms.system_arms
+        .iter()
+        .filter(|(method, _)| arms.system_packages_for(method).is_some())
         .find(|(method, tool)| delivered(method) || system_tool_available(tool))
         .map(|(method, _)| *method)
 }
@@ -875,10 +938,11 @@ fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Op
 /// `pip`) — the same string it hands the cascade — because a method naming
 /// neither this cascade nor that arm is a provision nothing can run.
 pub(super) fn detect_brew_system_method(
+    arms: &MediatedArms,
     fallback: &'static str,
     delivered: &dyn Fn(&str) -> bool,
 ) -> &'static str {
-    detect_brew_or_system_method(BREW_SYSTEM_ARMS, delivered).unwrap_or(fallback)
+    detect_brew_or_system_method(arms, delivered).unwrap_or(fallback)
 }
 
 /// The mediator a brew-then-system bootstrap can actually run on this host, or
@@ -889,10 +953,10 @@ pub(super) fn detect_brew_system_method(
 /// degrade into a cascade that tried something else, and under a binding plan
 /// it would be a guaranteed failure instead.
 pub(super) fn detect_brew_or_system_method(
-    arms: &[SystemArm],
+    arms: &MediatedArms,
     delivered: &dyn Fn(&str) -> bool,
 ) -> Option<&'static str> {
-    if delivered("brew") || brew_available() {
+    if arms.brew.is_some() && (delivered("brew") || brew_available()) {
         return Some("brew");
     }
     detect_system_arm(arms, delivered)
@@ -903,14 +967,11 @@ pub(super) fn detect_brew_or_system_method(
 /// method through it. Binding on execution for the same reason
 /// [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
-pub(super) fn detect_system_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    detect_system_arm(SYSTEM_MANAGER_ARMS, delivered)
-}
-
-/// Every mediator a `go` bootstrap can run: brew, then the full system cascade
-/// (`bootstrap_via_system_manager`, which reaches zypper as well).
-pub(super) fn detect_go_bootstrap_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS, delivered)
+pub(super) fn detect_system_method(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    detect_system_arm(arms, delivered)
 }
 
 /// The plan named a mediator that cannot deliver on this host any more.
@@ -1228,15 +1289,17 @@ fn bootstrap_system_arms(
     cx: &PackageContext<'_>,
     manager_name: &str,
     subject: &str,
-    pkgs: &[&str],
-    arms: &[SystemArm],
+    arms: &MediatedArms,
     fallback_method: Option<&str>,
 ) -> Result<bool> {
     if let Some(method) = cx.planned_method() {
         if fallback_method == Some(method) {
             return Ok(false);
         }
-        let Some((_, tool)) = arms.iter().find(|(arm, _)| *arm == method) else {
+        let Some((_, tool)) = arms.system_arms.iter().find(|(arm, _)| *arm == method) else {
+            return Err(planned_method_unavailable(manager_name, method).into());
+        };
+        let Some(pkgs) = arms.system_packages_for(method) else {
             return Err(planned_method_unavailable(manager_name, method).into());
         };
         if !system_tool_available(tool) {
@@ -1250,7 +1313,10 @@ fn bootstrap_system_arms(
         };
     }
 
-    for (method, tool) in arms {
+    for (method, tool) in arms.system_arms {
+        let Some(pkgs) = arms.system_packages_for(method) else {
+            continue;
+        };
         if system_tool_available(tool) {
             let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
             if result.status.success() {
@@ -1296,29 +1362,36 @@ fn run_system_install(
     })
 }
 
-/// Try to install a package via common system package managers (apt, then dnf, then zypper).
+/// Try to install a manager via common system package managers (apt, then dnf,
+/// then zypper, then FreeBSD's pkg).
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
 ///
 /// There is no fallback arm past this one: a caller reaching here has nothing
 /// else to try, so a planned method these arms cannot run fails naming itself.
+///
+/// The sentence names the mediators THIS manager offers, read off its own arms:
+/// a manager with no FreeBSD port never tried `pkg`, and telling its reader it
+/// did sends them looking for a failure that never happened.
 pub(super) fn bootstrap_via_system_manager(
     cx: &PackageContext<'_>,
-    target_pkg: &str,
+    arms: &MediatedArms,
     manager_name: &str,
 ) -> Result<()> {
-    if bootstrap_system_arms(
-        cx,
-        manager_name,
-        target_pkg,
-        &[target_pkg],
-        SYSTEM_MANAGER_ARMS,
-        None,
-    )? {
+    if bootstrap_system_arms(cx, manager_name, manager_name, arms, None)? {
         return Ok(());
     }
+    let message = match arms.offered_arm_names() {
+        Some(names) => format!("failed to install {manager_name} via {names}"),
+        // Unreachable: every manager whose bootstrap reaches here declares a
+        // non-empty system list. Worded rather than unwrapped so an arms table
+        // that one day declares none says something true — and what would be
+        // empty is the manager's own table, not the set of mediators the host
+        // carries.
+        None => format!("failed to install {manager_name}: it names no mediator to install it"),
+    };
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
-        message: format!("failed to install {} via apt, dnf, or zypper", target_pkg),
+        message,
     }
     .into())
 }
@@ -1336,21 +1409,15 @@ pub(super) fn bootstrap_via_system_manager(
 pub(super) fn bootstrap_via_brew_then_system(
     cx: &PackageContext<'_>,
     manager_name: &str,
-    brew_pkg: &str,
-    system_pkgs: &[&str],
+    arms: &MediatedArms,
     fallback_method: &str,
 ) -> Result<bool> {
-    if bootstrap_brew_arm(cx, manager_name, brew_pkg)? {
+    if let Some(brew_pkg) = arms.brew
+        && bootstrap_brew_arm(cx, manager_name, brew_pkg)?
+    {
         return Ok(true);
     }
-    bootstrap_system_arms(
-        cx,
-        manager_name,
-        manager_name,
-        system_pkgs,
-        BREW_SYSTEM_ARMS,
-        Some(fallback_method),
-    )
+    bootstrap_system_arms(cx, manager_name, manager_name, arms, Some(fallback_method))
 }
 
 /// Run a `sh -c <script>` install pipeline and surface non-zero exits as

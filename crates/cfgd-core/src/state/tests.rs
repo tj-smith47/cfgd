@@ -902,7 +902,7 @@ fn every_home_directory_unresolved_names_the_directory_it_could_not_place() {
 
 #[cfg(unix)]
 #[test]
-fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
+fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Skip under root: a 0o500 dir is still writable to uid 0, so the probe
@@ -4518,9 +4518,7 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let mut upserts = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = crate::test_helpers::walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (at, _) in body.match_indices("ON CONFLICT") {
             upserts += 1;

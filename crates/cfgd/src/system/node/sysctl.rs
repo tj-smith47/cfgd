@@ -93,6 +93,7 @@ impl SysctlConfigurator {
             content.push_str(&format!("{} = {}\n", k, v));
         }
 
+        // user-scope-ok: read by sysctl as root at boot, never by a user session
         cfgd_core::atomic_write_str(&conf_path, &content)?;
         Ok(())
     }

@@ -216,6 +216,17 @@ pub struct SystemCheckError {
     pub error: String,
 }
 
+impl SystemCheckError {
+    /// The key as a rendered row subject: the home directory folded to `~/`,
+    /// because a key naming an env target or a managed file carries an absolute
+    /// path the surrounding rows all show folded. `key` itself stays the stored
+    /// spelling every payload serializes.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        crate::fold_home_in_text(&self.key)
+    }
+}
+
 /// Where a declared package's installed copy stands against the `minVersion`
 /// floor its declaration pins.
 ///
@@ -280,12 +291,7 @@ pub fn package_version_floor(
             ),
         };
     }
-    let identity = mgr.package_identity(package);
-    let Some(entry) = installed
-        .listed()
-        .iter()
-        .find(|p| mgr.listed_identity(&p.name) == identity)
-    else {
+    let Some(entry) = installed.entry_for(mgr, package) else {
         // Not in the listing: the presence pass owns this package's verdict,
         // and a floor cannot be judged against a copy that is not there.
         return VersionFloor::Met;
@@ -515,7 +521,7 @@ pub fn env_verify_results(
                     .map(|content| content.contains(&line))
                     .unwrap_or(false);
                 results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
+                    resource_type: super::ENV_RC_RESOURCE_TYPE.to_string(),
                     resource_id: to_posix_string(&rc_path),
                     matches: has_line,
                     expected: "source line present".to_string(),

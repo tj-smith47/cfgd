@@ -34,7 +34,7 @@ pub use types::{
     FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
     ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
     SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
-    module_status_display, source_status_display,
+    module_listing_display, module_status_display, source_status_display,
 };
 
 /// Canonical state DB filename. The single source of truth so the default and
@@ -635,6 +635,21 @@ const MIGRATIONS: &[&str] = &[
         scope TEXT PRIMARY KEY,
         timestamp TEXT NOT NULL
     );",
+    // Migration 26: the cluster-owned backup cadences the device gateway
+    // answered the last check-in with. Runtime state, not configuration: the
+    // profile on disk is the machine's own declaration and is never rewritten
+    // by a projection. It lives here rather than in the daemon's memory
+    // because two processes need one answer — the daemon arms its timers from
+    // it, and `cfgd backup list` renders the cadence those timers will
+    // actually use. A check-in REPLACES the whole set, so a unit a policy
+    // stopped scheduling falls back to the profile's own cadence rather than
+    // running on a projection nothing renews.
+    "CREATE TABLE IF NOT EXISTS cluster_backup_schedules (
+        name       TEXT PRIMARY KEY,
+        schedule   TEXT NOT NULL,
+        retention  INTEGER,
+        checked_in_at TEXT NOT NULL
+    );",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
@@ -856,14 +871,17 @@ impl StateStore {
         Ok(store)
     }
 
-    /// Remove the `backup_runs` table so the next write to it fails.
+    /// Remove the `backup_runs` table so the next read or write of it fails.
     ///
     /// The seam for a caller's state-store-failure arm, which in production is
-    /// reached only by a refused write (a full disk, a locked or corrupt DB)
+    /// reached only by a refused query (a full disk, a locked or corrupt DB)
     /// and is otherwise untestable: the connection is private to this module,
-    /// so a consumer's test cannot break the schema by hand.
-    #[cfg(test)]
-    pub(crate) fn drop_backup_runs_table(&self) -> Result<()> {
+    /// so a consumer's test cannot break the schema by hand. The migrations are
+    /// gated on the schema version, so a reopen does not put the table back —
+    /// which is what lets a `cfgd`-crate test reach the degraded path of a
+    /// command that opens the store itself.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn drop_backup_runs_table(&self) -> Result<()> {
         self.conn.execute("DROP TABLE backup_runs", [])?;
         Ok(())
     }

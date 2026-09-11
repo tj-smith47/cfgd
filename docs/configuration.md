@@ -21,7 +21,9 @@ wrote it. Add a modeline to the top of the file:
 # yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v<version>/schemas/cfgd-config.schema.json
 apiVersion: cfgd.io/v1alpha1
 kind: Config
-# ...
+metadata:
+  name: cfgd
+spec: {}
 ```
 
 Swap `<version>` for the cfgd release that wrote the file (`cfgd --version`), and
@@ -619,7 +621,9 @@ is computed from the target's *current* bytes:
 Declarative file/directory snapshots, including the `schedule` grammar (interval
 or cron) and the hook, retention and destination semantics, live in
 [Declarative Backups](backups.md); the field table is in the
-[Profile spec](spec/profile.md#specbackups).
+[Profile spec](spec/profile.md#specbackups). A unit is open to the cluster's
+[`BackupPolicy`](backup-policy.md) unless the profile pins it with
+`scheduleOwner: Local`.
 
 ## File locations
 

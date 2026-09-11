@@ -6,7 +6,7 @@
 //! "additive or breaking?" decision rather than silently shipping a schema drift.
 //!
 //! One mechanism covers both halves of the unified registry: the four local YAML
-//! document kinds and the five cluster-side CRD kinds (behind the default-on
+//! document kinds and the cluster-side CRD kinds (behind the default-on
 //! `crd` feature, so the CRD goldens are exercised in the normal test run).
 //!
 //! Bless (regenerate the goldens) by running with `CFGD_BLESS_SCHEMA=1` set —

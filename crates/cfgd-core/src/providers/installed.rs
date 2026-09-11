@@ -1,6 +1,6 @@
 //! The per-run memo of what each package manager reports as installed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::{PackageInfo, PackageManager};
@@ -21,29 +21,44 @@ use crate::errors::Result;
 /// predicate instead of two filters.
 #[derive(Default)]
 pub struct InstalledPackages {
-    identities: HashSet<String>,
     listed: Vec<PackageInfo>,
+    /// Identity to the position in `listed` that first claimed it, so a
+    /// declared-name lookup is a hash probe rather than a scan that folds every
+    /// listed name on the way past. A machine declaring hundreds of packages
+    /// against a listing of thousands asks this question once per declared
+    /// package on every check-in, and the daemon asks it on every tick.
+    by_identity: HashMap<String, usize>,
 }
 
 impl InstalledPackages {
     pub(super) fn from_listing(manager: &dyn PackageManager, listed: Vec<PackageInfo>) -> Self {
-        let identities = listed
-            .iter()
-            .map(|pkg| manager.listed_identity(&pkg.name))
-            .collect();
-        Self { identities, listed }
+        let mut by_identity = HashMap::with_capacity(listed.len());
+        for (position, pkg) in listed.iter().enumerate() {
+            // First claim wins, matching the scan this index replaced: two rows
+            // folding to one identity are one package listed twice.
+            by_identity
+                .entry(manager.listed_identity(&pkg.name))
+                .or_insert(position);
+        }
+        Self {
+            listed,
+            by_identity,
+        }
     }
 
     /// Whether the manager reports `identity` installed. `identity` is a name
     /// already mapped into the manager's identity space — usually by
     /// [`PackageManager::package_identity`] for a declared entry.
     pub fn contains(&self, identity: &str) -> bool {
-        self.identities.contains(identity)
+        self.by_identity.contains_key(identity)
     }
 
     /// Every installed package, in the identity space the planner diffs in.
-    pub fn identities(&self) -> &HashSet<String> {
-        &self.identities
+    ///
+    /// The index IS the identity set, so there is no second structure to keep
+    /// in step and no listing-sized clone to build one.
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        self.by_identity.keys().map(String::as_str)
     }
 
     /// Every installed package as the manager listed it, with its version.
@@ -51,6 +66,22 @@ impl InstalledPackages {
     /// status surfaces render.
     pub fn listed(&self) -> &[PackageInfo] {
         &self.listed
+    }
+
+    /// The listing entry for a DECLARED package name, folded into `manager`'s
+    /// identity space on both sides.
+    ///
+    /// The ONE lookup from a declared name to the copy the manager reports:
+    /// `go` remaps names and `choco`/`scoop`/`winget` are case-insensitive, so
+    /// a caller comparing the raw strings finds nothing on exactly the managers
+    /// where the answer matters. `None` means the manager did not list the
+    /// package at all, which is a different fact from listing it with an
+    /// unreadable version ([`crate::providers::UNKNOWN_PACKAGE_VERSION`]).
+    pub fn entry_for(&self, manager: &dyn PackageManager, package: &str) -> Option<&PackageInfo> {
+        let identity = manager.package_identity(package);
+        self.by_identity
+            .get(&identity)
+            .and_then(|position| self.listed.get(*position))
     }
 }
 
@@ -189,7 +220,11 @@ mod tests {
 
     fn listing(names: &[&str]) -> InstalledPackages {
         InstalledPackages {
-            identities: names.iter().map(|n| (*n).to_string()).collect(),
+            by_identity: names
+                .iter()
+                .enumerate()
+                .map(|(position, n)| ((*n).to_string(), position))
+                .collect(),
             listed: names
                 .iter()
                 .map(|n| PackageInfo {

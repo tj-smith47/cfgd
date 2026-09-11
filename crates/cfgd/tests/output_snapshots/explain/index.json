@@ -1077,6 +1077,17 @@
             "type": "string"
           },
           {
+            "description": "Which layer owns this unit's schedule. `Cluster` (the default) lets a cluster `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively.",
+            "enum": [
+              "Cluster",
+              "Local"
+            ],
+            "name": "scheduleOwner",
+            "required": false,
+            "type": "string",
+            "typeName": "ScheduleOwner"
+          },
+          {
             "description": "File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
             "name": "source",
             "required": true,
@@ -7463,6 +7474,33 @@
     "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/operator.md#pod-module-injection",
     "fields": [
       {
+        "children": [
+          {
+            "description": "Command the alias expands to, written in the syntax of the shell it is generated for. cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared.",
+            "name": "command",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Alias name, as typed at the shell prompt.",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Platform tags gating this entry alone. Empty means every platform the declaring module is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+            "name": "platforms",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Shell aliases this module contributes to the machines that apply it.",
+        "name": "aliases",
+        "required": false,
+        "type": "[]object",
+        "typeName": "ModuleAlias"
+      },
+      {
         "description": "Names of other `Module` resources that must be applied first.",
         "name": "depends",
         "required": false,
@@ -7504,10 +7542,96 @@
       {
         "children": [
           {
-            "description": "Path to the file inside the module artifact.",
-            "name": "source",
-            "required": true,
+            "children": [
+              {
+                "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
+                "name": "backend",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                "enum": [
+                  "InRepo",
+                  "Always"
+                ],
+                "name": "mode",
+                "required": false,
+                "type": "string",
+                "typeName": "EncryptionMode"
+              }
+            ],
+            "description": "Encryption the source file must satisfy. Rejected on a `Patch` entry, which has no source to encrypt.",
+            "name": "encryption",
+            "required": false,
+            "type": "object",
+            "typeName": "EncryptionSpec"
+          },
+          {
+            "children": [
+              {
+                "description": "Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.",
+                "name": "ensure",
+                "required": false,
+                "type": "object"
+              },
+              {
+                "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                "enum": [
+                  "Ini",
+                  "Json",
+                  "Yaml",
+                  "Toml"
+                ],
+                "name": "format",
+                "required": false,
+                "type": "string",
+                "typeName": "PatchFormat"
+              },
+              {
+                "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
+                "name": "script",
+                "required": false,
+                "type": "string"
+              }
+            ],
+            "description": "Structured merge or rewriting script for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
+            "name": "patch",
+            "required": false,
+            "type": "object",
+            "typeName": "PatchSpec"
+          },
+          {
+            "description": "Unix permission bits (e.g. \"600\", \"644\") applied after deployment.",
+            "name": "permissions",
+            "required": false,
             "type": "string"
+          },
+          {
+            "description": "The source file is local-only: auto-added to .gitignore, and silently skipped on a machine where it does not exist. Default: `false`.",
+            "name": "private",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "description": "Path to the file inside the module artifact. Empty only when `strategy` is `Patch`, which rewrites the target's own content and reads no source.",
+            "name": "source",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Per-file deployment strategy override. Omitted, the machine-wide default applies.",
+            "enum": [
+              "Symlink",
+              "Copy",
+              "Template",
+              "Hardlink",
+              "Patch"
+            ],
+            "name": "strategy",
+            "required": false,
+            "type": "string",
+            "typeName": "FileStrategy"
           },
           {
             "description": "Destination path the file is deployed to inside the pod or on the machine.",
@@ -7521,6 +7645,573 @@
         "required": false,
         "type": "[]object",
         "typeName": "ModuleFileSpec"
+      },
+      {
+        "children": [
+          {
+            "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
+            "name": "onChange",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          },
+          {
+            "description": "Run when the daemon detects drift, before any auto-apply decision.",
+            "name": "onDrift",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          },
+          {
+            "description": "Run once after every action in an apply completes.",
+            "name": "postApply",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          },
+          {
+            "description": "Run once after a daemon reconcile tick completes.",
+            "name": "postReconcile",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          },
+          {
+            "description": "Run once before any action in an apply.",
+            "name": "preApply",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          },
+          {
+            "description": "Run once before a daemon reconcile tick begins.",
+            "name": "preReconcile",
+            "required": false,
+            "type": "[](string | ScriptCommand)",
+            "typeName": "ScriptEntry",
+            "variants": [
+              {
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
+                "name": "string",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "name": "continueOnError",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+                    "name": "creates",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+                    "name": "idleTimeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "name": "interactive",
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "onlyIf",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "The command or script body to run.",
+                    "name": "run",
+                    "required": true,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
+                    "name": "shell",
+                    "required": false,
+                    "type": "string",
+                    "typeName": "ScriptShell"
+                  },
+                  {
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
+                    "name": "timeout",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+                    "name": "unless",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+                    "name": "workdir",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "The mapping form, carrying the body and its knobs.",
+                "name": "ScriptCommand",
+                "required": false,
+                "type": "object",
+                "typeName": "ScriptCommand"
+              }
+            ]
+          }
+        ],
+        "description": "Lifecycle hooks the cfgd agent runs around this module's deployment, each a list of inline command bodies with their own guards and timeouts. Distinct from `scripts.postApply`, which is a script PATH inside the artifact that the pod-mutating webhook runs in an init container: these bodies are for the agent applying the module to a machine, and nothing in a pod runs them.",
+        "name": "hooks",
+        "required": false,
+        "type": "object",
+        "typeName": "ScriptSpec"
       },
       {
         "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
@@ -7542,23 +8233,53 @@
       {
         "children": [
           {
-            "description": "Default package name, used on every platform `platforms` names no override for.",
+            "description": "Per-manager package name overrides (e.g. {\"brew\": \"gnu-sed\", \"apt\": \"sed\"}) for a package spelled differently by each manager.",
+            "name": "aliases",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "description": "Package managers never used for this package, even where one is available and the machine's own priority would pick it.",
+            "name": "deny",
+            "required": false,
+            "type": "[]string"
+          },
+          {
+            "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`). An installed copy below this is treated as not satisfying the module.",
+            "name": "minVersion",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "Default package name, used on every manager `aliases` names no override for.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "Per-platform package name overrides (e.g. {\"brew\": \"gnu-sed\", \"apt\": \"sed\"}).",
+            "description": "Platform tags gating this package alone. Empty means every platform the declaring module is not already gated off of. Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
             "name": "platforms",
             "required": false,
-            "type": "object"
+            "type": "[]string"
+          },
+          {
+            "description": "Manager preference order for this package, overriding the machine's default manager priority (e.g. `[brew, apt]`).",
+            "name": "prefer",
+            "required": false,
+            "type": "[]string"
           }
         ],
-        "description": "Packages this module installs, each with optional per-platform name overrides.",
+        "description": "Packages this module installs. Each entry names the package and the hints that decide which manager installs it: per-manager name overrides, a version floor, a manager preference order, a manager denylist, and the platform tags gating the entry.",
         "name": "packages",
         "required": false,
         "type": "[]object",
         "typeName": "PackageEntry"
+      },
+      {
+        "description": "Platform tags gating the whole module on a machine reconciling it. When non-empty and the machine matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+        "name": "platforms",
+        "required": false,
+        "type": "[]string"
       },
       {
         "children": [
@@ -7616,11 +8337,104 @@
         "required": false,
         "type": "object",
         "typeName": "ModuleSignature"
+      },
+      {
+        "description": "System configurator settings this module contributes, keyed by configurator name (`shell`, `sysctl`, `macosDefaults`, …). Deep-merged into the profile's system map, module values winning at leaf level.",
+        "name": "system",
+        "required": false,
+        "type": "object"
       }
     ],
     "kind": "Module",
     "location": "Module CRD",
     "name": "Module (CRD)"
+  },
+  {
+    "apiVersion": "cfgd.io/v1alpha1",
+    "description": "Fleet-wide backup schedules projected onto selected machines.",
+    "docs": "docs/backup-policy.md#fields",
+    "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/backup-policy.md#fields",
+    "fields": [
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "description": "Label key this requirement tests.",
+                "name": "key",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "description": "How `values` is compared against the key: `In`, `NotIn`, `Exists`, or `DoesNotExist`.",
+                "enum": [
+                  "In",
+                  "NotIn",
+                  "Exists",
+                  "DoesNotExist"
+                ],
+                "name": "operator",
+                "required": true,
+                "type": "string",
+                "typeName": "SelectorOperator"
+              },
+              {
+                "description": "Values the key is tested against. Required for `In` and `NotIn`, and must be empty for `Exists` and `DoesNotExist`.",
+                "name": "values",
+                "required": false,
+                "type": "[]string"
+              }
+            ],
+            "description": "Set-based requirements a resource must satisfy, evaluated alongside `matchLabels`. Every requirement must hold.",
+            "name": "matchExpressions",
+            "required": false,
+            "type": "[]object",
+            "typeName": "LabelSelectorRequirement"
+          },
+          {
+            "description": "Labels a resource must carry verbatim to match. Every entry must match; an empty map matches everything.",
+            "name": "matchLabels",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Which MachineConfigs in this namespace the policy schedules backups for. Empty, it applies to all of them.",
+        "name": "selector",
+        "required": false,
+        "type": "object",
+        "typeName": "LabelSelector"
+      },
+      {
+        "children": [
+          {
+            "description": "Name of the unit in the machine's own `spec.backups[]` this entry schedules. Unique within the list.",
+            "name": "name",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "How many snapshots the unit keeps. Omitted, the machine's own profile decides.",
+            "name": "retention",
+            "required": false,
+            "type": "integer"
+          },
+          {
+            "description": "Cron expression (`0 3 * * *`) or interval (`6h`) the unit runs on, evaluated against the machine's local clock — a nightly window means 3am where each machine sits, not 3am in the cluster's timezone.",
+            "name": "schedule",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "description": "Schedule overrides, each naming a backup unit the matched machine's own profile defines. Required, and at least one entry: a policy that schedules nothing sets no cadence anywhere.",
+        "name": "units",
+        "required": true,
+        "type": "[]object",
+        "typeName": "BackupPolicyUnit"
+      }
+    ],
+    "kind": "BackupPolicy",
+    "location": "BackupPolicy CRD",
+    "name": "BackupPolicy"
   },
   {
     "apiVersion": "cfgd.io/v1alpha1",

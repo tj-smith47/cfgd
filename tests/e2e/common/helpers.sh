@@ -331,14 +331,29 @@ wait_for_service_endpoints() {
 
 # --- Build helpers ---
 
-# Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN.
+# Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN, and returns
+# non-zero when there is no binary to set it to.
+#
+# The build's stderr is kept and its status is read: a CI job that compiles cfgd
+# here has nothing else to report a cargo failure, and a discarded one surfaces
+# cases later as an opaque `rc=127` from whichever case runs the binary first.
 ensure_cfgd_binary() {
-    if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
-        echo "  Building cfgd..."
-        cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
-    fi
     CFGD_BIN="$REPO_ROOT/target/release/cfgd"
     export CFGD_BIN
+
+    if [ -x "$CFGD_BIN" ]; then
+        return 0
+    fi
+
+    echo "  Building cfgd..."
+    if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd; then
+        echo "  ERROR: cargo build --release --bin cfgd failed"
+        return 1
+    fi
+    if [ ! -x "$CFGD_BIN" ]; then
+        echo "  ERROR: no executable at $CFGD_BIN after a successful build"
+        return 1
+    fi
 }
 
 # --- Assertion helpers ---
