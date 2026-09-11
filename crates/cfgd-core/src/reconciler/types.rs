@@ -1217,8 +1217,8 @@ impl Plan {
 /// and rendered as their own rollup clauses, so the number the header promised
 /// and the numbers the rollup reports are one account again.
 ///
-/// A member is added here with its own wording (see [`Self::counted_noun`] /
-/// [`Self::performed_verb`]) and its own entry in [`Self::ALL`], which is what
+/// A member is added here with its own wording (see `counted_noun` /
+/// `performed_verb`) and its own entry in [`Self::ALL`], which is what
 /// every clause walks. What OUTCOME each item settled as is
 /// [`AfterPlanState`]'s; this type only says what kind of thing it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

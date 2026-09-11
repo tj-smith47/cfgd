@@ -28,7 +28,7 @@ use super::{Action, ModuleActionKind, Owner, Plan};
 /// Says WHY the target was left alone and not that it was: the profile arm's
 /// row is composed as `skip <target>: <reason>` and the module arm's detail
 /// hangs under a `Role::Skipped` glyph, so both halves already spell the
-/// decision ([`super::format::file_skip_reason_doubling_error`] is the rule).
+/// decision (`file_skip_reason_doubling_error` is the rule).
 pub const UNMANAGED_SKIP_REASON: &str = "target exists as unmanaged file";
 
 /// A conflict policy that has been SETTLED for one target.

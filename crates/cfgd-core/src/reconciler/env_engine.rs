@@ -697,7 +697,7 @@ pub const ENV_VERB_WRITE: &str = "write";
 pub const ENV_VERB_INJECT: &str = "inject";
 
 /// Every path segment a generated env surface occupies on some host, derived
-/// by driving [`env_targets`] over every platform, probe shape and scope.
+/// by driving `env_targets` over every platform, probe shape and scope.
 ///
 /// [`recorded_env_method`] answers the write-vs-inject question off a target's
 /// file name, so a display surface can be tempted to answer it the same way —
