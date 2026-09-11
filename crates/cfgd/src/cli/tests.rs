@@ -37625,9 +37625,18 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         "\"onChange\"",
     ];
     const HATCH: &str = "// hook-table-ok:";
-    // Far under the real counts, so a deletion does not trip the floor and a
-    // re-rooted walk does.
-    const FLOOR_FILES: [usize; 2] = [80, 90];
+    /// Every crate of the workspace, each with a file floor far under what its
+    /// own `src/` holds, so a deletion does not trip the floor and a re-rooted
+    /// walk does. Checked against `crates/` itself, so a crate added to the
+    /// workspace fails this walk until it joins the table with a floor.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 90),
+        ("cfgd-core", 80),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 6),
+        ("cfgd-operator", 40),
+        ("cfgd-schema", 2),
+    ];
     /// The qualifiers a function declaration may open on.
     const FN_QUALIFIERS: &[&str] = &[
         "pub",
@@ -37651,13 +37660,30 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
                 .all(|word| FN_QUALIFIERS.contains(&word))
     };
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let roots = [root.join("src"), root.join("../cfgd-core/src")];
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the cfgd crate sits under crates/");
+    let mut present: Vec<String> = std::fs::read_dir(crates_dir)
+        .expect("crates/ is readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    assert_eq!(
+        present,
+        WALK_ROOTS
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect::<Vec<String>>(),
+        "a crate joined or left the workspace, and this table decides what the walk reads"
+    );
     let mut tables = Vec::new();
     let mut hatched_tables = 0usize;
-    for (r, walk_root) in roots.iter().enumerate() {
+    for (name, floor) in WALK_ROOTS {
+        let walk_root = crates_dir.join(name).join("src");
         let mut seen = 0usize;
-        for path in rust_sources_under(walk_root) {
+        for path in rust_sources_under(&walk_root) {
             if path.components().any(|c| c.as_os_str() == "tests")
                 || path.file_name().is_none_or(|n| n == "tests.rs")
             {
@@ -37706,7 +37732,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
             hatched_tables += spared;
         }
         assert!(
-            seen >= FLOOR_FILES[r],
+            seen >= *floor,
             "the walk read {seen} files under {} — under the floor, so it is looking at the \
              wrong root",
             walk_root.display()
@@ -37719,11 +37745,12 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
          names are a field's own serde spelling with `{HATCH} <why>`:\n{}",
         tables.join("\n")
     );
-    // The two sites the hatch covers (`cfgd profile update`'s per-hook flag
-    // pairs and `ScriptPhase::display_name`), so the count above is what spared
-    // them rather than a walk that counts nothing at all.
+    // The three sites the hatch covers: `ScriptSpec::hooks` itself, `cfgd
+    // profile update`'s per-hook flag pairs, and `ScriptPhase::display_name`.
+    // Counted, so the assertion above is one a walk reaching nothing cannot
+    // pass.
     assert_eq!(
-        hatched_tables, 2,
-        "the walk found {hatched_tables} hatched hook tables — it is no longer reaching the          sites whose names are a field's own serde spelling"
+        hatched_tables, 3,
+        "the walk found {hatched_tables} hatched hook tables, so it is no longer reaching them"
     );
 }

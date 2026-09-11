@@ -344,6 +344,7 @@ impl ScriptSpec {
     /// names hooks reads from here, so none of them can miss a hook the YAML
     /// accepts or disagree about the order they are reported in.
     pub fn hooks(&self) -> [(&'static str, &[ScriptEntry]); 6] {
+        // hook-table-ok: this is the one hook set.
         // Destructured, so a seventh hook field does not compile until it is
         // listed here — the mechanism behind "no surface can miss a hook".
         let Self {

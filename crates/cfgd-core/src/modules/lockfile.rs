@@ -563,10 +563,10 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) ->
     let old_steps = post_apply_steps(old);
     let new_steps = post_apply_steps(new);
     for script in &old_steps {
-        // Whole entries, because the marker line renders the step's knobs
-        // (timeout, shell, workdir, onlyIf, continueOnError) beside its body: a
-        // step whose body stands while a knob moved is a change the screen
-        // shows, so comparing bodies alone would call it no change at all.
+        // Whole entries, because the marker line above the body states every
+        // knob the step declares: a step whose body stands while a knob moved
+        // is a change the screen shows, so comparing bodies alone would call it
+        // no change at all.
         if !new_steps.iter().any(|s| s.entry == script.entry) {
             changes.push(script.clone().change(Role::Fail, "removed"));
         }

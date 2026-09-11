@@ -29,6 +29,20 @@ pub struct DeclaredScript {
     /// Whether the step declares `continueOnError: true`. A declared `false`
     /// is the default, and a marker naming it would read as a knob in force.
     pub continue_on_error: bool,
+    /// `shell`, as the YAML spells it (`bash`). `None` for the platform
+    /// default, which is a step declaring no interpreter.
+    pub shell: Option<&'static str>,
+    /// `workdir`, as the YAML spells it.
+    pub workdir: Option<String>,
+    /// `onlyIf`, the command whose zero exit lets the step run.
+    pub only_if: Option<String>,
+    /// `unless`, the command whose zero exit holds the step back.
+    pub unless: Option<String>,
+    /// `creates`, the path whose existence holds the step back.
+    pub creates: Option<String>,
+    /// Whether the step declares `interactive: true`, which runs it attached
+    /// to the terminal.
+    pub interactive: bool,
 }
 
 impl DeclaredScript {
@@ -39,31 +53,73 @@ impl DeclaredScript {
                 timeout: None,
                 idle_timeout: None,
                 continue_on_error: false,
+                shell: None,
+                workdir: None,
+                only_if: None,
+                unless: None,
+                creates: None,
+                interactive: false,
             },
             ScriptEntry::Full(cmd) => Self {
                 body: cmd.run.clone(),
                 timeout: cmd.timeout.clone(),
                 idle_timeout: cmd.idle_timeout.clone(),
                 continue_on_error: cmd.continue_on_error.unwrap_or(false),
+                shell: (cmd.shell != crate::config::ScriptShell::Auto).then(|| cmd.shell.as_str()),
+                workdir: cmd.workdir.clone(),
+                only_if: cmd.only_if.clone(),
+                unless: cmd.unless.clone(),
+                creates: cmd.creates.clone(),
+                interactive: cmd.interactive,
             },
         }
     }
 
     /// The muted line above this step's body: its position among its hook's
-    /// steps, then one clause per knob it declares, in the order
-    /// `ScriptCommand` spells them.
+    /// steps, then one clause per knob it declares.
+    ///
+    /// Every knob `ScriptCommand` carries states itself here, because the
+    /// module-upgrade screen reports a step as changed when any of them moved:
+    /// a knob that stayed silent would render a removal and an addition whose
+    /// blocks read identically. A knob left at its default renders no clause,
+    /// so the line names what the author wrote and nothing else.
+    ///
+    /// A command or path clause carries its bytes as the body does: escaped,
+    /// because the operator approves what will run, and a home directory folded
+    /// to `~` as every other display slot folds it. The escape covers `\n` as
+    /// well, this being one line.
     fn marker(&self, position: usize, total: usize) -> String {
-        let mut marker = format!("{position}/{total}");
+        let escaped = |value: &str| crate::escape_control_chars(value);
+        let path = |value: &str| crate::fold_home_in_text(&escaped(value));
+        let mut clauses = vec![format!("{position}/{total}")];
         if let Some(timeout) = &self.timeout {
-            marker.push_str(&format!(" {MARKER_SEPARATOR} timeout {timeout}"));
+            clauses.push(format!("timeout {timeout}"));
         }
         if let Some(idle) = &self.idle_timeout {
-            marker.push_str(&format!(" {MARKER_SEPARATOR} idle {idle}"));
+            clauses.push(format!("idle {idle}"));
         }
         if self.continue_on_error {
-            marker.push_str(&format!(" {MARKER_SEPARATOR} continueOnError"));
+            clauses.push("continueOnError".to_string());
         }
-        marker
+        if let Some(shell) = self.shell {
+            clauses.push(format!("shell {shell}"));
+        }
+        if let Some(workdir) = &self.workdir {
+            clauses.push(format!("workdir {}", path(workdir)));
+        }
+        if let Some(only_if) = &self.only_if {
+            clauses.push(format!("onlyIf {}", escaped(only_if)));
+        }
+        if let Some(unless) = &self.unless {
+            clauses.push(format!("unless {}", escaped(unless)));
+        }
+        if let Some(creates) = &self.creates {
+            clauses.push(format!("creates {}", path(creates)));
+        }
+        if self.interactive {
+            clauses.push("interactive".to_string());
+        }
+        clauses.join(&format!(" {MARKER_SEPARATOR} "))
     }
 }
 

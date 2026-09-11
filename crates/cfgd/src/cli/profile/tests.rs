@@ -2225,6 +2225,42 @@ fn profile_update_add_multiple_script_hooks() {
     assert_eq!(scripts.on_change.len(), 1);
 }
 
+/// One invocation adding to all six hooks confirms them in the order
+/// `ScriptSpec::hooks` reports, which is the order every other surface lists a
+/// module's hooks in. The expected order is read off `hooks()` rather than
+/// retyped, so a reordering there moves this expectation with it.
+#[test]
+fn profile_update_adds_script_hooks_in_the_hook_sets_order() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.pre_apply = vec!["a.sh".to_string()];
+    args.post_apply = vec!["b.sh".to_string()];
+    args.pre_reconcile = vec!["c.sh".to_string()];
+    args.post_reconcile = vec!["d.sh".to_string()];
+    args.on_drift = vec!["e.sh".to_string()];
+    args.on_change = vec!["f.sh".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+
+    let confirmed: Vec<String> = out
+        .lines()
+        .filter_map(|line| line.split("Added ").nth(1))
+        .map(|rest| rest.split(':').next().unwrap_or(rest).trim().to_string())
+        .collect();
+    let expected: Vec<String> = config::ScriptSpec::default()
+        .hooks()
+        .iter()
+        .map(|(hook, _)| (*hook).to_string())
+        .collect();
+    assert_eq!(confirmed, expected, "rows out of hook order: {out}");
+}
+
 #[test]
 fn profile_show_displays_all_package_manager_sections() {
     let dir = tempfile::tempdir().unwrap();

@@ -247,12 +247,10 @@ fn drift_output() -> StatusOutput {
     }
 }
 
-/// The env, aliases and lifecycle hooks the fixture modules declare. Two
-/// hooks, declared out of run order on purpose: the Scripts row and the wide
-/// Scripts section both report `preApply` before `postApply` because that is
-/// the order they run in, never the order they were written.
-/// One declared script step for the fixtures below: the body plus whichever
-/// knobs the step sets, which is what the full Scripts form states above it.
+/// One declared script step for the fixtures below: the body plus whichever of
+/// the three timing knobs the step sets, which is what the full Scripts form
+/// states above it. The remaining knobs are spelled out rather than defaulted,
+/// so a knob added to `DeclaredScript` reaches this fixture as a compile error.
 fn declared_step(
     body: &str,
     timeout: Option<&str>,
@@ -264,9 +262,19 @@ fn declared_step(
         timeout: timeout.map(Into::into),
         idle_timeout: idle_timeout.map(Into::into),
         continue_on_error,
+        shell: None,
+        workdir: None,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
     }
 }
 
+/// The env, aliases and lifecycle hooks the fixture modules declare. Two
+/// hooks, declared out of run order on purpose: the Scripts row and the wide
+/// Scripts section both report `preApply` before `postApply` because that is
+/// the order they run in, never the order they were written.
 fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
     ModuleSurfaces {
         packages,

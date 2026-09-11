@@ -235,9 +235,9 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     );
 }
 
-/// A module whose `postApply` steps declare the three knobs the full Scripts
-/// form states above each body, plus one bare-string step, which states its
-/// position alone.
+/// A module whose `postApply` steps declare every knob the full Scripts form
+/// states above a body, plus one bare-string step, which states its position
+/// alone.
 fn knobbed_show_output() -> ModuleShowOutput {
     let mut output = happy_show_output();
     output.spec.scripts = Some(ScriptSpec {
@@ -259,6 +259,20 @@ fn knobbed_show_output() -> ModuleShowOutput {
                 ..ScriptCommand::default()
             }),
             ScriptEntry::Simple("echo done".into()),
+            ScriptEntry::Full(ScriptCommand {
+                run: "nvim --headless +UpdateRemotePlugins +qa".into(),
+                shell: cfgd_core::config::ScriptShell::Bash,
+                workdir: Some("~/.local/dev-tools".into()),
+                only_if: Some("command -v nvim".into()),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Full(ScriptCommand {
+                run: "echo \"press Enter\"; read".into(),
+                unless: Some("test -f ~/.cache/done".into()),
+                creates: Some("~/.cache/done".into()),
+                interactive: true,
+                ..ScriptCommand::default()
+            }),
         ],
         ..Default::default()
     });
@@ -292,8 +306,10 @@ fn module_show_scripts_condensed_human() {
 }
 
 /// `-s` / `-a`: each step states its position and the knobs it declares, then
-/// its whole body. The bare-string step states its position alone, and a
-/// declared `continueOnError: false` is the default, so no marker names it.
+/// its whole body. The bare-string step states its position alone, a declared
+/// `continueOnError: false` is the default, so no marker names it, and the two
+/// last steps state the interpreter, working directory and guards the upgrade
+/// screen reports a step as changed over.
 #[test]
 fn module_show_scripts_full_human() {
     emit_knobbed_show(ScriptsForm::Full, "module_show/scripts_full.txt");

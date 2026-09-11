@@ -145,9 +145,11 @@ impl Renderer {
             // emitter then indents: a row carrying nothing but whitespace and
             // an escape. The blank line a body declares stays blank, and the
             // highlighter still sees it, because a blank line is what closes a
-            // context in some grammars (a Markdown paragraph).
+            // context in some grammars (a Markdown paragraph). The newline is
+            // fed with it: these syntaxes are the `_newlines` set, whose pop
+            // patterns match at the line ending, so a bare `""` closes nothing.
             if line.is_empty() {
-                let _ = h.highlight_line(&line, syntax_set);
+                let _ = h.highlight_line("\n", syntax_set);
                 lines.push(String::new());
                 continue;
             }

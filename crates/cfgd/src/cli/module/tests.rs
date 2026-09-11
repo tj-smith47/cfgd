@@ -5759,9 +5759,9 @@ fn print_module_review_summary_multi_line_script_renders_every_line_verbatim() {
 
 /// The approval screen a remote module's post-apply steps reach, rendered by
 /// the one Scripts composer: the warning row states how many bodies follow,
-/// then the hook heads its steps as `cfgd module show --scripts` heads them,
-/// each step stating its knobs above its highlighted body. A `\r` inside a
-/// body shows as `\x0d` rather than returning the cursor over the line the
+/// then the hook heads its steps as `cfgd module show --show-scripts` heads
+/// them, each step stating its knobs above its highlighted body. A `\r` inside
+/// a body shows as `\x0d` rather than returning the cursor over the line the
 /// operator is reading.
 #[test]
 fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_composer() {
