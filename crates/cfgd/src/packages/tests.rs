@@ -3939,9 +3939,11 @@ fn brew_path_dirs_through_trait() {
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr: Box<dyn PackageManager> = Box::new(BrewManager);
     let dirs = mgr.path_dirs(&cx);
-    // On Linux: should have linuxbrew dirs
-    // On macOS: should have homebrew dirs
-    // On Windows: should be empty
+    assert_eq!(
+        dirs,
+        super::shared::brew_path_dirs(),
+        "the trait answers as the free function does"
+    );
     if cfg!(target_os = "linux") {
         assert_eq!(dirs.len(), 2);
     }

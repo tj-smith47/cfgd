@@ -630,12 +630,20 @@ fn sudo_cmd_builds_correct_command_structure() {
 }
 
 #[test]
-fn sudo_cmd_non_root_has_program_as_first_arg() {
+fn sudo_cmd_hands_the_program_to_sudo_off_root_and_runs_it_bare_as_root() {
     let cmd = sudo_cmd("dnf");
-    if !cfgd_core::is_root() {
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert!(!args.is_empty(), "sudo_cmd should pass program name as arg");
-        assert_eq!(args[0], "dnf");
+    let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+    if cfgd_core::is_root() {
+        // Root runs the program itself, so nothing is left for an argument slot
+        // to carry; an arg here would be a sudo-shaped argv aimed at dnf.
+        assert_eq!(cmd.get_program(), "dnf");
+        assert!(
+            args.is_empty(),
+            "as root, sudo_cmd must add no args, got: {args:?}"
+        );
+    } else {
+        assert_eq!(cmd.get_program(), "sudo");
+        assert_eq!(args, ["dnf"], "off root, the program is sudo's first arg");
     }
 }
 
