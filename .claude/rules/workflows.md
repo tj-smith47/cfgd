@@ -130,6 +130,12 @@ single-source-of-truth wiring.
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg
   locally against the accept VM (start-if-stopped, poll, sync, `task test:ci`).
+  The guest also carries `copyback: "false"`. The action's default copies
+  `/home/runner/work/` back to the runner when the run ends, which means the
+  guest's whole `target/` tree: the transfer died 3.3 GB in and failed the job
+  on work that had already passed (run 34556958882). No later step reads a
+  guest file, so there is nothing to bring home. A step that needs one turns
+  the copy back on and says which file it reads.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, not nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own
@@ -231,8 +237,15 @@ single-source-of-truth wiring.
   sccache + rust-cache + protoc + go-task, each gated by an input), which every
   compiling ci.yml job uses; `msrv` layers by hand because it installs a pinned
   older toolchain. `fmt` passes `cache: 'false'` (it only runs `cargo fmt`), the
-  `audit`/`cargo-audit`/`snapshot` jobs compile nothing, and `test-freebsd` builds
-  inside a vmactions guest a runner-side cache cannot reach. release.yml,
+  `snapshot` job compiles nothing and runs no `cargo` step, and `test-freebsd`
+  builds inside a vmactions guest a runner-side cache cannot reach. The
+  `audit` and `cargo-audit` jobs compile nothing either, yet each installs
+  `mozilla-actions/sccache-action` on its own and no `rust-cache`: the
+  workflow-level `RUSTC_WRAPPER: sccache` applies to every job, so a cargo
+  subcommand that only reads metadata still cannot start without the wrapper
+  binary on PATH (`task audit`'s `cargo tree -p cfgd-csi` failed exactly that
+  way in run 34556958882). A new job that runs any `cargo` subcommand without
+  `setup-rust` installs sccache the same way. release.yml,
   nightly.yml, determinism-shards.yml and the two publish workflows run no `cargo`
   step at all — anodizer-action owns those builds, and a determinism rebuild must
   start from a clean `target/` by definition.

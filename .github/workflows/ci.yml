@@ -163,6 +163,11 @@ jobs:
           # guest memory (run 34063783806); the 16 GB runner can spare 10.
           mem: 10240
           usesh: "true"
+          # Nothing on the runner reads guest files after the run, and the
+          # default copy-back rsyncs the guest's whole `target/` tree home: the
+          # connection died 3.3 GB in (run 34556958882) and failed the job on
+          # work that had already passed.
+          copyback: "false"
           prepare: |
             # vmactions flips the image to the `latest` branch, which dropped
             # devel/task. Flip it back in place rather than shadowing the repo
@@ -212,6 +217,12 @@ jobs:
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # This job compiles nothing, but `RUSTC_WRAPPER` is set for the whole
+      # workflow, so even `task audit`'s `cargo tree` needs the wrapper binary
+      # on PATH or cargo cannot so much as ask rustc for its version.
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Run code audit
         run: task audit
@@ -285,6 +296,12 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+
+      # Same reason as the audit job above: no compilation here, but the
+      # workflow-wide wrapper has to exist for any cargo subcommand that
+      # consults rustc.
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Audit dependencies
         run: cargo audit
