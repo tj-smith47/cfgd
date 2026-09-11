@@ -690,7 +690,7 @@ pub(super) fn print_module_review_summary(
                 format!("Post-apply scripts ({})", scripts.post_apply.len()),
             )
             .detail("these will execute on your machine:");
-        // The same render `cfgd module show --scripts` gives these steps: the
+        // The same render `cfgd module show --show-scripts` gives these steps: the
         // hook heading, each step's knobs, then its whole body highlighted. A
         // reader who inspected the module before approving it sees one shape,
         // and the composer escapes every body for this screen's sake, so the

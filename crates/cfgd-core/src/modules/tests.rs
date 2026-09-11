@@ -2345,6 +2345,45 @@ fn diff_module_specs_scripts_changed() {
             .iter()
             .any(|c| c.role == Role::Fail && c.subject.contains("postApply script removed"))
     );
+
+    // A step whose body stands while a knob moved: the screen renders `timeout
+    // 300s` on the marker line, so the upgrade reports the change the reader
+    // would otherwise approve without seeing it.
+    let mut timeout_old = old.clone();
+    let mut timeout_new = old.clone();
+    timeout_old.spec.scripts = Some(crate::config::ScriptSpec {
+        post_apply: vec![crate::config::ScriptEntry::Full(
+            crate::config::ScriptCommand {
+                run: "echo same".to_string(),
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    });
+    timeout_new.spec.scripts = Some(crate::config::ScriptSpec {
+        post_apply: vec![crate::config::ScriptEntry::Full(
+            crate::config::ScriptCommand {
+                run: "echo same".to_string(),
+                timeout: Some("300s".to_string()),
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    });
+    let knob_changes = diff_module_specs(&timeout_old, &timeout_new, "->");
+    let scripts: Vec<(Role, &str)> = knob_changes
+        .iter()
+        .filter(|c| c.script.is_some())
+        .map(|c| (c.role, c.subject.as_str()))
+        .collect();
+    assert_eq!(
+        scripts,
+        vec![
+            (Role::Fail, "postApply script removed"),
+            (Role::Ok, "postApply script added"),
+        ],
+        "a timeout-only change reads as the old step going and the new one arriving"
+    );
 }
 
 // `diff_module_specs` feeds the pre-approval security review of a module

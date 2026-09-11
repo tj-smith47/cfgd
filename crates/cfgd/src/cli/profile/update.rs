@@ -438,7 +438,10 @@ pub fn cmd_profile_update(
         }
     }
 
-    // Add/remove script hooks
+    // Add/remove script hooks, in the order `ScriptSpec::hooks` reports them.
+    // hook-table-ok: each hook has its own flag pair and its own field here, so
+    // the label is the serde spelling of the field the accessor beside it
+    // reaches rather than a table of hook names this screen orders for itself.
     changes += update_script_list(
         &mut doc.spec.scripts,
         &add_pre_apply,
@@ -473,18 +476,18 @@ pub fn cmd_profile_update(
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
-        &add_on_change,
-        &remove_on_change,
-        "onChange",
-        |s| &mut s.on_change,
-        printer,
-    );
-    changes += update_script_list(
-        &mut doc.spec.scripts,
         &add_on_drift,
         &remove_on_drift,
         "onDrift",
         |s| &mut s.on_drift,
+        printer,
+    );
+    changes += update_script_list(
+        &mut doc.spec.scripts,
+        &add_on_change,
+        &remove_on_change,
+        "onChange",
+        |s| &mut s.on_change,
         printer,
     );
 

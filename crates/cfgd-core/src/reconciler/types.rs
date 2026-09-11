@@ -593,6 +593,10 @@ pub enum ScriptPhase {
 
 impl ScriptPhase {
     pub fn display_name(&self) -> &'static str {
+        // hook-table-ok: the phase vocabulary, whose last three members name no
+        // lifecycle hook at all; the six that do are held to the names
+        // `ScriptSpec::hooks` pairs, in its order, by
+        // `the_lifecycle_phases_are_named_as_the_hook_set_names_them`.
         match self {
             ScriptPhase::PreApply => "preApply",
             ScriptPhase::PostApply => "postApply",
@@ -2053,6 +2057,30 @@ mod tests {
         assert_eq!(ScriptPhase::PostApply.display_name(), "postApply");
         assert_eq!(ScriptPhase::OnDrift.display_name(), "onDrift");
         assert_eq!(ScriptPhase::OnChange.display_name(), "onChange");
+    }
+
+    /// The six lifecycle phases are named the way the hook set names them, in
+    /// its order, so a renamed hook moves this vocabulary with it instead of
+    /// leaving a script row reporting a hook the YAML no longer accepts.
+    #[test]
+    fn the_lifecycle_phases_are_named_as_the_hook_set_names_them() {
+        let declared = crate::config::ScriptSpec::default();
+        let hooks: Vec<&str> = declared.hooks().iter().map(|(name, _)| *name).collect();
+        let phases = [
+            ScriptPhase::PreApply,
+            ScriptPhase::PostApply,
+            ScriptPhase::PreReconcile,
+            ScriptPhase::PostReconcile,
+            ScriptPhase::OnDrift,
+            ScriptPhase::OnChange,
+        ];
+        assert_eq!(
+            hooks,
+            phases
+                .iter()
+                .map(|p| p.display_name())
+                .collect::<Vec<&str>>()
+        );
     }
 
     #[test]

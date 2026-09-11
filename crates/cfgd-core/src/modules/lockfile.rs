@@ -290,15 +290,7 @@ pub fn load_source_modules(
 /// source's `noScripts` constraint over delivered bodies.
 fn module_script_kind(module: &LoadedModule) -> Option<String> {
     if let Some(ref scripts) = module.spec.scripts {
-        let lifecycle = [
-            ("preApply", &scripts.pre_apply),
-            ("postApply", &scripts.post_apply),
-            ("preReconcile", &scripts.pre_reconcile),
-            ("postReconcile", &scripts.post_reconcile),
-            ("onChange", &scripts.on_change),
-            ("onDrift", &scripts.on_drift),
-        ];
-        for (label, entries) in lifecycle {
+        for (label, entries) in scripts.hooks() {
             if !entries.is_empty() {
                 return Some(format!("a {label} script"));
             }
@@ -571,18 +563,16 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) ->
     let old_steps = post_apply_steps(old);
     let new_steps = post_apply_steps(new);
     for script in &old_steps {
-        if !new_steps
-            .iter()
-            .any(|s| s.entry.run_str() == script.entry.run_str())
-        {
+        // Whole entries, because the marker line renders the step's knobs
+        // (timeout, shell, workdir, onlyIf, continueOnError) beside its body: a
+        // step whose body stands while a knob moved is a change the screen
+        // shows, so comparing bodies alone would call it no change at all.
+        if !new_steps.iter().any(|s| s.entry == script.entry) {
             changes.push(script.clone().change(Role::Fail, "removed"));
         }
     }
     for script in &new_steps {
-        if !old_steps
-            .iter()
-            .any(|s| s.entry.run_str() == script.entry.run_str())
-        {
+        if !old_steps.iter().any(|s| s.entry == script.entry) {
             changes.push(script.clone().change(Role::Ok, "added"));
         }
     }

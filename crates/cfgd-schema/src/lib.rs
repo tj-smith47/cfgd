@@ -367,10 +367,8 @@ impl ScriptSpec {
 
 /// The hook name `post_apply` is paired with by [`ScriptSpec::hooks`].
 ///
-/// Two surfaces name this one hook on their own rather than walking all six:
-/// the screen a remote module is approved on, and the diff a module upgrade is
-/// approved from. Both read it here, so a renamed field cannot leave one of
-/// them looking up a hook nothing declares.
+/// Read by a caller naming this one hook rather than reporting all six, so a
+/// renamed field cannot leave one looking up a hook nothing declares.
 pub const POST_APPLY_HOOK: &str = "postApply";
 
 /// Why a declared script step was refused, as a complete sentence naming the

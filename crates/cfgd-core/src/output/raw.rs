@@ -143,8 +143,11 @@ impl Renderer {
             let line = escape_control_chars(line);
             // An empty source line highlights to a bare reset, which the
             // emitter then indents: a row carrying nothing but whitespace and
-            // an escape. The blank line a body declares stays blank.
+            // an escape. The blank line a body declares stays blank, and the
+            // highlighter still sees it, because a blank line is what closes a
+            // context in some grammars (a Markdown paragraph).
             if line.is_empty() {
+                let _ = h.highlight_line(&line, syntax_set);
                 lines.push(String::new());
                 continue;
             }

@@ -37602,3 +37602,128 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         "these rows name no site any more, so the table is describing code that moved: {missing:?}"
     );
 }
+
+/// The six lifecycle hook names belong to `ScriptSpec::hooks`, which is the one
+/// enumeration of the hook set and the authority over the order hooks are
+/// reported in. A production function that spells three or more of them as
+/// string literals is a second table: it can miss a hook the YAML accepts,
+/// spell one the YAML no longer does, or report them in an order no other
+/// surface uses.
+///
+/// A site that genuinely has one accessor, flag or variant per hook — where the
+/// name is the serde spelling of a field named right beside it — says so with
+/// `// hook-table-ok: <why>` inside the function.
+#[test]
+fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
+    /// Every name `ScriptSpec::hooks` pairs, as a literal a source would spell.
+    const HOOKS: &[&str] = &[
+        "\"preApply\"",
+        "\"postApply\"",
+        "\"preReconcile\"",
+        "\"postReconcile\"",
+        "\"onDrift\"",
+        "\"onChange\"",
+    ];
+    const HATCH: &str = "// hook-table-ok:";
+    // Far under the real counts, so a deletion does not trip the floor and a
+    // re-rooted walk does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    /// The qualifiers a function declaration may open on.
+    const FN_QUALIFIERS: &[&str] = &[
+        "pub",
+        "pub(crate)",
+        "pub(super)",
+        "async",
+        "const",
+        "unsafe",
+        "extern",
+        "default",
+    ];
+
+    let opens_a_function = |code: &str| {
+        let trimmed = code.trim_start();
+        let Some(before) = trimmed.split("fn ").next() else {
+            return false;
+        };
+        trimmed.contains("fn ")
+            && before
+                .split_whitespace()
+                .all(|word| FN_QUALIFIERS.contains(&word))
+    };
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [root.join("src"), root.join("../cfgd-core/src")];
+    let mut tables = Vec::new();
+    let mut hatched_tables = 0usize;
+    for (r, walk_root) in roots.iter().enumerate() {
+        let mut seen = 0usize;
+        for path in rust_sources_under(walk_root) {
+            if path.components().any(|c| c.as_os_str() == "tests")
+                || path.file_name().is_none_or(|n| n == "tests.rs")
+            {
+                continue;
+            }
+            seen += 1;
+            let body = cfgd_core::test_helpers::production_slice_of(&path);
+            let mut opened_at = 0usize;
+            let mut named: Vec<&str> = Vec::new();
+            let mut hatched = false;
+            let mut spared = 0usize;
+            let lines: Vec<&str> = body.lines().collect();
+            // One pass past the last line, so the function a file ends on is
+            // judged by the same arm as every other.
+            for n in 0..=lines.len() {
+                let line = lines.get(n).copied().unwrap_or("fn ");
+                if opens_a_function(line) {
+                    if named.len() >= 3 {
+                        if hatched {
+                            spared += 1;
+                        } else {
+                            let rel = path.file_name().unwrap_or_default().to_string_lossy();
+                            tables.push(format!(
+                                "{rel}:{}: {} hook names spelled in one function ({})",
+                                opened_at + 1,
+                                named.len(),
+                                named.join(", ")
+                            ));
+                        }
+                    }
+                    opened_at = n;
+                    named.clear();
+                    hatched = false;
+                    continue;
+                }
+                if line.contains(HATCH) {
+                    hatched = true;
+                }
+                let code = line.split("//").next().unwrap_or(line);
+                for hook in HOOKS {
+                    if code.contains(hook) && !named.contains(hook) {
+                        named.push(hook);
+                    }
+                }
+            }
+            hatched_tables += spared;
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is looking at the \
+             wrong root",
+            walk_root.display()
+        );
+    }
+    assert!(
+        tables.is_empty(),
+        "a function naming three or more lifecycle hooks reads them off \
+         `cfgd_schema::ScriptSpec::hooks()`, which owns the set and its order, or says why its \
+         names are a field's own serde spelling with `{HATCH} <why>`:\n{}",
+        tables.join("\n")
+    );
+    // The two sites the hatch covers (`cfgd profile update`'s per-hook flag
+    // pairs and `ScriptPhase::display_name`), so the count above is what spared
+    // them rather than a walk that counts nothing at all.
+    assert_eq!(
+        hatched_tables, 2,
+        "the walk found {hatched_tables} hatched hook tables — it is no longer reaching the          sites whose names are a field's own serde spelling"
+    );
+}

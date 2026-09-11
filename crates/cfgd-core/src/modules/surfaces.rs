@@ -101,6 +101,21 @@ pub fn scripts_section(doc: Doc, scripts: &[HookScripts], form: ScriptsForm) -> 
     })
 }
 
+/// Every hook that declares something, with its steps, in the order
+/// [`ScriptSpec::hooks`] reports — the one place the hook set is enumerated, so
+/// neither tally constructor spells a hook name or an order of its own.
+fn hook_inventory(scripts: &ScriptSpec) -> Vec<HookScripts> {
+    scripts
+        .hooks()
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .map(|(hook, entries)| HookScripts {
+            hook,
+            steps: entries.iter().map(DeclaredScript::of).collect(),
+        })
+        .collect()
+}
+
 /// The step rows one hook's entries render as, each numbered by its place in
 /// the hook: the ONE producer read by both shapes of the Scripts render, so a
 /// surface holding a `SectionGuard` and one building a [`Doc`] cannot word a
@@ -220,16 +235,7 @@ impl ModuleSurfaces {
             scripts: spec
                 .scripts
                 .as_ref()
-                .map(|s| {
-                    s.hooks()
-                        .into_iter()
-                        .filter(|(_, entries)| !entries.is_empty())
-                        .map(|(hook, entries)| HookScripts {
-                            hook,
-                            steps: entries.iter().map(DeclaredScript::of).collect(),
-                        })
-                        .collect()
-                })
+                .map(hook_inventory)
                 .unwrap_or_default(),
             system: spec.system.keys().cloned().collect(),
             depends: spec.depends.clone(),
@@ -249,15 +255,7 @@ impl ModuleSurfaces {
             files: module.files.len(),
             env: module.env.clone(),
             aliases: module.aliases.clone(),
-            scripts: module
-                .script_hooks()
-                .into_iter()
-                .filter(|(_, entries)| !entries.is_empty())
-                .map(|(hook, entries)| HookScripts {
-                    hook,
-                    steps: entries.iter().map(DeclaredScript::of).collect(),
-                })
-                .collect(),
+            scripts: hook_inventory(&module.declared_scripts()),
             system: module.system.keys().cloned().collect(),
             depends: module.depends.clone(),
         }
