@@ -814,9 +814,9 @@ Shell
     ✓ PAGER
 
 Scripts
-  preApply (1)
+  preApply
     set -euo pipefail …
-  postApply (2)
+  postApply
     nvim --headless '+Lazy! sync' +qa
     echo done
 ```
@@ -1656,18 +1656,17 @@ cfgd module show my-tool -a             # both
 ```
 
 The `Scripts` section lists every lifecycle hook the module declares, in the
-order the hooks run, each heading carrying how many steps it holds and each
-step one row of its own. No drift engine ever watches a hook body, so every row
-is a bare declaration, never a verdict glyph:
+order the hooks run, each step one row of its own. No drift engine ever watches
+a hook body, so every row is a bare declaration, never a verdict glyph:
 
 ```
 Scripts
-  preApply (1)
+  preApply
     mkdir -p ~/.config/dev-tools
-  postApply (2)
+  postApply
     echo 'post-apply hook ran'
     systemctl --user daemon-reload
-  onDrift (1)
+  onDrift
     notify-send 'dev-tools drifted'
 ```
 
@@ -1677,7 +1676,7 @@ adds the full env values `--show-values` reveals:
 
 ```
 Scripts
-  postApply (2)
+  postApply
     1/2 · timeout 120s · continueOnError
     if command -v pipx >/dev/null 2>&1; then
       pipx install --force pynvim

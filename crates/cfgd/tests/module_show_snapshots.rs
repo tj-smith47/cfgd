@@ -219,12 +219,12 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     assert_eq!(
         rows,
         vec![
-            "preApply (1)",
+            "preApply",
             "mkdir -p ~/.config/dev-tools",
-            "postApply (2)",
+            "postApply",
             "echo 'post-apply hook ran'",
             "systemctl --user daemon-reload",
-            "onDrift (1)",
+            "onDrift",
             "notify-send 'dev-tools drifted'",
         ],
         "every declaring hook, in execution order, each step under its own hook: {human}"

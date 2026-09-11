@@ -576,7 +576,7 @@ fn module_show_all_renders_the_env_values_and_the_full_script_bodies() {
         "-a renders the declared env value in full, got: {out}"
     );
     assert!(
-        out.contains("postApply (2)") && out.contains("echo second"),
+        out.contains("postApply") && out.contains("echo second"),
         "-a renders each step's whole body under its hook, got: {out}"
     );
 }
@@ -626,12 +626,12 @@ fn show_values_alone_renders_condensed_script_rows_on_both_verbs() {
 fn status_per_module_script_flags_itemize_the_inventories() {
     let compact = inventory_flag_output(&["status", "--module", "flags-mod"]);
     assert!(
-        !compact.contains("postApply (2)") && !compact.contains("echo first"),
-        "with neither flag the report states counts, got: {compact}"
+        !compact.contains("echo first"),
+        "with neither flag the report states counts and no step body, got: {compact}"
     );
     let scripts = inventory_flag_output(&["status", "--module", "flags-mod", "-s"]);
     assert!(
-        scripts.contains("postApply (2)") && scripts.contains("echo second"),
+        scripts.contains("postApply") && scripts.contains("echo second"),
         "-s itemizes the inventories and renders each whole body, got: {scripts}"
     );
     assert!(
@@ -37471,7 +37471,6 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         ".section(",
         ".subsection(",
         ".section_annotated(",
-        ".subsection_annotated(",
         ".heading(",
         "section_owner(",
     ];

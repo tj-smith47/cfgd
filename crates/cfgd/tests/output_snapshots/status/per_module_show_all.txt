@@ -19,11 +19,11 @@ Shell
     ✓ PAGER="less -R"
 
 Scripts
-  preApply (1)
+  preApply
     1/1
     set -euo pipefail
     mkdir -p ~/.config/nvim
-  postApply (2)
+  postApply
     1/2 · timeout 900s · idle 30s · continueOnError
     nvim --headless '+Lazy! sync' +qa
 

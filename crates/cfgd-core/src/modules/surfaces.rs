@@ -77,8 +77,8 @@ const SCRIPTS_SECTION: &str = "Scripts";
 /// The ONE render of the scripts a module declares, for every human surface
 /// that shows them: `cfgd module show` and `cfgd status --module`.
 ///
-/// One nested section per declaring hook, headed with the step count, in
-/// execution order, because that order is the fact a reader needs. Under
+/// One nested section per declaring hook, in execution order, because that
+/// order is the fact a reader needs. Under
 /// [`ScriptsForm::Condensed`] each step is one row carrying its first line;
 /// under [`ScriptsForm::Full`] each step states the knobs it declares and then
 /// its whole body, highlighted. The renderer owns every coat, indent and blank
@@ -96,7 +96,7 @@ pub fn scripts_section(doc: Doc, scripts: &[HookScripts], form: ScriptsForm) -> 
     doc.section(SCRIPTS_SECTION, |section| {
         scripts.iter().fold(section, |section, hook| {
             let total = hook.steps.len();
-            section.subsection_annotated(hook.hook, total.to_string(), |sub| {
+            section.subsection(hook.hook, |sub| {
                 sub.script_steps(
                     hook.steps.iter().enumerate().map(|(index, step)| {
                         let body = match form {

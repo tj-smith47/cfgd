@@ -736,24 +736,6 @@ impl SectionBuilder {
         self
     }
 
-    /// A nested subsection whose heading carries a muted trailing annotation
-    /// (`postApply (7)`) — [`Doc::section_annotated`] one depth down, with the
-    /// same renderer-owned parentheses and coat.
-    pub fn subsection_annotated<F>(
-        mut self,
-        name: impl Into<String>,
-        annotation: impl Into<String>,
-        build: F,
-    ) -> Self
-    where
-        F: FnOnce(SectionBuilder) -> SectionBuilder,
-    {
-        let mut sb = SectionBuilder::new(name, /*keep_when_empty=*/ true);
-        sb.annotation = Some(annotation.into());
-        self.children.push(build(sb).into_component());
-        self
-    }
-
     /// The script steps one lifecycle hook declares (see
     /// [`Component::ScriptSteps`]). Reach it through
     /// `cfgd_core::modules::scripts_section`, which is the one composer that

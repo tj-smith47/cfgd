@@ -2389,8 +2389,8 @@ fn cmd_module_show_scripts() {
         "should have a scripts section, got: {output}"
     );
     assert!(
-        output.contains("postApply (2)"),
-        "the hook heads its steps and states how many it holds, got: {output}"
+        output.contains("postApply"),
+        "the declaring hook heads its steps, got: {output}"
     );
     assert!(
         output.contains("echo setup"),

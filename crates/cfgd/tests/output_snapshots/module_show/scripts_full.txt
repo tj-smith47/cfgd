@@ -22,10 +22,10 @@ Env
   GH_TOKEN  ***lue
 
 Scripts
-  preApply (1)
+  preApply
     1/1
     mkdir -p ~/.config/dev-tools
-  postApply (3)
+  postApply
     1/3 · timeout 120s · continueOnError
     if command -v pipx >/dev/null 2>&1; then
       pipx install --force pynvim
