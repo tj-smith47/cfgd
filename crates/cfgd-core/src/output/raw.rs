@@ -141,6 +141,13 @@ impl Renderer {
         let mut lines = Vec::new();
         for line in code.lines() {
             let line = escape_control_chars(line);
+            // An empty source line highlights to a bare reset, which the
+            // emitter then indents: a row carrying nothing but whitespace and
+            // an escape. The blank line a body declares stays blank.
+            if line.is_empty() {
+                lines.push(String::new());
+                continue;
+            }
             lines.push(match h.highlight_line(&line, syntax_set) {
                 // A line that did not close its last foreground run leaves it in
                 // force over whatever the command prints next.
@@ -361,6 +368,25 @@ mod tests {
             stripped.contains("let y"),
             "stripped output missing 'let y': {stripped:?}"
         );
+    }
+
+    /// An empty source line has nothing to highlight, and syntect answers it
+    /// with a bare reset: indented by the emitter, that is a row of whitespace
+    /// and an escape, which a golden reads as trailing whitespace.
+    #[test]
+    fn a_blank_line_inside_a_highlighted_body_renders_blank() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default().with_colors(true), Verbosity::Normal);
+        let ss = SyntaxSet::load_defaults_newlines();
+        r.render_syntax_highlight(&sink, 1, "let x = 1;\n\nlet y = 2;\n", "rs", &ss);
+        // raw-capture-ok: the claim is that the blank row carries no escape at all
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let blank = out
+            .lines()
+            .find(|l| strip_ansi(l).trim().is_empty())
+            .unwrap_or_else(|| panic!("the declared blank line renders as a row: {out:?}"));
+        assert_eq!(blank, "", "the blank row carries no indent and no escape");
     }
 
     /// syntect carries its own theme and emits truecolor escapes without ever

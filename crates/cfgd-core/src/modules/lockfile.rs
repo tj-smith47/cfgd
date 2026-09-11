@@ -350,6 +350,49 @@ fn gated(value: &str, entry: &impl crate::platform::PlatformGated) -> String {
     }
 }
 
+/// One change an upgrade would make to a module's spec, as the approval screen
+/// renders it.
+///
+/// `script` carries the post-apply script a script change is ABOUT, kept out of
+/// `subject` so the screen renders its body through the Scripts composer: the
+/// operator approves those bytes, and a body embedded in the subject line can
+/// only be painted as one more plain string. Every other kind of change states
+/// itself wholly in `subject`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecChange {
+    /// The role the row's glyph takes: `Ok` for an addition, `Fail` for a
+    /// removal, `Warn` for a changed value, `Info` for the no-changes sentinel.
+    pub role: Role,
+    /// The line naming what changed.
+    pub subject: String,
+    /// The script this change names, for the two script arms only.
+    pub script: Option<ChangedScript>,
+}
+
+/// The post-apply script a [`SpecChange`] names, with the place it holds among
+/// the steps of the spec it was read from, so the marker above its body states
+/// the same position the module's own Scripts render states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChangedScript {
+    /// The entry as declared, knobs included.
+    pub entry: crate::config::ScriptEntry,
+    /// Its 1-based position among that spec's `postApply` steps.
+    pub position: usize,
+    /// How many steps that spec declares.
+    pub total: usize,
+}
+
+impl SpecChange {
+    /// A change that states itself in full on one line.
+    pub fn of(role: Role, subject: impl Into<String>) -> Self {
+        Self {
+            role,
+            subject: subject.into(),
+            script: None,
+        }
+    }
+}
+
 /// Diff two module specs, returning a human-readable summary of changes.
 ///
 /// Each entry carries the [`Role`] the caller renders it with — `Ok` for an
@@ -369,34 +412,40 @@ fn gated(value: &str, entry: &impl crate::platform::PlatformGated) -> String {
 /// approving it; the words remove that ambiguity without inventing a
 /// dedicated add/remove role the rest of the theme has no other use for.
 ///
+/// A change naming a post-apply script carries the script itself rather than
+/// its body in the text, because the approval screen renders that body through
+/// the Scripts composer (see [`SpecChange::script`]).
+///
 /// name-row-ok: every row NAMES the declared kind that changed (`dependency
 /// added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
 /// and not a past-tense report of something the command did.
-pub fn diff_module_specs(
-    old: &LoadedModule,
-    new: &LoadedModule,
-    arrow: &str,
-) -> Vec<(Role, String)> {
+pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) -> Vec<SpecChange> {
     let mut changes = Vec::new();
 
     // Dependencies
     let old_deps: HashSet<&str> = old.spec.depends.iter().map(|s| s.as_str()).collect();
     let new_deps: HashSet<&str> = new.spec.depends.iter().map(|s| s.as_str()).collect();
     for dep in new_deps.difference(&old_deps) {
-        changes.push((Role::Ok, format!("dependency added: {dep}")));
+        changes.push(SpecChange::of(Role::Ok, format!("dependency added: {dep}")));
     }
     for dep in old_deps.difference(&new_deps) {
-        changes.push((Role::Fail, format!("dependency removed: {dep}")));
+        changes.push(SpecChange::of(
+            Role::Fail,
+            format!("dependency removed: {dep}"),
+        ));
     }
 
     // Packages
     let old_pkgs: HashSet<&str> = old.spec.packages.iter().map(|p| p.name.as_str()).collect();
     let new_pkgs: HashSet<&str> = new.spec.packages.iter().map(|p| p.name.as_str()).collect();
     for pkg in new_pkgs.difference(&old_pkgs) {
-        changes.push((Role::Ok, format!("package added: {pkg}")));
+        changes.push(SpecChange::of(Role::Ok, format!("package added: {pkg}")));
     }
     for pkg in old_pkgs.difference(&new_pkgs) {
-        changes.push((Role::Fail, format!("package removed: {pkg}")));
+        changes.push(SpecChange::of(
+            Role::Fail,
+            format!("package removed: {pkg}"),
+        ));
     }
 
     // Check for version constraint changes on existing packages
@@ -404,7 +453,7 @@ pub fn diff_module_specs(
         if let Some(old_pkg) = old.spec.packages.iter().find(|p| p.name == new_pkg.name)
             && old_pkg.min_version != new_pkg.min_version
         {
-            changes.push((
+            changes.push(SpecChange::of(
                 Role::Warn,
                 format!(
                     "package '{}': minVersion {} {} {}",
@@ -421,10 +470,16 @@ pub fn diff_module_specs(
     let old_files: HashSet<&str> = old.spec.files.iter().map(|f| f.target.as_str()).collect();
     let new_files: HashSet<&str> = new.spec.files.iter().map(|f| f.target.as_str()).collect();
     for file in new_files.difference(&old_files) {
-        changes.push((Role::Ok, format!("file target added: {file}")));
+        changes.push(SpecChange::of(
+            Role::Ok,
+            format!("file target added: {file}"),
+        ));
     }
     for file in old_files.difference(&new_files) {
-        changes.push((Role::Fail, format!("file target removed: {file}")));
+        changes.push(SpecChange::of(
+            Role::Fail,
+            format!("file target removed: {file}"),
+        ));
     }
 
     // Env vars — an upgrade that introduces one reaches the login shell of
@@ -449,8 +504,11 @@ pub fn diff_module_specs(
     for ev in &new.spec.env {
         let value = gated(&ev.value, ev);
         match old_env.get(ev.name.as_str()) {
-            None => changes.push((Role::Ok, format!("env added: {}={}", ev.name, value))),
-            Some(prev) if *prev != value => changes.push((
+            None => changes.push(SpecChange::of(
+                Role::Ok,
+                format!("env added: {}={}", ev.name, value),
+            )),
+            Some(prev) if *prev != value => changes.push(SpecChange::of(
                 Role::Warn,
                 format!("env '{}': {} {} {}", ev.name, prev, arrow, value),
             )),
@@ -459,7 +517,7 @@ pub fn diff_module_specs(
     }
     for ev in &old.spec.env {
         if !new_env.contains_key(ev.name.as_str()) {
-            changes.push((
+            changes.push(SpecChange::of(
                 Role::Fail,
                 format!("env removed: {}={}", ev.name, gated(&ev.value, ev)),
             ));
@@ -482,8 +540,11 @@ pub fn diff_module_specs(
     for alias in &new.spec.aliases {
         let command = gated(&alias.command, alias);
         match old_aliases.get(alias.name.as_str()) {
-            None => changes.push((Role::Ok, format!("alias added: {}={}", alias.name, command))),
-            Some(prev) if *prev != command => changes.push((
+            None => changes.push(SpecChange::of(
+                Role::Ok,
+                format!("alias added: {}={}", alias.name, command),
+            )),
+            Some(prev) if *prev != command => changes.push(SpecChange::of(
                 Role::Warn,
                 format!("alias '{}': {} {} {}", alias.name, prev, arrow, command),
             )),
@@ -492,7 +553,7 @@ pub fn diff_module_specs(
     }
     for alias in &old.spec.aliases {
         if !new_aliases.contains_key(alias.name.as_str()) {
-            changes.push((
+            changes.push(SpecChange::of(
                 Role::Fail,
                 format!(
                     "alias removed: {}={}",
@@ -503,39 +564,64 @@ pub fn diff_module_specs(
         }
     }
 
-    // Scripts
-    let old_scripts: Vec<&str> = old
-        .spec
-        .scripts
-        .as_ref()
-        .map(|s| s.post_apply.iter().map(|e| e.run_str()).collect())
-        .unwrap_or_default();
-    let new_scripts: Vec<&str> = new
-        .spec
-        .scripts
-        .as_ref()
-        .map(|s| s.post_apply.iter().map(|e| e.run_str()).collect())
-        .unwrap_or_default();
-    let old_script_set: HashSet<&str> = old_scripts.into_iter().collect();
-    let new_script_set: HashSet<&str> = new_scripts.into_iter().collect();
-    for script in new_script_set.difference(&old_script_set) {
-        // This is the pre-approval security review of a module upgrade — the
-        // user must see the FULL script body before approving it running on
-        // their machine, so push the raw body untouched. Never condense here;
-        // the caller (`cmd_module_upgrade` in `cli/module/registry.rs`)
-        // decides bullet-vs-code_block rendering based on embedded `\n`. A
-        // multi-line script renders as a `code_block`, which carries no
-        // per-line Role icon, so "added"/"removed" is spelled out in the
-        // label itself rather than relying on a marker the block can't show.
-        changes.push((Role::Ok, format!("postApply script added: {script}")));
+    // Scripts — the BODY travels separately (see `SpecChange::script`), so the
+    // approval screen can render it through the one Scripts composer. Removals
+    // come first, so a step whose body changed reads as the old one going and
+    // the new one arriving rather than the other way round.
+    let old_steps = post_apply_steps(old);
+    let new_steps = post_apply_steps(new);
+    for script in &old_steps {
+        if !new_steps
+            .iter()
+            .any(|s| s.entry.run_str() == script.entry.run_str())
+        {
+            changes.push(script.clone().change(Role::Fail, "removed"));
+        }
     }
-    for script in old_script_set.difference(&new_script_set) {
-        changes.push((Role::Fail, format!("postApply script removed: {script}")));
+    for script in &new_steps {
+        if !old_steps
+            .iter()
+            .any(|s| s.entry.run_str() == script.entry.run_str())
+        {
+            changes.push(script.clone().change(Role::Ok, "added"));
+        }
     }
 
     if changes.is_empty() {
-        changes.push((Role::Info, "(no spec changes)".to_string()));
+        changes.push(SpecChange::of(Role::Info, "(no spec changes)".to_string()));
     }
 
     changes
+}
+
+/// Every `postApply` step a module declares, each carrying its own position, so
+/// a step reported on its own states the place it holds in the hook.
+fn post_apply_steps(module: &LoadedModule) -> Vec<ChangedScript> {
+    let steps = module
+        .spec
+        .scripts
+        .as_ref()
+        .map(|s| s.post_apply.as_slice())
+        .unwrap_or_default();
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| ChangedScript {
+            entry: entry.clone(),
+            position: index + 1,
+            total: steps.len(),
+        })
+        .collect()
+}
+
+impl ChangedScript {
+    /// This step as the change that added or removed it: the row names the hook
+    /// and the direction, and the body rides along untouched.
+    fn change(self, role: Role, direction: &str) -> SpecChange {
+        SpecChange {
+            role,
+            subject: format!("{} script {direction}", cfgd_schema::POST_APPLY_HOOK),
+            script: Some(self),
+        }
+    }
 }

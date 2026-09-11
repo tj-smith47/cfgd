@@ -5613,12 +5613,12 @@ fn print_module_review_summary_omits_env_and_alias_sections_when_absent() {
 
 #[test]
 fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
-    // `print_module_review_summary`'s post-apply-script rendering and the
-    // upgrade-diff "Changes" section both gate bullet-vs-code_block on this
-    // one function now — pin the exact cases that used to disagree under
-    // the old `contains('\n')` gate (a `run: |` block scalar's trailing
-    // newline survives into a single logical line) and the true
-    // multi-line case that must still render as a code block.
+    // Every review entry that is not a script body gates bullet-vs-code_block
+    // on this one function: an alias command, an env value, an upgrade diff row.
+    // The cases pinned here are the ones that used to disagree under the old
+    // `contains('\n')` gate (a YAML block scalar's trailing newline survives
+    // into a single logical value) plus the true multi-line case that must
+    // still render as a code block.
     assert!(
         !super::registry::has_second_non_empty_line("echo hello"),
         "single line, no trailing newline"
@@ -5638,24 +5638,32 @@ fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
     assert!(!super::registry::has_second_non_empty_line(""));
 }
 
+/// The upgrade diff names the change and hands the body to the composer, so a
+/// changed script reaches neither the bullet nor the code-block gate: the row
+/// carries the role alone, and the step below it is the shape the add screen
+/// shows.
 #[test]
-fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
-    // The upgrade-diff surface (`cmd_module_upgrade`'s "Changes" section)
-    // embeds a changed script body in a change line, and used to gate on raw
-    // `change.contains('\n')`: a `run: |` single-logical-line `postApply
-    // script` diff, whose `run_str()` carries a trailing `\n`, then rendered
-    // as a code block while the identical body rendered as a bullet one
-    // surface over.
+fn an_upgraded_modules_script_change_is_a_role_row_with_the_body_under_it() {
     let old = make_loaded_module("m", config::ModuleSpec::default());
     let new = module_with_post_apply_script("echo hello\n");
     let changes = modules::diff_module_specs(&old, &new, "->");
-    let (_, change) = changes
+    let change = changes
         .iter()
-        .find(|(_, c)| c.contains("postApply script"))
+        .find(|c| c.script.is_some())
         .expect("expected a postApply script diff entry");
+    assert_eq!(change.subject, "postApply script added");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::registry::print_spec_changes(&printer, &changes);
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        !super::registry::has_second_non_empty_line(change),
-        "a single logical line with a trailing newline must not be routed to a code block: {change:?}"
+        out.contains("postApply script added\n    1/1\n    echo hello"),
+        "the row names the change and the step renders under it: {out:?}"
+    );
+    assert!(
+        !out.contains("script added: echo hello"),
+        "the body is the composer's, not part of the row: {out:?}"
     );
 }
 
@@ -5720,9 +5728,11 @@ fn print_module_review_summary_leading_blank_line_script_renders_its_body() {
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
+    // The blank line the body opens with is part of the body, so it renders as
+    // a blank row between the marker and the command rather than being eaten.
     assert!(
-        out.contains("echo hello"),
-        "the declared body renders: {out}"
+        out.contains("    1/1\n\n    echo hello"),
+        "the marker, the declared blank line, then the command: {out:?}"
     );
 }
 
@@ -5850,6 +5860,84 @@ fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_compo
     cfgd_core::output::test_capture::assert_snapshot_at(
         &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/output_snapshots"),
         "module_add/post_apply_review.txt",
+        &stripped,
+    );
+}
+
+/// The Changes section of a module upgrade: each script change is a role row
+/// naming it, with the step itself rendered under the row by the same composer
+/// the add screen reaches, removals before additions. A blank line inside a
+/// body renders blank rather than as an indented reset.
+#[test]
+fn an_upgrade_diffs_script_changes_render_their_bodies_through_the_composer() {
+    let old = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![cfgd_core::config::ScriptEntry::Simple(
+                    "nvim --headless +PlugClean +qa".into(),
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let new = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![cfgd_core::config::ScriptEntry::Full(
+                    cfgd_core::config::ScriptCommand {
+                        run: "set -eu\n\nnvim --headless +PlugInstall +qa\nnvim --headless +UpdateRemotePlugins +qa".into(),
+                        timeout: Some("300s".into()),
+                        ..Default::default()
+                    },
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let changes = modules::diff_module_specs(&old, &new, "->");
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_theme_colored(
+        cfgd_core::output::Theme::preset("dracula").expect("dracula is a registered preset"),
+        cfgd_core::output::Verbosity::Normal,
+    );
+    super::registry::print_spec_changes(&printer, &changes);
+    drop(printer);
+    // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    let lines: Vec<&str> = raw.lines().collect();
+    let removed = lines
+        .iter()
+        .position(|l| l.contains("postApply script removed"))
+        .unwrap_or_else(|| panic!("a removed step is named: {raw:?}"));
+    let added = lines
+        .iter()
+        .position(|l| l.contains("postApply script added"))
+        .unwrap_or_else(|| panic!("an added step is named: {raw:?}"));
+    assert!(
+        removed < added,
+        "a changed step reads as the old one going and the new one arriving: {raw:?}"
+    );
+    assert_eq!(
+        cfgd_core::output::strip_ansi(lines[added + 1]),
+        "    1/1 \u{b7} timeout 300s",
+        "the step states its position and knobs under the row: {:?}",
+        lines[added + 1]
+    );
+    for line in &lines[added + 2..] {
+        let stripped = cfgd_core::output::strip_ansi(line);
+        assert!(
+            stripped.trim().is_empty() == stripped.is_empty(),
+            "a blank line in a body renders blank, not as indent plus a reset: {line:?}"
+        );
+    }
+    let stripped = cfgd_core::output::strip_ansi(&raw);
+    cfgd_core::output::test_capture::assert_snapshot_at(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/output_snapshots"),
+        "module_upgrade/script_changes.txt",
         &stripped,
     );
 }

@@ -31,8 +31,9 @@ pub use loader::{
     declared_modules_dir, load_module, load_modules, resolve_dependency_order, validate_module_name,
 };
 pub use lockfile::{
-    diff_module_specs, hash_module_contents, load_all_modules, load_locked_modules, load_lockfile,
-    load_source_modules, save_lockfile, verify_lockfile_integrity,
+    ChangedScript, SpecChange, diff_module_specs, hash_module_contents, load_all_modules,
+    load_locked_modules, load_lockfile, load_source_modules, save_lockfile,
+    verify_lockfile_integrity,
 };
 pub use registry::{
     FetchedRemoteModule, RegistryModule, RegistryRef, extract_registry_name,
@@ -44,6 +45,7 @@ pub use resolve::{
     resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
+pub use surfaces::post_apply_change_body;
 pub use surfaces::post_apply_scripts_section;
 pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section};
 

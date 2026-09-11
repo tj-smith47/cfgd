@@ -37444,9 +37444,11 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         ("cfgd/src/cli/log.rs", "entry_sec.code_block(", false),
         // The YAML `cfgd generate` wrote.
         ("cfgd/src/cli/generate/mod.rs", "&req.content", false),
-        // The pre-install review of a remote module: an alias command, an env
-        // value, or one line of an upgrade diff. The module's declared hooks
-        // render through the composer's `post_apply_scripts_section`.
+        // A multi-line value on a module's approval screen: an alias command, an
+        // env value, or one row of an upgrade diff. Both screens hand a script
+        // body to the composer instead (`post_apply_scripts_section` for the
+        // module being added, `post_apply_change_body` for a changed step), so
+        // no declared body reaches this slot.
         (
             "cfgd/src/cli/module/registry.rs",
             "section.code_block(",

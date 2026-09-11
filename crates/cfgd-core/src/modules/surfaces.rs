@@ -101,9 +101,10 @@ pub fn scripts_section(doc: Doc, scripts: &[HookScripts], form: ScriptsForm) -> 
     })
 }
 
-/// The step rows one hook's entries render as — the ONE producer of them, read
-/// by both shapes of the Scripts render, so a surface holding a `SectionGuard`
-/// and one building a [`Doc`] cannot word a marker or cut a body differently.
+/// The step rows one hook's entries render as, each numbered by its place in
+/// the hook: the ONE producer read by both shapes of the Scripts render, so a
+/// surface holding a `SectionGuard` and one building a [`Doc`] cannot word a
+/// marker or cut a body differently.
 ///
 /// A full body is escaped here rather than left to the renderer's own per-line
 /// escaping: the renderer splits on `\n`, which drops a `\r` sitting in front
@@ -118,17 +119,25 @@ fn hook_steps(hook: &HookScripts, form: ScriptsForm) -> Vec<ScriptStep> {
     hook.steps
         .iter()
         .enumerate()
-        .map(|(index, step)| match form {
-            ScriptsForm::Full => ScriptStep {
-                marker: Some(step.marker(index + 1, total)),
-                body: crate::escape_control_chars_except_newline(&step.body),
-            },
-            ScriptsForm::Condensed => ScriptStep {
-                marker: None,
-                body: crate::output::condense_script_label(&step.body),
-            },
-        })
+        .map(|(index, step)| step_row(step, index + 1, total, form))
         .collect()
+}
+
+/// One step as a renderable row, with its position stated by the caller: a
+/// surface rendering a single step out of its hook (an upgrade diff) states the
+/// position that step holds in the spec it came from, so its marker reads the
+/// same as on the screen the whole module is approved on.
+fn step_row(step: &DeclaredScript, position: usize, total: usize, form: ScriptsForm) -> ScriptStep {
+    match form {
+        ScriptsForm::Full => ScriptStep {
+            marker: Some(step.marker(position, total)),
+            body: crate::escape_control_chars_except_newline(&step.body),
+        },
+        ScriptsForm::Condensed => ScriptStep {
+            marker: None,
+            body: crate::output::condense_script_label(&step.body),
+        },
+    }
 }
 
 /// The post-apply steps a module declares, in the full form, under a section a
@@ -149,7 +158,7 @@ pub fn post_apply_scripts_section(section: &SectionGuard<'_>, scripts: &ScriptSp
     let Some((name, entries)) = scripts
         .hooks()
         .into_iter()
-        .find(|(name, entries)| *name == POST_APPLY_HOOK && !entries.is_empty())
+        .find(|(name, entries)| *name == cfgd_schema::POST_APPLY_HOOK && !entries.is_empty())
     else {
         return;
     };
@@ -161,12 +170,25 @@ pub fn post_apply_scripts_section(section: &SectionGuard<'_>, scripts: &ScriptSp
     sub.script_steps(hook_steps(&hook, ScriptsForm::Full), ScriptsForm::Full);
 }
 
-/// The hook whose steps the module-approval screen reviews, as
-/// [`ScriptSpec::hooks`] names it. A spelling that stopped matching would
-/// render an approval screen with no bodies on it, which
-/// `a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_composer`
-/// is what refuses.
-const POST_APPLY_HOOK: &str = "postApply";
+/// One post-apply script an upgrade would add or remove, under the row that
+/// named the change: the marker stating the step's position and knobs, then its
+/// whole body highlighted, the same step [`post_apply_scripts_section`] shows.
+///
+/// The change itself is the caller's row, so nothing here names the hook or the
+/// direction of the change: a reader sees one body in one shape whether they
+/// inspected the module, approved it, or approved an upgrade to it.
+pub fn post_apply_change_body(
+    section: &SectionGuard<'_>,
+    entry: &ScriptEntry,
+    position: usize,
+    total: usize,
+) {
+    let step = DeclaredScript::of(entry);
+    section.nested_script_steps(
+        [step_row(&step, position, total, ScriptsForm::Full)],
+        ScriptsForm::Full,
+    );
+}
 
 /// The declared surfaces of one module: the counts a summary line reports and
 /// the items an inventory lists.

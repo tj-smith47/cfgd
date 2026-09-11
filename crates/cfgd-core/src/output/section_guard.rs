@@ -205,10 +205,31 @@ impl<'p> SectionGuard<'p> {
         steps: impl IntoIterator<Item = super::ScriptStep>,
         form: super::ScriptsForm,
     ) -> &Self {
+        self.script_steps_at(self.depth, steps, form)
+    }
+
+    /// [`Self::script_steps`] one depth deeper, for steps that hang under a
+    /// status row this section already rendered rather than under a hook
+    /// heading of their own (a module upgrade's diff). Reach it through
+    /// `cfgd_core::modules::post_apply_change_body`.
+    pub fn nested_script_steps(
+        &self,
+        steps: impl IntoIterator<Item = super::ScriptStep>,
+        form: super::ScriptsForm,
+    ) -> &Self {
+        self.script_steps_at(self.depth + 1, steps, form)
+    }
+
+    fn script_steps_at(
+        &self,
+        depth: usize,
+        steps: impl IntoIterator<Item = super::ScriptStep>,
+        form: super::ScriptsForm,
+    ) -> &Self {
         let steps: Vec<super::ScriptStep> = steps.into_iter().collect();
         self.renderer.render_script_steps(
             self.sink.as_ref(),
-            self.depth,
+            depth,
             &steps,
             form,
             &self.printer.syntax_set,

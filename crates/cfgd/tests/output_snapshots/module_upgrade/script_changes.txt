@@ -1,0 +1,10 @@
+Changes
+  ✗ postApply script removed
+    1/1
+    nvim --headless +PlugClean +qa
+  ✓ postApply script added
+    1/1 · timeout 300s
+    set -eu
+
+    nvim --headless +PlugInstall +qa
+    nvim --headless +UpdateRemotePlugins +qa

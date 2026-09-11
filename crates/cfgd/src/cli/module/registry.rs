@@ -438,15 +438,7 @@ pub fn cmd_module_upgrade(
 
     // Show diff
     let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());
-    {
-        let changes_sec = printer.section("Changes");
-        for (role, change) in &changes {
-            // A diff entry embeds the unmodified body of whatever changed — a
-            // multi-line script, or an env value carrying a newline — so every
-            // line of it shows, condensed at no point in the approval.
-            review_entry(&changes_sec, Some(*role), change);
-        }
-    }
+    print_spec_changes(printer, &changes);
 
     // Check for signature on new ref
     super::enforce_signature_policy(
@@ -499,24 +491,55 @@ pub fn cmd_module_upgrade(
     Ok(())
 }
 
+/// The `Changes` section of a module upgrade's pre-approval review: one row per
+/// change, each carrying the role's own add/remove/change glyph.
+///
+/// A row naming a post-apply script states the change alone, and the script's
+/// body renders under it through the Scripts composer, in the same shape the
+/// add-time review and `cfgd module show --show-scripts` give it: the marker
+/// line, then the whole body highlighted and nothing condensed. Every other
+/// change states itself on its own row (or as a code block, for a declared
+/// value carrying a newline).
+pub(super) fn print_spec_changes(printer: &Printer, changes: &[modules::SpecChange]) {
+    let changes_sec = printer.section("Changes");
+    for change in changes {
+        match &change.script {
+            Some(script) => {
+                changes_sec.status_simple(change.role, change.subject.clone());
+                cfgd_core::modules::post_apply_change_body(
+                    &changes_sec,
+                    &script.entry,
+                    script.position,
+                    script.total,
+                );
+            }
+            None => review_entry(&changes_sec, Some(change.role), &change.subject),
+        }
+    }
+}
+
 /// True when `body` has a second non-empty logical line — the gate for
-/// rendering a review entry (an upgrade diff line, an alias command, an env
-/// value) as a multi-line `code_block()` instead of a single `bullet()`.
+/// rendering a review entry (an alias command, an env value, an upgrade diff
+/// row) as a multi-line `code_block()` instead of a single `bullet()`.
 /// Deciding on LINE COUNT alone (rather than raw `contains('\n')`) is
-/// necessary because a `run: |` YAML block-scalar's trailing newline survives
-/// `run_str()` even for a single logical line of script, and a diff entry
-/// embeds that body verbatim — a raw `contains('\n')` check would flip such a
-/// single line into a code block while `bullet()`-rendering the identical body
-/// elsewhere.
+/// necessary because a YAML block scalar's trailing newline survives into the
+/// declared value even for a single logical line: a raw `contains('\n')` check
+/// flips such a value into a code block on one surface while the identical
+/// value renders as a bullet on another.
 pub(super) fn has_second_non_empty_line(body: &str) -> bool {
     let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
     non_empty.next();
     non_empty.next().is_some()
 }
 
-/// Render one review entry in full: an alias command, an env value, or one
-/// line of an upgrade diff. A module's declared hooks reach the screen through
-/// `cfgd_core::modules::post_apply_scripts_section` instead.
+/// Render one review entry in full: an alias command, an env value, or an
+/// upgrade diff row that names no script.
+///
+/// No script body reaches here. Both approval screens hand their bodies to the
+/// Scripts composer: the add-time review through
+/// `cfgd_core::modules::post_apply_scripts_section`, a changed step on the
+/// upgrade diff through `post_apply_change_body`, each rendering the marker and
+/// the highlighted body `cfgd module show --show-scripts` renders.
 ///
 /// `bullet()` cannot carry a body containing `\n` (the `write_line`
 /// debug_assert), and this is the pre-install security review of a remote
@@ -547,8 +570,8 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 /// `status_simple` instead of a plain `bullet`. `None` keeps the bare bullet
 /// (a caller with nothing to mark, e.g. a fresh `add`'s env/alias listing). A
 /// multi-line body always renders as a `code_block`, which carries no
-/// per-line icon — the caller spells "added"/"removed" into that body's own
-/// label instead of relying on `role` to convey it there.
+/// per-line icon, so a caller whose entry can be several lines long spells
+/// "added"/"removed" into the text rather than relying on `role` to carry it.
 fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, body: &str) {
     // Split by hand rather than with `lines()`, which silently drops a `\r`
     // sitting before a `\n` — on a surface whose contract is "this is exactly

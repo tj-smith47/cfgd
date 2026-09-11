@@ -1776,9 +1776,11 @@ cfgd module upgrade tmux --yes               # skip confirmation
 cfgd module upgrade tmux --allow-unsigned    # allow unsigned modules
 ```
 
-The confirmation screen lists the spec changes, each one in full: a changed or
-added post-apply script shows every line of its body, so you approve the exact
-text that will run.
+The confirmation screen lists the spec changes, each one in full. A post-apply
+script that was added, removed or edited gets a row naming the change, with the
+whole step under it in the same form `cfgd module show --show-scripts` uses, so
+you approve the exact text that will run. An edited step reads as the old one
+removed and the new one added.
 
 ### `cfgd module search <query>`
 
