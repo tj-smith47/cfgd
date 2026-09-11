@@ -42,6 +42,38 @@ pub struct CommandOutcome {
     pub timed_out: bool,
 }
 
+/// How many spawns a program file reported busy is given, and the backoff
+/// ladder between them: 1 ms doubling to a 32 ms ceiling, so the whole ladder
+/// costs under 200 ms before the error is handed back.
+const BUSY_PROGRAM_ATTEMPTS: u32 = 10;
+const BUSY_PROGRAM_FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
+const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(32);
+
+/// Spawn `cmd`, giving a program file the OS reports as open for writing a few
+/// more tries.
+///
+/// Writing an executable and running it races every other thread in the
+/// process: a `fork` anywhere between the file's open and close inherits the
+/// writable descriptor until that child reaches its own `exec`, and an `exec` of
+/// that same file in this thread fails for as long as the descriptor lives
+/// (`ETXTBSY`). Cargo's own process builder retries for this reason. Every other
+/// error comes straight back, unretried.
+fn spawn_past_a_busy_program_file(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    let mut wait = BUSY_PROGRAM_FIRST_WAIT;
+    for _ in 1..BUSY_PROGRAM_ATTEMPTS {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
+            }
+            outcome => return outcome,
+        }
+    }
+    cmd.spawn()
+}
+
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
@@ -82,7 +114,7 @@ pub fn command_output_with_timeout_outcome(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = spawn_past_a_busy_program_file(cmd)?;
     let id = child.id();
 
     let abandoned = Arc::new(AtomicBool::new(false));
@@ -1556,6 +1588,42 @@ mod tests {
             !orphan.is_empty(),
             "output written before the kill must still be captured"
         );
+    }
+
+    // A writable descriptor on the program file is what makes the exec fail
+    // with ETXTBSY, so the probe holds one open to prove the refusal is real
+    // before the ladder is given a chance to wait it out.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let program = tmp.path().join("busy");
+        std::fs::write(&program, "#!/bin/sh\necho ran\n").unwrap();
+        crate::set_file_permissions(&program, 0o755).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .unwrap();
+
+        let refused = std::process::Command::new(&program)
+            .spawn()
+            .expect_err("a program file open for writing cannot be executed");
+        assert_eq!(refused.kind(), std::io::ErrorKind::ExecutableFileBusy);
+
+        let releasing = std::thread::spawn(move || {
+            // The release has to land while the ladder is already retrying, and
+            // 20ms sits well inside its ~160ms budget.
+            // sleep-ok: a spawn attempt publishes no observable to wait on
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(writer);
+        });
+        let mut cmd = std::process::Command::new(&program);
+        let outcome =
+            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_secs(5))
+                .expect("the ladder must wait the writer out");
+        releasing.join().unwrap();
+
+        assert_eq!(stdout_lossy_trimmed(&outcome.output), "ran");
     }
 
     /// The separator is the platform's, so the assertions build their
