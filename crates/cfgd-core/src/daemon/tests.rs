@@ -9998,12 +9998,15 @@ async fn handle_reconcile_runs_on_drift_scripts() {
 /// hook in the plan ([`crate::reconciler::Reconciler::plan`]) and makes the
 /// hook the only thing any row here could be about.
 ///
-/// Each hook body writes its witness through a redirect, which creates the file
-/// under both shells `ScriptShell::Auto` dispatches to, so a hook that runs
-/// when it should not is caught wherever the suite runs. Each tick's journal is
-/// captured on the thread the tick runs on, so the sentence asserted here is
-/// this tick's own rather than whatever another declaration's tick wrote to the
-/// shared capture beside it.
+/// Each hook body is one quoted path to a [`crate::test_helpers::write_tool_shim`]
+/// stand-in, and its witness is the argv log that shim appends to. `ScriptShell::Auto`
+/// dispatches to `sh` on Unix and `cmd.exe` on Windows, and no ONE command line
+/// writes a file under both: a redirect to a POSIX path quoted for `sh` names a
+/// file `cmd.exe` refuses to open, so the witness silently never appeared there.
+/// The shim is the one shape both run, because `write_tool_shim` writes the
+/// host's own script kind. Each tick's journal is captured on the thread the
+/// tick runs on, so the sentence asserted here is this tick's own rather than
+/// whatever another declaration's tick wrote to the shared capture beside it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
     let tmp = tempfile::tempdir().unwrap();
@@ -10011,8 +10014,14 @@ async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let hook_witness = tmp.path().join("post-reconcile-ran");
-    let drift_witness = tmp.path().join("on-drift-ran");
+    let hook_shim_dir = tmp.path().join("post-reconcile-shim");
+    let drift_shim_dir = tmp.path().join("on-drift-shim");
+    std::fs::create_dir_all(&hook_shim_dir).unwrap();
+    std::fs::create_dir_all(&drift_shim_dir).unwrap();
+    let hook_shim = crate::test_helpers::write_tool_shim(&hook_shim_dir, "post-reconcile", &[]);
+    let drift_shim = crate::test_helpers::write_tool_shim(&drift_shim_dir, "on-drift", &[]);
+    let hook_witness = hook_shim_dir.join("argv.log");
+    let drift_witness = drift_shim_dir.join("argv.log");
 
     let notify_only = tmp.path().join("config.yaml");
     std::fs::write(
@@ -10037,12 +10046,16 @@ async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
     // stand for, so a drift row recorded here could only be a hook's.
     let mod_dir = tmp.path().join("modules").join("hooked");
     std::fs::create_dir_all(&mod_dir).unwrap();
+    // The shim is named by its NATIVE path, double-quoted: `cmd.exe` reads a
+    // forward slash as the start of a switch, and both shells take a quoted
+    // program name. The YAML scalar is single-quoted for the same path, whose
+    // backslashes a double-quoted scalar would read as escapes.
     std::fs::write(
         mod_dir.join("module.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postReconcile:\n      - \"echo ran > '{}'\"\n    onDrift:\n      - \"echo ran > '{}'\"\n",
-            crate::to_posix_string(&hook_witness),
-            crate::to_posix_string(&drift_witness),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postReconcile:\n      - '\"{}\"'\n    onDrift:\n      - '\"{}\"'\n",
+            hook_shim.display(), // native-ok: a command line the host's own shell parses
+            drift_shim.display(), // native-ok: a command line the host's own shell parses
         ),
     )
     .unwrap();
