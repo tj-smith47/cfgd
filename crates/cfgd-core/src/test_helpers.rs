@@ -1350,9 +1350,10 @@ pub fn test_printer() -> crate::output::Printer {
 /// byte-for-byte (each literal-interior byte becomes a space, quotes stay),
 /// so byte positions found on the blanked line index the raw line exactly.
 /// Handles `"…"` with escapes, `r"…"`/`r#"…"#` raw strings, the byte forms
-/// `b'x'` and `b"…"` through those same two arms, and char literals —
-/// discriminated from lifetimes by closing-quote proximity, the same test
-/// `audit.sh`'s `strip_strings` uses. Line-scoped by construction: a literal
+/// `b'x'` and `b"…"` through those same two arms, and char literals,
+/// discriminated from lifetimes by requiring the char shape itself, one
+/// escape or exactly one char, never closing-quote proximity, which would
+/// blank the paren in `<'a>('x')`. Line-scoped by construction: a literal
 /// that spans lines has only its first line blanked, and its interior lines
 /// are read as code — the same bound every walk reading this already lives
 /// with.
