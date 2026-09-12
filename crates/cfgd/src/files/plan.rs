@@ -574,7 +574,8 @@ impl super::CfgdFileManager {
                 target: target_id,
                 matches: false,
                 expected: cfgd_core::providers::SOURCE_MISSING_EXPECTED.to_string(),
-                // absolute-path-ok: the recorded drift operand, compared against a stored row
+                // absolute-path-ok: the payload field; the human line above
+                // folds its own copy
                 actual: format!("source not found: {}", source_path.posix()),
                 unmanaged: false,
             });
