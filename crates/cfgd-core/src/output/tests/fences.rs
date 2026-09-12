@@ -561,52 +561,19 @@ fn balanced_close(text: &str) -> Option<usize> {
     None
 }
 
-/// The argument text of the `with_writer(` opened at `from` on `lines[at]`, up
-/// to its matching close paren — across lines, because rustfmt splits a long
-/// call and a line-scoped read would see `with_writer(` and `std::io::stderr`
-/// as two unrelated lines. Bounded at a few lines so a stray unbalanced paren
+/// The argument text of the call whose `(` sits just before `from` on
+/// `lines[at]`, up to its matching close paren, rows below included: rustfmt
+/// splits a long call, and a line-scoped read would see `with_writer(` and
+/// `std::io::stderr` as two unrelated lines.
+///
+/// The text comes back RAW, because a rule may turn on a string literal the
+/// blanked rendering would have emptied; a caller whose tells are identifiers
+/// takes [`writer_argument`] instead. Parens are counted on the blanked
+/// rendering either way, which is byte-for-byte, so one inside a literal
+/// cannot close the call early. Bounded at a few rows, so an unbalanced paren
 /// cannot swallow the rest of the file and pair the call with an unrelated
 /// `stderr` far below it.
-fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
-    const MAX_LINES: usize = 6;
-    let mut depth = 1usize;
-    let mut arg = String::new();
-    for (offset, line) in lines[at..].iter().take(MAX_LINES).enumerate() {
-        let code = code_half(line);
-        let chars = if offset == 0 {
-            // `from` was found on the same literal-blanked rendering this
-            // call re-derives, and blanking is byte-length preserving, so the
-            // index lands where it was found.
-            &code[from.min(code.len())..]
-        } else {
-            code.as_str()
-        };
-        for c in chars.chars() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return arg;
-                    }
-                }
-                _ => {}
-            }
-            arg.push(c);
-        }
-    }
-    arg
-}
-
-/// The RAW argument text of the call whose `(` sits just before `from` on
-/// `lines[at]`, up to its balanced close paren, rows below included.
-///
-/// [`writer_argument`]'s counterpart for a rule that turns on a string literal
-/// the blanked rendering would have emptied. Parens are counted on the blanked
-/// rendering all the same, which is byte-for-byte, so a paren inside a literal
-/// cannot close the call early while the text returned stays the source's own.
-/// Bounded at a few rows, so an unbalanced paren cannot swallow the file.
-fn raw_call_argument(lines: &[&str], at: usize, from: usize) -> String {
+fn call_argument(lines: &[&str], at: usize, from: usize) -> String {
     const MAX_LINES: usize = 6;
     let mut depth = 1usize;
     let mut arg = String::new();
@@ -639,6 +606,12 @@ fn raw_call_argument(lines: &[&str], at: usize, from: usize) -> String {
         arg.push(' ');
     }
     arg
+}
+
+/// That same argument with its literals blanked, so a `stderr` written inside
+/// one is prose to a walk whose tells are identifiers.
+fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
+    blank_string_literals(&call_argument(lines, at, from))
 }
 
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in
@@ -4833,7 +4806,7 @@ fn hand_substitutions(lines: &[&str], from: usize) -> Vec<usize> {
         // a string literal is prose, and read raw, because the label the pair
         // turns on is itself a literal.
         for (at, _) in masked.match_indices(CALL) {
-            let call = raw_call_argument(lines, idx, at + CALL.len());
+            let call = call_argument(lines, idx, at + CALL.len());
             let Some((subject, label)) = call.split_once(',') else {
                 continue;
             };
