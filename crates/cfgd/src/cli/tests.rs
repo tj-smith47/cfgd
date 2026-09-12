@@ -35889,12 +35889,14 @@ fn unmatched_open_above(lines: &[&str], from: usize) -> usize {
 
 /// Whether the block opening at `open` is a function body, judged on the `fn`
 /// keyword as a word of the statement that opens it, so a signature rustfmt
-/// broke over several rows still answers yes.
+/// broke over several rows still answers yes. The word is read off the
+/// literal-blanked line, or a literal spelling `fn` makes a block a function.
 fn opens_a_function(lines: &[&str], open: usize) -> bool {
     lines[opening_statement(lines, open)..=open]
         .iter()
         .any(|line| {
-            line.replace(['(', ')'], " ")
+            blank_string_literals(line)
+                .replace(['(', ')'], " ")
                 .split_whitespace()
                 .any(|word| word == "fn")
         })
@@ -35947,10 +35949,14 @@ fn enclosing_fn_end(lines: &[&str], start: usize) -> usize {
 /// sit under an unrelated `json!` or error. The walk up ends after the
 /// previous statement, and includes a line opening a block (a `json!({` whose
 /// fields follow) because that line is the statement the render is part of.
+///
+/// Each row is read literal-blanked, so a `;` or a brace written inside one
+/// cannot end the statement early.
 fn opening_statement(lines: &[&str], render: usize) -> usize {
     let mut j = render;
     while j > 0 {
-        let prev = lines[j - 1].trim_end();
+        let blanked = blank_string_literals(lines[j - 1]);
+        let prev = blanked.trim_end();
         if prev.is_empty()
             || prev.trim_start().starts_with("//")
             || prev.ends_with(';')
