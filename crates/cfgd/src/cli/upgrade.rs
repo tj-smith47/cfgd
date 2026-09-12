@@ -26,7 +26,12 @@ fn upgraded_doc(
 ) -> Doc {
     let mut doc = Doc::new()
         .status(Role::Ok, format!("Upgraded to {version}"))
-        .kv("Installed to", installed_path);
+        // Folded here rather than at either caller, so the row and the
+        // `installedPath` payload beside it cannot disagree about the spelling.
+        .kv(
+            "Installed to",
+            cfgd_core::fold_home_in_text(&installed_path),
+        );
     if daemon_terminated {
         doc = doc.kv("Daemon", "terminated to pick up the new binary");
     }
@@ -226,6 +231,7 @@ pub fn cmd_upgrade(
 
     printer.emit(upgraded_doc(
         &check.latest.to_string(),
+        // absolute-path-ok: `upgraded_doc` folds the row it renders
         report.installed_path.display_posix(),
         applied.daemon_terminated,
         [
@@ -434,6 +440,7 @@ fn apply_startup_update(
             let report = &applied.report;
             printer.emit(upgraded_doc(
                 &check.latest.to_string(),
+                // absolute-path-ok: `upgraded_doc` folds the row it renders
                 report.installed_path.display_posix(),
                 applied.daemon_terminated,
                 [

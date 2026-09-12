@@ -6,6 +6,7 @@ use std::process::Command;
 
 // Only the nvm arm probes for a tool by name, and that arm is compiled off
 // Windows.
+use cfgd_core::PathDisplayExt;
 #[cfg(not(windows))]
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
@@ -732,7 +733,7 @@ impl PackageManager for NpmManager {
                 "npm",
                 format!(
                     "no writable global prefix; installing into {}",
-                    prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
+                    prefix.display_posix(),
                 ),
             );
         }
@@ -2549,14 +2550,17 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("no writable global prefix"))
                 .expect("the fallback note is reported");
-            let prefix = home.path().join(".npm-global").display().to_string();
+            // The note settles through the sink, which folds the home
+            // directory, so an unfolded expectation matches nothing.
+            let prefix =
+                cfgd_core::fold_home_in_text(&home.path().join(".npm-global").display_posix());
             assert!(
                 note.contains(&prefix),
                 "the note must still say where the packages went: {note}"
             );
-            // The prefix is a random tempdir path, and any substring test would
-            // be answering about THAT rather than about the sentence: `add`
-            // turns up in a tempdir name roughly once in 100k runs.
+            // Read about the sentence rather than about the path inside it: a
+            // substring test over an unfolded tempdir name would answer about
+            // the name (`add` turns up in one roughly once in 100k runs).
             let sentence = note.replace(&prefix, "<prefix>");
             assert!(
                 !sentence.contains("PATH") && !sentence.contains("add"),

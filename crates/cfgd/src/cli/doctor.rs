@@ -423,6 +423,7 @@ fn collect_doctor_output(
     // as a profile (canonical bundles included, payload dirs excluded).
     let profiles_scan = cfgd_core::config::scan_profiles_tolerant(&profiles_dir_path);
     let profiles_dir_extra = DoctorProfilesDir {
+        // absolute-path-ok: the payload field; the rows rendering it fold their own copy
         path: profiles_dir_path.display_posix(),
         exists: profiles_dir_path.exists(),
         profile_count: profiles_scan.as_ref().map(Vec::len).unwrap_or(0),
@@ -441,6 +442,7 @@ fn collect_doctor_output(
                 let cached_path = cache_dir.as_ref().and_then(|cd| {
                     let p = cd.join(&source.name);
                     if p.exists() {
+                        // absolute-path-ok: the payload field; the row rendering it folds its own copy
                         Some(p.display_posix())
                     } else {
                         None
@@ -568,7 +570,10 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
         DoctorConfigState::Valid => {
             // name-row-ok: an inventory row naming what was checked
             let mut s = s.status_with(Role::Ok, "Config file", |f| {
-                f.qualifier(format!("{} (valid)", cfg.path))
+                f.qualifier(format!(
+                    "{} (valid)",
+                    cfgd_core::fold_home_in_text(&cfg.path)
+                ))
             });
             let mut pairs: Vec<(String, String)> = Vec::new();
             if let Some(name) = cfg.name.as_deref() {
@@ -584,19 +589,21 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
             s
         }
         DoctorConfigState::MissingAtDefault => s.status_with(Role::Warn, "Config file", |sf| {
-            sf.qualifier(cfg.path.clone()).detail(format!(
-                "{}; run `cfgd init` to create one",
-                cfgd_core::Absence::NotFound
-            ))
+            sf.qualifier(cfgd_core::fold_home_in_text(&cfg.path))
+                .detail(format!(
+                    "{}; run `cfgd init` to create one",
+                    cfgd_core::Absence::NotFound
+                ))
         }),
         DoctorConfigState::MissingAtExplicit => s.status_with(Role::Fail, "Config file", |sf| {
-            sf.qualifier(cfg.path.clone()).detail(format!(
-                "{}; the given --config/--config-dir/CFGD_CONFIG path does not exist",
-                cfgd_core::Absence::NotFound
-            ))
+            sf.qualifier(cfgd_core::fold_home_in_text(&cfg.path))
+                .detail(format!(
+                    "{}; the given --config/--config-dir/CFGD_CONFIG path does not exist",
+                    cfgd_core::Absence::NotFound
+                ))
         }),
         DoctorConfigState::Invalid => s.status_with(Role::Fail, "Config file", |f| {
-            f.qualifier(cfg.path.clone())
+            f.qualifier(cfgd_core::fold_home_in_text(&cfg.path))
                 .detail(cfg.error.as_deref().unwrap_or("invalid").to_string())
         }),
     }
@@ -633,13 +640,16 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
         // name-row-ok: the row names the key file, not an outcome
-        (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
+        (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| {
+            f.qualifier(cfgd_core::fold_home_in_text(path))
+        }),
         // name-row-ok: the row names the key file, not an outcome
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
-            f.qualifier(path.to_string()).detail(format!(
-                "{}; run `cfgd init` to generate",
-                cfgd_core::Absence::NotFound
-            ))
+            f.qualifier(cfgd_core::fold_home_in_text(path))
+                .detail(format!(
+                    "{}; run `cfgd init` to generate",
+                    cfgd_core::Absence::NotFound
+                ))
         }),
         _ => s,
     };
@@ -650,7 +660,9 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     ) {
         (true, Some(path)) => {
             // name-row-ok: an inventory row naming what was checked
-            s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier(path.to_string()))
+            s.status_with(Role::Ok, ".sops.yaml", |f| {
+                f.qualifier(cfgd_core::fold_home_in_text(path))
+            })
         }
         // name-row-ok: an inventory row naming what was checked
         (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
@@ -802,19 +814,23 @@ fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> S
     if let Some(pd) = extras.profiles_dir.as_ref() {
         s = if let Some(err) = pd.error.as_deref() {
             s.status_with(Role::Fail, "Profiles directory", |sf| {
-                sf.qualifier(pd.path.clone())
+                sf.qualifier(cfgd_core::fold_home_in_text(&pd.path))
                     .detail(cfgd_core::output::collapse_to_subject_line(err))
             })
         } else if pd.exists {
             // name-row-ok: an inventory row naming what was checked
             s.status_with(Role::Ok, "Profiles directory", |sf| {
-                sf.qualifier(format!("{} ({} profiles)", pd.path, pd.profile_count))
+                sf.qualifier(format!(
+                    "{} ({})",
+                    cfgd_core::fold_home_in_text(&pd.path),
+                    cfgd_core::pluralize(pd.profile_count, "profile")
+                ))
             })
         } else {
             s.status_with(
                 Role::Warn,
                 format!("Profiles directory {}", cfgd_core::Absence::NotFound),
-                |sf| sf.qualifier(pd.path.clone()),
+                |sf| sf.qualifier(cfgd_core::fold_home_in_text(&pd.path)),
             )
         };
     }
@@ -831,7 +847,7 @@ fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> S
         .iter()
         .fold(s, |s, source| match source.cached_path.as_deref() {
             Some(path) => s.status_with(Role::Ok, source.name.clone(), |f| {
-                f.qualifier(format!("cached at {}", path))
+                f.qualifier(format!("cached at {}", cfgd_core::fold_home_in_text(path)))
             }),
             None => s.status_with(Role::Warn, source.name.clone(), |f| {
                 f.qualifier("not cached (run `cfgd source update`)")
