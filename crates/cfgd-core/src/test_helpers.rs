@@ -1180,6 +1180,107 @@ impl BareGitRepo {
 }
 
 // ---------------------------------------------------------------------------
+// Tracing journal
+// ---------------------------------------------------------------------------
+
+/// Everything this process has logged at `INFO` or above since the last
+/// [`reset_tracing_journal`], as the process-global subscriber formatted it.
+static TRACING_JOURNAL: Mutex<String> = Mutex::new(String::new());
+
+/// The size the journal is trimmed back to once it grows past it, oldest lines
+/// first. A reader asks about the lines its own subject just wrote, and most
+/// binaries installing the journal never empty it, so an uncapped static holds
+/// every event a whole suite emitted.
+const TRACING_JOURNAL_CEILING: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct TracingJournalWriter;
+
+impl std::io::Write for TracingJournalWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut held = TRACING_JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+        held.push_str(&String::from_utf8_lossy(buf));
+        if held.len() > TRACING_JOURNAL_CEILING {
+            // Cut at a newline so no reader sees half a line; the index a
+            // `\n` match reports is a char boundary whatever the line holds.
+            let kept = held
+                .match_indices('\n')
+                .find(|(at, _)| *at >= TRACING_JOURNAL_CEILING / 2)
+                .map(|(at, _)| held[at + 1..].to_string())
+                .unwrap_or_default();
+            *held = kept;
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for TracingJournalWriter {
+    type Writer = Self;
+    fn make_writer(&self) -> Self::Writer {
+        *self
+    }
+}
+
+/// Install the process-global `INFO` subscriber every scoped tracing capture
+/// needs under it, once per process.
+///
+/// A capture that binds a subscriber to its own thread
+/// (`tracing::subscriber::with_default`, `WithSubscriber`) calls this FIRST, and
+/// `every_scoped_tracing_capture_installs_the_journal_under_it` walks the
+/// workspace for one that does not. `tracing` caches one `Interest` per callsite
+/// for the whole process and computes it from what the REGISTERING thread can
+/// see: while a single dispatcher is registered, a callsite first reached from a
+/// thread holding no subscriber at all caches `never`, and every later event
+/// there is dropped until an unrelated registration rebuilds the cache. The
+/// event dropped that way is the one a scoped capture on another thread is
+/// waiting for, and the capture comes back empty — which is how
+/// `a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration` failed
+/// on an empty journal under a full parallel run. A global subscriber that
+/// outlives every capture is what keeps a thread from ever seeing none.
+///
+/// Best-effort: a process that has already set a global default of its own keeps
+/// it, and [`tracing_journal`] then reports whatever that subscriber left.
+pub fn install_tracing_journal() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            .with_writer(TracingJournalWriter)
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
+/// Everything this process has logged at `INFO` or above since the last
+/// [`reset_tracing_journal`].
+///
+/// A reader asks only whether a line APPEARED. The journal carries no target
+/// filter, so every event any test in the binary emits reaches it: containment
+/// only grows when a stranger writes, while an absence or a count answers by
+/// whatever else the run happened to schedule. A test asserting either scopes a
+/// capture of its own.
+pub fn tracing_journal() -> String {
+    TRACING_JOURNAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Install the journal and empty it.
+pub fn reset_tracing_journal() {
+    install_tracing_journal();
+    TRACING_JOURNAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+// ---------------------------------------------------------------------------
 // Printer helper
 // ---------------------------------------------------------------------------
 

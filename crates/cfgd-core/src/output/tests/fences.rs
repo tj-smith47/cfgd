@@ -2402,28 +2402,30 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// [`every_test_mutating_the_process_environment_serializes_itself`] demands
 /// instead.
 ///
-/// Not every seam is a numeric ceiling. The tracing dispatcher is one as well,
-/// and it has no guard: installing a subscriber mutates the process-global
-/// dispatcher registry and the per-callsite interest caches, so a capture live
-/// while another declaration installs can come back holding that declaration's
-/// events and missing its own. Its pin is the install call, whichever of the
-/// three spellings it takes, and its reader is the capture a test reads back,
-/// including through the helper that installs for it: a test calling such a
-/// helper installs a subscriber without naming one, which is how an
-/// unserialized installer reached this binary.
+/// Not every seam is a numeric ceiling. The process-global tracing journal
+/// ([`crate::test_helpers::install_tracing_journal`]) is one as well, and it has
+/// no guard: one buffer holds what every thread logs, one wrapper per binary
+/// clears it, and the daemon-loop tests read it back. Its `set_global_default`
+/// lives in `test_helpers.rs`, which this walk skips, so the pin is the wrapper
+/// the journal is cleared through and the reader is the journal read itself.
 ///
-/// A WRAPPER around an install joins this table as its own row, pin column the
-/// declaration and reader column the call: the walk judges the declaration a pin
-/// is written in, so a wrapper that installs for its callers is judged once and
-/// its callers are judged by nothing. Hatching the wrapper and rostering it is
-/// what makes the next hop out cost two lines rather than a paragraph.
+/// A declaration that STARTS A DAEMON is a writer of that journal and joins the
+/// group too, which the `run_daemon_with` and `run_daemon_loop` rows are: a
+/// reader waiting on the startup banner as proof its OWN daemon installed a
+/// signal handler reads a sibling's banner as its own otherwise, raises SIGTERM
+/// before any handler exists, and the default disposition kills the whole test
+/// process.
+///
+/// A SCOPED capture (`tracing::subscriber::with_default`, `WithSubscriber`) is
+/// in neither class and joins no group: it replaces one thread's own default for
+/// the length of a closure, so what another thread registers reaches neither its
+/// buffer nor its verdict — provided the journal is already installed under it,
+/// which is what makes the per-callsite interest cache unable to strand an event
+/// either way. That order is held by
+/// [`every_scoped_tracing_capture_installs_the_journal_under_it`] instead, and a
+/// declaration whose only tracing reach is such a capture carries no serial
+/// attribute at all.
 const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
-    (
-        ".with_subscriber(",
-        "tracing_dispatcher",
-        "capture_run_logs_async(",
-        1,
-    ),
     (
         "AvailabilityMemoTtlGuard::",
         "",
@@ -2461,29 +2463,22 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         3,
     ),
     (
-        "fn capture_warn_logs",
-        "tracing_dispatcher",
-        "capture_warn_logs(",
-        1,
-    ),
-    ("fn run_sighup", "tracing_dispatcher", "run_sighup(", 1),
-    (
-        "fn with_trace_subscriber",
-        "tracing_dispatcher",
-        "with_trace_subscriber(",
-        1,
-    ),
-    (
-        "set_global_default(",
+        "fn reset_daemon_log",
         "tracing_dispatcher",
         "daemon_log()",
         1,
     ),
     (
-        "tracing::subscriber::with_default(",
+        "runner::run_daemon_loop(",
         "tracing_dispatcher",
-        "capture_run_logs(",
-        5,
+        "wait_for_daemon_log(",
+        12,
+    ),
+    (
+        "super::super::run_daemon_with(",
+        "tracing_dispatcher",
+        "run_daemon(",
+        10,
     ),
     ("with_test_elevated", "", "effective_elevated(", 14),
 ];
@@ -2650,6 +2645,222 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
              the walk has gone blind to it"
         );
     }
+}
+
+/// The serial group an attribute line joins, `""` for `serial_test`'s unnamed
+/// lock, or `None` for a line that is no serial attribute.
+fn serial_group_of(attr: &str) -> Option<String> {
+    let attr = attr.trim();
+    if attr == "#[serial_test::serial]" || attr == "#[serial]" {
+        return Some(String::new());
+    }
+    let rest = attr
+        .strip_prefix("#[serial_test::serial(")
+        .or_else(|| attr.strip_prefix("#[serial("))?;
+    Some(rest.split(')').next().unwrap_or_default().to_string())
+}
+
+/// Every pair of serial attributes `body` writes on one declaration, and the
+/// ones written in the other order, each named by the line the second attribute
+/// of the pair sits on.
+///
+/// Split out of the walk below so a fixture can prove the scan classifies an
+/// inversion as one: the walk's own subject is every source in the workspace,
+/// which holds none by construction once the walk is green.
+fn serial_lock_order_offenders(body: &str) -> (usize, Vec<String>) {
+    let named = |group: &str| {
+        if group.is_empty() {
+            "unnamed".to_string()
+        } else {
+            group.to_string()
+        }
+    };
+    let mut pairs = 0usize;
+    let mut offenders = Vec::new();
+    let mut held: Option<String> = None;
+    for (nth, line) in body.lines().enumerate() {
+        let code = code_half(line);
+        let trimmed = code.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with("#[") {
+            held = None;
+            continue;
+        }
+        let Some(group) = serial_group_of(trimmed) else {
+            continue;
+        };
+        if let Some(previous) = held.replace(group.clone()) {
+            pairs += 1;
+            if previous > group {
+                offenders.push(format!(
+                    "{}: takes the {} lock before the {} one",
+                    nth + 1,
+                    named(&previous),
+                    named(&group)
+                ));
+            }
+        }
+    }
+    (pairs, offenders)
+}
+
+/// A declaration carrying two `serial_test::serial` attributes takes both locks
+/// in one order, the unnamed one first and named ones alphabetically.
+///
+/// Two attributes are two locks, taken in the order they are written: the first
+/// attribute expands around the rest. A declaration writing them the other way
+/// round holds lock B while it waits for A, against a sibling holding A and
+/// waiting for B, and both tests hang until the harness is killed — no timeout
+/// fires, because neither is waiting on anything it can see. One inverted pair
+/// hung five `select_loop_*` declarations and every test behind them in the
+/// unnamed lock's queue, which a full parallel run reported only as `has been
+/// running for over 60 seconds`.
+///
+/// There is no hatch: an order is arbitrary, and the whole value of this one is
+/// that every declaration writes the same one.
+#[test]
+fn every_declaration_taking_two_serial_locks_takes_them_in_one_order() {
+    let mut pairs = 0usize;
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // This file spells the attribute in fixtures rather than wearing it.
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let labelled = source_label(&path);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
+        });
+        if !body.contains("serial_test::serial") {
+            continue;
+        }
+        let (seen, found) = serial_lock_order_offenders(&body);
+        pairs += seen;
+        offenders.extend(found.into_iter().map(|at| format!("{labelled}:{at}")));
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a declaration taking two serial locks takes them in the order every \
+         other declaration does — the unnamed lock first, named groups \
+         alphabetically — or the two deadlock against each other:\n{}",
+        offenders.join("\n")
+    );
+    // A floor, so a walk that stopped matching anything cannot pass silently.
+    assert!(
+        pairs >= 8,
+        "the walk saw {pairs} declarations taking two serial locks; it has gone blind to them"
+    );
+}
+
+/// The order is what the scan judges, and a declaration writing the canonical
+/// one is no offender however many locks it takes.
+#[test]
+fn the_serial_lock_order_scan_reads_an_inverted_pair_as_the_offence() {
+    let (pairs, offenders) = serial_lock_order_offenders(
+        "#[tokio::test]\n#[serial_test::serial(tracing_dispatcher)]\n#[serial_test::serial]\nasync fn a() {}\n\
+         #[tokio::test]\n#[serial_test::serial]\n#[serial_test::serial(tracing_dispatcher)]\nasync fn b() {}\n",
+    );
+    assert_eq!(pairs, 2, "both declarations take two locks");
+    assert_eq!(
+        offenders.len(),
+        1,
+        "and only the inverted one is an offence: {offenders:?}"
+    );
+    assert!(
+        offenders[0].starts_with("3: takes the tracing_dispatcher lock before the unnamed one"),
+        "named by line and by both groups: {offenders:?}"
+    );
+}
+
+/// The spellings a test binds a scoped tracing subscriber with. Each is a line
+/// the process-global journal must already be installed before.
+const SCOPED_CAPTURE_BINDS: &[&str] = &["tracing::subscriber::with_default(", ".with_subscriber("];
+
+/// Exempts one scoped bind from the walk below, with the reason after it.
+const JOURNAL_FLOOR_HATCH: &str = "journal-floor-ok:";
+
+/// Every scoped tracing capture installs the process-global journal under it
+/// first.
+///
+/// `tracing` caches one `Interest` per callsite for the whole process and
+/// computes it from what the REGISTERING thread can see, so while a single
+/// dispatcher is registered, a callsite first reached from a thread holding no
+/// subscriber at all caches `never` — and every later event there is dropped
+/// until an unrelated registration rebuilds the cache, including the event a
+/// capture on another thread is waiting for.
+/// [`crate::test_helpers::install_tracing_journal`] carries the rest of the
+/// mechanism; what this walk keeps is the ORDER, a floor installed after the
+/// bind being one the cached verdict already escaped.
+///
+/// A site handing on a dispatcher it was given (`spawn_blocking_with_test_home`)
+/// binds no capture of its own and is not in the class.
+/// `// journal-floor-ok: <why>` on the bind's line or the one above exempts one.
+#[test]
+fn every_scoped_tracing_capture_installs_the_journal_under_it() {
+    let mut binds = 0usize;
+    let mut offenders = Vec::new();
+
+    for path in workspace_rust_files() {
+        // This file spells every needle in order to hunt for it, and
+        // `test_helpers.rs` declares the floor itself.
+        if path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new("test_helpers.rs"))
+        {
+            continue;
+        }
+        let labelled = source_label(&path);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
+        });
+        if !SCOPED_CAPTURE_BINDS.iter().any(|bind| body.contains(bind)) {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        for (open, slice) in source_functions(&labelled, &body) {
+            let code: Vec<(usize, String)> = crate::test_helpers::logical_source_lines(&slice)
+                .into_iter()
+                .map(|(at, line)| (at, code_half(&line)))
+                .collect();
+            let installed = code
+                .iter()
+                .position(|(_, line)| line.contains("install_tracing_journal("));
+            for (nth, (at, line)) in code.iter().enumerate() {
+                if !SCOPED_CAPTURE_BINDS.iter().any(|bind| line.contains(bind)) {
+                    continue;
+                }
+                binds += 1;
+                let absolute = open + at - 1;
+                if hatched(&lines, absolute - 1, JOURNAL_FLOOR_HATCH) {
+                    continue;
+                }
+                if installed.is_some_and(|first| first < nth) {
+                    continue;
+                }
+                let name = declared_fn_name(&slice).unwrap_or("<unnamed>");
+                offenders.push(format!(
+                    "{labelled}:{absolute}: {name} binds a scoped subscriber with no \
+                     `install_tracing_journal()` above it"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a scoped tracing capture reads back empty when a callsite cached \
+         `never`; install the process-global journal first, or say why with \
+         `// journal-floor-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    // A floor, so a walk that stopped matching anything cannot pass silently.
+    assert!(
+        binds >= 6,
+        "the walk saw {binds} scoped binds; it has gone blind to them"
+    );
 }
 
 /// No item outside a function body writes the process environment.

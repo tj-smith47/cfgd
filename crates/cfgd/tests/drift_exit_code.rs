@@ -786,7 +786,9 @@ fn a_row_the_scan_keeps_standing_is_rendered_and_priced_by_that_scan() {
     let state_tmp = tempfile::tempdir().unwrap();
     write_config(config_tmp.path(), false, false);
 
-    // Recorded exactly as a daemon tick records a planned script action.
+    // A legacy row an older daemon left: no tick records a `script` row any
+    // more, and this one is kept to prove a row the scan cannot re-find still
+    // renders and still prices.
     {
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
         state

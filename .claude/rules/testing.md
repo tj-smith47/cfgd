@@ -85,6 +85,15 @@ a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
 for one, and `// serial-ok: <why>` hatches a mutation that cannot race (a
 per-child `Command::env(…)` handoff is not one of them and is never matched).
 
+Two serial attributes on one declaration are two locks, taken in the order they
+are written, so every declaration writes that order the same way: the unnamed
+lock first, named groups alphabetically. The other order holds one lock while it
+waits for the other against a sibling doing the reverse, and both tests hang with
+no timeout to fire;
+`every_declaration_taking_two_serial_locks_takes_them_in_one_order`
+(`output/tests/fences.rs`) walks every crate for an inverted pair and has no
+hatch.
+
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
 `false` gets bare text: bold, dim, italic, underline and OSC 8 are withheld with the
@@ -110,6 +119,35 @@ hand-edited.
 
 Verify both ways before calling a test suite green; a suite only ever observed one way is
 how all of this shipped.
+
+## A scoped tracing capture installs the process-global journal under it
+
+`tracing` caches one `Interest` per callsite for the whole process and computes it
+from what the thread that first reaches the callsite can see. While a single
+dispatcher is registered, a callsite first reached from a thread holding no
+subscriber at all caches `never`, and every later event there is dropped until an
+unrelated registration rebuilds the cache — including the event a capture on
+another thread is waiting for, which reads back empty. So a test binding a scoped
+subscriber (`tracing::subscriber::with_default`, `WithSubscriber`) calls
+`cfgd_core::test_helpers::install_tracing_journal()` first, and
+`every_scoped_tracing_capture_installs_the_journal_under_it`
+(`output/tests/fences.rs`) walks every crate for a bind with no installer above
+it.
+
+The journal that installer leaves behind is also what the daemon's `run_daemon`
+loop tests read: those lines come from tokio tasks and watcher threads the daemon
+owns, which a scoped dispatcher never reaches. A reader of it asks only whether a
+line APPEARED — it carries no target filter, so every event any test in the binary
+emits reaches it, and an absence or a count answers by whatever else the run
+scheduled. A line read as proof that the reader's OWN subject reached a state
+needs more than containment: every declaration that starts a daemon joins the
+`tracing_dispatcher` group, because a sibling's daemon writes the same startup
+banner.
+
+That group belongs to the journal alone. A scoped capture holds one thread's
+buffer for the length of one closure, so a test whose only tracing reach is a
+capture carries no serial attribute: what keeps its verdict independent of what
+another thread registered is the journal installed under it, not a lock.
 
 ## A fail-without-fix probe never mutates the shared working tree
 

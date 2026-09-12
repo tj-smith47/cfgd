@@ -684,15 +684,17 @@ fn reconcile_tick(
     // Every action the plan holds, in the order the recording loop reads them.
     let planned: Vec<&crate::reconciler::Action> =
         plan.phases.iter().flat_map(|p| p.actions()).collect();
-    // The drift this tick found, priced from the rows it is about to RECORD
-    // through the one producer the recording loop reads. An action that mints
-    // no row is work the run is about to perform rather than divergence it
-    // observed, so a plan whose only actions are scripts reports no drift,
-    // records nothing, fires no onDrift hook and sends no notice. Priced from
-    // the plan's own action total instead, a module declaring only hooks
-    // reported a drifted resource every interval with an empty store beside
-    // the sentence. `action_counts_as_drift` carries the one action counted
-    // here that records nothing, a refused file deploy.
+    // The drift this tick found, counted one per ACTION that stands for a row
+    // the recording loop is about to write, through the one producer that loop
+    // reads: a module's five-file deploy is one resource in the sentence though
+    // it records a row per file. An action standing for no row at all is work
+    // the run is about to perform rather than divergence it observed, so a plan
+    // whose only actions are scripts reports no drift, records nothing, fires no
+    // onDrift hook and sends no notice. Priced from the plan's own action total
+    // instead, a module declaring only hooks reported a drifted resource every
+    // interval with an empty store beside the sentence.
+    // `action_counts_as_drift` carries the one action counted here that records
+    // nothing, a refused file deploy.
     let drift_total = planned
         .iter()
         .filter(|a| crate::reconciler::action_counts_as_drift(a, registry))
