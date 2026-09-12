@@ -141,25 +141,39 @@ impl Renderer {
         let mut lines = Vec::new();
         for line in code.lines() {
             let line = escape_control_chars(line);
+            // Every line is fed with its newline: these syntaxes are the
+            // `_newlines` set, whose pop patterns match at the line ending, so a
+            // line handed over without one closes no context. The newline is
+            // layout the emitter owns, so it comes back off before the row is
+            // kept.
+            let fed = format!("{line}\n");
             // An empty source line highlights to a bare reset, which the
             // emitter then indents: a row carrying nothing but whitespace and
             // an escape. The blank line a body declares stays blank, and the
             // highlighter still sees it, because a blank line is what closes a
-            // context in some grammars (a Markdown paragraph). The newline is
-            // fed with it: these syntaxes are the `_newlines` set, whose pop
-            // patterns match at the line ending, so a bare `""` closes nothing.
+            // context in some grammars (a Markdown paragraph).
             if line.is_empty() {
-                let _ = h.highlight_line("\n", syntax_set);
+                let _ = h.highlight_line(&fed, syntax_set);
                 lines.push(String::new());
                 continue;
             }
-            lines.push(match h.highlight_line(&line, syntax_set) {
+            lines.push(match h.highlight_line(&fed, syntax_set) {
                 // A line that did not close its last foreground run leaves it in
                 // force over whatever the command prints next.
-                Ok(ranges) => format!(
-                    "{}{SYNTECT_RESET}",
-                    as_24_bit_terminal_escaped(&ranges, false)
-                ),
+                Ok(mut ranges) => {
+                    // The fed newline comes off the last range rather than off
+                    // the assembled bytes: syntect gives it a range of its own,
+                    // and trimming the string would leave that range's colour
+                    // escape standing with no text under it.
+                    if let Some((_, text)) = ranges.last_mut() {
+                        *text = text.strip_suffix('\n').unwrap_or(text);
+                    }
+                    ranges.retain(|(_, text)| !text.is_empty());
+                    format!(
+                        "{}{SYNTECT_RESET}",
+                        as_24_bit_terminal_escaped(&ranges, false)
+                    )
+                }
                 // The highlighter gave up on this one line. Its TEXT is what an
                 // operator approves from, so the line stands unstyled; empty
                 // ranges would have printed a reset and dropped the content.
@@ -392,6 +406,14 @@ mod tests {
             .find(|l| strip_ansi(l).trim().is_empty())
             .unwrap_or_else(|| panic!("the declared blank line renders as a row: {out:?}"));
         assert_eq!(blank, "", "the blank row carries no indent and no escape");
+        // The newline each line is fed with is the emitter's to place, so no
+        // highlighted row carries one of its own.
+        for row in r.highlight_lines("let x = 1;\n\nlet y = 2;\n", "rs", &ss) {
+            assert!(
+                !row.contains('\n'),
+                "a highlighted row kept the newline it was fed: {row:?}"
+            );
+        }
     }
 
     /// syntect carries its own theme and emits truecolor escapes without ever

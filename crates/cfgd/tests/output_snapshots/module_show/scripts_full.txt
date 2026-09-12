@@ -31,7 +31,7 @@ Scripts
       pipx install --force pynvim
     fi
 
-    2/5 · timeout 900s · idle 30s
+    2/5 · timeout 900s · idleTimeout 30s
     nvim --headless "+Lazy! restore" +qa!
 
     3/5

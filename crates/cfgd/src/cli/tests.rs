@@ -37625,10 +37625,13 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         "\"onChange\"",
     ];
     const HATCH: &str = "// hook-table-ok:";
-    /// Every crate of the workspace, each with a file floor far under what its
-    /// own `src/` holds, so a deletion does not trip the floor and a re-rooted
-    /// walk does. Checked against `crates/` itself, so a crate added to the
-    /// workspace fails this walk until it joins the table with a floor.
+    /// Every crate of the workspace, each with the floor of production files its
+    /// own `src/` must yield, so a re-rooted walk trips it. The four larger
+    /// crates sit under what they hold, so a deletion there is free;
+    /// `cfgd-crd` and `cfgd-schema` hold exactly one and two production files,
+    /// so their floors ARE their counts and deleting one is meant to trip.
+    /// Checked against `crates/` itself, so a crate added to the workspace fails
+    /// this walk until it joins the table with a floor.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 90),
         ("cfgd-core", 80),

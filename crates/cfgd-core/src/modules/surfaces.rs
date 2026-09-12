@@ -1,6 +1,6 @@
 //! What a module DECLARES, tallied once per report.
 
-use crate::config::{EnvVar, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias};
+use crate::config::{EnvVar, ModuleSpec, ScriptCommand, ScriptEntry, ScriptSpec, ShellAlias};
 use crate::output::{Doc, ScriptStep, ScriptsForm, SectionGuard};
 
 /// One lifecycle hook and the script steps declared under it.
@@ -60,18 +60,34 @@ impl DeclaredScript {
                 creates: None,
                 interactive: false,
             },
-            ScriptEntry::Full(cmd) => Self {
-                body: cmd.run.clone(),
-                timeout: cmd.timeout.clone(),
-                idle_timeout: cmd.idle_timeout.clone(),
-                continue_on_error: cmd.continue_on_error.unwrap_or(false),
-                shell: (cmd.shell != crate::config::ScriptShell::Auto).then(|| cmd.shell.as_str()),
-                workdir: cmd.workdir.clone(),
-                only_if: cmd.only_if.clone(),
-                unless: cmd.unless.clone(),
-                creates: cmd.creates.clone(),
-                interactive: cmd.interactive,
-            },
+            ScriptEntry::Full(cmd) => {
+                // Destructured, so a seventh knob does not compile until it is
+                // carried here and given a clause in `marker`.
+                let ScriptCommand {
+                    run,
+                    timeout,
+                    idle_timeout,
+                    continue_on_error,
+                    shell,
+                    only_if,
+                    unless,
+                    creates,
+                    interactive,
+                    workdir,
+                } = cmd;
+                Self {
+                    body: run.clone(),
+                    timeout: timeout.clone(),
+                    idle_timeout: idle_timeout.clone(),
+                    continue_on_error: continue_on_error.unwrap_or(false),
+                    shell: (*shell != crate::config::ScriptShell::Auto).then(|| shell.as_str()),
+                    workdir: workdir.clone(),
+                    only_if: only_if.clone(),
+                    unless: unless.clone(),
+                    creates: creates.clone(),
+                    interactive: *interactive,
+                }
+            }
         }
     }
 
@@ -81,8 +97,11 @@ impl DeclaredScript {
     /// Every knob `ScriptCommand` carries states itself here, because the
     /// module-upgrade screen reports a step as changed when any of them moved:
     /// a knob that stayed silent would render a removal and an addition whose
-    /// blocks read identically. A knob left at its default renders no clause,
-    /// so the line names what the author wrote and nothing else.
+    /// blocks read identically. [`DeclaredScript::of`] destructures
+    /// `ScriptCommand` exhaustively, so a knob added to it does not compile
+    /// until it is carried here and given a clause. A knob left at its default
+    /// renders no clause, so the line names what the author wrote and nothing
+    /// else.
     ///
     /// A command or path clause carries its bytes as the body does: escaped,
     /// because the operator approves what will run, and a home directory folded
@@ -96,7 +115,7 @@ impl DeclaredScript {
             clauses.push(format!("timeout {timeout}"));
         }
         if let Some(idle) = &self.idle_timeout {
-            clauses.push(format!("idle {idle}"));
+            clauses.push(format!("idleTimeout {idle}"));
         }
         if self.continue_on_error {
             clauses.push("continueOnError".to_string());
@@ -365,7 +384,7 @@ impl ModuleSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ScriptEntry, ScriptSpec};
+    use crate::config::{ScriptCommand, ScriptEntry, ScriptSpec};
 
     fn spec_with_scripts(scripts: ScriptSpec) -> ModuleSpec {
         ModuleSpec {
@@ -461,6 +480,26 @@ mod tests {
         assert_eq!(
             surfaces.script_summary().as_deref(),
             Some("preApply (1 script), postApply (2 scripts)")
+        );
+    }
+
+    /// The marker's two text policies, neither of which a golden built from
+    /// ordinary values can show: a path under the home directory reads as `~/`,
+    /// and a control character in a guard command renders visibly rather than
+    /// reaching the terminal.
+    #[test]
+    fn a_marker_folds_the_home_directory_and_escapes_a_control_character() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _home_guard = crate::with_test_home_guard(home.path());
+        let step = DeclaredScript::of(&ScriptEntry::Full(ScriptCommand {
+            run: "true".into(),
+            workdir: Some(format!("{}/x", crate::to_posix_string(home.path()))),
+            only_if: Some("test -d a\rb".into()),
+            ..Default::default()
+        }));
+        assert_eq!(
+            step.marker(1, 1),
+            format!("1/1 {MARKER_SEPARATOR} workdir ~/x {MARKER_SEPARATOR} onlyIf test -d a\\x0db")
         );
     }
 

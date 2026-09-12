@@ -271,10 +271,10 @@ fn declared_step(
     }
 }
 
-/// The env, aliases and lifecycle hooks the fixture modules declare. Two
-/// hooks, declared out of run order on purpose: the Scripts row and the wide
-/// Scripts section both report `preApply` before `postApply` because that is
-/// the order they run in, never the order they were written.
+/// The env, aliases and lifecycle hooks the fixture modules declare: two hooks
+/// in run order, `preApply` carrying one bare step that declares no knob, and
+/// `postApply` two steps that do, so the Scripts section renders both a
+/// position-only marker and a marker stating knobs.
 fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
     ModuleSurfaces {
         packages,

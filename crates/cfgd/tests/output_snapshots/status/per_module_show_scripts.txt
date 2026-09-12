@@ -24,7 +24,7 @@ Scripts
     set -euo pipefail
     mkdir -p ~/.config/nvim
   postApply
-    1/2 · timeout 900s · idle 30s · continueOnError
+    1/2 · timeout 900s · idleTimeout 30s · continueOnError
     nvim --headless '+Lazy! sync' +qa
 
     2/2 · timeout 120s
