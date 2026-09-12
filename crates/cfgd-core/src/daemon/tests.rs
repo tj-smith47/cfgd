@@ -12248,8 +12248,8 @@ fn reset_daemon_log() {
 /// Its readers ask it only whether a line is there.
 /// [`crate::test_helpers::tracing_journal`] carries why an absence or a count is
 /// not this journal's to answer, and
-/// `no_reader_of_the_global_daemon_journal_asserts_an_absence` walks this file
-/// for one.
+/// `no_reader_of_the_global_daemon_journal_asserts_an_absence` walks every
+/// crate's sources for one, the journal being reachable from all of them.
 ///
 /// A line a reader takes as proof its OWN daemon reached a state is a third
 /// thing again, and containment is not enough for it: every declaration that
@@ -12381,8 +12381,18 @@ fn captured_logs(buf: &LogBuf) -> String {
 /// [`capture_run_logs`] carries the same spelling as one bound from
 /// [`daemon_log`], so the bindings are tracked per declaration and end where it
 /// does.
+///
+/// Both spellings of the read count: this file's own helper, and
+/// [`crate::test_helpers::tracing_journal`], which every other crate reaches the
+/// same journal through. The two installers carry that name as a prefix and
+/// write the journal rather than reading it, so they are not reads.
 fn global_journal_reads(body: &str) -> (usize, Vec<String>) {
-    let read = format!("daemon_log{}", "()");
+    let local = format!("daemon_log{}", "()");
+    let shared = format!("tracing_journal{}", "()");
+    let writers: Vec<String> = ["install_", "reset_"]
+        .iter()
+        .map(|prefix| format!("{prefix}{shared}"))
+        .collect();
     let mut reads = 0usize;
     let mut bound: Vec<String> = Vec::new();
     let mut offenders = Vec::new();
@@ -12394,21 +12404,34 @@ fn global_journal_reads(body: &str) -> (usize, Vec<String>) {
         if code.starts_with("fn ") || code.starts_with("async fn ") {
             bound.clear();
         }
-        if code.contains(&read) {
+        if code.contains(&local)
+            || (code.contains(&shared) && !writers.iter().any(|w| code.contains(w)))
+        {
             reads += 1;
             if let Some(name) = code
                 .strip_prefix("let ")
-                .and_then(|rest| rest.split_once(&format!(" = {read}")))
-                .map(|(name, _)| name.trim().to_string())
+                .and_then(|rest| rest.split_once(" = "))
+                .map(|(name, _)| name.trim().trim_start_matches("mut ").trim().to_string())
             {
                 bound.push(name);
             }
         }
+        // What turns a read into a question about what the journal does NOT
+        // hold: a containment negated or compared against `false`, a count over
+        // the lines read, a search answered with `is_none`.
+        let negated =
+            code.contains("assert!(!") || code.contains("false") || code.contains("is_none()");
         let asserts_absence = |subject: &str| {
-            code.contains(&format!("!{subject}.contains"))
-                || code.contains(&format!("{subject}.matches("))
+            let over = |tail: &str| code.contains(&format!("{subject}{tail}"));
+            over(".matches(")
+                || (over(".contains") && negated)
+                || (over(".lines()") && code.contains("count()"))
+                || (over(".find(") && code.contains("is_none()"))
         };
-        if asserts_absence(&read) || bound.iter().any(|name| asserts_absence(name)) {
+        if asserts_absence(&local)
+            || asserts_absence(&shared)
+            || bound.iter().any(|name| asserts_absence(name))
+        {
             offenders.push(format!("{}: {code}", n + 1));
         }
     }
@@ -12434,27 +12457,73 @@ fn the_journal_absence_scan_separates_the_global_buffer_from_a_scoped_capture() 
         offenders[0].starts_with("3: "),
         "named by line: {offenders:?}"
     );
+
+    // Every other shape that asks what the journal does not hold, and the
+    // second spelling of the read, which a test in another crate writes.
+    for body in [
+        "fn c() {\n    let logs = daemon_log();\n    assert_eq!(logs.contains(\"x\"), false);\n}\n",
+        "fn d() {\n    let logs = daemon_log();\n    assert_eq!(logs.lines().count(), 2);\n}\n",
+        "fn e() {\n    let logs = daemon_log();\n    assert!(logs.find(\"x\").is_none());\n}\n",
+        "fn f() {\n    let logs = cfgd_core::test_helpers::tracing_journal();\n    \
+         assert!(!logs.contains(\"x\"));\n}\n",
+        "fn g() {\n    let mut logs = daemon_log();\n    assert!(!logs.contains(\"x\"));\n}\n",
+    ] {
+        let (reads, offenders) = global_journal_reads(body);
+        assert_eq!(reads, 1, "the read is seen in: {body}");
+        assert_eq!(offenders.len(), 1, "the absence is an offence in: {body}");
+    }
+
+    // Installing or emptying the journal is not reading it.
+    let (reads, offenders) = global_journal_reads(
+        "fn h() {\n    crate::test_helpers::reset_tracing_journal();\n    \
+         let logs = capture_run_logs(|| ());\n    assert!(!logs.contains(\"x\"));\n}\n",
+    );
+    assert_eq!(reads, 0, "neither installer reads the journal");
+    assert!(
+        offenders.is_empty(),
+        "scoped absence is allowed: {offenders:?}"
+    );
 }
 
 /// Every reader of the process-global journal asks only whether a line is there.
 ///
 /// [`daemon_log`] carries the reasoning: the journal has no target filter, so
-/// every test in this binary writes into it and only containment survives a
-/// stranger's line. An absence or a count read off it answers by whatever else
+/// every test in the binary writes into it and only containment survives a
+/// stranger's line. Every crate is read, not this file alone:
+/// [`crate::test_helpers::tracing_journal`] is public, so a test anywhere can
+/// reach the same buffer. An absence or a count read off it answers by whatever else
 /// the run scheduled beside it — two ticks in this file asserted one and failed
 /// for work they never did, which is what moved every other reader here onto
 /// [`capture_run_logs`]. A test asserting either scopes its own capture.
 #[test]
 fn no_reader_of_the_global_daemon_journal_asserts_an_absence() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/tests.rs");
-    let body = crate::test_helpers::walked_file_body(&path);
-    let (reads, offenders) = global_journal_reads(&body);
+    let crates_dir = crate::test_helpers::workspace_root().join("crates");
+    let mut reads = 0usize;
+    let mut files = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in crate::test_helpers::rust_sources_under(&crates_dir) {
+        files += 1;
+        let body = crate::test_helpers::walked_file_body(&path);
+        let (file_reads, file_offenders) = global_journal_reads(&body);
+        reads += file_reads;
+        let label = crate::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        offenders.extend(
+            file_offenders
+                .into_iter()
+                .map(|offender| format!("{label}:{offender}")),
+        );
+    }
     assert!(
         offenders.is_empty(),
         "the process-global journal answers whether a line appeared and nothing \
          else; an absence or a count belongs to a capture the test scopes itself \
          with `capture_run_logs` / `capture_run_logs_async`:\n{}",
         offenders.join("\n")
+    );
+    assert!(
+        files >= 500,
+        "the walk read {files} sources under {}; it is looking at the wrong root",
+        crates_dir.display()
     );
     assert!(
         reads >= 8,

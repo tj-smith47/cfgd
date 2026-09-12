@@ -521,6 +521,35 @@ fn composition_records_which_layer_declared_each_env_entry() {
     );
 }
 
+#[test]
+fn compose_refuses_a_source_hook_with_an_empty_run() {
+    let local = make_local_profile();
+    let mut src = make_source_input("acme", 500);
+    // The subscriber accepted this source's scripts, so the shape check is what
+    // the step answers to rather than the no-scripts constraint.
+    src.allow_scripts = true;
+    src.layers = vec![source_layer(ProfileSpec {
+        scripts: Some(ScriptSpec {
+            post_apply: vec![
+                ScriptEntry::Simple("echo applied".into()),
+                ScriptEntry::Simple("   ".into()),
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })];
+
+    let err = compose(&local, &[src], ConstraintMode::Enforce)
+        .expect_err("a blank step reaching the merge from a source must be refused")
+        .to_string();
+
+    assert!(
+        err.contains("profile") && err.contains("scripts.postApply[1]") && err.contains("empty"),
+        "a composed profile states a blank step in the same words the local parser uses, got: \
+         {err}"
+    );
+}
+
 fn source_layer(spec: ProfileSpec) -> ProfileLayer {
     ProfileLayer {
         source: "acme".to_string(),
