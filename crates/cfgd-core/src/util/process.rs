@@ -49,6 +49,32 @@ const BUSY_PROGRAM_ATTEMPTS: u32 = 10;
 const BUSY_PROGRAM_FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(32);
 
+/// Whether the OS refused this spawn because the program file is still open for
+/// writing somewhere else.
+///
+/// Unix names that refusal and nothing else shares the name (`ETXTBSY`).
+/// Windows has no equivalent kind: `CreateProcess` against a file another handle
+/// holds without sharing comes back as a sharing violation (raw os error 32),
+/// and the same race reached through a handle opened for exclusive access comes
+/// back as access denied, so both join the ladder there. Neither widens to Unix,
+/// where raw 32 is `EPIPE` and access denied is a permission fact that no wait
+/// changes.
+fn program_file_is_busy(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::ExecutableFileBusy {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+            || e.kind() == std::io::ErrorKind::PermissionDenied
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Spawn `cmd`, giving a program file the OS reports as open for writing a few
 /// more tries.
 ///
@@ -56,8 +82,9 @@ const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_mil
 /// process: a `fork` anywhere between the file's open and close inherits the
 /// writable descriptor until that child reaches its own `exec`, and an `exec` of
 /// that same file in this thread fails for as long as the descriptor lives
-/// (`ETXTBSY`). Cargo's own process builder retries for this reason. Every other
-/// error comes straight back, unretried.
+/// (`ETXTBSY`). Cargo's own process builder retries for this reason.
+/// [`program_file_is_busy`] decides which refusals that covers on this host;
+/// every other error comes straight back, unretried.
 ///
 /// The spawn count travels beside the outcome so a test can state that the
 /// ladder really ran, a claim the spawned child alone cannot support.
@@ -67,7 +94,7 @@ fn spawn_past_a_busy_program_file(
     let mut wait = BUSY_PROGRAM_FIRST_WAIT;
     for attempt in 1..BUSY_PROGRAM_ATTEMPTS {
         match cmd.spawn() {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+            Err(e) if program_file_is_busy(&e) => {
                 std::thread::sleep(wait);
                 wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
             }
@@ -1634,6 +1661,54 @@ mod tests {
             attempts >= 2,
             "the first spawn was refused, so the child came from a retry; \
              {attempts} attempt(s) means the ladder was never exercised"
+        );
+    }
+
+    /// Only the host's own busy-program refusals reach the retry ladder: a
+    /// broken pipe carries raw os error 32 on Unix, which is Windows' sharing
+    /// violation number and nothing to wait out here, and a permission refusal
+    /// is a fact no wait changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_spawn_refusal_that_is_not_etxtbsy_leaves_the_ladder() {
+        for refusal in [
+            std::io::Error::from_raw_os_error(32),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ] {
+            assert!(
+                !program_file_is_busy(&refusal),
+                "{refusal:?} must come straight back"
+            );
+        }
+        assert!(
+            program_file_is_busy(&std::io::Error::from(
+                std::io::ErrorKind::ExecutableFileBusy
+            )),
+            "the refusal the ladder exists for must be retried"
+        );
+    }
+
+    /// Windows reports a program file another handle still holds as a sharing
+    /// violation or as access denied, neither of which carries a kind of its
+    /// own, so both are what the ladder waits out there. `write_tool_shim`
+    /// writes a `.cmd` shim and spawns it, which is exactly that race.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_spawn_refusal_naming_a_held_program_file_joins_the_ladder() {
+        for refusal in [
+            std::io::Error::from_raw_os_error(32),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy),
+        ] {
+            assert!(
+                program_file_is_busy(&refusal),
+                "{refusal:?} names a program file still being written"
+            );
+        }
+        assert!(
+            !program_file_is_busy(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            "a missing program is not a race"
         );
     }
 
