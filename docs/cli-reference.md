@@ -810,15 +810,14 @@ Shell
 ```
 
 Packages, files, aliases and env vars list alphabetically. Aliases precede env
-vars wherever the pair is named —
-the counts, these inventories, `cfgd module show`'s sections, the profile
-inventory `cfgd profile show`, `cfgd source show` and `cfgd source add` render,
-and `-o json`'s field order alike. `--show-values` renders the same inventories
-with each declared alias and env value beside its name, as the key/value rows
-`cfgd module show` lists them under the same two headings; a row a check found
-drifted keeps its warning glyph and its cause. This view lists no scripts
-either: `cfgd module show` is where a module's hooks and their bodies are
-read.
+vars wherever the pair is named: the counts, these inventories, `cfgd module
+show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
+and `cfgd source add` render, and `-o json`'s field order alike.
+`--show-values` renders the same inventories with each declared alias and env
+value beside its name, as the key/value rows `cfgd module show` lists them
+under the same two headings; a row a check found drifted keeps its warning
+glyph and its cause. This view lists no scripts either: `cfgd module show` is
+where a module's hooks and their bodies are read.
 
 A check that could not run renders on this view as a row under the section whose
 items it is about: a failed env probe under `Shell`, a `minVersion` the manager
