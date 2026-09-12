@@ -4899,7 +4899,7 @@ fn every_pin_that_runs_at_one_uid_says_so_in_its_name() {
 /// A holder reaches its validation through the file that PARSES it, which is
 /// not always its own: `ProfileSpec` is refused where its layers are merged,
 /// once for the solo path and once for the composed one.
-const SCRIPT_SPEC_HOLDERS: &[(&str, &str, &[&str])] = &[
+const SCRIPT_BODY_HOLDERS: &[(&str, &str, &[&str])] = &[
     (
         "crates/cfgd-core/src/config/module.rs",
         "scripts",
@@ -4959,6 +4959,37 @@ fn declares_a_script_body_field(line: &str) -> Option<&str> {
         .then(|| name.trim())
 }
 
+/// The call every holder's parse reaches its refusal through, named by the
+/// prefix both the list form and the scalar form share.
+const VALIDATE_BODY_CALL: &str = "validate_script_bod";
+
+/// Whether `text` names `token` on its own rather than inside a longer name.
+///
+/// A holder field called `script` is spelled inside the call token
+/// `validate_script_bod` itself, so a plain substring test lets the call vouch
+/// for a field nothing passes to it.
+fn names_whole_token(text: &str, token: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(token).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + token.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// The line with the refusal call's own identifier cut out, so what remains is
+/// only what the call site SAYS about the field it is judging.
+fn without_call_name(line: &str) -> String {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let Some(at) = line.find(VALIDATE_BODY_CALL) else {
+        return line.to_string();
+    };
+    let end = line[at..]
+        .char_indices()
+        .find(|(_, c)| !ident(*c))
+        .map_or(line.len(), |(offset, _)| at + offset);
+    format!("{} {}", &line[..at], &line[end..])
+}
+
 /// A script body a surface accepts from YAML is a body cfgd will run: a blank
 /// one runs nothing and renders a row with no body in it, so every holder
 /// refuses it at parse time. The Module CRD held two fields nothing checked,
@@ -4996,7 +5027,7 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
         read >= 380,
         "the walk read {read} production files; it is looking at the wrong root"
     );
-    let listed: std::collections::BTreeSet<(&str, &str)> = SCRIPT_SPEC_HOLDERS
+    let listed: std::collections::BTreeSet<(&str, &str)> = SCRIPT_BODY_HOLDERS
         .iter()
         .map(|(file, field, _)| (*file, *field))
         .collect();
@@ -5007,8 +5038,8 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
         .collect();
     assert!(
         unlisted.is_empty(),
-        "a field accepting a declared script spec from YAML joins `SCRIPT_SPEC_HOLDERS` \
-         with the file that refuses an empty `run` in it:\n{}",
+        "a field accepting a declared script body from YAML joins `SCRIPT_BODY_HOLDERS` \
+         with the file that refuses a blank one in it:\n{}",
         unlisted.join("\n")
     );
     let stale: Vec<String> = listed
@@ -5022,15 +5053,15 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
         stale.join("\n")
     );
     let mut unvalidated = Vec::new();
-    for (file, field, validators) in SCRIPT_SPEC_HOLDERS {
+    for (file, field, validators) in SCRIPT_BODY_HOLDERS {
         for validator in *validators {
             let body = walked_file_body(&workspace_root().join(validator));
             let lines: Vec<&str> = body.lines().collect();
             let names_the_field = lines.iter().enumerate().any(|(i, line)| {
-                line.contains("validate_script_bod")
+                line.contains(VALIDATE_BODY_CALL)
                     && lines[i.saturating_sub(2)..(i + 3).min(lines.len())]
                         .iter()
-                        .any(|near| near.contains(field))
+                        .any(|near| names_whole_token(&without_call_name(near), field))
             });
             if !names_the_field {
                 unvalidated.push(format!("{file}: {field}: {validator}"));
@@ -5079,4 +5110,40 @@ fn the_script_body_field_matcher_reads_a_declaration_and_nothing_else() {
         Some("hooks"),
         "the matcher names the field, which is how a holder is found in the table"
     );
+}
+
+/// The per-holder tell asks what the CALL SITE says about the field, and the
+/// call's own name is not part of that answer.
+///
+/// A holder field named `script` is spelled inside `validate_script_bod`, so a
+/// substring test over the lines around the call would let the call vouch for a
+/// field nothing is ever passed for. The tell reads whole tokens and cuts the
+/// call's identifier out of the line first, leaving the arguments and the
+/// statement that selected the field.
+#[test]
+fn the_validator_tell_reads_a_whole_field_token_outside_the_call_name() {
+    let call = "            && let Err(e) = cfgd_schema::validate_script_body(";
+    assert!(
+        call.contains("script"),
+        "the call token holds the name a `script` field would carry, which is the \
+         confusion the tell has to survive"
+    );
+    assert!(
+        !names_whole_token(&without_call_name(call), "script"),
+        "the call's own name vouches for no field: {call}"
+    );
+    assert!(
+        !names_whole_token("    pub scripts_spec: ScriptSpec,", "scripts"),
+        "a longer identifier is a different field"
+    );
+    for line in [
+        "        cfgd_schema::validate_script_bodies(\"profile\", &merged.scripts)",
+        "        if let Some(ref post_apply) = self.scripts.post_apply",
+        "                &format!(\"scripts.{}\", cfgd_schema::POST_APPLY_HOOK),",
+    ] {
+        assert!(
+            names_whole_token(&without_call_name(line), "scripts"),
+            "a call site naming the field it judges answers the tell: {line}"
+        );
+    }
 }
