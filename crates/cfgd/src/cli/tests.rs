@@ -35886,14 +35886,22 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 /// a key restore needing two renames to fail in order, a rollback whose every
 /// warning arm needs a different filesystem refusal.
 ///
-/// A slot is read as a statement however rustfmt broke it, plus the few lines
-/// above it, because a render is often bound to a name one line up and
-/// interpolated. Three shapes are not display slots and are passed over: a
-/// `tracing` line (a journal is read from other hosts, per
-/// `path-handling.md`), a hint (`Renderer::render_hint` folds its own text and
-/// every command it carries), and anything carrying
-/// `// absolute-path-ok: <why>` on its line or in the comment block above it:
-/// a stored id, an `-o json` field or a returned error.
+/// The display slots it judges are every status row and its `detail` /
+/// `qualifier` / `verdict` parts, every section head, every kv row (`kv`,
+/// `kv_block`, a hand-built `KvPair`), every bullet, every table row, every
+/// spinner finish and every question a prompt asks. A slot is read as the
+/// statement the sink opens, however
+/// rustfmt broke it, plus the twenty rows above it, because a row's value is
+/// often built well before the block that prints it.
+///
+/// Four shapes are passed over, each because the absolute path is right there
+/// or because something else folds it: a `tracing` / `warn!` / `info!` line (a
+/// journal is read from other hosts, per `path-handling.md`), a hint
+/// (`Renderer::render_hint` folds its own text and every command it carries), a
+/// provider note (`ActionNote::body` folds it at its one render point), and a
+/// returned error or an `-o json` payload (`cli_error`, `anyhow!`, `bail!`,
+/// `json!`). Anything else that must print the absolute path says why with
+/// `// absolute-path-ok: <why>` on its line or in the comment block above it.
 #[test]
 fn every_display_slot_of_both_crates_folds_the_home_directory() {
     const SINKS: &[&str] = &[
@@ -35902,25 +35910,60 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         ".detail(",
         ".status(",
         ".status_simple(",
-        ".kv_block(",
         ".qualifier(",
+        ".verdict(",
+        ".section(",
+        ".kv(",
+        ".kv_block(",
+        "KvPair::new(",
+        ".bullet(",
+        ".row(",
+        "row_styled(",
+        "finish_ok(",
+        "finish_fail(",
+        "prompt_confirm(",
+        "prompt_select(",
+        "prompt_text(",
     ];
     const RENDERS: &[&str] = &[".posix()", ".display_posix()", ".display()"];
+    // A render carrying one of these above it is not a display slot's. Read
+    // over the eight rows up to the render, because a macro's own name sits
+    // several rows above the argument that carries the path.
+    const PASSED_OVER: &[&str] = &[
+        "tracing::",
+        "warn!(",
+        "info!(",
+        "debug!(",
+        "error!(",
+        "trace!(",
+        ".hint(",
+        ".hint_commands(",
+        ".report(",
+        "next_step(",
+        "cli_error",
+        "anyhow!(",
+        "bail!(",
+        "json!(",
+    ];
     const HATCH: &str = "// absolute-path-ok:";
+    // How far above a sink a row's value may be built and still be read.
+    const LOOKBACK: usize = 20;
     // A per-file floor for the files that hold a known population, so a read
     // going blind in one of them fails instead of passing on another's slots.
-    const FLOOR_FILES: [(&str, usize); 6] = [
-        ("cfgd-core/src/reconciler/restore.rs", 11),
-        ("cfgd/src/files/plan.rs", 8),
-        ("cfgd/src/cli/config_migration.rs", 7),
-        ("cfgd/src/cli/secret.rs", 6),
-        ("cfgd/src/cli/profile/migrate.rs", 6),
-        ("cfgd/src/cli/module/keys.rs", 4),
+    const FLOOR_FILES: [(&str, usize); 8] = [
+        ("cfgd-core/src/reconciler/restore.rs", 21),
+        ("cfgd/src/cli/module/keys.rs", 12),
+        ("cfgd/src/cli/module/export.rs", 12),
+        ("cfgd/src/files/plan.rs", 11),
+        ("cfgd/src/cli/config_migration.rs", 10),
+        ("cfgd/src/cli/module/crud.rs", 9),
+        ("cfgd/src/cli/profile/migrate.rs", 9),
+        ("cfgd/src/cli/secret.rs", 8),
     ];
     // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
     // nowhere reads no files, and one holding no command code judges no slot.
     const FLOOR_SOURCES: usize = 280;
-    const FLOOR_SLOTS: usize = 65;
+    const FLOOR_SLOTS: usize = 160;
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
@@ -35934,7 +35977,12 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" {
+            // A test region renders paths of its own and asserts on them, so
+            // the population is the production sources alone.
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
                 continue;
             }
             sources += 1;
@@ -35950,7 +35998,7 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
                     n += 1;
                     continue;
                 }
-                // A statement rustfmt broke over many lines still ends at its
+                // A statement rustfmt broke over many rows still ends at its
                 // `;`. Where the sink is a builder chain whose `;` is further
                 // out than the window, the window itself is the bound, so a
                 // render under the sink is read rather than missed.
@@ -35958,15 +36006,15 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
                 let end = (n..=last)
                     .find(|&i| lines[i].trim_end().ends_with(';'))
                     .unwrap_or(last);
-                for i in n.saturating_sub(6)..=end {
+                for i in n.saturating_sub(LOOKBACK)..=end {
                     let line = lines[i];
                     if line.trim_start().starts_with("//")
                         || !RENDERS.iter().any(|render| line.contains(render))
                     {
                         continue;
                     }
-                    let near = lines[i.saturating_sub(3)..=i].join("\n");
-                    if near.contains("tracing::") || near.contains("hint(") {
+                    let above = lines[i.saturating_sub(8)..=i].join("\n");
+                    if PASSED_OVER.iter().any(|tell| above.contains(tell)) {
                         continue;
                     }
                     slots += 1;
