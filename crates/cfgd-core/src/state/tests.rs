@@ -3275,18 +3275,18 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
     // The pre-fix tick recorded `('module', '<name>:skip')` on every pass over
     // a module it skipped whole, plus a matching tracking row. Nothing mints,
     // heals or re-finds that shape now, so without the migration it stands
-    // forever. A `<name>:script` row is a real finding of the same type and
-    // must come through untouched, and so must a row whose own grammar merely
-    // ENDS in those five characters: the migration's predicate is
-    // `module_row_facet`'s, which judges the FIRST separator, so
-    // `mod:extra:skip` and `mod/path:skip` are not skip rows.
+    // forever. A per-file row is the live finding shape and must come through
+    // untouched, and so must a row whose own grammar merely ENDS in those five
+    // characters: the migration's predicate is `module_row_facet`'s, which
+    // judges the FIRST separator, so `mod:extra:skip` and `mod/path:skip` are
+    // not skip rows. The hook rows of the same shape are migration 27's.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
         let store = StateStore::open(&path).unwrap();
         for rid in [
             "gated:skip",
-            "nvim:script",
+            "nvim/.vimrc",
             "mod:extra:skip",
             "mod/path:skip",
         ] {
@@ -3317,7 +3317,7 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         vec![
             ("module".to_string(), "mod/path:skip".to_string()),
             ("module".to_string(), "mod:extra:skip".to_string()),
-            ("module".to_string(), "nvim:script".to_string()),
+            ("module".to_string(), "nvim/.vimrc".to_string()),
             ("package".to_string(), "brew:skip".to_string()),
         ],
         "only the whole-module skip row resolves"
@@ -3335,9 +3335,81 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         vec![
             "mod/path:skip".to_string(),
             "mod:extra:skip".to_string(),
-            "nvim:script".to_string()
+            "nvim/.vimrc".to_string()
         ],
         "the skip row's tracking row is dropped and every sibling kept"
+    );
+}
+
+#[test]
+fn a_module_hook_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept() {
+    // The pre-fix tick recorded `('module', '<name>:script')` for every
+    // lifecycle hook it planned. A planned hook is an act a run performs, so
+    // nothing mints that row now, no apply heals it and no CLI check re-finds
+    // it — `<name>:script` names no file — and without the migration a module
+    // declaring only hooks reads Drifted forever. The tracking row STAYS: it
+    // records that this host ran the hooks, which is a fact about the machine.
+    //
+    // The predicate is `module_row_facet`'s, so a row whose own grammar merely
+    // ends in those seven characters (`mod:extra:script`, `mod/path:script`)
+    // is not a hook row, and the sweep is scoped to the `module` type.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in [
+            "nvim:script",
+            "mod:extra:script",
+            "mod/path:script",
+            "nvim/.vimrc",
+        ] {
+            store
+                .record_drift("module", rid, None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource("module", rid, "local", None, None)
+                .unwrap();
+        }
+        store
+            .record_drift("package", "brew:script", None, None, "local")
+            .unwrap();
+        rewind_schema_version(&store, 26);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("module".to_string(), "mod/path:script".to_string()),
+            ("module".to_string(), "mod:extra:script".to_string()),
+            ("module".to_string(), "nvim/.vimrc".to_string()),
+            ("package".to_string(), "brew:script".to_string()),
+        ],
+        "only the hook row resolves"
+    );
+    let mut tracked: Vec<String> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.resource_id)
+        .collect();
+    tracked.sort_unstable();
+    assert_eq!(
+        tracked,
+        vec![
+            "mod/path:script".to_string(),
+            "mod:extra:script".to_string(),
+            "nvim/.vimrc".to_string(),
+            "nvim:script".to_string()
+        ],
+        "every tracking row survives, the hook's included"
     );
 }
 

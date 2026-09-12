@@ -447,9 +447,10 @@ fn classify_recorded_drift_for_chain(
                         drifted_ids.insert(event.resource_id.clone());
                         (SURFACE_FILES, item)
                     }
-                    // The daemon's `<module>:script` / `<module>:skip`
-                    // spelling keeps its facet as the item; the bare legacy
-                    // whole-module id has none.
+                    // A faceted legacy id (`<module>:script`,
+                    // `<module>:skip`) keeps its facet as the item; the bare
+                    // legacy whole-module id has none. No producer mints
+                    // either one now.
                     None => (
                         "",
                         cfgd_core::reconciler::module_row_facet(&event.resource_id)
@@ -783,8 +784,10 @@ fn render_module_drift_section(
         scan_note,
         |s, d| {
             // A whole-module verdict has no surface to name: the subject is
-            // the owner token, carrying the `:script` / `:skip` facet the
-            // recording action spelled after it, and the recorded cause speaks.
+            // the owner token, carrying whatever facet a legacy row spelled
+            // after it, and the recorded cause speaks. Nothing mints such a row
+            // now; one already in the store renders plain here, counted in no
+            // owner's clause.
             let subject = if d.surface.is_empty() {
                 let owner = cfgd_core::reconciler::Owner::module(&d.owner).token();
                 if d.item.is_empty() {
@@ -1817,19 +1820,6 @@ fn check_error_owner(
     profile_owner.cloned()
 }
 
-/// The shortfall noun a non-file `module` row counts under, from its facet.
-///
-/// Only `script` is a noun the owner's own inventory prices, so only it earns
-/// a counts clause; a `skip` names no countable resource, and a row wearing a
-/// facet nothing here knows renders its owner's bare verdict rather than
-/// inventing a unit for it.
-fn module_facet_noun(facet: &str) -> Option<&'static str> {
-    match facet {
-        "script" => Some("script"),
-        _ => None,
-    }
-}
-
 /// Which Component Health owner one unresolved recorded finding belongs to,
 /// the drifted-noun its shortfall counts under — `None` noun for a
 /// whole-module verdict, which flips the row without a countable unit — and
@@ -1870,18 +1860,22 @@ fn finding_owner(
                 // nested subject is the bare folded target.
                 FindingSlot::Child(Some(cfgd_core::fold_home_in_text(&target))),
             ),
-            // Not a per-file id: a `<module>:script` / `<module>:skip` row, or
-            // the bare whole-module id a tick recorded before either producer
-            // agreed on a spelling. The OWNER is the module the row belongs to
-            // — taking the whole id instead minted a second Component Health
-            // row named `nvim:script` beside the real `nvim`, which then read
-            // clean while its phantom carried the finding.
+            // Not a per-file id: the bare whole-module id a tick recorded
+            // before per-file rows became the one grammar, or a faceted legacy
+            // id (`<module>:script`, `<module>:skip`) no producer mints any
+            // more. The OWNER is the module the row belongs to — taking the
+            // whole id instead minted a second Component Health row named
+            // `nvim:script` beside the real `nvim`, which then read clean while
+            // its phantom carried the finding.
+            //
+            // No noun either way: the owner's own inventory prices no scripts
+            // and a `skip` names no countable resource, so such a row flips its
+            // owner to a bare verdict with no counts clause.
             None => (
                 Some(Owner::module(cfgd_core::reconciler::module_row_owner(
                     &event.resource_id,
                 ))),
-                cfgd_core::reconciler::module_row_facet(&event.resource_id)
-                    .and_then(module_facet_noun),
+                None,
                 FindingSlot::OwnerVerdict,
             ),
         },
@@ -1944,6 +1938,10 @@ fn finding_owner(
             // shortfall clause can hold the noun beyond the event's borrow.
             let noun = match other {
                 "file" | "files" => "file",
+                // A profile's own inline lifecycle script, whose `script` /
+                // `Running script` rows a tick still records: the action that
+                // runs one heals its row, so unlike a module's hook it is a
+                // finding a later run settles.
                 "script" | "Running script" => "script",
                 "system" => "setting",
                 _ => "item",

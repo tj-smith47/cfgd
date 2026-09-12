@@ -8055,19 +8055,20 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
 /// apply healed per-file `("module", "nvim/<target>")` rows, so a converged
 /// module reported drift on every later `cfgd status` and nothing on the
 /// machine could ever clear it. The first half walks EVERY inner variant and
-/// requires rows to exist exactly where the action is not pre-skipped (an
-/// action that cannot run on this host stands for no finding). The second
-/// It also holds the module grammar: a `module`-typed row names a file, a
-/// script or a skipped block, never an aggregate over a package list — the
+/// requires rows to exist exactly where the action is not pre-skipped and is
+/// not one of the three module kinds that stand for no finding (an action that
+/// cannot run on this host, a module nothing probed, and a hook no check ever
+/// looks at). It also holds the module grammar: every `module`-typed row names a
+/// FILE, never an aggregate over a package list and never a facet — the
 /// arm-level claim the source walk in the CLI crate cannot see. The second
 /// half records what the producer yields for a plan of executable actions,
 /// runs a real apply against a real store, and requires the store to come
 /// back holding only the four PROVIDER `Skip` variants' rows — a withheld
 /// block is not converged by the run that withheld it, so its row waits for
-/// the tick's own complement instead. The two module shapes mint no row in the
-/// first place: a module skipped whole probed nothing under it and a refused
-/// file deploy read no target, so six withheld actions leave four standing
-/// rows.
+/// the tick's own complement instead. The two withheld module shapes mint no row
+/// in the first place: a module skipped whole probed nothing under it and a
+/// refused file deploy read no target, so six withheld actions leave four
+/// standing rows.
 ///
 /// The env and secret variants are absent from the executable half: the first
 /// writes the user's real shell surfaces and the second needs a live backend,
@@ -8086,11 +8087,21 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
         // deploy before reading a target. The two shapes that are neither
         // pre-skipped nor row producers.
         let unprobed = crate::reconciler::module_files_unprobed(&action);
+        // A module's hook is the third shape that mints nothing: nothing checks
+        // a hook body, so running one is an act rather than a convergence, and
+        // a row for it would stand under a module whose real work converged.
+        let runs_a_hook = matches!(
+            &action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::RunScript { .. },
+                ..
+            })
+        );
         assert_eq!(
             rows.is_empty(),
-            action.pre_skip_reason().is_some() || unprobed,
-            "an action stands for rows exactly when it can run here and probed \
-             something: {action:?}"
+            action.pre_skip_reason().is_some() || unprobed || runs_a_hook,
+            "an action stands for rows exactly when it can run here, probed \
+             something, and is not a hook: {action:?}"
         );
         for row in &rows {
             assert!(
@@ -8099,10 +8110,8 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
             );
             if row.resource_type == "module" {
                 assert!(
-                    crate::reconciler::module_row_names_a_file(&row.resource_id)
-                        || row.resource_id.ends_with(":script")
-                        || row.resource_id.ends_with(":skip"),
-                    "a module row names a file, a script or a skipped block — \
+                    crate::reconciler::module_row_names_a_file(&row.resource_id),
+                    "every module drift row names a FILE — never a facet and \
                      never an aggregate over a list no check can re-find: \
                      {row:?} from {action:?}"
                 );
@@ -8288,6 +8297,12 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
             .iter()
             .any(|(rtype, rid)| rtype == "module" && rid.ends_with(":skip")),
         "the tick records no row for a module skipped whole: {recorded:?}"
+    );
+    assert!(
+        !recorded
+            .iter()
+            .any(|(rtype, rid)| rtype == "module" && rid.ends_with(":script")),
+        "the tick records no row for a module's lifecycle hook: {recorded:?}"
     );
 
     let plan = Plan {

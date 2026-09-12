@@ -161,9 +161,9 @@ fn full_check_cannot_refind(
         // Every module row this check can answer for is a per-file
         // `<module>/<target>`, classified by the FIRST separator through the
         // one reader the daemon attributes rows with — a tail may carry a `/`
-        // of its own. The other spellings under the type name a module's own
-        // action (`<module>:script`, `<module>:skip`), which no live file
-        // check re-examines.
+        // of its own. A faceted spelling (`<module>:script`, `<module>:skip`)
+        // is a legacy id no producer mints any more, and no live file check
+        // re-examines one.
         // legacy-id-ok: a BARE `<module>` is the whole-module row a tick
         // recorded before per-file rows became the one grammar; that nothing
         // mints one now is what `every_module_drift_id_names_the_file_it_stands_for`
@@ -356,8 +356,8 @@ pub(super) struct ScopedStanding {
 /// Returns every recorded row attributable to `chain` that `checked` did not
 /// cover — a finding this run's own scope owns but never got to re-examine,
 /// because its type or grammar sits outside what THIS check evaluates (a
-/// module's bare legacy id, a `:script`/`:skip` action row, a package this
-/// chain declares but the scan excluded from `checked`). A caller presenting
+/// module's bare or faceted legacy id, a package this chain declares but the
+/// scan excluded from `checked`). A caller presenting
 /// the scan renders and prices them beside its findings, exactly as the
 /// full-machine walk's own [`record_full_scan_findings`] does with its
 /// keep-set — the type is never special-cased here, only asked of the one
@@ -1028,8 +1028,9 @@ mod tests {
             (
                 "module",
                 "`resolve_module_file_drift`, per DECLARED file of the deployed \
-                 module; a module skipped whole mints none and heals none, \
-                 having probed nothing",
+                 module; the three module kinds that mint nothing heal nothing — \
+                 a module skipped whole and a refused deploy probed nothing, and \
+                 a lifecycle hook is an act no check looks at",
             ),
             (
                 "package",

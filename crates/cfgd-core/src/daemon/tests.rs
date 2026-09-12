@@ -9927,6 +9927,99 @@ async fn handle_reconcile_runs_on_drift_scripts() {
 /// publish no manager can perform (drawn, and not drift). Both counts are
 /// asserted against the tree's actual row count, never against literals.
 #[cfg(all(unix, not(target_os = "macos")))]
+/// A module whose whole declaration is lifecycle hooks leaves the store with no
+/// drift row at all: nothing checks a hook body, so a planned hook is an act a
+/// run performs and not divergence it found. The tick plans this module's
+/// `postReconcile` hook (the reconcile context's own half of the lifecycle
+/// pair), because a module declaring no packages and no files keeps its scripts
+/// unconditionally ([`crate::reconciler::Reconciler::plan`]), and the sentence
+/// naming that one planned action is what makes the empty store below an
+/// answer about the hook.
+///
+/// The bug this ends: every tick recorded a `module:<name>:script` row for the
+/// hook it planned. A module declaring only scripts therefore read `Drifted` on
+/// every `cfgd status` for as long as it existed, and nothing could clear it:
+/// no live check re-finds such a row, and this tick is `NotifyOnly`, so no
+/// apply ran to settle it either. A module declaring packages beside its hooks
+/// carried the same row as a duplicate of the package finding next to it.
+///
+/// The hook body is a no-op valid in both shells `ScriptShell::Auto` dispatches
+/// to, so the fixture runs wherever the suite does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(tracing_dispatcher)]
+async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
+    reset_daemon_log();
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - hooked\n",
+    )
+    .unwrap();
+    // No packages and no files: the hook is the only thing this module can
+    // stand for, so a drift row recorded here could only be the hook's.
+    let mod_dir = tmp.path().join("modules").join("hooked");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let logs = daemon_log();
+    assert!(
+        logs.contains("drift detected in 1 resource"),
+        "the hook is the one action this tick planned, and the sentence prices \
+         the plan: {logs}"
+    );
+
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    let standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        standing.is_empty(),
+        "a planned hook is no finding, so the tick records no drift row for \
+         it: {standing:?}"
+    );
+    assert_eq!(
+        state.lock().await.drift_count,
+        0,
+        "and the drift count the daemon reports reads clean"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn a_notify_only_tick_counts_every_row_its_tree_printed() {

@@ -796,8 +796,8 @@ fn reconcile_tick(
 
     // A per-module tick probes ONE module, so beyond the re-find predicate it
     // may heal only rows attributable to that module by identity: every
-    // `module` row under its name — the per-file `<name>/<target>` rows and the
-    // `<name>:script` / `<name>:skip` spellings its own actions mint — plus the
+    // `module` row under its name — the per-file `<name>/<target>` rows its own
+    // actions mint, and any legacy spelling an older cfgd left there — plus the
     // per-package and per-shell rows its group carries. Everything else —
     // other modules', the machine-wide surfaces — stands for the next
     // profile-wide tick to judge.
@@ -1458,14 +1458,14 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   installed. `provision:` / `refuse:` rows are the one shape the tick does
 ///   not mint per member — a cascade's node carries only its leader's id — so
 ///   they are re-found through the manager node that speaks for the manager.
-/// * `module` — every spelling under a module's name: the per-file
-///   `<module>/<target>` rows this tick mints itself through
-///   `module_file_spec_resource_id`, and the `<module>:packages:…` /
-///   `<module>:script` / `<module>:skip` ids its other kinds mint. All of them
-///   are the tick's own grammar, so identity governs — a row the plan still
-///   covers is in the current set before this predicate is consulted, and one
-///   it does not cover is a file or a surface the plan found converged. The
-///   exception is a module whose files the plan never probed
+/// * `module` — every spelling under a module's name. The per-file
+///   `<module>/<target>` rows are the only ones this tick mints, through
+///   `module_file_spec_resource_id`; a module's other kinds mint no drift row at
+///   all, so anything else under the type is a legacy id an older cfgd left in
+///   the store. The minted grammar is the tick's own, so identity governs — a
+///   row the plan still covers is in the current set before this predicate is
+///   consulted, and one it does not cover is a file or a surface the plan found
+///   converged. The exception is a module whose files the plan never probed
 ///   ([`crate::reconciler::module_files_unprobed`]): the host declined it whole,
 ///   or it refused the deploy before reading a target. Its rows are kept the way
 ///   the CLI keeps an unevaluated configurator's — a run that declined to look
@@ -1523,13 +1523,10 @@ pub(super) fn tick_cannot_refind(
         // A module whose files this tick never probed — the host declined it
         // whole, or it refused the deploy outright.
         //
-        // The keep is deliberately wider than the file rows it exists for: a
-        // refused module's `<mod>:script` row is kept too, once `hooks_now`
-        // (`reconciler/plan.rs`) elides the hooks because the module's package
-        // work converged while the refusal still stands. Nothing in that window
-        // vouches for the script's convergence, so healing it would be exactly
-        // the blind heal this predicate prevents — over-report, never
-        // under-report.
+        // The keep is by module NAME rather than by id shape, so a legacy row
+        // an older cfgd recorded under the same module is kept with its file
+        // rows. A run that declined to look proves nothing about what it did
+        // not read: over-report, never under-report.
         "module" => {
             let owner = crate::reconciler::module_row_owner(resource_id);
             planned.iter().any(|a| {

@@ -1767,9 +1767,6 @@ impl DriftRow {
 ///   `<manager>:<identity>` id. A `script`-installed entry mints none — a
 ///   custom install script has no queryable installed state, so a row for one
 ///   names something no check can re-find.
-/// * Every other `Module` kind — the id its own executed description parses to
-///   (`<name>:script`, `<name>:skip`), so the apply settles exactly what the
-///   tick recorded.
 /// * `Package(Install | Uninstall)` — one row PER PACKAGE, keyed on the
 ///   manager's [`package_entry_drift_id`], carrying the presence words every
 ///   live check words a package finding with.
@@ -1788,17 +1785,21 @@ impl DriftRow {
 /// [`apply_heals_action_rows`] holds them back from the heal. They are cleared
 /// by the tick's own complement, when a later plan stops carrying the skip.
 ///
-/// The two module kinds that mint NO row are `ModuleActionKind::Skip` and
-/// `ModuleActionKind::FilesRefused`. The other four Skips name a resource cfgd
-/// probed and could not converge; a module the host declined whole was never
-/// probed at all, and a refused file deploy is cfgd declining to touch the
-/// files rather than finding them diverged — in neither case is there anything
-/// under it to report as divergence. That is why the tick keeps the rows
-/// standing under such a module rather than re-finding them
-/// (`daemon::reconcile`'s `tick_cannot_refind`), and why no CLI check can
-/// re-mint a `<name>:skip` row: a gate is information, not divergence. Both
-/// kinds are still LISTED — the refusal as a counted action row, the host
-/// decline as the header's `Modules` clause.
+/// The three module kinds that mint NO row are `ModuleActionKind::Skip`,
+/// `ModuleActionKind::FilesRefused` and `ModuleActionKind::RunScript`. The four
+/// provider Skips name a resource cfgd probed and could not converge; a module
+/// the host declined whole was never probed at all, a refused file deploy is
+/// cfgd declining to touch the files rather than finding them diverged, and a
+/// hook is work a run performs that no check ever looks at again. In none of
+/// the three is there anything to report as divergence. That is why the tick
+/// keeps the rows standing under a module whose files it never probed rather
+/// than re-finding them (`daemon::reconcile`'s `tick_cannot_refind`), and why
+/// no CLI check can re-mint a `<name>:skip` or `<name>:script` row: a gate is
+/// information and a hook is an act, and neither is divergence. All three kinds
+/// are still LISTED — the refusal as a counted action row, the host decline as
+/// the header's `Modules` clause, the hook as the action row that runs it — and
+/// the hook still records its `managed_resources` tracking row, which is what
+/// this host RAN rather than a finding about it.
 pub fn action_drift_rows(
     action: &Action,
     registry: &crate::providers::ProviderRegistry,
@@ -1808,9 +1809,17 @@ pub fn action_drift_rows(
     }
     match action {
         Action::Module(ma) => match &ma.kind {
-            // `Skip` is settled by the guard above; both arms are what keep
-            // the match exhaustive over `ModuleActionKind`.
-            ModuleActionKind::Skip { .. } | ModuleActionKind::FilesRefused { .. } => Vec::new(),
+            // `Skip` is settled by the guard above; all three arms are what
+            // keep the match exhaustive over `ModuleActionKind`.
+            //
+            // A hook is the third: nothing checks a hook body, so a planned
+            // script is not divergence. The row it used to mint duplicated the
+            // package or file finding it was planned beside, and a module
+            // declaring only scripts read `Drifted` on every tick for as long
+            // as the module existed, with no command able to clear it.
+            ModuleActionKind::Skip { .. }
+            | ModuleActionKind::FilesRefused { .. }
+            | ModuleActionKind::RunScript { .. } => Vec::new(),
             ModuleActionKind::DeployFiles { files, .. } => files
                 .iter()
                 .map(|f| {
@@ -1854,15 +1863,6 @@ pub fn action_drift_rows(
                     })
                     .collect()
             }
-            // Parsed back out of the action's own description rather than
-            // re-spelled: the apply upserts and settles under exactly this
-            // string, and two hand-written composers of one id is how the
-            // whole-module row came to be healed by nothing.
-            _ => vec![DriftRow::plain(
-                super::format::parse_resource_from_description(
-                    &super::format::format_action_description(action),
-                ),
-            )],
         },
         // A Skip names the bare manager whose whole block was withheld — a
         // finding about the TOOLING, not about any package in it.
@@ -1957,8 +1957,9 @@ fn presence_drift_rows<'a>(
 /// nothing about it. Resolving those rows on a skip would report a machine
 /// converged by the very run that declined to touch it.
 ///
-/// The two module kinds are held back as a belt: [`action_drift_rows`] mints no
-/// row for either, so the heal each would perform is over an empty set.
+/// The three module kinds are held back as a belt: [`action_drift_rows`] mints
+/// no row for any of them, so the heal each would perform is over an empty
+/// set.
 #[must_use]
 pub fn apply_heals_action_rows(action: &Action) -> bool {
     !matches!(
@@ -1968,7 +1969,7 @@ pub fn apply_heals_action_rows(action: &Action) -> bool {
             | Action::Secret(SecretAction::Skip { .. })
             | Action::File(FileAction::Skip { .. })
             | Action::Module(ModuleAction {
-                kind: ModuleActionKind::FilesRefused { .. },
+                kind: ModuleActionKind::FilesRefused { .. } | ModuleActionKind::RunScript { .. },
                 ..
             })
     ) && !module_skipped_whole(action)

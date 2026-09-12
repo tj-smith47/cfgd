@@ -1048,13 +1048,14 @@ pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
     Some((module, target))
 }
 
-/// The module a `"module"` drift row belongs to: everything before its first
-/// `/` or `:`.
+/// The module a `"module"` row belongs to: everything before its first `/` or
+/// `:`.
 ///
-/// One type carries three grammars — the per-file `<module>/<target>` rows and
-/// the `<module>:script` / `<module>:skip` ids — plus the bare `<module>` a
-/// tick recorded before either producer agreed on a spelling. A module name
-/// carries neither separator — [`crate::modules::validate_module_name`] is the
+/// One type carries two grammars: the per-file `<module>/<target>` drift rows,
+/// and the `<module>:script` / `<module>:skip` / `<module>:files:<n>` /
+/// `<module>:packages:<a,b>` tracking ids an apply records. The bare `<module>`
+/// a tick recorded before either producer agreed on a spelling is a third
+/// shape, carrying no tail at all. A module name carries neither separator — [`crate::modules::validate_module_name`] is the
 /// one refusal, and every name that becomes a key of the module map answers to
 /// it, whichever of the four sources it arrived from — so the first separator
 /// is always where the owner ends.
@@ -1070,13 +1071,17 @@ pub fn module_row_owner(resource_id: &str) -> &str {
     }
 }
 
-/// The facet of a `"module"` drift row that names no file: the `script` /
-/// `skip` tail of the daemon's `<module>:script` / `<module>:skip` ids, or
-/// `None` for the bare whole-module id and for every per-file row.
+/// The facet of a `"module"` row that names no file: the `script` / `skip` /
+/// `files-refused` tail an apply's tracking id carries, or `None` for the bare
+/// whole-module id and for every per-file row.
 ///
-/// The one reader of that tail, kept beside [`module_row_owner`] because it
-/// is the same split read from the other side; a report rendering the row
-/// spells the facet after the owner exactly as the action that minted it did.
+/// The one reader of that tail, kept beside [`module_row_owner`] because it is
+/// the same split read from the other side; a report rendering the row spells
+/// the facet after the owner exactly as the action that recorded it did.
+///
+/// No DRIFT row carries a facet: a module's only drift rows are the per-file
+/// ones ([`crate::reconciler::action_drift_rows`]), so a facet on a drift row
+/// is a legacy id an older cfgd recorded.
 #[must_use]
 pub fn module_row_facet(resource_id: &str) -> Option<&str> {
     match resource_id.find(['/', ':']) {
@@ -1085,9 +1090,9 @@ pub fn module_row_facet(resource_id: &str) -> Option<&str> {
     }
 }
 
-/// Whether a `"module"` drift row NAMES A FILE — the `<module>/<target>`
-/// grammar [`module_file_resource_id`] mints — rather than a script, a skip,
-/// or the bare legacy whole-module id.
+/// Whether a `"module"` row NAMES A FILE — the `<module>/<target>` grammar
+/// [`module_file_resource_id`] mints — and not a script, a skip, or the bare
+/// legacy whole-module id.
 ///
 /// The question a live check asks before resolving a row: only a per-file id
 /// is something a file pass can re-find, and a scan that resolves anything
