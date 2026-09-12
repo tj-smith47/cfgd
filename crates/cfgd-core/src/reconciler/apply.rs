@@ -1062,6 +1062,9 @@ impl<'a> super::Reconciler<'a> {
                 module
                     .files
                     .iter()
+                    // native-ok: the digest is rendered back as the Files Hash row of
+                    // `cfgd module show` and compared with nothing, on this host or
+                    // any other, so the separator its parts carry reaches no key.
                     .map(|f| format!("{}:{}", f.source.display(), f.target.display()))
                     .collect(),
             );

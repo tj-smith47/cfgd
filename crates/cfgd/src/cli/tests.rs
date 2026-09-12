@@ -35925,12 +35925,32 @@ fn serializing_type_names() -> std::collections::BTreeSet<String> {
     names
 }
 
-/// Whether a line OPENS a literal of one of those types.
-fn opens_a_serialized_literal(
-    line: &str,
-    serializing: &std::collections::BTreeSet<String>,
-) -> bool {
-    if line.contains("json!") {
+/// Whether a deliberately native render carries its reason, on its own line or
+/// in the comment block directly above it.
+///
+/// A render inside a multi-line literal leaves no room for the reason beside it,
+/// and a hatch pushed onto the line of a closure's `map` reads as a comment about
+/// the wrong thing.
+fn hatched_here_or_just_above(lines: &[&str], at: usize) -> bool {
+    lines[at].contains(NATIVE_HATCH)
+        || lines[..at]
+            .iter()
+            .rev()
+            .take_while(|prior| prior.trim_start().starts_with("//"))
+            .any(|prior| prior.contains(NATIVE_HATCH))
+}
+
+/// The digest composers whose parts become a PERSISTED string.
+///
+/// A path rendered into one crosses the same boundary a serialized field does:
+/// the column holds the digest, so the separator the parts carried decides
+/// whether two hosts reading one declaration state the same value.
+const DIGEST_COMPOSERS: &[&str] = &["hash_sorted_parts(", "sha256_hex(", "sha256_digest("];
+
+/// Whether a line OPENS a literal of one of those types, or a digest over
+/// persisted parts.
+fn opens_a_serialized_span(line: &str, serializing: &std::collections::BTreeSet<String>) -> bool {
+    if line.contains("json!") || DIGEST_COMPOSERS.iter().any(|call| line.contains(call)) {
         return true;
     }
     let code = line.split("//").next().unwrap_or(line).trim_end();
@@ -35956,9 +35976,11 @@ fn opens_a_serialized_literal(
 /// the same native target into the module document it generated.
 ///
 /// The walk reads both crates' production sources and fails a native render
-/// inside a `serde_json::json!` literal or inside a struct literal of a type
-/// serde serializes. A slot whose value is genuinely this host's own (an argv
-/// token, a progress label) says so with `// native-ok: <why>` on the line.
+/// inside a `serde_json::json!` literal, inside a struct literal of a type serde
+/// serializes, or among the parts of a digest a column holds. A slot whose value
+/// is genuinely this host's own (an argv token, a progress label, a digest
+/// nothing compares) says so with `// native-ok: <why>` on the render's line or
+/// in the comment block above it.
 /// Indirection through a helper that RETURNS the string is outside its reach:
 /// the post-edit hook reads those on the way in.
 #[test]
@@ -35989,10 +36011,10 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
             for (n, line) in lines.iter().enumerate() {
                 let net = line.matches(['(', '[', '{']).count() as i32
                     - line.matches([')', ']', '}']).count() as i32;
-                let opens = opens_a_serialized_literal(line, &serializing);
+                let opens = opens_a_serialized_span(line, &serializing);
                 if (inside.is_some() || opens)
                     && NATIVE_RENDERS.iter().any(|render| line.contains(render))
-                    && !line.contains(NATIVE_HATCH)
+                    && !hatched_here_or_just_above(&lines, n)
                 {
                     offenders.push(format!(
                         "{}:{}: {}",
