@@ -2829,7 +2829,8 @@ fn every_scoped_tracing_capture_installs_the_journal_under_it() {
 /// needle being read off [`code_half`].
 ///
 /// A read outside every declaration — a file-scope `static` or `LazyLock`
-/// initializer — is counted and FAILS, as [`no_item_outside_a_function_body_mutates_the_process_environment`]
+/// initializer — is counted and FAILS, as
+/// [`no_item_outside_a_function_body_mutates_the_process_environment`]
 /// holds the mutation half: an initializer runs ordered by first use, inside
 /// no span any guard could bracket. The needle is the two `env::var`
 /// spellings, which is the walk's ceiling — a read through a
