@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Only the nvm arm probes for a tool by name, and that arm is compiled off
+// Windows.
+#[cfg(not(windows))]
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
@@ -11,8 +14,12 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, Packag
 
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
-    pkg_run, planned_method_failed, planned_method_unavailable, report_abandoned_step,
     run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+};
+// The nvm arm's own helpers, with the arm itself.
+#[cfg(not(windows))]
+use super::shared::{
+    pkg_run, planned_method_failed, planned_method_unavailable, report_abandoned_step,
 };
 
 pub struct NpmManager;
