@@ -8055,10 +8055,10 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
 /// apply healed per-file `("module", "nvim/<target>")` rows, so a converged
 /// module reported drift on every later `cfgd status` and nothing on the
 /// machine could ever clear it. The first half walks EVERY inner variant and
-/// requires rows to exist exactly where the action is not pre-skipped and is
-/// not one of the three module kinds that stand for no finding (an action that
-/// cannot run on this host, a module nothing probed, and a hook no check ever
-/// looks at). It also holds the module grammar: every `module`-typed row names a
+/// requires rows to exist exactly where the action stands for a finding at all:
+/// never one that cannot run on this host, never a module nothing probed, and
+/// never a script — a module's hook or a profile's own lifecycle step — that no
+/// check ever looks at. It also holds the module grammar: every `module`-typed row names a
 /// FILE, never an aggregate over a package list and never a facet — the
 /// arm-level claim the source walk in the CLI crate cannot see. The second
 /// half records what the producer yields for a plan of executable actions,
@@ -8087,21 +8087,23 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
         // deploy before reading a target. The two shapes that are neither
         // pre-skipped nor row producers.
         let unprobed = crate::reconciler::module_files_unprobed(&action);
-        // A module's hook is the third shape that mints nothing: nothing checks
-        // a hook body, so running one is an act rather than a convergence, and
-        // a row for it would stand under a module whose real work converged.
-        let runs_a_hook = matches!(
+        // A script is the third shape that mints nothing, in both its forms: a
+        // module's lifecycle hook and a profile's own lifecycle step. Nothing
+        // checks a script body, so running one is an act rather than a
+        // convergence, and a row for it would stand under an owner whose real
+        // work converged.
+        let runs_a_script = matches!(
             &action,
             Action::Module(ModuleAction {
                 kind: ModuleActionKind::RunScript { .. },
                 ..
-            })
+            }) | Action::Script(crate::reconciler::ScriptAction::Run { .. })
         );
         assert_eq!(
             rows.is_empty(),
-            action.pre_skip_reason().is_some() || unprobed || runs_a_hook,
+            action.pre_skip_reason().is_some() || unprobed || runs_a_script,
             "an action stands for rows exactly when it can run here, probed \
-             something, and is not a hook: {action:?}"
+             something, and is not a script: {action:?}"
         );
         for row in &rows {
             assert!(

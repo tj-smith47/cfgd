@@ -650,29 +650,32 @@ const MIGRATIONS: &[&str] = &[
         retention  INTEGER,
         checked_in_at TEXT NOT NULL
     );",
-    // Migration 27: the `module` drift rows a pre-fix tick recorded for a
-    // module's lifecycle hooks. Nothing checks a hook body, so a planned hook
-    // is no longer divergence and `action_drift_rows` mints no row for one;
-    // migration 24's reasoning then applies unchanged to the rows already in
-    // the store. Minted by no producer, healed by no apply, and re-found by no
-    // CLI check — `<name>:script` names no file — such a row would stand
-    // forever and hold every `--exit-code` surface at 5 with no command able to
-    // clear it.
+    // Migration 27: the drift rows a pre-fix tick recorded for a script, in
+    // both shapes — a module's lifecycle hook (`module` / `<name>:script`) and
+    // a profile's own inline lifecycle step (`script` / the raw body, plus the
+    // `Running script` spelling an older cfgd keyed it under). Nothing checks a
+    // script body, so a planned script is no longer divergence and
+    // `action_drift_rows` mints no row for either; migration 24's reasoning
+    // then applies unchanged to the rows already in the store. Minted by no
+    // producer, healed by no apply, and re-found by no CLI check, such a row
+    // would stand forever and hold every `--exit-code` surface at 5 with no
+    // command able to clear it.
     //
-    // The `managed_resources` tracking row is deliberately left alone: it
-    // records that this host RAN the module's hooks, which is a fact about the
-    // machine rather than a finding about it, and the next apply re-records it.
+    // The `managed_resources` tracking rows are deliberately left alone: they
+    // record that this host RAN the scripts, which is a fact about the machine
+    // rather than a finding about it, and the next apply re-records them.
     //
-    // Same SQL predicate as migration 24, over a seven-character tail: the
-    // facet reader judges the FIRST separator, so only `<name>:script` with no
-    // earlier `:` or `/` is a hook row.
+    // The module clause is migration 24's predicate over a seven-character
+    // tail: the facet reader judges the FIRST separator, so only
+    // `<name>:script` with no earlier `:` or `/` is a hook row.
     "UPDATE drift_events
          SET resolved_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-       WHERE resource_type = 'module'
-         AND resource_id LIKE '%:script'
-         AND instr(resource_id, ':') = length(resource_id) - 6
-         AND instr(resource_id, '/') = 0
-         AND resolved_by IS NULL AND resolved_at IS NULL;",
+       WHERE resolved_by IS NULL AND resolved_at IS NULL
+         AND (resource_type IN ('script', 'Running script')
+              OR (resource_type = 'module'
+                  AND resource_id LIKE '%:script'
+                  AND instr(resource_id, ':') = length(resource_id) - 6
+                  AND instr(resource_id, '/') = 0));",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

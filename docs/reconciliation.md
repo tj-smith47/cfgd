@@ -369,18 +369,23 @@ manager's own naming (a Go package `rsc.io/2fa` is `go:2fa`, the name `go list`
 reports), so the producer that records the row and the check that clears it always
 agree.
 
-A module's lifecycle hooks record no row either. Nothing checks a hook body, so a
-planned hook is work the run is about to perform rather than a finding about the
-machine, and a module that declares only scripts reads as converged instead of
-drifted on every tick. The hook is still drawn as an action row under its own
-phase, and an apply that runs it records its `Managed Resources` row.
+Scripts record no row either, a module's lifecycle hooks and a profile's own
+lifecycle steps alike. Nothing checks a script body, so a planned script is work
+the run is about to perform rather than a finding about the machine, and an owner
+that declares only scripts reads as converged instead of drifted on every tick.
+The script is still drawn as an action row under its own phase, and an apply that
+runs it records its `Managed Resources` row. A tick whose whole plan is scripts
+logs no drift, sends no drift notification and runs no `onDrift` hook; under
+`driftPolicy: Auto` it still runs them, because applying a plan is work rather
+than a finding.
 
 ### Rows an older daemon wrote
 
 Before cfgd settled on the identities above, a reconcile tick could record a
 whole-module row (`module|nvim`), a batched package row
-(`package|brew:jq,ripgrep`), or a row for a module's lifecycle hooks
-(`module|nvim:script`). Nothing writes any of those spellings now, and no check
+(`package|brew:jq,ripgrep`), a row for a module's lifecycle hooks
+(`module|nvim:script`), or a row for a profile's own lifecycle script
+(`script|<body>`). Nothing writes any of those spellings now, and no check
 can re-find one, so `cfgd status`, `cfgd diff` and `cfgd verify` leave them standing
 rather than clearing a finding they never looked at — rendered beside the live
 findings under their stored `expected`/`actual`, which keeps `cfgd status
@@ -388,8 +393,9 @@ findings under their stored `expected`/`actual`, which keeps `cfgd status
 A `--module` run leaves standing only the rows its own scope owns (a bare
 module id matching the module chain, a package id the module's own resolved
 set claims); a row outside that scope is neither rendered nor priced by the
-narrower check. A hook row is the exception: cfgd resolves those when it opens a
-state store written by an older version, so nothing has to clear them by hand. A
+narrower check. The script rows are the exception, in both shapes: cfgd resolves
+them when it opens a state store written by an older version, so nothing has to
+clear them by hand. A
 running daemon clears the rest on its next tick (the rows it can
 no longer account for are resolved with the plan it just ran). On a machine
 that never runs `cfgd daemon`, start it once in the foreground and stop it

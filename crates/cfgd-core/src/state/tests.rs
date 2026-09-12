@@ -3342,17 +3342,21 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
 }
 
 #[test]
-fn a_module_hook_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept() {
-    // The pre-fix tick recorded `('module', '<name>:script')` for every
-    // lifecycle hook it planned. A planned hook is an act a run performs, so
-    // nothing mints that row now, no apply heals it and no CLI check re-finds
-    // it — `<name>:script` names no file — and without the migration a module
-    // declaring only hooks reads Drifted forever. The tracking row STAYS: it
-    // records that this host ran the hooks, which is a fact about the machine.
+fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept() {
+    // The pre-fix tick recorded a drift row for every script it planned, in
+    // both shapes: `('module', '<name>:script')` for a module's lifecycle hook
+    // and `('script', '<body>')` for a profile's own lifecycle step (older
+    // still, `('Running script', '<body>')`). A planned script is an act a run
+    // performs, so nothing mints either row now, no apply heals one and no CLI
+    // check re-finds one — `<name>:script` names no file and no check ever
+    // reads a script body — and without the migration an owner that declares
+    // only scripts reads Drifted forever. The tracking rows STAY: they record
+    // that this host ran the scripts, which is a fact about the machine.
     //
-    // The predicate is `module_row_facet`'s, so a row whose own grammar merely
-    // ends in those seven characters (`mod:extra:script`, `mod/path:script`)
-    // is not a hook row, and the sweep is scoped to the `module` type.
+    // The module predicate is `module_row_facet`'s, so a row whose own grammar
+    // merely ends in those seven characters (`mod:extra:script`,
+    // `mod/path:script`) is not a hook row, and that clause is scoped to the
+    // `module` type — a `package` row reading `brew:script` stands.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
@@ -3370,10 +3374,18 @@ fn a_module_hook_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept
                 .upsert_managed_resource("module", rid, "local", None, None)
                 .unwrap();
         }
+        for rtype in ["script", "Running script"] {
+            store
+                .record_drift(rtype, "echo hi", None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource(rtype, "echo hi", "local", None, None)
+                .unwrap();
+        }
         store
             .record_drift("package", "brew:script", None, None, "local")
             .unwrap();
-        rewind_schema_version(&store, 26);
+        rewind_schema_version(&store, 27);
     }
 
     let store = StateStore::open(&path).unwrap();
@@ -3392,7 +3404,7 @@ fn a_module_hook_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept
             ("module".to_string(), "nvim/.vimrc".to_string()),
             ("package".to_string(), "brew:script".to_string()),
         ],
-        "only the hook row resolves"
+        "both script shapes resolve and nothing else does"
     );
     let mut tracked: Vec<String> = store
         .managed_resources()
@@ -3404,12 +3416,14 @@ fn a_module_hook_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept
     assert_eq!(
         tracked,
         vec![
+            "echo hi".to_string(),
+            "echo hi".to_string(),
             "mod/path:script".to_string(),
             "mod:extra:script".to_string(),
             "nvim/.vimrc".to_string(),
             "nvim:script".to_string()
         ],
-        "every tracking row survives, the hook's included"
+        "every tracking row survives, both scripts' included"
     );
 }
 

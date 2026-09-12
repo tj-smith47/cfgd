@@ -109,9 +109,10 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
 
 /// The resource types a full CLI live check evaluates end to end, and so the
 /// ONLY types its complement-resolve may clear. Everything else in
-/// `drift_events` — the daemon's `secret`, `script`,
-/// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows,
-/// any class a future writer mints — is a finding nothing in
+/// `drift_events` — the daemon's `secret`,
+/// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows, the
+/// `script` rows an older cfgd left behind, any class a future writer mints —
+/// is a finding nothing in
 /// this check re-examined, and stands for its own writer to settle. Also the
 /// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
 /// tuple pushed into a checked/findings vector is a wire key, never a

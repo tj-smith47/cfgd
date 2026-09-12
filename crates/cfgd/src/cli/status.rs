@@ -1,8 +1,6 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{
-    Doc, KvPair, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
-};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, SectionBuilder, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -692,17 +690,10 @@ impl HealthFinding {
     /// Word one recorded event for the nested slot. `subject` is the item the
     /// owner row above already attributes, so a module FILE finding names the
     /// bare folded path rather than repeating its owner; every other kind
-    /// takes [`cfgd_core::output::drift_item_subject`]'s spelling. A script
-    /// id is the raw `run_str` body (preserved byte-identical for UPSERT
-    /// matching) and condenses only here, at the point it enters a subject.
+    /// takes [`cfgd_core::output::drift_item_subject`]'s spelling.
     fn of(event: &cfgd_core::state::DriftEvent, subject: Option<String>) -> Self {
         let subject = subject.unwrap_or_else(|| {
-            let display_id =
-                if event.resource_type == "script" || event.resource_type == "Running script" {
-                    condense_script_label(&event.resource_id)
-                } else {
-                    cfgd_core::fold_home_in_text(&event.resource_id)
-                };
+            let display_id = cfgd_core::fold_home_in_text(&event.resource_id);
             cfgd_core::output::drift_item_subject(&event.resource_type, &display_id)
         });
         // The recomputed pair when a surface could read one off the machine
@@ -1938,11 +1929,6 @@ fn finding_owner(
             // shortfall clause can hold the noun beyond the event's borrow.
             let noun = match other {
                 "file" | "files" => "file",
-                // A profile's own inline lifecycle script, whose `script` /
-                // `Running script` rows a tick still records: the action that
-                // runs one heals its row, so unlike a module's hook it is a
-                // finding a later run settles.
-                "script" | "Running script" => "script",
                 "system" => "setting",
                 _ => "item",
             };
@@ -5691,6 +5677,11 @@ mod tests {
         assert!(
             nvim.contains("Drifted"),
             "the finding lands on the module that owns it: {nvim}"
+        );
+        assert!(
+            !nvim.contains("script"),
+            "and nothing counts it as a resource, so the row earns no \
+             `(1 script)` parenthetical: {nvim}"
         );
     }
 
