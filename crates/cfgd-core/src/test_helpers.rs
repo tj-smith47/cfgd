@@ -4744,6 +4744,34 @@ mod tests {
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
 
+    /// The literal shapes the blanker has to tell apart, and the
+    /// byte-for-byte promise every walk reading it indexes the raw line with.
+    ///
+    /// The char arm is where a blanker judging closing-quote distance alone
+    /// goes wrong: in `<'a>('x')` a quote sits two bytes ahead of another
+    /// quote with the call's open paren between them, so a distance test
+    /// blanks that paren and a walk counting parens on the result pairs a call
+    /// with the wrong argument.
+    #[test]
+    fn blank_string_literals_blanks_each_literal_shape_byte_for_byte() {
+        for (raw, expected) in [
+            ("let s = \"a\\\"b\";", "let s = \"    \";"),
+            ("let r = r#\"a\"b\"#;", "let r = r#\"   \"#;"),
+            ("let c = '{';", "let c = ' ';"),
+            ("let b = b'}';", "let b = b' ';"),
+            ("let n = count::<'a>('x');", "let n = count::<'a>(' ');"),
+        ] {
+            let blanked = blank_string_literals(raw);
+            assert_eq!(blanked, expected, "blanking `{raw}`");
+            assert_eq!(
+                blanked.len(),
+                raw.len(),
+                "a blanked line is the same length as the raw one, or a byte \
+                 position found on it indexes the wrong byte: `{raw}`"
+            );
+        }
+    }
+
     /// The shapes the fold has to tell apart, in one source.
     ///
     /// A raw literal is the one a naive "trailing backslash continues the
