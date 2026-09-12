@@ -138,10 +138,12 @@ fi
 # Enforced on the DELTA, not the baseline: only newly-added native renders trip
 # this, so the documented legacy uses (swept separately) don't block edits.
 # output/ owns terminal rendering (native correct); tests carry no cross-OS keys.
+# The binary crate is in scope too: its `-o json` payloads are read on other
+# hosts, which is how `plan -o json` shipped native targets.
 if [ -n "${EDITED_FILE:-}" ] && [ -f "$EDITED_FILE" ]; then
     case "$EDITED_FILE" in
         */crates/cfgd-core/src/output/*|*tests.rs|*/tests/*) ;;
-        */crates/cfgd-core/src/*)
+        */crates/cfgd-core/src/*|*/crates/cfgd/src/*)
             GITDIR=$(dirname "$EDITED_FILE")
             if git -C "$GITDIR" ls-files --error-unmatch "$EDITED_FILE" >/dev/null 2>&1; then
                 # tracked: inspect only added lines, preserving the legacy baseline
@@ -157,7 +159,7 @@ if [ -n "${EDITED_FILE:-}" ] && [ -f "$EDITED_FILE" ]; then
             if [ -n "$LEAK" ]; then
                 echo
                 echo "PATH-HANDLING in $EDITED_FILE"
-                echo "  New native path render in the cross-OS library core. A path that"
+                echo "  New native path render in a cross-OS source. A path that"
                 echo "  becomes a resource-id / state key / snapshot / env-file body must"
                 echo "  fold to '/', or it never matches its Unix counterpart on Windows:"
                 echo "    path.posix()           instead of  path.display()"
