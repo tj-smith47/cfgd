@@ -7,10 +7,39 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+    canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct WingetManager;
+
+/// Build a `Command` for winget, honouring the `CFGD_WINGET_BIN` seam first and
+/// resolving the binary shim-aware otherwise. Every spawn in this file routes
+/// through it, so a test can drive winget's argv without a Windows host and the
+/// availability probe answers from the same place the spawn does.
+fn winget_cmd() -> Command {
+    tool_cmd_with_resolver("winget", || resolve_tool_with_fallbacks("winget", &[]))
+}
+
+/// The spawn that installs one package id through winget. The ONE declaration of
+/// winget's install argv, read by its own `install` and by the bootstrap arm that
+/// delivers a mediated manager.
+///
+/// `--silent` hands the package's own installer its quiet switch: without it an
+/// MSI-backed package (`Rustlang.Rustup`) opens a GUI and an unattended run waits
+/// on a reader who is not there.
+pub(super) fn install_cmd_for(pkg: &str) -> Command {
+    let mut cmd = winget_cmd();
+    cmd.args([
+        "install",
+        "--id",
+        pkg,
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ]);
+    cmd
+}
 
 /// Parse `winget list` into `(Id, Version)` pairs, locating the `Id`/`Version`
 /// columns from the header. The Id is in its REGISTERED case (e.g. `Git.Git`);
@@ -79,7 +108,7 @@ impl PackageManager for WingetManager {
     }
 
     fn tool_version(&self) -> Option<String> {
-        super::shared::tool_version_from(Command::new("winget").arg("--version"))
+        super::shared::tool_version_from(winget_cmd().arg("--version"))
     }
 
     fn is_available(&self) -> bool {
@@ -104,7 +133,7 @@ impl PackageManager for WingetManager {
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
         let output = run_pkg_cmd(
             "winget",
-            Command::new("winget").args(["list", "--source", "winget"]),
+            winget_cmd().args(["list", "--source", "winget"]),
             "list",
         )?;
         Ok(parse_winget_list(&String::from_utf8_lossy(&output.stdout)))
@@ -132,7 +161,7 @@ impl PackageManager for WingetManager {
     ) -> Result<Vec<PackageInfo>> {
         let output = run_pkg_cmd(
             "winget",
-            Command::new("winget").args(["list", "--source", "winget"]),
+            winget_cmd().args(["list", "--source", "winget"]),
             "list",
         )?;
         Ok(parse_winget_list_versions(&String::from_utf8_lossy(
@@ -150,13 +179,7 @@ impl PackageManager for WingetManager {
             run_pkg_cmd_live(
                 cx,
                 "winget",
-                Command::new("winget").args([
-                    "install",
-                    "--id",
-                    pkg,
-                    "--accept-package-agreements",
-                    "--accept-source-agreements",
-                ]),
+                &mut install_cmd_for(pkg),
                 &format!("Installing {}", pkg),
                 "install",
             )?;
@@ -169,7 +192,7 @@ impl PackageManager for WingetManager {
             run_pkg_cmd_live(
                 cx,
                 "winget",
-                Command::new("winget").args(["uninstall", "--id", pkg]),
+                winget_cmd().args(["uninstall", "--id", pkg]),
                 &format!("Uninstalling {}", pkg),
                 "uninstall",
             )?;
@@ -178,10 +201,7 @@ impl PackageManager for WingetManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = run_pkg_query(
-            "winget",
-            Command::new("winget").args(["show", "--id", package]),
-        )?;
+        let output = run_pkg_query("winget", winget_cmd().args(["show", "--id", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -438,29 +458,24 @@ SomeApp               Some.App                  1.0.0\n";
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake `winget` binary on PATH.
+    // PackageManager trait impls through a `ToolShim` behind `CFGD_WINGET_BIN`.
+    // Every winget spawn routes through `winget_cmd()`, which reads the seam
+    // first, so these run on Windows as well as on a POSIX host.
     // ---------------------------------------------------------------------------
 
-    #[cfg(unix)]
     mod winget_shim {
         use super::*;
-        use cfgd_core::test_helpers::{
-            install_named_path_shim, test_package_context, test_printer, test_state,
-        };
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        fn install_winget_shim(
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::PathShimGuard) {
-            install_named_path_shim("winget", exit_code, stdout, stderr)
+        fn install_winget_shim(exit_code: i32, stdout: &str, stderr: &str) -> ToolShim {
+            ToolShim::install("CFGD_WINGET_BIN", exit_code, stdout, stderr)
         }
 
         #[test]
         #[serial]
         fn install_succeeds_per_package_when_winget_exits_zero() {
-            let (_bin, _path) = install_winget_shim(0, "", "");
+            let _shim = install_winget_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -472,7 +487,7 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn install_propagates_nonzero_exit_as_install_failed() {
-            let (_bin, _path) = install_winget_shim(1, "", "no manifest found");
+            let _shim = install_winget_shim(1, "", "no manifest found");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -485,7 +500,7 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn uninstall_succeeds_per_package_when_winget_exits_zero() {
-            let (_bin, _path) = install_winget_shim(0, "", "");
+            let _shim = install_winget_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -497,7 +512,7 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
-            let (_bin, _path) = install_winget_shim(1, "", "not installed");
+            let _shim = install_winget_shim(1, "", "not installed");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -510,8 +525,7 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn winget_declares_no_index_and_refreshing_upgrades_nothing() {
-            let (_bin, _path, log) =
-                cfgd_core::test_helpers::install_named_path_shim_logged("winget", 0, "", "");
+            let log = install_winget_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -541,7 +555,7 @@ Name            Id                    Version
 Visual Studio   Microsoft.VisualStudio 17.8.3
 Git             Git.Git                2.43.0
 ";
-            let (_bin, _path) = install_winget_shim(0, stdout, "");
+            let _shim = install_winget_shim(0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -573,7 +587,7 @@ Git             Git.Git               2.43.0
         #[test]
         #[serial]
         fn available_version_returns_none_on_nonzero_exit() {
-            let (_bin, _path) = install_winget_shim(1, "", "not found");
+            let _shim = install_winget_shim(1, "", "not found");
             let v = WingetManager
                 .available_version("Foo.Bar")
                 .expect("non-zero → Ok(None)");
@@ -584,7 +598,7 @@ Git             Git.Git               2.43.0
         #[serial]
         fn available_version_extracts_version_field_from_show_output() {
             let info = "Found Git [Git.Git]\nVersion: 2.43.0\nPublisher: Git\n";
-            let (_bin, _path) = install_winget_shim(0, info, "");
+            let _shim = install_winget_shim(0, info, "");
             let v = WingetManager.available_version("Git.Git").expect("Ok");
             assert_eq!(v.as_deref(), Some("2.43.0"));
         }

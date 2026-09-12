@@ -37,6 +37,16 @@ fn scoop_cmd() -> Command {
     tool_cmd_with_resolver("scoop", || resolve_tool_with_fallbacks("scoop", &[]))
 }
 
+/// The spawn that installs `pkgs` through scoop. The ONE declaration of scoop's
+/// install verb, read by its own `install` and by the bootstrap arm that
+/// delivers a mediated manager, so a provision cannot spell the verb differently
+/// from an ordinary install.
+pub(super) fn install_cmd_for(pkgs: &[&str]) -> Command {
+    let mut cmd = scoop_cmd();
+    cmd.arg("install").args(pkgs);
+    cmd
+}
+
 /// Parse the set of installed app names from `scoop export` JSON. The document is
 /// `{ "buckets": [...], "apps": [ { "Name": "...", ... }, ... ] }`; a missing/empty
 /// `apps` array (or non-JSON input) yields an empty set. Used instead of parsing
@@ -184,9 +194,8 @@ impl PackageManager for ScoopManager {
         // (scoop-install.ps1 iterates its $apps array); `scoop install` no-ops
         // on an app already held, so raising it takes `scoop update`.
         install_batch_then_per_package(cx, "scoop", &fresh, |pkgs| {
-            let mut cmd = scoop_cmd();
-            cmd.arg("install").args(pkgs);
-            cmd
+            let refs: Vec<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+            install_cmd_for(&refs)
         })?;
         upgrade_each(cx, "scoop", &held, "scoop update", |pkg| {
             let mut cmd = scoop_cmd();

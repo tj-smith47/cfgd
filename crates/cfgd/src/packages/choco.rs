@@ -7,8 +7,8 @@ use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, partition_already_installed, run_pkg_cmd, run_pkg_cmd_live,
-    run_pkg_query, upgrade_each,
+    canonical_ci_pkg_name, partition_already_installed, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct ChocolateyManager;
@@ -26,6 +26,25 @@ fn choco_bin_dir() -> Option<std::path::PathBuf> {
             .map(|root| std::path::PathBuf::from(root).join("bin"))
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\chocolatey\bin")),
     )
+}
+
+/// Build a `Command` for choco, honouring the `CFGD_CHOCO_BIN` seam first and
+/// resolving the binary shim-aware otherwise. Every spawn in this file goes
+/// through it: the seam is what lets a test drive chocolatey's argv without a
+/// Windows host, and a probe that answered from `$PATH` while the spawn
+/// answered from the seam is how the two disagreed.
+fn choco_cmd() -> Command {
+    tool_cmd_with_resolver("choco", || resolve_tool_with_fallbacks("choco", &[]))
+}
+
+/// The spawn that installs `pkgs` through chocolatey. The ONE declaration of
+/// chocolatey's install verb, read by its own `install` and by the bootstrap arm
+/// that delivers a mediated manager, so a provision cannot spell the verb
+/// differently from an ordinary install.
+pub(super) fn install_cmd_for(pkgs: &[&str]) -> Command {
+    let mut cmd = choco_cmd();
+    cmd.args(["install", "-y"]).args(pkgs);
+    cmd
 }
 
 /// Extract `(name, version)` for each real package line of `choco list` output,
@@ -85,7 +104,7 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn tool_version(&self) -> Option<String> {
-        super::shared::tool_version_from(Command::new("choco").arg("--version"))
+        super::shared::tool_version_from(choco_cmd().arg("--version"))
     }
 
     fn is_available(&self) -> bool {
@@ -138,7 +157,7 @@ impl PackageManager for ChocolateyManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
+        let output = run_pkg_cmd("chocolatey", choco_cmd().args(["list"]), "list")?;
         Ok(parse_choco_list(&String::from_utf8_lossy(&output.stdout)))
     }
 
@@ -162,7 +181,7 @@ impl PackageManager for ChocolateyManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<PackageInfo>> {
-        let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
+        let output = run_pkg_cmd("chocolatey", choco_cmd().args(["list"]), "list")?;
         Ok(parse_choco_list_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))
@@ -175,13 +194,11 @@ impl PackageManager for ChocolateyManager {
     ) -> Result<()> {
         let (held, fresh) = partition_already_installed(self, packages, cx);
         if !fresh.is_empty() {
-            let mut args = vec!["install", "-y"];
             let pkg_refs: Vec<&str> = fresh.iter().map(|s| s.as_str()).collect();
-            args.extend(pkg_refs);
             run_pkg_cmd_live(
                 cx,
                 "chocolatey",
-                Command::new("choco").args(&args),
+                &mut install_cmd_for(&pkg_refs),
                 "Installing chocolatey packages",
                 "install",
             )?;
@@ -189,7 +206,7 @@ impl PackageManager for ChocolateyManager {
         // `choco install` no-ops on a package already held; raising it takes
         // `choco upgrade`.
         upgrade_each(cx, "chocolatey", &held, "choco upgrade -y", |pkg| {
-            let mut cmd = Command::new("choco");
+            let mut cmd = choco_cmd();
             cmd.args(["upgrade", "-y", pkg]);
             cmd
         })?;
@@ -201,13 +218,13 @@ impl PackageManager for ChocolateyManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        let mut args = vec!["uninstall", "-y"];
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
-        args.extend(pkg_refs);
+        let mut cmd = choco_cmd();
+        cmd.args(["uninstall", "-y"]).args(&pkg_refs);
         run_pkg_cmd_live(
             cx,
             "chocolatey",
-            Command::new("choco").args(&args),
+            &mut cmd,
             "Uninstalling chocolatey packages",
             "uninstall",
         )?;
@@ -215,7 +232,7 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = run_pkg_query("chocolatey", Command::new("choco").args(["info", package]))?;
+        let output = run_pkg_query("chocolatey", choco_cmd().args(["info", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -579,27 +596,181 @@ Tags: git vcs dvcs
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake `choco` binary on PATH. Mirrors
-    // the scoop shim approach — choco methods call `Command::new("choco")`
-    // directly, so prepending a tempdir with our shim to PATH routes the call
-    // through it.
+    // PackageManager trait impls through a `ToolShim` behind `CFGD_CHOCO_BIN`.
+    // Every choco spawn routes through `choco_cmd()`, which reads the seam
+    // first, so these run on Windows as well as on a POSIX host.
     // ---------------------------------------------------------------------------
 
-    #[cfg(unix)]
     mod choco_shim {
         use super::*;
-        use cfgd_core::test_helpers::{
-            install_named_path_shim, test_package_context, test_printer, test_state,
-        };
+        use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        fn install_choco_shim(
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::PathShimGuard) {
-            install_named_path_shim("choco", exit_code, stdout, stderr)
+        fn install_choco_shim(exit_code: i32, stdout: &str, stderr: &str) -> ToolShim {
+            ToolShim::install("CFGD_CHOCO_BIN", exit_code, stdout, stderr)
         }
+
+        #[test]
+        #[serial]
+        fn install_succeeds_when_choco_exits_zero() {
+            let _shim = install_choco_shim(0, "", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ChocolateyManager
+                .install(&["git".into(), "nodejs".into()], &cx)
+                .expect("install Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn install_raises_a_held_package_via_choco_upgrade_not_install() {
+            // The listing already carries `git`, so `install` partitions it
+            // into `held` and raises it through `choco upgrade -y git`
+            // instead of re-running `choco install -y git`, which would
+            // no-op; `nodejs` is unheld and still installs.
+            let shim = install_choco_shim(0, "git 2.44.0\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ChocolateyManager
+                .install(&["git".into(), "nodejs".into()], &cx)
+                .expect("install Ok");
+            let argv = shim.argv_log();
+            assert!(
+                argv.contains("upgrade -y git"),
+                "held package must be raised via `choco upgrade -y`: {argv}"
+            );
+            assert!(
+                argv.contains("install -y nodejs"),
+                "unheld package must still install: {argv}"
+            );
+            assert!(
+                !argv.contains("install -y git"),
+                "held package must not be re-run through `choco install`: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn install_propagates_nonzero_exit_as_install_failed() {
+            let _shim = install_choco_shim(1, "", "package not found");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let err = ChocolateyManager
+                .install(&["git".into()], &cx)
+                .expect_err("non-zero choco install must error");
+            assert!(err.to_string().contains("chocolatey"));
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_succeeds_when_choco_exits_zero() {
+            let _shim = install_choco_shim(0, "", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            ChocolateyManager
+                .uninstall(&["git".into()], &cx)
+                .expect("uninstall Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
+            let _shim = install_choco_shim(2, "", "no such package");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let err = ChocolateyManager
+                .uninstall(&["git".into()], &cx)
+                .expect_err("non-zero choco uninstall must error");
+            assert!(err.to_string().contains("chocolatey"));
+        }
+
+        #[test]
+        #[serial]
+        fn choco_declares_no_index_and_refreshing_upgrades_nothing() {
+            let shim = install_choco_shim(0, "", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            assert!(
+                !ChocolateyManager.has_index(),
+                "`choco upgrade all -y` upgrades every package the user never declared"
+            );
+            ChocolateyManager.refresh_index(&cx).expect("refresh Ok");
+            assert_eq!(
+                shim.invocation_count(),
+                0,
+                "a manager with no index must not invoke choco at all, ran: {}",
+                shim.argv_log()
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn installed_packages_parses_choco_list_output() {
+            let stdout = "Chocolatey v2.2.2\ngit 2.44.0\nnodejs 20.11.1\npython 3.12.1\n3 packages installed.\n";
+            let _shim = install_choco_shim(0, stdout, "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
+            assert!(pkgs.contains("git"));
+            assert!(pkgs.contains("nodejs"));
+            assert!(pkgs.contains("python"));
+            assert_eq!(pkgs.len(), 3);
+        }
+
+        #[test]
+        #[serial]
+        fn installed_packages_empty_when_output_only_has_summary() {
+            let _shim = install_choco_shim(0, "Chocolatey v2.2.2\n0 packages installed.\n", "");
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
+            assert!(pkgs.is_empty());
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_returns_none_on_nonzero_exit() {
+            let _shim = install_choco_shim(1, "", "not found");
+            let v = ChocolateyManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_extracts_pipe_separated_field_from_title_line() {
+            let info = "Chocolatey v2.2.2\nTitle: Git | 2.44.0\nPublished: now\n";
+            let _shim = install_choco_shim(0, info, "");
+            let v = ChocolateyManager.available_version("git").expect("Ok");
+            assert_eq!(v.as_deref(), Some("2.44.0"));
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_returns_none_when_title_field_missing() {
+            let info = "Chocolatey v2.2.2\nSummary: foo\n";
+            let _shim = install_choco_shim(0, info, "");
+            let v = ChocolateyManager.available_version("foo").expect("Ok");
+            assert_eq!(v, None);
+        }
+    }
+
+    // chocolatey's own installer is a PowerShell pipeline carrying no
+    // `CFGD_*_BIN` seam, so these stay on a POSIX PATH shim for `powershell`.
+    #[cfg(unix)]
+    mod choco_bootstrap_shim {
+        use super::*;
+        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
+        use serial_test::serial;
 
         #[test]
         #[serial]
@@ -654,159 +825,6 @@ Tags: git vcs dvcs
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("nonzero powershell must error");
             let _ = err.to_string();
-        }
-
-        #[test]
-        #[serial]
-        fn install_succeeds_when_choco_exits_zero() {
-            let (_bin, _path) = install_choco_shim(0, "", "");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            ChocolateyManager
-                .install(&["git".into(), "nodejs".into()], &cx)
-                .expect("install Ok");
-        }
-
-        #[test]
-        #[serial]
-        fn install_raises_a_held_package_via_choco_upgrade_not_install() {
-            // The listing already carries `git`, so `install` partitions it
-            // into `held` and raises it through `choco upgrade -y git`
-            // instead of re-running `choco install -y git`, which would
-            // no-op; `nodejs` is unheld and still installs.
-            let (_bin, _path, log) = cfgd_core::test_helpers::install_named_path_shim_logged(
-                "choco",
-                0,
-                "git 2.44.0\n",
-                "",
-            );
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            ChocolateyManager
-                .install(&["git".into(), "nodejs".into()], &cx)
-                .expect("install Ok");
-            let argv = log.argv_log();
-            assert!(
-                argv.contains("upgrade -y git"),
-                "held package must be raised via `choco upgrade -y`: {argv}"
-            );
-            assert!(
-                argv.contains("install -y nodejs"),
-                "unheld package must still install: {argv}"
-            );
-            assert!(
-                !argv.contains("install -y git"),
-                "held package must not be re-run through `choco install`: {argv}"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn install_propagates_nonzero_exit_as_install_failed() {
-            let (_bin, _path) = install_choco_shim(1, "", "package not found");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            let err = ChocolateyManager
-                .install(&["git".into()], &cx)
-                .expect_err("non-zero choco install must error");
-            assert!(err.to_string().contains("chocolatey"));
-        }
-
-        #[test]
-        #[serial]
-        fn uninstall_succeeds_when_choco_exits_zero() {
-            let (_bin, _path) = install_choco_shim(0, "", "");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            ChocolateyManager
-                .uninstall(&["git".into()], &cx)
-                .expect("uninstall Ok");
-        }
-
-        #[test]
-        #[serial]
-        fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
-            let (_bin, _path) = install_choco_shim(2, "", "no such package");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            let err = ChocolateyManager
-                .uninstall(&["git".into()], &cx)
-                .expect_err("non-zero choco uninstall must error");
-            assert!(err.to_string().contains("chocolatey"));
-        }
-
-        #[test]
-        #[serial]
-        fn choco_declares_no_index_and_refreshing_upgrades_nothing() {
-            let (_bin, _path) = install_choco_shim(0, "", "");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            assert!(
-                !ChocolateyManager.has_index(),
-                "`choco upgrade all -y` upgrades every package the user never declared"
-            );
-            ChocolateyManager.refresh_index(&cx).expect("refresh Ok");
-        }
-
-        #[test]
-        #[serial]
-        fn installed_packages_parses_choco_list_output() {
-            let stdout = "Chocolatey v2.2.2\ngit 2.44.0\nnodejs 20.11.1\npython 3.12.1\n3 packages installed.\n";
-            let (_bin, _path) = install_choco_shim(0, stdout, "");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
-            assert!(pkgs.contains("git"));
-            assert!(pkgs.contains("nodejs"));
-            assert!(pkgs.contains("python"));
-            assert_eq!(pkgs.len(), 3);
-        }
-
-        #[test]
-        #[serial]
-        fn installed_packages_empty_when_output_only_has_summary() {
-            let (_bin, _path) =
-                install_choco_shim(0, "Chocolatey v2.2.2\n0 packages installed.\n", "");
-            let p = test_printer();
-            let st = test_state();
-            let cx = test_package_context(&p, &st);
-            let pkgs = ChocolateyManager.installed_packages(&cx).expect("Ok");
-            assert!(pkgs.is_empty());
-        }
-
-        #[test]
-        #[serial]
-        fn available_version_returns_none_on_nonzero_exit() {
-            let (_bin, _path) = install_choco_shim(1, "", "not found");
-            let v = ChocolateyManager
-                .available_version("nonexistent")
-                .expect("non-zero → Ok(None)");
-            assert_eq!(v, None);
-        }
-
-        #[test]
-        #[serial]
-        fn available_version_extracts_pipe_separated_field_from_title_line() {
-            let info = "Chocolatey v2.2.2\nTitle: Git | 2.44.0\nPublished: now\n";
-            let (_bin, _path) = install_choco_shim(0, info, "");
-            let v = ChocolateyManager.available_version("git").expect("Ok");
-            assert_eq!(v.as_deref(), Some("2.44.0"));
-        }
-
-        #[test]
-        #[serial]
-        fn available_version_returns_none_when_title_field_missing() {
-            let info = "Chocolatey v2.2.2\nSummary: foo\n";
-            let (_bin, _path) = install_choco_shim(0, info, "");
-            let v = ChocolateyManager.available_version("foo").expect("Ok");
-            assert_eq!(v, None);
         }
     }
 }
