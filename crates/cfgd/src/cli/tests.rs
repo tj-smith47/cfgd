@@ -35999,8 +35999,9 @@ fn opening_statement(lines: &[&str], render: usize) -> usize {
 /// provider note (a note folds at both its render points, `ActionNote::body`
 /// for a collected caveat and `NoteSink::report_tagged`'s non-collecting arm
 /// for one that settles on the printer), and a returned error or an `-o json`
-/// payload (`cli_error`, `anyhow!`, `bail!`, `json!`). Anything else that must print the absolute path says why with
-/// `// absolute-path-ok: <why>` on its line or in the comment block above it.
+/// payload (`cli_error`, `anyhow!`, `bail!`, `json!`). Anything else that must
+/// print the absolute path says why with `// absolute-path-ok: <why>` on its
+/// line or in the comment block above it.
 #[test]
 fn every_display_slot_of_both_crates_folds_the_home_directory() {
     const SINKS: &[&str] = &[
