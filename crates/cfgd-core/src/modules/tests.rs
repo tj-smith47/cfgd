@@ -2386,6 +2386,113 @@ fn diff_module_specs_scripts_changed() {
     );
 }
 
+#[test]
+fn diff_module_specs_reports_a_reordered_and_a_duplicated_script() {
+    let with_steps = |bodies: &[&str]| {
+        let mut module = LoadedModule {
+            version: None,
+            name: "test".into(),
+            spec: ModuleSpec {
+                platforms: vec![],
+                depends: vec![],
+                packages: vec![],
+                files: vec![],
+                env: vec![],
+                aliases: vec![],
+                scripts: None,
+                system: BTreeMap::new(),
+            },
+            dir: PathBuf::from("/tmp"),
+            origin: None,
+        };
+        module.spec.scripts = Some(crate::config::ScriptSpec {
+            post_apply: bodies
+                .iter()
+                .map(|b| crate::config::ScriptEntry::Simple((*b).to_string()))
+                .collect(),
+            ..Default::default()
+        });
+        module
+    };
+    let script_rows = |changes: Vec<SpecChange>| -> Vec<(Role, String, String)> {
+        changes
+            .iter()
+            .filter_map(|c| {
+                c.script
+                    .as_ref()
+                    .map(|s| (c.role, c.subject.clone(), s.entry.run_str().to_string()))
+            })
+            .collect()
+    };
+
+    // Both bodies still declared, in the other order: the machine now runs the
+    // migration before the build rather than after it.
+    let swapped = script_rows(diff_module_specs(
+        &with_steps(&["echo build", "echo migrate"]),
+        &with_steps(&["echo migrate", "echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        swapped,
+        vec![
+            (
+                Role::Warn,
+                "postApply script moved".to_string(),
+                "echo migrate".to_string()
+            ),
+            (
+                Role::Warn,
+                "postApply script moved".to_string(),
+                "echo build".to_string()
+            ),
+        ],
+        "a reordered hook states both steps that moved"
+    );
+
+    // The same body a second time: the step runs twice now.
+    let duplicated = script_rows(diff_module_specs(
+        &with_steps(&["echo build"]),
+        &with_steps(&["echo build", "echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        duplicated,
+        vec![(
+            Role::Ok,
+            "postApply script added".to_string(),
+            "echo build".to_string()
+        )],
+        "the extra copy is an addition, and the copy that kept its place is not a change"
+    );
+
+    // A copy taken away is the mirror of the one above.
+    let undoubled = script_rows(diff_module_specs(
+        &with_steps(&["echo build", "echo build"]),
+        &with_steps(&["echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        undoubled,
+        vec![(
+            Role::Fail,
+            "postApply script removed".to_string(),
+            "echo build".to_string()
+        )],
+        "one of two identical steps going is a removal"
+    );
+
+    // An unchanged hook still reads as no change at all.
+    assert!(
+        script_rows(diff_module_specs(
+            &with_steps(&["echo build", "echo migrate"]),
+            &with_steps(&["echo build", "echo migrate"]),
+            "->",
+        ))
+        .is_empty(),
+        "a hook declared identically states nothing"
+    );
+}
+
 // `diff_module_specs` feeds the pre-approval security review of a module
 // upgrade, so it must never condense or truncate a multi-line script body: the
 // user would approve running code they never saw. The body travels as the

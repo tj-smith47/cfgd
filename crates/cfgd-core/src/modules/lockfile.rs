@@ -560,20 +560,38 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) ->
     // approval screen can render it through the one Scripts composer. Removals
     // come first, so a step whose body changed reads as the old one going and
     // the new one arriving rather than the other way round.
+    //
+    // Judged by POSITION, not as a set: the hook runs its steps in the order
+    // they are declared, so two steps swapped or one declared a second time
+    // changes what the machine does while both specs still name the same
+    // bodies. A step the other spec holds at its own position is unchanged; one
+    // it holds elsewhere has moved, and only a body whose count actually fell
+    // or rose went or arrived.
     let old_steps = post_apply_steps(old);
     let new_steps = post_apply_steps(new);
+    let copies = |steps: &[ChangedScript], entry: &crate::config::ScriptEntry| {
+        steps.iter().filter(|s| &s.entry == entry).count()
+    };
     for script in &old_steps {
         // Whole entries, because the marker line above the body states every
         // knob the step declares: a step whose body stands while a knob moved
         // is a change the screen shows, so comparing bodies alone would call it
         // no change at all.
-        if !new_steps.iter().any(|s| s.entry == script.entry) {
+        if holds_step_at(&new_steps, script) {
+            continue;
+        }
+        if copies(&new_steps, &script.entry) < copies(&old_steps, &script.entry) {
             changes.push(script.clone().change(Role::Fail, "removed"));
         }
     }
     for script in &new_steps {
-        if !old_steps.iter().any(|s| s.entry == script.entry) {
+        if holds_step_at(&old_steps, script) {
+            continue;
+        }
+        if copies(&old_steps, &script.entry) < copies(&new_steps, &script.entry) {
             changes.push(script.clone().change(Role::Ok, "added"));
+        } else {
+            changes.push(script.clone().change(Role::Warn, "moved"));
         }
     }
 
@@ -582,6 +600,14 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) ->
     }
 
     changes
+}
+
+/// Whether `steps` declares the same entry `script` holds, at the same place in
+/// the hook.
+fn holds_step_at(steps: &[ChangedScript], script: &ChangedScript) -> bool {
+    steps
+        .get(script.position - 1)
+        .is_some_and(|s| s.entry == script.entry)
 }
 
 /// Every `postApply` step a module declares, each carrying its own position, so
