@@ -5277,10 +5277,11 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     assert!(
         output.contains(&format!(
             "Config file: {} — not found",
-            // The row reads the same field `-o json` serializes, which is
-            // folded to forward slashes, so the expectation is folded too
-            // rather than spelling this host's separator.
-            cfgd_core::to_posix_string(&config_path)
+            // The row renders the field `-o json` serializes, folded to
+            // forward slashes and then through the home fold the slot
+            // applies: a Windows temp dir lies under the home, so an
+            // unfolded expectation matches nothing there.
+            cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&config_path))
         )),
         "Fail line should name the explicit path, got: {output}"
     );
