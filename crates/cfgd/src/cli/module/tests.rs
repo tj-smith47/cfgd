@@ -3417,7 +3417,7 @@ fn cmd_module_delete_with_purge() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     make_module(dir.path(), "purge-mod", &yaml);
 
@@ -3454,7 +3454,7 @@ fn cmd_module_delete_restores_symlinked_files() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: restore-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     // Write module.yaml (module dir already created above)
     std::fs::write(dir.path().join("modules/restore-mod/module.yaml"), &yaml).unwrap();
@@ -3500,7 +3500,7 @@ fn cmd_module_delete_with_purge_removes_directory_target() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-dir-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_dir.display()
+        cfgd_core::to_posix_string(&target_dir)
     );
     make_module(dir.path(), "purge-dir-mod", &yaml);
 
@@ -3545,7 +3545,7 @@ fn cmd_module_delete_default_mode_restores_directory_source_via_copy_dir() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: restore-dir-mod\nspec:\n  files:\n    - source: files/payload\n      target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         dir.path().join("modules/restore-dir-mod/module.yaml"),
@@ -7570,7 +7570,7 @@ fn cmd_module_delete_purge_doc_payload_counts_processed_files() {
     std::fs::write(&target_file, "deployed").unwrap();
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-doc\nspec:\n  files:\n    - source: files/deployed.conf\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     make_module(dir.path(), "purge-doc", &yaml);
     std::fs::write(

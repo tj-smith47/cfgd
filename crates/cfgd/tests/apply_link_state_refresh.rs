@@ -33,7 +33,7 @@ fn setup(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, Path
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: {strategy}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();

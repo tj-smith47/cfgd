@@ -35,7 +35,7 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -74,9 +74,9 @@ pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::Temp
     std::fs::write(&second, "a stranger wrote this").unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true 1\"\n      - \"true 2\"\n      - \"true 3\"\n      - \"true 4\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n      - source: files/third.txt\n        target: {}\n        strategy: Copy\n",
-        target.display(),
-        second.display(),
-        third.display()
+        cfgd_core::to_posix_string(&target),
+        cfgd_core::to_posix_string(&second),
+        cfgd_core::to_posix_string(&third)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("tiny.yaml"),
@@ -107,7 +107,7 @@ pub fn profile_and_module_with_on_change_hooks_setup()
     .unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - hooked\n  scripts:\n    onChange:\n      - \"true profile\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("tiny.yaml"),
@@ -179,7 +179,7 @@ pub fn profile_with_packages_setup() -> (tempfile::TempDir, tempfile::TempDir, P
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -219,8 +219,8 @@ pub fn profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/world.txt\n        target: {}\n        strategy: Copy\n",
-        target_ok.display(),
-        target_fail.display(),
+        cfgd_core::to_posix_string(&target_ok),
+        cfgd_core::to_posix_string(&target_fail),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -448,8 +448,8 @@ pub fn backup_profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n    - name: ok\n      source: {}\n      retention: 3\n",
-        broken_source.display(),
-        ok_source.display(),
+        cfgd_core::to_posix_string(&broken_source),
+        cfgd_core::to_posix_string(&ok_source),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -486,8 +486,8 @@ pub fn single_failed_file_and_broken_backup_setup() -> (tempfile::TempDir, tempf
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n",
-        target_fail.display(),
-        broken_source.display(),
+        cfgd_core::to_posix_string(&target_fail),
+        cfgd_core::to_posix_string(&broken_source),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();

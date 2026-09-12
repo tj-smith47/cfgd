@@ -4375,7 +4375,7 @@ mod tests {
             profiles_dir.join("default.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n  backups:\n    - name: docs\n      source: {}\n      retention: 3\n",
-                backup_source.display()
+                cfgd_core::to_posix_string(&backup_source)
             ),
         )
         .unwrap();
@@ -8512,7 +8512,7 @@ mod tests {
             profiles_dir.join("default.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
-                target.display()
+                cfgd_core::to_posix_string(&target)
             ),
         )
         .unwrap();
@@ -8657,7 +8657,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                module_target.display()
+                cfgd_core::to_posix_string(&module_target)
             ),
         )
         .unwrap();
@@ -8783,7 +8783,7 @@ mod tests {
             dep_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dep-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                tmp_home.path().join("dep-file.txt").display()
+                cfgd_core::to_posix_string(tmp_home.path().join("dep-file.txt"))
             ),
         )
         .unwrap();
@@ -8794,7 +8794,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  depends:\n    - dep-mod\n  files:\n    - source: conf\n      target: {}\n",
-                tmp_home.path().join("mod-file.txt").display()
+                cfgd_core::to_posix_string(tmp_home.path().join("mod-file.txt"))
             ),
         )
         .unwrap();
@@ -8852,7 +8852,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                module_target.display()
+                cfgd_core::to_posix_string(&module_target)
             ),
         )
         .unwrap();

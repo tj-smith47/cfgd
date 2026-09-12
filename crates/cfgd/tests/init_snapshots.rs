@@ -556,7 +556,7 @@ fn init_apply_lock_honors_state_dir_override() {
         target.join("profiles").join("default.yaml"),
         format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-            deployed.display()
+            cfgd_core::to_posix_string(&deployed)
         ),
     )
     .unwrap();

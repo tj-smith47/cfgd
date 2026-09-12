@@ -2374,7 +2374,7 @@ fn module_delete_purge_removes_target_files() {
     // Create a module with a file entry pointing at the target
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-mod\nspec:\n  files:\n    - source: files/deployed.conf\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     create_module_in_dir(dir.path(), "purge-mod", &module_yaml);
     // Write a source file in the module
@@ -2408,7 +2408,7 @@ fn module_delete_no_purge_preserves_target_files() {
 
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: keep-mod\nspec:\n  files:\n    - source: files/regular.conf\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     create_module_in_dir(dir.path(), "keep-mod", &module_yaml);
 
@@ -5846,7 +5846,7 @@ fn cmd_apply_dry_run_with_files() {
     // Profile with a file
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -5906,7 +5906,7 @@ fn cmd_apply_creates_file() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -5956,7 +5956,7 @@ fn cmd_apply_idempotent() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -6021,7 +6021,7 @@ fn cmd_diff_with_files() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/test.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -7970,7 +7970,7 @@ fn cmd_rollback_after_file_apply() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/rollback-test.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -8052,7 +8052,7 @@ fn apply_one_file_and_record(
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withfile\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/{name}.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         config_dir.path().join("profiles").join("withfile.yaml"),
@@ -9929,7 +9929,7 @@ fn module_delete_restores_symlinked_files() {
 
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: link-mod\nspec:\n  files:\n    - source: files/config.txt\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     std::fs::write(module_dir.join("module.yaml"), &module_yaml).unwrap();
 
@@ -14018,7 +14018,7 @@ fn cmd_apply_real_records_state() {
     let target = h.config_path().join("output").join("seed.txt");
     let default_profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/seed.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         h.config_path().join("profiles").join("default.yaml"),
@@ -30803,7 +30803,7 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
         mod_dir.join("module.yaml"),
         format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: conf-mod\nspec:\n  files:\n    - source: files/app.conf\n      target: {}\n      strategy: Copy\n",
-            target.display()
+            cfgd_core::to_posix_string(&target)
         ),
     )
     .unwrap();
@@ -35795,6 +35795,235 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     );
 }
 
+/// Whether a line opens a cfgd document a fixture plants on disk: a template
+/// carrying a line break and one of the four keys every such document spells.
+///
+/// Kept beside the walk below rather than inside it so the fixture test can ask
+/// the same question of a line it spells itself.
+fn opens_a_cfgd_document(line: &str) -> bool {
+    line.contains("\\n")
+        && ["apiVersion:", "kind:", "metadata:", "spec:"]
+            .iter()
+            .any(|key| line.contains(key))
+}
+
+/// Every native path render a test region interpolates into one of those
+/// documents, as `(index into `lines`, the line)`, beside the count of folded
+/// ones the same statements hold.
+fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, usize) {
+    const NATIVE: &[&str] = &[".display()", ".to_string_lossy()"];
+    const FOLDED: &[&str] = &["to_posix_string(", "to_posix_fs_key(", ".posix()"];
+    let lines: Vec<&str> = region.lines().collect();
+    let mut offenders = Vec::new();
+    let mut folded = 0usize;
+    for (n, line) in lines.iter().enumerate() {
+        if !opens_a_cfgd_document(line) {
+            continue;
+        }
+        // The template states the document and every interpolated value sits
+        // below it, so the statement it opens is the span to judge.
+        //
+        // A reason is written above the whole statement, which the template
+        // rarely opens, so the hatch is read from the line above the first line
+        // of the statement holding it.
+        let mut opened = n;
+        while opened > 0
+            && n - opened < 6
+            && !lines[opened - 1].trim_end().ends_with([';', '{', '}'])
+        {
+            opened -= 1;
+        }
+        let hatch_from = opened.saturating_sub(1);
+        let mut depth = 0i32;
+        for (i, text) in lines[n..].iter().enumerate() {
+            depth += text.matches(['(', '[', '{']).count() as i32;
+            depth -= text.matches([')', ']', '}']).count() as i32;
+            if FOLDED.iter().any(|f| text.contains(f)) {
+                folded += 1;
+            } else if NATIVE.iter().any(|f| text.contains(f)) {
+                let hatched = lines[hatch_from..=n + i]
+                    .iter()
+                    .any(|l| l.contains(NATIVE_HATCH));
+                if !hatched {
+                    offenders.push((n + i, (*text).to_string()));
+                }
+            }
+            if depth <= 0 && text.trim_end().ends_with([';', '?', ')']) {
+                break;
+            }
+        }
+    }
+    (offenders, folded)
+}
+
+/// What a deliberately native render inside such a document says for itself.
+const NATIVE_HATCH: &str = "// native-ok:";
+
+/// A path a FIXTURE writes into a cfgd document folds to `/`, exactly as
+/// production does.
+///
+/// That document is parsed back by cfgd, and a Windows `\` in a double-quoted
+/// YAML scalar is an escape the parser reads as something else entirely, so the
+/// fixture plants a document no production path would ever produce and the test
+/// asserts about a parse failure instead of its subject. A `target:` also
+/// becomes a resource id the next tick matches by string equality, which is the
+/// bug `path-handling.md` exists for. A render that belongs to a command built
+/// for THIS host alone says so with `// native-ok: <why>` on the line, or above
+/// the statement holding it.
+///
+/// Judged over every crate's TEST regions: production display slots are covered
+/// by the three walks above and by the post-edit hook.
+#[test]
+fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let mut folded = 0usize;
+    let mut files = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
+        let body = cfgd_core::test_helpers::walked_file_body(&path);
+        let in_tests = path.components().any(|c| c.as_os_str() == "tests")
+            || path.file_name().is_some_and(|n| n == "tests.rs");
+        let Some(region) = (if in_tests {
+            Some(0)
+        } else {
+            body.find("#[cfg(test)]")
+        }) else {
+            continue;
+        };
+        files += 1;
+        // Line numbers are the file's own, so an offender can be opened where
+        // it is reported.
+        let skipped = body[..region].lines().count();
+        let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        let (found, count) = native_paths_in_declared_documents(&body[region..]);
+        folded += count;
+        for (n, line) in found {
+            offenders.push(format!("{label}:{}: {}", skipped + n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a fixture interpolating a path into a cfgd document folds it through \
+         `cfgd_core::to_posix_string`, or says why the native separator is right with \
+         `{NATIVE_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        files >= 300,
+        "the walk read {files} sources holding a test region; it is looking at the wrong root"
+    );
+    assert!(
+        folded >= 60,
+        "the walk found {folded} folded interpolations; it has gone blind to the population"
+    );
+}
+
+/// The walk reads the document, then the render inside it: a planted YAML
+/// document carrying a native path is an offence, the same document carrying a
+/// folded one is not, and a native path outside any document is none of its
+/// business.
+#[test]
+fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
+    // Assembled rather than spelled, so the walk above does not read this
+    // fixture's own offence as one of the workspace's.
+    let native = format!(".dis{}", "play()");
+    let document = "        \"apiVersion: cfgd.io/v1alpha1\\nkind: Profile\\nspec:\\n  \
+                    files:\\n    managed:\\n      - target: {}\\n\",";
+    let offending =
+        format!("    let profile = format!(\n{document}\n        target{native},\n    );");
+    let (found, folded) = native_paths_in_declared_documents(&offending);
+    assert_eq!(
+        found.len(),
+        1,
+        "a native path interpolated into a planted document is an offence: {found:?}"
+    );
+    assert_eq!(folded, 0, "nothing in that statement is folded");
+
+    let folded_body = format!(
+        "    let profile = format!(\n{document}\n        \
+         cfgd_core::to_posix_string(&target),\n    );"
+    );
+    let (found, folded) = native_paths_in_declared_documents(&folded_body);
+    assert!(
+        found.is_empty(),
+        "the folded spelling is no offence: {found:?}"
+    );
+    assert_eq!(
+        folded, 1,
+        "the folded interpolation is counted as the population"
+    );
+
+    let hatched = format!(
+        "    // {NATIVE_HATCH} the path is read by this host's own shell.\n\
+             let profile = format!(\n{document}\n        target{native},\n    );"
+    );
+    assert!(
+        native_paths_in_declared_documents(&hatched).0.is_empty(),
+        "a hatched render is no offence"
+    );
+
+    let elsewhere = format!("    let message = format!(\"cannot read {{}}\", path{native});");
+    assert!(
+        native_paths_in_declared_documents(&elsewhere).0.is_empty(),
+        "a native render outside a planted document is not this walk's business"
+    );
+}
+
+/// `ModuleTally.scripts` serves `-o json` alone.
+///
+/// Nothing checks a script, so no human row of the status report counts one: the
+/// Managed Resources table states no script row and the Component Health clause
+/// names no script noun. The slot exists because a consumer reading the recorded
+/// rows still gets the number, and the two sites below are the whole of its
+/// life: the assignment that fills it from the declaration, and the one payload
+/// field that carries it onto the wire. A third read would be a human surface
+/// counting something this report never checked.
+#[test]
+fn the_module_tally_script_count_is_read_by_the_payload_alone() {
+    /// Every read or write of a `scripts` slot `status.rs` may hold, and what
+    /// each one is for.
+    const ALLOWED: &[(&str, &str)] = &[
+        (
+            "\"script\" => entry.scripts = declared.get(module).map_or(0, |d| d.scripts),",
+            "fills the tally slot from the module's own declaration",
+        ),
+        (
+            "scripts: tally.scripts,",
+            "carries the count into the `-o json` payload",
+        ),
+    ];
+    let path = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/status.rs");
+    let body = cfgd_core::test_helpers::production_slice_of(&path);
+    let mut found = vec![0usize; ALLOWED.len()];
+    let mut offenders = Vec::new();
+    for (n, line) in body.lines().enumerate() {
+        if !line.contains(".scripts") {
+            continue;
+        }
+        let code = line.trim();
+        match ALLOWED.iter().position(|(shape, _)| *shape == code) {
+            Some(index) => found[index] += 1,
+            None => offenders.push(format!("status.rs:{}: {code}", n + 1)),
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a module's script count is the `-o json` payload's, the table stating no script row \
+         and the health clause counting no script noun:\n{}",
+        offenders.join("\n")
+    );
+    let missing: Vec<&str> = ALLOWED
+        .iter()
+        .zip(&found)
+        .filter(|(_, count)| **count == 0)
+        .map(|((shape, _), _)| *shape)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these shapes name no line any more, so the table describes code that moved: {missing:?}"
+    );
+}
+
 /// Every verb that runs a plan records `managed_resources` rows with no hash,
 /// and settles them through the ONE `refresh_link_deployed_hashes` seam
 /// before it returns — or the daemon's first tick after it backfills the
@@ -36278,7 +36507,7 @@ fn diff_and_scan_agree_on_the_findings() {
     std::fs::write(&target, "tampered\n").unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  system:\n    gpgKeys:\n      - name: sig\n        realName: Test User\n        email: sig@example.com\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
-        target.display(),
+        cfgd_core::to_posix_string(&target),
     );
 
     let drift_rows = |run: &dyn Fn(&CliTestHarness)| {

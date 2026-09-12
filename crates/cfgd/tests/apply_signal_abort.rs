@@ -49,8 +49,8 @@ fn sleeping_apply_config(dir: &Path) -> std::path::PathBuf {
     let sentinel = sentinel_path(dir);
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    preApply:\n      - run: \"touch '{}' && sleep 5\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        sentinel.display(),
-        target.display(),
+        cfgd_core::to_posix_string(&sentinel),
+        cfgd_core::to_posix_string(&target),
     );
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -163,7 +163,7 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
         let tgt = config_tmp2.path().join("out").join("hello.txt");
         let profile = format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-            tgt.display(),
+            cfgd_core::to_posix_string(&tgt),
         );
         let profiles_dir = config_tmp2.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();

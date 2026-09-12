@@ -553,7 +553,7 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
     // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
-        module_target.display()
+        cfgd_core::to_posix_string(&module_target)
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
@@ -631,7 +631,7 @@ fn status_module_exit_code_catches_module_file_drift() {
     // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
-        module_target.display()
+        cfgd_core::to_posix_string(&module_target)
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
@@ -1508,7 +1508,7 @@ fn status_exit_code_renders_live_file_drift_not_no_drift() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
@@ -2383,7 +2383,7 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     std::fs::write(&target, "tampered\n").unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
@@ -2836,7 +2836,7 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
         dir.join("modules/example/module.yaml"),
         format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: example\nspec:\n  files:\n    - source: files/example.txt\n      target: {}/deployed/example.txt\n",
-            dir.display()
+            cfgd_core::to_posix_string(dir)
         ),
     )
     .unwrap();
