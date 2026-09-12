@@ -36045,9 +36045,11 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         "json!(",
     ];
     const HATCH: &str = "// absolute-path-ok:";
-    // A per-file floor for the files that hold a known population, so a read
-    // going blind in one of them fails instead of passing on another's slots.
-    const FLOOR_FILES: [(&str, usize); 11] = [
+    // A per-file floor, so a read going blind in one file fails instead of
+    // passing on another's slots. The members are every file the walk judges
+    // three or more slots in, which is what keeps the table from being a
+    // sample: a file that grows into that population joins it.
+    const FLOOR_FILES: [(&str, usize); 17] = [
         ("cfgd-core/src/reconciler/restore.rs", 11),
         ("cfgd-core/src/reconciler/scripts.rs", 11),
         ("cfgd/src/cli/config_migration.rs", 10),
@@ -36058,7 +36060,13 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         ("cfgd/src/cli/module/crud.rs", 6),
         ("cfgd/src/cli/backup.rs", 6),
         ("cfgd-core/src/sources/mod.rs", 6),
+        ("cfgd/src/cli/init/enroll.rs", 4),
+        ("cfgd/src/cli/plan_ops.rs", 4),
+        ("cfgd/src/cli/helpers.rs", 3),
+        ("cfgd/src/cli/init/source.rs", 3),
         ("cfgd/src/cli/module/export.rs", 3),
+        ("cfgd/src/cli/profile/backups.rs", 3),
+        ("cfgd/src/cli/profile/show.rs", 3),
     ];
     // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
     // nowhere reads no files, and one holding no command code judges no slot.
