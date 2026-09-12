@@ -35839,6 +35839,25 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         surfaces.push((surface, cap.human()));
     }
 
+    // `cfgd module keys list` is DRIVEN rather than composed: its rows come off
+    // the filesystem, so a constructed value would assert about the fixture
+    // instead of about the command, and the key files it names sit under home.
+    std::fs::create_dir_all(home.path().join(".cfgd")).expect("create ~/.cfgd");
+    std::fs::write(home.path().join(".cfgd/cosign.pub"), "public-key-bytes")
+        .expect("plant a public key under home");
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    super::module::cmd_module_keys_list(&printer).expect("list the signing keys");
+    drop(printer);
+    let listing = cap
+        .json()
+        .expect("the listing carries a payload")
+        .to_string();
+    assert!(
+        listing.contains(&home_posix),
+        "the key listing's `-o json` payload keeps the absolute path:\n{listing}"
+    );
+    surfaces.push(("cfgd module keys list", cap.human()));
+
     for (surface, text) in surfaces {
         assert!(
             !text.contains(&home_posix),
@@ -35854,6 +35873,87 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         paths.config.file,
         config_path.posix().to_string(),
         "the `-o json` payload keeps the absolute path"
+    );
+}
+
+/// The two commands whose subject IS a path the caller named fold the home
+/// directory in every display slot they print.
+///
+/// `cfgd secret <verb> <file>` and `cfgd module keys rotate --dir <dir>` print
+/// back the path they were handed, and the path a person hands either of them
+/// usually sits under their home directory. Both keep the absolute path in their
+/// `-o json` payload and in the failure strings they record, so the fold belongs
+/// to the display slot alone, and a walk is the only thing that reaches the arms
+/// no fixture can drive: two of `secret`'s error arms need a backend that fails
+/// on a real file, and the key-restore arm needs two renames to fail in order.
+///
+/// A slot is judged as a statement however rustfmt broke it, plus the few lines
+/// above it, because a render is often bound to a name one line up and
+/// interpolated. A slot that must print the absolute path says so with
+/// `// absolute-path-ok: <why>`.
+#[test]
+fn every_display_slot_of_a_caller_named_path_folds_the_home_directory() {
+    const SINKS: &[&str] = &[
+        "printer.status",
+        "printer.hint",
+        "printer.alert",
+        ".detail(",
+        ".status(",
+        ".status_simple(",
+        ".kv_block(",
+        ".qualifier(",
+        ".hint_commands(",
+    ];
+    const RENDERS: &[&str] = &[".posix()", ".display_posix()", ".display()"];
+    const HATCH: &str = "// absolute-path-ok:";
+    // The floor is per file, so a read that goes blind in one of them fails
+    // rather than passing on the other's slots.
+    const WALKED: [(&str, usize); 2] = [("cli/secret.rs", 5), ("cli/module/keys.rs", 4)];
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+    for (relative, floor) in WALKED {
+        let path = src.join(relative);
+        let body = production_body(&walked_file_body(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        let mut judged = 0usize;
+        let mut n = 0usize;
+        while n < lines.len() {
+            if lines[n].trim_start().starts_with("//")
+                || !SINKS.iter().any(|sink| lines[n].contains(sink))
+            {
+                n += 1;
+                continue;
+            }
+            // A statement rustfmt broke over many lines still ends at its `;`.
+            // Where the sink is a builder chain whose `;` is further out than the
+            // window, the window itself is the bound, so a render under the sink
+            // is read rather than missed.
+            let last = (n + 13).min(lines.len() - 1);
+            let end = (n..=last)
+                .find(|&i| lines[i].trim_end().ends_with(';'))
+                .unwrap_or(last);
+            let window = lines[n.saturating_sub(6)..=end].join("\n");
+            if RENDERS.iter().any(|render| window.contains(render)) {
+                judged += 1;
+                if !window.contains("fold_home_in_text") && !window.contains(HATCH) {
+                    offenders.push(format!("{relative}:{}: {}", n + 1, lines[n].trim()));
+                }
+            }
+            n = end + 1;
+        }
+        assert!(
+            judged >= floor,
+            "the walk judged {judged} display slots in {relative}, under its floor of {floor} \
+             — it has gone blind in that file"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a display slot of a command whose subject is a caller-named path folds the home \
+         directory through `cfgd_core::fold_home_in_text`, or says why the absolute path is \
+         right with `{HATCH} <why>`:\n{}",
+        offenders.join("\n")
     );
 }
 
