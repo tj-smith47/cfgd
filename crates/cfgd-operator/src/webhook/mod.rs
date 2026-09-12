@@ -669,7 +669,9 @@ fn build_injection_patches<'m>(
     // Add init containers for modules with postApply scripts
     let script_modules: Vec<_> = modules
         .iter()
-        .filter(|(_, _, spec)| spec.scripts.post_apply.is_some() && mounts_into_containers(spec))
+        .filter(|(_, _, spec)| {
+            spec.scripts.post_apply_body().is_some() && mounts_into_containers(spec)
+        })
         .collect();
 
     if !script_modules.is_empty() {
@@ -690,11 +692,7 @@ fn build_injection_patches<'m>(
 
         for (name, _version, spec) in &script_modules {
             let safe_name = cfgd_core::sanitize_k8s_name(name);
-            let script_path = spec
-                .scripts
-                .post_apply
-                .as_deref()
-                .unwrap_or("post-apply.sh");
+            let script_path = spec.scripts.post_apply_body().unwrap_or("post-apply.sh");
             patches.push(json_patch::PatchOperation::Add(json_patch::AddOperation {
                 path: ptr("/spec/initContainers/-"),
                 value: serde_json::json!({

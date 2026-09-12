@@ -506,6 +506,21 @@ pub struct ModuleScripts {
     pub post_apply: Option<String>,
 }
 
+impl ModuleScripts {
+    /// The post-apply command this module declares, if it declares one.
+    ///
+    /// A blank body runs nothing, so it is no declaration: [`ModuleSpec::validate`]
+    /// refuses one, and every reader asks this rather than `post_apply.is_some()`
+    /// so a module already admitted under an older webhook cannot have an init
+    /// container built for a command there is nothing to run.
+    pub fn post_apply_body(&self) -> Option<&str> {
+        self.post_apply
+            .as_deref()
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+    }
+}
+
 /// An environment variable set by a Module.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1128,6 +1143,15 @@ impl ModuleSpec {
         }
         if let Some(ref hooks) = self.hooks
             && let Err(e) = cfgd_schema::validate_script_bodies("spec.hooks", hooks)
+        {
+            errors.push(e.to_string());
+        }
+        if let Some(ref post_apply) = self.scripts.post_apply
+            && let Err(e) = cfgd_schema::validate_script_body(
+                "spec",
+                &format!("scripts.{}", cfgd_schema::POST_APPLY_HOOK),
+                post_apply,
+            )
         {
             errors.push(e.to_string());
         }

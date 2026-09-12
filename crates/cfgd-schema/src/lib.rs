@@ -392,12 +392,28 @@ pub struct ScriptShapeError(pub String);
 pub fn validate_script_bodies(subject: &str, spec: &ScriptSpec) -> Result<(), ScriptShapeError> {
     for (hook, entries) in spec.hooks() {
         for (index, entry) in entries.iter().enumerate() {
-            if entry.run_str().trim().is_empty() {
-                return Err(ScriptShapeError(format!(
-                    "{subject}: scripts.{hook}[{index}] has an empty 'run'"
-                )));
-            }
+            validate_script_body(
+                subject,
+                &format!("scripts.{hook}[{index}]"),
+                entry.run_str(),
+            )?;
         }
+    }
+    Ok(())
+}
+
+/// Refuse ONE declared body whose text is empty or holds only whitespace,
+/// naming the slot the caller was reading.
+///
+/// The refusal every hook declaration answers to, whether it arrives as a list
+/// of steps or as the single command a scalar hook field carries: a blank body
+/// runs nothing wherever it was declared, and one wording keeps two surfaces
+/// from refusing the same document differently.
+pub fn validate_script_body(subject: &str, slot: &str, body: &str) -> Result<(), ScriptShapeError> {
+    if body.trim().is_empty() {
+        return Err(ScriptShapeError(format!(
+            "{subject}: {slot} has an empty 'run'"
+        )));
     }
     Ok(())
 }

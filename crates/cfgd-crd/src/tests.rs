@@ -869,6 +869,49 @@ fn module_validate_rejects_a_hook_with_an_empty_run() {
     );
 }
 
+/// The second hook declaration on the Module CRD: a scalar `postApply` command
+/// whose body is blank.
+///
+/// The webhook builds an init container for every module declaring this field,
+/// so a blank body is a container that runs nothing and a module the agent
+/// refuses on every machine it reaches. The refusal comes from the same shape
+/// rule the list-shaped hooks answer to, which is why the wording matches.
+#[test]
+fn module_validate_rejects_a_blank_post_apply_script() {
+    let spec = ModuleSpec {
+        scripts: ModuleScripts {
+            post_apply: Some("   ".to_string()),
+        },
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a postApply command that runs nothing must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec: scripts.postApply has an empty 'run'".to_string()],
+        "the scalar hook is refused in the same words as a hook step"
+    );
+    assert!(
+        ModuleScripts {
+            post_apply: Some("   ".to_string()),
+        }
+        .post_apply_body()
+        .is_none(),
+        "a blank body declares no command, so no reader builds anything for it"
+    );
+    assert_eq!(
+        ModuleScripts {
+            post_apply: Some(" setup.sh ".to_string()),
+        }
+        .post_apply_body(),
+        Some("setup.sh"),
+        "a body with a command in it is read without its surrounding space"
+    );
+}
+
 #[test]
 fn module_validate_rejects_malformed_oci_ref() {
     let spec = ModuleSpec {

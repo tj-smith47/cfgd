@@ -4893,9 +4893,8 @@ fn every_pin_that_runs_at_one_uid_says_so_in_its_name() {
     }
 }
 
-/// Every production field whose type is a [`cfgd_schema::ScriptSpec`], paired
-/// with the production files whose parse refuses a step with an empty `run` in
-/// it.
+/// Every production field whose type carries a declared script body, paired
+/// with the production files whose parse refuses a blank one in it.
 ///
 /// A holder reaches its validation through the file that PARSES it, which is
 /// not always its own: `ProfileSpec` is refused where its layers are merged,
@@ -4924,15 +4923,27 @@ const SCRIPT_SPEC_HOLDERS: &[(&str, &str, &[&str])] = &[
         "hooks",
         &["crates/cfgd-crd/src/lib.rs"],
     ),
+    (
+        "crates/cfgd-crd/src/lib.rs",
+        "scripts",
+        &["crates/cfgd-crd/src/lib.rs"],
+    ),
 ];
 
+/// Every type a declared script body arrives inside: the six-hook spec, and the
+/// Module CRD's own scalar hook holder.
+///
+/// A field declaring one accepts a body cfgd will run, whatever the shape it
+/// spells the body in, so both belong to the population below.
+const SCRIPT_BODY_TYPES: &[&str] = &["ScriptSpec", "ModuleScripts"];
+
 /// The field name a line declares, when the line declares a struct field whose
-/// type holds a `ScriptSpec`.
+/// type carries a script body.
 ///
 /// A field is the shape that DESERIALIZES one: a struct literal, a function
 /// parameter and a return type all name the type without accepting YAML, so
 /// only a `pub` field ending its own declaration answers.
-fn declares_a_script_spec_field(line: &str) -> Option<&str> {
+fn declares_a_script_body_field(line: &str) -> Option<&str> {
     let code = line.split("//").next().unwrap_or(line).trim();
     if !code.ends_with(',') {
         return None;
@@ -4942,20 +4953,26 @@ fn declares_a_script_spec_field(line: &str) -> Option<&str> {
         return None;
     }
     let (name, ty) = words.next()?.split_once(':')?;
-    ty.contains("ScriptSpec").then(|| name.trim())
+    SCRIPT_BODY_TYPES
+        .iter()
+        .any(|holder| ty.contains(holder))
+        .then(|| name.trim())
 }
 
-/// A `ScriptSpec` a surface accepts from YAML is a body cfgd will run: a step
-/// whose `run` is blank runs nothing and renders a row with no body in it, so
-/// every holder refuses it at parse time. The Module CRD held the one field
-/// nothing checked, which let a cluster admit a module the agent then refused
-/// on every machine it reached.
+/// A script body a surface accepts from YAML is a body cfgd will run: a blank
+/// one runs nothing and renders a row with no body in it, so every holder
+/// refuses it at parse time. The Module CRD held two fields nothing checked,
+/// which let a cluster admit a module the agent then refused on every machine it
+/// reached, and let the pod webhook build an init container around a command
+/// that was never there.
 ///
 /// Each holder names the files that validate it rather than validating in
 /// place, because a spec merged from layers is refused where the merge lands
-/// and not where the field is declared.
+/// and not where the field is declared. The validating call must NAME the
+/// holder's field in its subject or its argument: a file already refusing one
+/// field would otherwise vouch for a second holder nothing reads.
 #[test]
-fn every_deserialized_script_spec_is_refused_an_empty_run() {
+fn every_deserialized_script_body_is_refused_an_empty_run() {
     let mut found: Vec<(String, String)> = Vec::new();
     let mut read = 0usize;
     for path in workspace_rust_files() {
@@ -4970,7 +4987,7 @@ fn every_deserialized_script_spec_is_refused_an_empty_run() {
         let label = source_label(&path);
         for line in crate::test_helpers::production_slice_of(&path).lines() {
             let code = code_half(line);
-            if let Some(field) = declares_a_script_spec_field(&code) {
+            if let Some(field) = declares_a_script_body_field(&code) {
                 found.push((label.to_string(), field.to_string()));
             }
         }
@@ -5008,32 +5025,41 @@ fn every_deserialized_script_spec_is_refused_an_empty_run() {
     for (file, field, validators) in SCRIPT_SPEC_HOLDERS {
         for validator in *validators {
             let body = walked_file_body(&workspace_root().join(validator));
-            if !body.contains("validate_script_bodies") {
+            let lines: Vec<&str> = body.lines().collect();
+            let names_the_field = lines.iter().enumerate().any(|(i, line)| {
+                line.contains("validate_script_bod")
+                    && lines[i.saturating_sub(2)..(i + 3).min(lines.len())]
+                        .iter()
+                        .any(|near| near.contains(field))
+            });
+            if !names_the_field {
                 unvalidated.push(format!("{file}: {field}: {validator}"));
             }
         }
     }
     assert!(
         unvalidated.is_empty(),
-        "the file that parses a declared script spec calls \
-         `cfgd_schema::validate_script_bodies` over it, so one surface cannot accept a body \
-         another refuses:\n{}",
+        "the file that parses a declared script body calls `cfgd_schema::validate_script_bod*` \
+         over it, naming the field in the call's subject or argument, so one surface cannot \
+         accept a body another refuses:\n{}",
         unvalidated.join("\n")
     );
 }
 
 /// The field matcher reads the declaration shape, not the type name: a struct
-/// literal, a parameter and a return type mention a `ScriptSpec` without
+/// literal, a parameter and a return type mention a script-body type without
 /// accepting one from YAML, and a private field accepts one as much as a `pub`
 /// one does only where serde can reach it.
 #[test]
-fn the_script_spec_field_matcher_reads_a_declaration_and_nothing_else() {
+fn the_script_body_field_matcher_reads_a_declaration_and_nothing_else() {
     for line in [
         "    pub hooks: Option<cfgd_schema::ScriptSpec>,",
         "    pub(crate) scripts: ScriptSpec,",
+        "    pub scripts: Option<ModuleScripts>,",
+        "    pub scripts: ModuleScripts,",
     ] {
         assert!(
-            declares_a_script_spec_field(line).is_some(),
+            declares_a_script_body_field(line).is_some(),
             "a field declaration must be matched: {line}"
         );
     }
@@ -5041,15 +5067,15 @@ fn the_script_spec_field_matcher_reads_a_declaration_and_nothing_else() {
         "            scripts: crate::config::ScriptSpec::default(),",
         "        scripts: &ScriptSpec,",
         "    pub fn declared_scripts(&self) -> crate::config::ScriptSpec {",
-        "    pub scripts: Option<ModuleScripts>,",
+        "            scripts: ModuleScripts::default(),",
     ] {
         assert!(
-            declares_a_script_spec_field(line).is_none(),
+            declares_a_script_body_field(line).is_none(),
             "only a field declaration is matched: {line}"
         );
     }
     assert_eq!(
-        declares_a_script_spec_field("    pub hooks: Option<cfgd_schema::ScriptSpec>,"),
+        declares_a_script_body_field("    pub hooks: Option<cfgd_schema::ScriptSpec>,"),
         Some("hooks"),
         "the matcher names the field, which is how a holder is found in the table"
     );

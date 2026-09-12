@@ -560,6 +560,44 @@ fn build_patches_with_post_apply_script() {
     assert!(patch_json.contains("setup.sh"));
 }
 
+/// A `postApply` holding only whitespace declares no command, so nothing is
+/// built for it.
+///
+/// `ModuleSpec::validate` refuses such a body at admission, but a module
+/// admitted before that refusal existed is still in the cluster, and an init
+/// container built for it would run nothing while holding the pod's start up.
+/// The gate reads the same predicate the refusal does.
+#[test]
+fn build_patches_skips_a_module_whose_post_apply_is_blank() {
+    let pod = serde_json::json!({
+        "spec": {
+            "containers": [
+                {"name": "app", "image": "busybox"}
+            ]
+        }
+    });
+    let modules = vec![(
+        "setup".to_string(),
+        "1.0".to_string(),
+        ModuleSpec {
+            scripts: crate::crds::ModuleScripts {
+                post_apply: Some("   ".to_string()),
+            },
+            ..Default::default()
+        },
+    )];
+    let (patches, _skipped) = build_injection_patches(&pod, &modules);
+    let patch_json = serde_json::to_string(&patches).unwrap();
+    assert!(
+        !patch_json.contains("initContainers"),
+        "a blank body builds no init container: {patch_json}"
+    );
+    assert!(
+        !patch_json.contains("cfgd-scripts"),
+        "and no volume for it to write into: {patch_json}"
+    );
+}
+
 #[test]
 fn build_patches_with_append_env_var() {
     let pod = serde_json::json!({
