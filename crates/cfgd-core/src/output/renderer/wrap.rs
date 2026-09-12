@@ -169,7 +169,11 @@ pub(crate) fn wrap_body_at_hang(
     hang: &str,
     cols: Option<usize>,
 ) -> Vec<String> {
-    let mut logical = body.split('\n');
+    // A body's own terminator is not a line of it. Split as handed in, a value
+    // ending the way every YAML block scalar does left a blank physical row
+    // behind the last line, which then sat beside the blank the next block
+    // arms for itself and closed the report on two.
+    let mut logical = body.trim_end_matches(['\n', '\r']).split('\n');
     let Some(first) = logical.next() else {
         return Vec::new();
     };
@@ -543,6 +547,31 @@ mod tests {
         // same shape as a terminal one.
         let out = wrap_body("✓ head\ntail", "  ", None);
         assert_eq!(out, vec!["  ✓ head", "    tail"]);
+    }
+
+    /// A body's trailing newline is how its last line ENDS, not a line of its
+    /// own. Laid out as one, the blank physical row it produced sat beside the
+    /// blank the next block arms for itself, and a report whose last row was a
+    /// declared script body — every YAML block scalar ends in a newline —
+    /// closed on two blank lines before its hint. Both entry points answer
+    /// here, so neither a message body nor a command list's value can bring
+    /// the row back.
+    #[test]
+    fn a_body_terminator_is_not_a_line_of_the_body() {
+        assert_eq!(
+            wrap_body("◉ head\nfi\n", "  ", None),
+            vec!["  ◉ head", "    fi"]
+        );
+        assert_eq!(
+            wrap_body_at_hang("first\nsecond\n", "> ", "  ", None),
+            vec!["> first", "  second"]
+        );
+        // A blank line the body really declares still renders, terminator or
+        // not: it separates paragraphs inside the body.
+        assert_eq!(
+            wrap_body_at_hang("first\n\nsecond\n", "> ", "  ", None),
+            vec!["> first", "", "  second"]
+        );
     }
 
     #[test]

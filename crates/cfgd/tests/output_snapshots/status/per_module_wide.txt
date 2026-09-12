@@ -2,7 +2,7 @@ Status: dev-tools
   Status        Drifted
   Last Applied  5m ago
 
-Installed Packages
+Packages
   ✓ neovim  — brew
   ⚠ ripgrep — not installed (brew)
 
@@ -23,6 +23,6 @@ Scripts
     set -euo pipefail …
   postApply
     nvim --headless '+Lazy! sync' +qa
-    echo done
+    echo done …
 
 → Run `cfgd apply --module dev-tools` to reconcile

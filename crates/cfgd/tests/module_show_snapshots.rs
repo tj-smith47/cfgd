@@ -244,8 +244,13 @@ fn knobbed_show_output() -> ModuleShowOutput {
         pre_apply: vec![ScriptEntry::Simple("mkdir -p ~/.config/dev-tools".into())],
         post_apply: vec![
             ScriptEntry::Full(ScriptCommand {
-                run: "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim\nfi"
-                    .into(),
+                // Terminated the way the YAML parser hands a block scalar
+                // over, so this golden carries the shape a declared body
+                // really has: a composer reading the terminator as a line of
+                // its own leaves a blank row behind the last one.
+                run:
+                    "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim\nfi\n"
+                        .into(),
                 timeout: Some("120s".into()),
                 idle_timeout: None,
                 continue_on_error: Some(true),

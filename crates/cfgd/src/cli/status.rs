@@ -574,8 +574,12 @@ pub(in crate::cli) const PLATFORM_SKIPPED: &str = "skipped (platform filter)";
 #[serde(rename_all = "camelCase")]
 pub struct ModulePackageStatus {
     pub name: String,
-    /// The manager that answered. `None` when nothing asked, so the row can
-    /// never name a manager as the authority for a verdict it did not give.
+    /// The manager behind this row: the one that answered where a check ran,
+    /// and the one the entry resolves to where none did — a name declared
+    /// twice under two managers is two rows, and a row naming neither tells a
+    /// reader nothing about which entry it is. `None` only for an entry no
+    /// manager can take (a platform gate rules it out, or resolution failed),
+    /// where naming one would claim a route that does not exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
     pub state: ModulePackagePresence,
@@ -2332,22 +2336,25 @@ fn render_module_inventories(
     show_values: bool,
     scripts: ScriptsForm,
 ) -> Doc {
-    let mut doc =
-        doc.section_if_nonempty("Installed Packages", &output.package_state, |s, pkgs| {
-            let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
-            sorted.sort_by(|a, b| a.name.cmp(&b.name));
-            sorted.into_iter().fold(s, |s, pkg| {
-                // An installed row names the manager that has it and nothing else
-                // — the section heading already says installed. Every other row
-                // leads with the verdict, because that is the exception it reports.
-                let detail = match (&pkg.manager, pkg.state) {
-                    (Some(m), ModulePackagePresence::Installed) => m.clone(),
-                    (Some(m), state) => format!("{} ({m})", state.label()),
-                    (None, state) => state.label().to_string(),
-                };
-                s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
-            })
-        });
+    let mut doc = doc.section_if_nonempty("Packages", &output.package_state, |s, pkgs| {
+        let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted.into_iter().fold(s, |s, pkg| {
+            // An installed row names the manager that has it and nothing
+            // else: the ✓ is the verdict, so repeating the word would say
+            // it twice. Every other row leads with the verdict, because
+            // that is the exception it reports, and names its manager
+            // after it — one name may be declared twice under two
+            // managers, and two rows reading `neovim — not scanned` say
+            // nothing about which entry is which.
+            let detail = match (&pkg.manager, pkg.state) {
+                (Some(m), ModulePackagePresence::Installed) => m.clone(),
+                (Some(m), state) => format!("{} ({m})", state.label()),
+                (None, state) => state.label().to_string(),
+            };
+            s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+        })
+    });
 
     // The cause a drifted file's row carries, keyed through the id producer
     // both halves already agree on (`drifted_ids` matches the same way): a
@@ -2453,14 +2460,22 @@ fn render_module_inventories(
                 let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, alias| {
-                    let subject = if show_values {
-                        super::helpers::quoted_assignment(&alias.name, &alias.command)
-                    } else {
-                        alias.name.clone()
-                    };
-                    let subject = super::module::list_show::gated_value(subject, alias);
+                    let subject = super::module::list_show::gated_value(alias.name.clone(), alias);
                     match shell_cause(SURFACE_ALIASES, &alias.name) {
                         Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        // `--show-values` asks to see the declared document, so
+                        // a row with nothing to report is the kv pair `cfgd
+                        // module show` renders for the same item: the name in
+                        // the key column, the value plain beside it. Painted as
+                        // one subject the whole assignment read as a key, with
+                        // the declared value in the colour of the name.
+                        // facts-block-ok: this branch renders the inventory row
+                        // INSTEAD of a status row, and the rows around it are
+                        // the same inventory, not a run's result lines.
+                        None if show_values => s.kv(
+                            &alias.name,
+                            super::module::list_show::gated_value(alias.command.clone(), alias),
+                        ),
                         None => clean_row(s, subject),
                     }
                 })
@@ -2469,16 +2484,18 @@ fn render_module_inventories(
                 let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, ev| {
-                    let subject = if show_values {
-                        super::helpers::quoted_assignment(&ev.name, &ev.value)
-                    } else {
-                        ev.name.clone()
-                    };
                     // Declared state, so a gated entry is listed and annotated
                     // exactly as `module show` annotates it.
-                    let subject = super::module::list_show::gated_value(subject, ev);
+                    let subject = super::module::list_show::gated_value(ev.name.clone(), ev);
                     match shell_cause(SURFACE_ENV, &ev.name) {
                         Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        // facts-block-ok: the inventory row this branch
+                        // renders stands in for a status row, beside other
+                        // rows of the same inventory.
+                        None if show_values => s.kv(
+                            &ev.name,
+                            super::module::list_show::gated_value(ev.value.clone(), ev),
+                        ),
                         None => clean_row(s, subject),
                     }
                 })
@@ -2949,13 +2966,22 @@ fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
 /// as that one manager. A gated entry is answered before the queue is drawn
 /// from — it produced no resolution, so consuming one would hand it the verdict
 /// belonging to its same-named sibling.
+///
+/// A name nothing answered for still names its manager, resolved through
+/// [`modules::resolve_package`] — the ONE resolver, the same one `cfgd module
+/// show` reads — so the two rows of a name declared twice are told apart on
+/// every report. No installed listing is consulted for it: a row with no
+/// verdict behind it may not pay for a live probe, so a bare entry resolves to
+/// the manager this platform would install it through.
 fn join_package_state(
     declared: &[cfgd_core::config::ModulePackageEntry],
     scanned: &mut std::collections::HashMap<
         String,
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     >,
-    here: &Platform,
+    here: &'static Platform,
+    module_name: &str,
+    managers: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
 ) -> Vec<ModulePackageStatus> {
     declared
         .iter()
@@ -2993,7 +3019,10 @@ fn join_package_state(
                 },
                 None => ModulePackageStatus {
                     name: p.name.clone(),
-                    manager: None,
+                    manager: modules::resolve_package(p, module_name, here, managers, None)
+                        .ok()
+                        .flatten()
+                        .map(|resolved| resolved.manager),
                     state: ModulePackagePresence::NotScanned,
                 },
             }
@@ -3390,7 +3419,13 @@ pub(super) fn cmd_status_module(
         }
     }
 
-    let package_state = join_package_state(&module.spec.packages, &mut scanned_packages, platform);
+    let package_state = join_package_state(
+        &module.spec.packages,
+        &mut scanned_packages,
+        platform,
+        mod_name,
+        &mgr_map,
+    );
 
     let deployed_files: Vec<ModuleFileStatus> = state
         .module_deployed_files(mod_name)?
@@ -6121,7 +6156,11 @@ mod tests {
 
     /// `--show-values` names items, and only the itemized view has rows to
     /// name them on — so it selects that view without `-o wide` being asked
-    /// for, and renders the declared value beside the name.
+    /// for, and renders the declared value beside the name as the kv pair
+    /// `cfgd module show` renders for the same item: the name in the key
+    /// column, the value plain beside it. Rendered as one subject
+    /// (`EDITOR="nvim"`) the whole assignment took the key's colour, which
+    /// painted the declared value as though it were part of the name.
     #[test]
     fn show_values_selects_the_itemized_view_without_wide() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -6155,11 +6194,17 @@ mod tests {
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nShell\n")
-                && out.contains("\n  Env\n")
-                && out.contains(r#"EDITOR="nvim""#),
-            "--show-values must itemize env under Shell and show the declared \
-             value: {out}"
+            out.contains("\nShell\n") && out.contains("\n  Env\n"),
+            "--show-values must itemize env under Shell: {out}"
+        );
+        let row = out
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("EDITOR"))
+            .unwrap_or_else(|| panic!("no EDITOR row: {out}"));
+        assert_eq!(
+            row.split_whitespace().collect::<Vec<_>>(),
+            vec!["EDITOR", "nvim"],
+            "the row is the key and the declared value, not a quoted assignment: {row}"
         );
     }
 
@@ -6188,7 +6233,7 @@ mod tests {
 
         let out = cap.human();
         assert!(
-            out.contains("\nInstalled Packages\n") && out.contains("ripgrep"),
+            out.contains("\nPackages\n") && out.contains("ripgrep"),
             "-o wide must itemize the declared packages: {out}"
         );
         assert!(
@@ -7321,6 +7366,16 @@ mod tests {
         }
     }
 
+    /// The same entry with the manager its author named, the shape a module
+    /// takes when it declares one name under two managers.
+    fn declared_under(name: &str, manager: &str) -> cfgd_core::config::ModulePackageEntry {
+        cfgd_core::config::ModulePackageEntry {
+            name: name.to_string(),
+            prefer: vec![manager.to_string()],
+            ..Default::default()
+        }
+    }
+
     /// One name declared twice under two managers is two rows with two
     /// verdicts. Keyed by name alone, the second resolution overwrote the
     /// first and both rows rendered the same manager.
@@ -7339,6 +7394,8 @@ mod tests {
             &[declared("docker", &[]), declared("docker", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
         );
 
         assert_eq!(rows.len(), 2);
@@ -7368,6 +7425,8 @@ mod tests {
             &[declared("tool", &[]), declared("tool", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
         );
 
         assert_eq!(rows.len(), 2);
@@ -7375,6 +7434,48 @@ mod tests {
         assert_eq!(rows[0].state, ModulePackagePresence::NotScanned);
         assert_eq!(rows[1].manager.as_deref(), Some("brew"));
         assert_eq!(rows[1].state, ModulePackagePresence::Installed);
+    }
+
+    /// Nothing asked, and the two rows for one name still read differently:
+    /// the manager each entry RESOLVES to goes on its row, through the one
+    /// resolver `cfgd module show` reads, so a reader can tell `neovim` under
+    /// `brew` from `neovim` under `npm`. Both rows read `◉ neovim — not
+    /// scanned` before this, which says nothing about either entry.
+    #[test]
+    fn an_unscanned_row_names_the_manager_its_entry_resolves_to() {
+        let brew = cfgd_core::test_helpers::MockPackageManager::new("brew");
+        let npm = cfgd_core::test_helpers::MockPackageManager::new("npm");
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [
+                (
+                    "brew".to_string(),
+                    &brew as &dyn cfgd_core::providers::PackageManager,
+                ),
+                (
+                    "npm".to_string(),
+                    &npm as &dyn cfgd_core::providers::PackageManager,
+                ),
+            ]
+            .into_iter()
+            .collect();
+
+        let rows = join_package_state(
+            &[
+                declared_under("neovim", "brew"),
+                declared_under("neovim", "npm"),
+            ],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+        );
+
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.state, ModulePackagePresence::NotScanned);
+        }
+        assert_eq!(rows[0].manager.as_deref(), Some("brew"));
+        assert_eq!(rows[1].manager.as_deref(), Some("npm"));
     }
 
     /// A gated entry resolved to nothing, so it must not consume the verdict
@@ -7394,6 +7495,8 @@ mod tests {
             &[declared("docker", &["plan9"]), declared("docker", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
         );
 
         assert_eq!(rows[0].state, ModulePackagePresence::PlatformSkipped);
@@ -7934,7 +8037,7 @@ mod tests {
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nInstalled Packages\n"),
+            out.contains("\nPackages\n"),
             "the packages phase must have a section of its own: {out}"
         );
         let row = out
@@ -7983,13 +8086,12 @@ mod tests {
     }
 
     /// A declared alias, env var and script hook with no check standing
-    /// behind them: `Installed Packages` and `Deployed Files` already
-    /// degrade an unchecked declaration to `not scanned` (the two pins
-    /// above), but `Shell` and `Scripts` rendered every row `Role::Ok`
-    /// regardless — the same doctrine
-    /// (`no_recorded_verdict_claims_a_check_that_never_ran`) extended to
-    /// every inventory row: a row reporting a bare declaration renders as a
-    /// declaration, never a verdict it never earned.
+    /// behind them: `Packages` and `Deployed Files` already degrade an
+    /// unchecked declaration to `not scanned` (the two pins above), but
+    /// `Shell` and `Scripts` rendered every row `Role::Ok` regardless — the
+    /// same doctrine (`no_recorded_verdict_claims_a_check_that_never_ran`)
+    /// extended to every inventory row: a row reporting a bare declaration
+    /// renders as a declaration, never a verdict it never earned.
     #[test]
     fn no_declared_inventory_row_wears_a_verdict_glyph() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -9024,7 +9126,8 @@ mod tests {
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
-        // Word-match: a substring scan for `ll` matches "Installed Packages".
+        // Word-match: a substring scan for `ll` matches any line carrying
+        // the letters, the `Installed` of a verdict included.
         let row = |needle: &str| {
             out.lines()
                 .find(|l| l.split_whitespace().any(|w| w == needle))

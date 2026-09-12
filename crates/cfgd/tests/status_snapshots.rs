@@ -300,9 +300,11 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
             HookScripts {
                 hook: "preApply",
                 // A bare-string step: it declares no knob, so its marker
-                // states its position alone.
+                // states its position alone. Terminated the way the YAML
+                // parser hands a block scalar over, so the goldens carry the
+                // shape a declared body really has.
                 steps: vec![declared_step(
-                    "set -euo pipefail\nmkdir -p ~/.config/nvim",
+                    "set -euo pipefail\nmkdir -p ~/.config/nvim\n",
                     None,
                     None,
                     false,
@@ -317,7 +319,13 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
                         Some("30s"),
                         true,
                     ),
-                    declared_step("echo done", Some("120s"), None, false),
+                    // The LAST declared body of the report, and a terminated
+                    // multi-line one: the stray row a terminator-as-a-line
+                    // composer leaves behind lands beside the blank the
+                    // closing hint arms for itself, which is the doubling
+                    // `every_golden_separates_sibling_blocks_with_one_blank_line`
+                    // refuses.
+                    declared_step("echo done\nexit 0\n", Some("120s"), None, false),
                 ],
             },
         ],

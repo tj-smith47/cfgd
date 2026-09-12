@@ -595,6 +595,17 @@ fn module_show_scripts_renders_full_bodies_with_the_env_value_still_masked() {
     );
 }
 
+/// The words of the `EDITOR` row, so a claim about the itemized env inventory
+/// reads the key and the declared value as two spans rather than matching one
+/// string a single colour could have painted whole.
+fn env_row_words(rendered: &str) -> Vec<&str> {
+    rendered
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some("EDITOR"))
+        .map(|l| l.split_whitespace().collect())
+        .unwrap_or_default()
+}
+
 /// `--show-values` alone names the env value and leaves every script row
 /// condensed to its first line, on both verbs.
 #[test]
@@ -610,7 +621,7 @@ fn show_values_alone_renders_condensed_script_rows_on_both_verbs() {
     );
     let status = inventory_flag_output(&["status", "--module", "flags-mod", "--show-values"]);
     assert!(
-        status.contains(r#"EDITOR="supersecretvalue""#) && status.contains("echo first"),
+        env_row_words(&status) == ["EDITOR", "supersecretvalue"] && status.contains("echo first"),
         "--show-values itemizes the inventories with the value beside the name, got: {status}"
     );
     assert!(
@@ -640,7 +651,7 @@ fn status_per_module_script_flags_itemize_the_inventories() {
     );
     let all = inventory_flag_output(&["status", "--module", "flags-mod", "-a"]);
     assert!(
-        all.contains(r#"EDITOR="supersecretvalue""#) && all.contains("echo second"),
+        env_row_words(&all) == ["EDITOR", "supersecretvalue"] && all.contains("echo second"),
         "-a itemizes the inventories with both halves, got: {all}"
     );
 }

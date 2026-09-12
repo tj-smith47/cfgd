@@ -797,7 +797,7 @@ Status: nvim
   Status        Drifted
   Last Applied  3h ago
 
-Installed Packages
+Packages
   ✓ neovim  — brew
   ⚠ ripgrep — not installed (brew)
 
@@ -828,19 +828,23 @@ regardless of `--scan`. Aliases precede env vars wherever the pair is named —
 the counts, these inventories, `cfgd module show`'s sections, the profile
 inventory `cfgd profile show`, `cfgd source show` and `cfgd source add` render,
 and `-o json`'s field order alike. `--show-values` renders the same inventories
-with each declared env value (`EDITOR="nvim"`, quoted the way the generated env
-file writes it), `--show-scripts` / `-s` with each script's whole body instead
-of its condensed first line, and `--show-all` / `-a` with both; each implies
-`-o wide`.
+with each declared alias and env value beside its name, as the key/value rows
+`cfgd module show` lists them under the same two headings; a row a check found
+drifted keeps its warning glyph and its cause. `--show-scripts` / `-s` renders
+each script's whole body instead of its condensed first line, and `--show-all` /
+`-a` does both; each implies `-o wide`.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads
-`missing` either way). A package the module's own `platforms` gate rules out
-on this host reads `skipped (platform filter)` instead, the same words `cfgd
-module show` uses for it: nothing was ever going to install it, scan or no
-scan. `-o json` carries the same verdicts as `packageState[].state`
-(`installed`, `notInstalled`, `notScanned`, `platformSkipped`) and
+`missing` either way). A package row names the manager it resolves to in every
+state, the same one `cfgd module show` names, so two entries declaring one name
+under two managers are told apart. A package the module's own `platforms` gate
+rules out on this host reads `skipped (platform filter)` instead, with no
+manager named, the same words `cfgd module show` uses for it: nothing was ever
+going to install it, scan or no scan. `-o json` carries the same verdicts as
+`packageState[].state` (`installed`, `notInstalled`, `notScanned`,
+`platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
 is identical under every view: `-o wide`, `--show-values`, `--show-scripts` and
 `--show-all` change the human render only.
