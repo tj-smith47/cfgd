@@ -1230,7 +1230,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             if let Err(e) = remove_existing(path) {
                 warn(format!(
                     "{owner}: could not prune snapshot {}: {}",
-                    path.posix(),
+                    crate::fold_home_in_text(&path.display_posix()),
                     collapse_to_subject_line(&e)
                 ));
                 continue;

@@ -27807,6 +27807,13 @@ impl crate::providers::SystemConfigurator for NarratingConfigurator {
             crate::output::Role::Warn,
             "reload deferred: /proc is read-only",
         );
+        cx.report(
+            crate::output::Role::Info,
+            format!(
+                "wrote {}",
+                crate::expand_tilde(std::path::Path::new("~/.ssh/config")).display_posix()
+            ),
+        );
         Ok(())
     }
 }
@@ -27881,12 +27888,14 @@ fn configurator_narration_collects_into_the_run_wide_caveats_group() {
     );
     let (owner, notes) = &result.caveats[0];
     assert_eq!(*owner, Owner::profile("work"));
-    // Untagged: the action line already says which configurator spoke.
+    // Untagged: the action line already says which configurator spoke. The
+    // third body carries the fold this render point applies.
     assert_eq!(
         notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
         vec![
             "sysctl -w net.ipv4.ip_forward=1".to_string(),
             "reload deferred: /proc is read-only".to_string(),
+            "wrote ~/.ssh/config".to_string(),
         ],
         "narration collects in order, keeping its role: {notes:?}"
     );
@@ -27897,6 +27906,8 @@ fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
     // The standalone shape — a `SystemContext::new` caller owns no action line,
     // so a report the sink would otherwise hold is the only output the user
     // gets and must still reach the terminal.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
     let (printer, cap) = crate::output::Printer::for_test_doc();
     let cx = crate::providers::SystemContext::new(&printer);
     crate::providers::SystemConfigurator::apply(
@@ -27915,6 +27926,15 @@ fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
         out.contains("reload deferred: /proc is read-only"),
         "including the warning: {out}"
     );
+    // The second render point of a note: settled on the printer rather than
+    // collected, it folds the home directory the way `ActionNote::body` does,
+    // so one run cannot spell the home two ways depending on who drained it.
+    let home = crate::to_posix_string(staging.path());
+    assert!(
+        out.contains("wrote ~/.ssh/config"),
+        "a note settling on the printer folds the home directory: {out}"
+    );
+    assert!(!out.contains(&home), "and spells it no other way: {out}");
 }
 
 #[test]

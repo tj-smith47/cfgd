@@ -483,7 +483,10 @@ impl ActionNote {
     /// file it wrote, and a caveat spelling `/home/tj/.ssh/config` under rows
     /// that read `~/.ssh/config` names one file two ways in one report. Folded
     /// here rather than per call site, because [`Self::message`] is what a
-    /// failure records and nothing else renders a note.
+    /// failure records. A note has two render points, and both fold: this one
+    /// for a collected caveat, and
+    /// [`NoteSink::report_tagged`](NoteSink::report_tagged)'s non-collecting arm
+    /// for a note that settles straight onto the printer.
     pub fn body(&self) -> String {
         let shown = crate::fold_home_in_text(&self.message);
         match &self.tag {
@@ -583,8 +586,10 @@ impl NoteSink {
             });
         } else {
             // Untagged once it settles: a standalone line has no action line
-            // above it that a `[tag]` prefix would disambiguate it from.
-            printer.status_simple(role, message);
+            // above it that a `[tag]` prefix would disambiguate it from. The
+            // fold is the one `ActionNote::body` applies on the collecting
+            // path, so a home-rooted note reads the same either way.
+            printer.status_simple(role, crate::fold_home_in_text(&message));
         }
     }
 
