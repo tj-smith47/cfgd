@@ -150,25 +150,43 @@ actually run: on a machine with none of them, cfgd says the manager cannot be
 provisioned and why, instead of naming one and failing on it.
 
 These are the mediators each provisioned manager reaches for, and what each one
-installs:
+installs. A cell naming a package is a route cfgd can drive; a cell naming a
+reason is an arm the manager declines.
 
-| Manager | brew | apt / dnf | zypper | FreeBSD `pkg` | Own arm |
-|---|---|---|---|---|---|
-| `pipx` | `pipx` | `pipx` | — | `devel/py-pipx` | `pip` |
-| `npm` | `node` | `nodejs`, `npm` | — | `www/npm` | `nvm` (needs `curl` and `bash`) |
-| `go` | `go` | `golang` | `golang` | `lang/go` | — |
-| `flatpak` | — | `flatpak` | `flatpak` | — | — |
-| `snap` | — | `snapd` | `snapd` | — | — |
+| Manager | brew | apt | dnf / yum | zypper | pacman | apk | FreeBSD `pkg` | winget | choco | scoop | Own installer |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `npm` | `node` | `nodejs`, `npm` | `nodejs`, `npm` | `nodejs24`, `npm24` | `nodejs`, `npm` | `nodejs`, `npm` | `www/npm` | `OpenJS.NodeJS.LTS` | `nodejs-lts` | `nodejs-lts` | `nvm` (POSIX only) |
+| `pipx` | `pipx` | `pipx` | `pipx` (dnf only) | `python3-pipx` | `python-pipx` | `pipx` | `devel/py-pipx` | none published | `pipx` | `pipx` | `pip` |
+| `go` | `go` | `golang` | `golang` | `go` | `go` | `go` | `lang/go` | `GoLang.Go` | `golang` | `go` | no own arm |
+| `cargo` | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | `Rustlang.Rustup` | `rustup.install` | `rustup` | `rustup` |
+| `flatpak` | Linux only | `flatpak` | `flatpak` | `flatpak` | `flatpak` | `flatpak` | Linux only | Linux only | Linux only | Linux only | no own arm |
+| `snap` | Linux only | `snapd` | `snapd` | `snapd` | AUR only | needs glibc | Linux only | Linux only | Linux only | Linux only | no own arm |
+| `brew` | installer only | installer only | installer only | installer only | installer only | installer only | installer only | no Windows build | no Windows build | no Windows build | Homebrew installer |
+| `nix` | installer only | installer only | installer only | installer only | installer only | installer only | installer only | WSL only | WSL only | WSL only | nix installer |
 
-On openSUSE, `pipx` therefore falls to its `pip` arm and `npm` to `nvm`: neither
-reaches zypper, whose package names for them differ from the apt and dnf ones.
+A few cells need their reason spelled out:
+
+- `pipx` on yum: RHEL 7's repositories carry no pipx, and yum is the manager
+  only on releases that old. A yum host reaches pipx through the `pip` arm.
+- `pipx` on winget: winget publishes no pipx at all, so a winget-only Windows
+  host also reaches it through the `pip` arm.
+- `cargo` everywhere but Windows: rustup's own installer is upstream's route on
+  every POSIX host, and rustup is what then installs a toolchain. On Windows
+  there is no `sh` for that installer, so the three Windows managers package
+  rustup itself and cfgd runs `rustup default stable` afterwards.
+- `snap` on pacman and apk: snapd reaches Arch through the AUR, which pacman
+  does not install from, and it is built against glibc, which Alpine does not
+  ship.
+- `brew` and `nix`: both install themselves from their own script, and neither
+  is packaged by any system manager.
 
 The FreeBSD column names PORT ORIGINS rather than package names. FreeBSD's
 Python and Node packages carry the flavour in their name (`py311-pipx`,
 `npm-node22`), so a bare `pipx` resolves to nothing and a flavoured name goes
 stale the moment the default flavour moves; an origin is version-free and
-`pkg install devel/py-pipx` always picks the current default. An em-dash cell is
-a mediator the manager declares no arm for, and cfgd plans no arm it cannot run.
+`pkg install devel/py-pipx` always picks the current default.
+
+cfgd plans no arm it cannot run, so a declined cell is never named in a plan.
 
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
