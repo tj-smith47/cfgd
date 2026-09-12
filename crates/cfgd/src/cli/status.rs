@@ -2468,11 +2468,13 @@ fn render_module_inventories(
                         // module show` renders for the same item: the name in
                         // the key column, the value plain beside it. Painted as
                         // one subject the whole assignment read as a key, with
-                        // the declared value in the colour of the name.
+                        // the declared value in the colour of the name. An
+                        // errored probe is not nothing to report, so that row
+                        // keeps the `not scanned` verdict `clean_row` gives it.
                         // facts-block-ok: this branch renders the inventory row
                         // INSTEAD of a status row, and the rows around it are
                         // the same inventory, not a run's result lines.
-                        None if show_values => s.kv(
+                        None if show_values && !probe_errored => s.kv(
                             &alias.name,
                             super::module::list_show::gated_value(alias.command.clone(), alias),
                         ),
@@ -2492,7 +2494,7 @@ fn render_module_inventories(
                         // facts-block-ok: the inventory row this branch
                         // renders stands in for a status row, beside other
                         // rows of the same inventory.
-                        None if show_values => s.kv(
+                        None if show_values && !probe_errored => s.kv(
                             &ev.name,
                             super::module::list_show::gated_value(ev.value.clone(), ev),
                         ),
@@ -2968,20 +2970,22 @@ fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
 /// belonging to its same-named sibling.
 ///
 /// A name nothing answered for still names its manager, resolved through
-/// [`modules::resolve_package`] — the ONE resolver, the same one `cfgd module
-/// show` reads — so the two rows of a name declared twice are told apart on
-/// every report. No installed listing is consulted for it: a row with no
-/// verdict behind it may not pay for a live probe, so a bare entry resolves to
-/// the manager this platform would install it through.
+/// [`modules::resolve_package`] — the ONE resolver — so the two rows of a name
+/// declared twice are told apart on every report. `installed` is the run's own
+/// package context, which is what `cfgd module show` resolves against: which
+/// manager already HOLDS a bare entry is part of what resolution means, so
+/// without it a package a non-default manager holds would be named under the
+/// platform default here and under its holder there.
 fn join_package_state(
     declared: &[cfgd_core::config::ModulePackageEntry],
     scanned: &mut std::collections::HashMap<
         String,
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     >,
-    here: &'static Platform,
+    here: &Platform,
     module_name: &str,
     managers: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    installed: Option<&cfgd_core::providers::PackageContext<'_>>,
 ) -> Vec<ModulePackageStatus> {
     declared
         .iter()
@@ -3019,7 +3023,7 @@ fn join_package_state(
                 },
                 None => ModulePackageStatus {
                     name: p.name.clone(),
-                    manager: modules::resolve_package(p, module_name, here, managers, None)
+                    manager: modules::resolve_package(p, module_name, here, managers, installed)
                         .ok()
                         .flatten()
                         .map(|resolved| resolved.manager),
@@ -3419,12 +3423,16 @@ pub(super) fn cmd_status_module(
         }
     }
 
+    // The same installed state `cfgd module show` resolves against, shared
+    // with this run's scan so a manager is enumerated once.
+    let pkg_cx = ctx.package_context()?;
     let package_state = join_package_state(
         &module.spec.packages,
         &mut scanned_packages,
         platform,
         mod_name,
         &mgr_map,
+        Some(&pkg_cx),
     );
 
     let deployed_files: Vec<ModuleFileStatus> = state
@@ -5320,8 +5328,11 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &output,
+            // The invocation the wording above describes: `--show-values`,
+            // under which a clean row is a kv pair. An errored probe is not a
+            // clean row, so the verdict has to survive the flag.
             ModuleStatusView::Inventory {
-                show_values: false,
+                show_values: true,
                 scripts: ScriptsForm::Condensed,
             },
             "2026-05-14T10:05:00Z",
@@ -7396,6 +7407,7 @@ mod tests {
             Platform::current(),
             "test-mod",
             &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows.len(), 2);
@@ -7427,6 +7439,7 @@ mod tests {
             Platform::current(),
             "test-mod",
             &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows.len(), 2);
@@ -7468,6 +7481,7 @@ mod tests {
             Platform::current(),
             "test-mod",
             &managers,
+            None,
         );
 
         assert_eq!(rows.len(), 2);
@@ -7476,6 +7490,62 @@ mod tests {
         }
         assert_eq!(rows[0].manager.as_deref(), Some("brew"));
         assert_eq!(rows[1].manager.as_deref(), Some("npm"));
+    }
+
+    /// A bare entry names the manager that already HOLDS it, not the manager
+    /// this platform installs by default: which manager has a package is part
+    /// of what resolution means, and `cfgd module show` resolves against the
+    /// same installed state. Resolved without it, the row named the platform
+    /// default while `module show` named the holder, for one package.
+    #[test]
+    fn an_unscanned_bare_entry_names_the_manager_that_holds_it() {
+        let apt = cfgd_core::test_helpers::MockPackageManager::new("apt");
+        let npm = cfgd_core::test_helpers::MockPackageManager::new("npm").with_installed(&["fd"]);
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [
+                (
+                    "apt".to_string(),
+                    &apt as &dyn cfgd_core::providers::PackageManager,
+                ),
+                (
+                    "npm".to_string(),
+                    &npm as &dyn cfgd_core::providers::PackageManager,
+                ),
+            ]
+            .into_iter()
+            .collect();
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let installed = cfgd_core::test_helpers::test_package_context(&printer, &state);
+
+        let rows = join_package_state(
+            &[declared("fd", &[])],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+            Some(&installed),
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state, ModulePackagePresence::NotScanned);
+        assert_eq!(rows[0].manager.as_deref(), Some("npm"));
+
+        // And the holder is what the context ADDS: with none in hand the same
+        // entry falls to whatever this platform installs by default.
+        let blind = join_package_state(
+            &[declared("fd", &[])],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+            None,
+        );
+        assert_ne!(
+            blind[0].manager.as_deref(),
+            Some("npm"),
+            "the holder is only knowable from the installed state"
+        );
     }
 
     /// A gated entry resolved to nothing, so it must not consume the verdict
@@ -7497,6 +7567,7 @@ mod tests {
             Platform::current(),
             "test-mod",
             &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows[0].state, ModulePackagePresence::PlatformSkipped);

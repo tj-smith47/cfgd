@@ -26,8 +26,8 @@ use std::path::Path;
 
 use cfgd::cli::status::{
     ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence,
-    ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_FILES,
-    SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
+    ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_ENV,
+    SURFACE_FILES, SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
     build_module_status_not_found_doc,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
@@ -321,7 +321,7 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
                     ),
                     // The LAST declared body of the report, and a terminated
                     // multi-line one: the stray row a terminator-as-a-line
-                    // composer leaves behind lands beside the blank the
+                    // composer leaves behind sits beside the blank the
                     // closing hint arms for itself, which is the doubling
                     // `every_golden_separates_sibling_blocks_with_one_blank_line`
                     // refuses.
@@ -487,6 +487,28 @@ fn per_module_scanned_output() -> ModuleStatus {
                 owner: "dev-tools".into(),
                 surface: SURFACE_FILES,
                 item: "/home/user/.config/nvim/init.lua".into(),
+            },
+            // A shell item the scan found drifted: under `--show-values` its
+            // row keeps the warning shape and its cause while its clean
+            // siblings render as key/value pairs, so the golden carries both
+            // shapes side by side. The operands are the markers
+            // `env_item_verify_results` stores.
+            ModuleDrift {
+                event: DriftEvent {
+                    id: 23,
+                    timestamp: "2026-05-14T12:00:03Z".into(),
+                    resource_type: "env-var".into(),
+                    resource_id: "PAGER".into(),
+                    expected: Some("current".into()),
+                    actual: Some("missing or changed".into()),
+                    resolved_by: None,
+                    source: "local".into(),
+                    want: None,
+                    have: None,
+                },
+                owner: "dev-tools".into(),
+                surface: SURFACE_ENV,
+                item: "PAGER".into(),
             },
         ],
         drift_checked_live: true,

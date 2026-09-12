@@ -47,6 +47,16 @@
       "resourceType": "module",
       "source": "local",
       "timestamp": "2026-05-14T12:00:02Z"
+    },
+    {
+      "actual": "missing or changed",
+      "expected": "current",
+      "id": 23,
+      "resolvedBy": null,
+      "resourceId": "PAGER",
+      "resourceType": "env-var",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:03Z"
     }
   ],
   "driftCheckedLive": true,

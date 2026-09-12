@@ -16,7 +16,7 @@ Shell
     gs  git status --short
   Env
     EDITOR  nvim
-    PAGER   less -R
+    ⚠ PAGER — missing
 
 Scripts
   preApply

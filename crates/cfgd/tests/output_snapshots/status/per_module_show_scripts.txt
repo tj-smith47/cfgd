@@ -16,7 +16,7 @@ Shell
     ✓ gs
   Env
     ✓ EDITOR
-    ✓ PAGER
+    ⚠ PAGER — missing
 
 Scripts
   preApply
