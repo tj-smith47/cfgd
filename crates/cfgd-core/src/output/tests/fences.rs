@@ -597,6 +597,49 @@ fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
     arg
 }
 
+/// The RAW argument text of the call whose `(` sits just before `from` on
+/// `lines[at]`, up to its balanced close paren, rows below included.
+///
+/// [`writer_argument`]'s counterpart for a rule that turns on a string literal
+/// the blanked rendering would have emptied. Parens are counted on the blanked
+/// rendering all the same, which is byte-for-byte, so a paren inside a literal
+/// cannot close the call early while the text returned stays the source's own.
+/// Bounded at a few rows, so an unbalanced paren cannot swallow the file.
+fn raw_call_argument(lines: &[&str], at: usize, from: usize) -> String {
+    const MAX_LINES: usize = 6;
+    let mut depth = 1usize;
+    let mut arg = String::new();
+    for (offset, line) in lines[at..].iter().take(MAX_LINES).enumerate() {
+        let masked = code_half(line);
+        let start = if offset == 0 {
+            from.min(masked.len())
+        } else {
+            0
+        };
+        let mut close = None;
+        for (pos, byte) in masked.as_bytes().iter().enumerate().skip(start) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(pos);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = close.unwrap_or(masked.len());
+        arg.push_str(&line[start..end]);
+        if close.is_some() {
+            break;
+        }
+        arg.push(' ');
+    }
+    arg
+}
+
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in
 /// `source`, by brace matching from the region's opening `{`.
 ///
@@ -4776,6 +4819,37 @@ const SUBSTITUTED_PATH_WORDS: [&str; 7] = [
 /// and a wholesale loss of the helper does.
 const NORMALIZER_CALL_FLOOR: usize = 50;
 
+/// Every line from `from` on holding a hand substitution: a `.replace(` whose
+/// first argument names a path and whose second is an angle-bracketed label,
+/// less the ones a `// hand-substitution-ok:` marker accounts for.
+fn hand_substitutions(lines: &[&str], from: usize) -> Vec<usize> {
+    const CALL: &str = ".replace(";
+    let mut found = Vec::new();
+    for (idx, line) in lines.iter().enumerate().skip(from) {
+        let masked = code_half(line);
+        // The call is located on the blanked rendering, so a `.replace(` inside
+        // a string literal is prose, and read raw, because the label the pair
+        // turns on is itself a literal.
+        for (at, _) in masked.match_indices(CALL) {
+            let call = raw_call_argument(lines, idx, at + CALL.len());
+            let Some((subject, label)) = call.split_once(',') else {
+                continue;
+            };
+            let names_a_path = SUBSTITUTED_PATH_WORDS
+                .iter()
+                .any(|word| subject.contains(word));
+            if !names_a_path || !label.contains("\"<") {
+                continue;
+            }
+            if hatched(lines, idx, "hand-substitution-ok:") {
+                continue;
+            }
+            found.push(idx);
+        }
+    }
+    found
+}
+
 /// Every path a test substitutes for a label is substituted through
 /// [`crate::normalize_for_snapshot`].
 ///
@@ -4789,7 +4863,8 @@ const NORMALIZER_CALL_FLOOR: usize = 50;
 /// it, so no verdict turns on where the host puts its temp directory.
 ///
 /// Judged on the pair: a `.replace(` whose first argument names a path and whose
-/// second is an angle-bracketed label. The region is the test one — a file under
+/// second is an angle-bracketed label, read to the call's balanced close so a
+/// call rustfmt split over rows is judged like an inline one. The region is the test one — a file under
 /// a `tests/` directory whole, every other from its first `#[cfg(test)]` on —
 /// because a production fold substitutes a path for a marker too, and
 /// `fold_home_in_text` is the one this rule is named after.
@@ -4811,27 +4886,13 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
             lines.iter().position(|l| opens_a_test_region(l))
         };
         let Some(from) = from else { continue };
-        for (idx, line) in lines.iter().enumerate().skip(from) {
+        for line in lines.iter().skip(from) {
             // The code half of the line: a comment naming either spelling is
             // prose, and this file's own doc comment names both.
-            let ends = blank_string_literals(line).find("//").unwrap_or(line.len());
-            let code = &line[..ends];
-            normalized += code.matches("normalize_for_snapshot(").count();
-            for call in code.split(".replace(").skip(1) {
-                let Some((subject, label)) = call.split_once(',') else {
-                    continue;
-                };
-                let names_a_path = SUBSTITUTED_PATH_WORDS
-                    .iter()
-                    .any(|word| subject.contains(word));
-                if !names_a_path || !label.contains("\"<") {
-                    continue;
-                }
-                if hatched(&lines, idx, "hand-substitution-ok:") {
-                    continue;
-                }
-                offenders.push(format!("{posix}:{}: {}", idx + 1, line.trim()));
-            }
+            normalized += code_half(line).matches("normalize_for_snapshot(").count();
+        }
+        for idx in hand_substitutions(&lines, from) {
+            offenders.push(format!("{posix}:{}: {}", idx + 1, lines[idx].trim()));
         }
     }
     assert!(
@@ -4848,6 +4909,44 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
          `cfgd_core::normalize_for_snapshot(captured, &[(path, \"<LABEL>\")])`, \
          or say why it cannot with `// hand-substitution-ok: <why>`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// A substitution rustfmt split over rows is judged like one written inline.
+///
+/// `.replace(` is read to its balanced close, because rustfmt puts the label on
+/// a later row as soon as the call grows, and a line-scoped read sees a call
+/// with no second argument and passes it over: the walk would go blind on every
+/// long substitution while reporting the short ones.
+#[test]
+fn a_hand_substitution_split_over_rows_is_judged_like_an_inline_one() {
+    let inline = ["let s = captured.replace(dir, \"<DIR>\");"];
+    let split = [
+        "let s = captured.replace(",
+        "    dir,",
+        "    \"<DIR>\",",
+        ");",
+    ];
+    let marked = [
+        "// hand-substitution-ok: the subject is a registry name, not a path",
+        "let s = captured.replace(",
+        "    dir,",
+        "    \"<DIR>\",",
+        ");",
+    ];
+    assert_eq!(
+        hand_substitutions(&inline, 0),
+        vec![0],
+        "the inline spelling is the one the walk already reported"
+    );
+    assert_eq!(
+        hand_substitutions(&split, 0),
+        vec![0],
+        "a substitution whose label sits on a later row is judged too"
+    );
+    assert!(
+        hand_substitutions(&marked, 0).is_empty(),
+        "a marked substitution is accounted for on either spelling"
     );
 }
 
