@@ -900,18 +900,14 @@ impl super::CfgdFileManager {
         managed: &ManagedFileSpec,
         profile: &MergedProfile,
     ) -> Result<Option<u32>> {
-        // The map's keys come from YAML, where a target is authored with `/`, so
-        // the probe folds instead of carrying this host's separator.
-        let target_str = cfgd_core::to_posix_string(target);
-
         // Per-file permissions take priority (intended for managed files).
         // Global files.permissions map is a fallback (intended for unmanaged paths,
         // but can also be used for managed files by target or source path).
         let mode_str = managed
             .permissions
             .as_ref()
-            .or_else(|| profile.files.permissions.get(&target_str))
-            .or_else(|| profile.files.permissions.get(&managed.source));
+            .or_else(|| declared_permission(&profile.files.permissions, target))
+            .or_else(|| declared_permission(&profile.files.permissions, &managed.source));
 
         if let Some(mode_str) = mode_str {
             // On Windows, file permissions are not applicable (NTFS uses inherited ACLs).
@@ -962,6 +958,28 @@ impl super::CfgdFileManager {
             }
         })
     }
+}
+
+/// The octal mode `profile.files.permissions` declares for one path, matching a
+/// key by its folded spelling.
+///
+/// Both sides fold: the map's keys are written by hand in YAML, where a Windows
+/// target can be authored with `\` as easily as `/`, and the two spell the same
+/// file. Folding the probe alone matched a key only when the author happened to
+/// pick the separator cfgd renders, so a declared `mode:` was dropped on the
+/// other spelling with no diagnostic. The fold is a comparison, never a value
+/// this function returns.
+fn declared_permission(
+    permissions: &std::collections::HashMap<String, String>,
+    path: impl AsRef<Path>,
+) -> Option<&String> {
+    let wanted = cfgd_core::to_posix_string(path);
+    permissions.get(&wanted).or_else(|| {
+        permissions
+            .iter()
+            .find(|(key, _)| cfgd_core::to_posix_string(key) == wanted)
+            .map(|(_, mode)| mode)
+    })
 }
 
 /// Script-execution binding for a module-deployed `Patch` file: a relative
@@ -1615,6 +1633,52 @@ mod tests {
             matches!(&actions[0], FileAction::SetPermissions { target: t, mode: 0o600, .. } if *t == target),
             "content match with wrong permissions should produce SetPermissions, got: {:?}",
             actions
+        );
+    }
+
+    /// A `files.permissions` key authored with `\` still names its target.
+    ///
+    /// The map is hand-written YAML, so a Windows path in it can carry either
+    /// separator, while the probe cfgd builds always folds to `/`. Matching on
+    /// the probe alone silently dropped the declared mode for a key spelled the
+    /// other way.
+    #[test]
+    #[cfg(unix)]
+    fn a_permissions_key_declared_with_a_backslash_matches_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("cfg.txt"), "same content").unwrap();
+
+        let target = config_dir.join("output").join("cfg.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "same content").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let declared_key = cfgd_core::to_posix_string(&target).replace("output/", "output\\");
+        assert!(
+            declared_key.contains('\\'),
+            "the key under test must carry a backslash: {declared_key}"
+        );
+        let mut permissions = HashMap::new();
+        permissions.insert(declared_key, "600".to_string());
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/cfg.txt",
+                target.clone(),
+                Some(FileStrategy::Copy),
+            )],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert!(
+            matches!(actions.first(), Some(FileAction::SetPermissions { target: t, mode: 0o600, .. }) if *t == target),
+            "the declared mode must be found through the folded key, got: {actions:?}"
         );
     }
 
