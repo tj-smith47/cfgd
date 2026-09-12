@@ -219,6 +219,63 @@ fn plan_json_exposes_action_target_paths() {
 }
 
 #[test]
+fn plan_json_folds_a_target_declared_with_a_native_separator() {
+    // `-o json` is read on a host other than the one that wrote it, so a
+    // target's separators fold to `/` there whatever the declaration spelled.
+    // The destination below is declared with a Windows separator, which a POSIX
+    // host reads as an ordinary character in a file name: a payload echoing the
+    // declaration keeps the backslash, a folded one does not.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
+    let declared = format!(
+        "{}/out\\hello.txt",
+        cfgd_core::to_posix_string(config_dir.path())
+    );
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {declared}\n        strategy: Copy\n"
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), &profile).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("plan doc carries a payload");
+    let files_phase = payload["phases"]
+        .as_array()
+        .expect("phases array")
+        .iter()
+        .find(|p| p["phase"] == "Files")
+        .expect("a Files phase is planned");
+    let targets = files_phase["groups"][0]["actions"][0]["targets"]
+        .as_array()
+        .expect("file action exposes a targets array");
+    assert_eq!(
+        targets,
+        &vec![serde_json::json!(cfgd_core::to_posix_string(&declared))],
+        "a serialized target folds every separator it was declared with"
+    );
+    assert!(
+        !targets[0]
+            .as_str()
+            .expect("a target is a string")
+            .contains('\\'),
+        "the payload carries no host separator: {targets:?}"
+    );
+}
+
+#[test]
 fn plan_empty_human() {
     // Empty profile: zero managed files, zero modules — exercises the
     // `MSG_NOTHING_TO_DO` branch of `display_plan_preview`.

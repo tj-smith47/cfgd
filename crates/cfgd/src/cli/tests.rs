@@ -35796,28 +35796,233 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     );
 }
 
-/// Whether a line opens a cfgd document a fixture plants on disk: a line
-/// naming one of the keys such a document spells, written either as an escaped
-/// template or as the first line of a raw literal.
+/// Every path render that does not fold, as a walk over source text reads one.
+const NATIVE_RENDERS: &[&str] = &[".display()", ".to_string_lossy()"];
+
+/// The type name a declaration line names, for the attribute block above it.
+fn declared_type_name(code: &str) -> Option<&str> {
+    let after = ["struct ", "enum "].iter().find_map(|keyword| {
+        code.strip_prefix(keyword).or_else(|| {
+            code.split_once(&format!(" {keyword}"))
+                .map(|(_, rest)| rest)
+        })
+    })?;
+    let name = after.split([' ', '<', '{', '(', ';']).next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every type in the workspace serde SERIALIZES, by name.
+///
+/// A struct literal of one of these is a payload under construction, which is
+/// what makes a path rendered into it a value another host reads rather than a
+/// line on this one's terminal. The roots are read off `crates/`, so a crate
+/// added to the workspace joins the population with it.
+fn serializing_type_names() -> std::collections::BTreeSet<String> {
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let mut names = std::collections::BTreeSet::new();
+    let mut crate_roots = 0usize;
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+        .expect("the workspace holds a crates directory")
+        .map(|entry| entry.expect("a crates entry reads").path())
+        .collect();
+    entries.sort();
+    for src in entries.into_iter().map(|krate| krate.join("src")) {
+        if !src.is_dir() {
+            continue;
+        }
+        crate_roots += 1;
+        for path in rust_sources_under(&src) {
+            let body = walked_file_body(&path);
+            let mut serializes = false;
+            for line in production_body(&body).lines() {
+                let code = line.trim();
+                if code.starts_with("#[") {
+                    serializes = serializes || code.contains("Serialize");
+                    continue;
+                }
+                if code.is_empty() || code.starts_with("//") {
+                    continue;
+                }
+                if serializes {
+                    if let Some(name) = declared_type_name(code) {
+                        names.insert(name.to_string());
+                    }
+                    serializes = false;
+                }
+            }
+        }
+    }
+    assert!(
+        crate_roots >= 6,
+        "the walk found {crate_roots} crate source roots; it is looking at the wrong directory"
+    );
+    assert!(
+        names.len() >= 250,
+        "the walk read {} serialized types; it has gone blind to the population",
+        names.len()
+    );
+    names
+}
+
+/// Whether a line OPENS a literal of one of those types.
+fn opens_a_serialized_literal(
+    line: &str,
+    serializing: &std::collections::BTreeSet<String>,
+) -> bool {
+    if line.contains("json!") {
+        return true;
+    }
+    let code = line.split("//").next().unwrap_or(line).trim_end();
+    let Some(head) = code.strip_suffix('{') else {
+        return false;
+    };
+    let name = head
+        .trim_end()
+        .rsplit([' ', '(', ':', '&', '<', '['])
+        .next()
+        .unwrap_or_default();
+    serializing.contains(name)
+}
+
+/// A path written into a SERIALIZED slot folds to `/`.
+///
+/// `-o json`, a stored id and a wire field are all read on a host other than the
+/// one that wrote them, so `path-handling.md` makes the fold mandatory there
+/// while a terminal line, a journal line and a human-facing error keep this
+/// host's separators. `cfgd plan -o json` rendered its `targets` with
+/// `Path::display()`, so a Windows consumer read `C:\Users\…\.zshrc` where every
+/// Unix-authored value beside it spelled `/`, and `cfgd module add --file` wrote
+/// the same native target into the module document it generated.
+///
+/// The walk reads both crates' production sources and fails a native render
+/// inside a `serde_json::json!` literal or inside a struct literal of a type
+/// serde serializes. A slot whose value is genuinely this host's own (an argv
+/// token, a progress label) says so with `// native-ok: <why>` on the line.
+/// Indirection through a helper that RETURNS the string is outside its reach:
+/// the post-edit hook reads those on the way in.
+#[test]
+fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
+    let serializing = serializing_type_names();
+    let roots = [
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src"),
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    let mut files = 0usize;
+    let mut spans = 0usize;
+    for root in roots {
+        for path in rust_sources_under(&root) {
+            if path
+                .file_name()
+                .is_some_and(|n| n == "tests.rs" || n == "test_helpers.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            files += 1;
+            let body = walked_file_body(&path);
+            let production = production_body(&body);
+            let lines: Vec<&str> = production.lines().collect();
+            let mut depth = 0i32;
+            let mut inside: Option<i32> = None;
+            for (n, line) in lines.iter().enumerate() {
+                let net = line.matches(['(', '[', '{']).count() as i32
+                    - line.matches([')', ']', '}']).count() as i32;
+                let opens = opens_a_serialized_literal(line, &serializing);
+                if (inside.is_some() || opens)
+                    && NATIVE_RENDERS.iter().any(|render| line.contains(render))
+                    && !line.contains(NATIVE_HATCH)
+                {
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        cfgd_core::to_posix_string(&path),
+                        n + 1,
+                        line.trim()
+                    ));
+                }
+                if inside.is_none() && opens && net > 0 {
+                    inside = Some(depth);
+                    spans += 1;
+                }
+                depth += net;
+                if inside.is_some_and(|at| depth <= at) {
+                    inside = None;
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a path written into a serialized payload folds through \
+         `cfgd_core::to_posix_string` (or `to_posix_fs_key` for a stored key a restore \
+         reopens), or says why this host's separators are right with `{NATIVE_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        files >= 200,
+        "the walk read {files} production sources; it is looking at the wrong root"
+    );
+    assert!(
+        spans >= 500,
+        "the walk found {spans} serialized literals; it has gone blind to the population"
+    );
+}
+
+/// The keys a planted cfgd document spells.
 ///
 /// The two nested keys are listed because a fixture often assembles its
 /// document from fragments, and the fragment carrying the path names no
 /// top-level key of its own.
+const DOCUMENT_KEYS: &[&str] = &[
+    "apiVersion:",
+    "kind:",
+    "metadata:",
+    "spec:",
+    "target:",
+    "source:",
+];
+
+/// Macros whose argument is printed rather than planted.
+///
+/// A `println!` whose format string is `"target: {}\n"` spells a key at the
+/// start of a literal exactly as a one-key document does, and nothing parses the
+/// result back, so a native path in one is a log line and not this walk's
+/// business.
+const PRINTING_MACROS: &[&str] = &["println!", "print!", "eprintln!", "eprint!"];
+
+/// Whether a line opens a cfgd document a fixture plants on disk: a line whose
+/// string literal begins a YAML line with one of those keys, written either as
+/// an escaped template or as a raw literal.
 ///
 /// Kept beside the walk below rather than inside it so the fixture test can ask
 /// the same question of a line it spells itself.
 fn opens_a_cfgd_document(line: &str) -> bool {
-    [
-        "apiVersion:",
-        "kind:",
-        "metadata:",
-        "spec:",
-        "target:",
-        "source:",
-    ]
-    .iter()
-    .any(|key| line.contains(key))
-        && (line.contains("\\n") || line.contains("r#\""))
+    if PRINTING_MACROS.iter().any(|m| line.contains(m)) {
+        return false;
+    }
+    if !line.contains("\\n") && !line.contains("r#\"") {
+        return false;
+    }
+    DOCUMENT_KEYS
+        .iter()
+        .any(|key| begins_a_yaml_line(line, key))
+}
+
+/// Whether `key` begins a YAML line somewhere in `line`.
+///
+/// A document's keys each open a line of their own, so a key counts only where
+/// the text in front of it opens a literal (`"`, `r#"`), closes the YAML line
+/// before it (`\n`), or is the indentation a continued or raw literal carries
+/// on a line of its own, with a list dash allowed in between. A prose message
+/// naming one arbitrary `source:` mid-sentence opens nothing.
+fn begins_a_yaml_line(line: &str, key: &str) -> bool {
+    line.match_indices(key).any(|(at, _)| {
+        let mut before = line[..at].trim_end_matches([' ', '\t']);
+        if let Some(rest) = before.strip_suffix('-') {
+            before = rest.trim_end_matches([' ', '\t']);
+        }
+        before.is_empty() || before.ends_with("\\n") || before.ends_with('"')
+    })
 }
 
 /// The identifier a `let` line binds, for a fixture that renders its path into
@@ -36068,6 +36273,25 @@ fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
             .0
             .is_empty(),
         "a key the document spells is not a value it reads"
+    );
+
+    // Printed output carries no document: nothing parses it back, and a path in
+    // a log line keeps this host's separators.
+    let printed = format!(
+        "    {}(\"target: {{}}\\n\", path{native});",
+        PRINTING_MACROS[0]
+    );
+    assert!(
+        native_paths_in_declared_documents(&printed).0.is_empty(),
+        "a printed line is no planted document"
+    );
+
+    // A key named mid-sentence opens no YAML line.
+    let prose =
+        format!("    let message = format!(\"keeps one arbitrary source:\\n{{}}\", path{native});");
+    assert!(
+        native_paths_in_declared_documents(&prose).0.is_empty(),
+        "a prose message naming a key mid-sentence is no document"
     );
 }
 
