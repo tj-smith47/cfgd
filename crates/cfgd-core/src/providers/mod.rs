@@ -476,12 +476,19 @@ impl ActionNote {
         self
     }
 
-    /// The rendered body of the note — the ONE derivation, so a tagged and an
+    /// The rendered body of the note, the ONE derivation, so a tagged and an
     /// untagged note cannot drift into two layouts.
+    ///
+    /// This is also where a path inside a note folds: a configurator states the
+    /// file it wrote, and a caveat spelling `/home/tj/.ssh/config` under rows
+    /// that read `~/.ssh/config` names one file two ways in one report. Folded
+    /// here rather than per call site, because [`Self::message`] is what a
+    /// failure records and nothing else renders a note.
     pub fn body(&self) -> String {
+        let shown = crate::fold_home_in_text(&self.message);
         match &self.tag {
-            Some(tag) => format!("[{}] {}", tag, self.message),
-            None => self.message.clone(),
+            Some(tag) => format!("[{}] {}", tag, shown),
+            None => shown,
         }
     }
 }
