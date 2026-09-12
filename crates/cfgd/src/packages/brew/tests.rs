@@ -71,9 +71,15 @@ fn parse_brew_versions_whitespace_only() {
 fn brew_manager_name_and_bootstrap_plan() {
     let mgr = BrewManager;
     assert_eq!(mgr.name(), "brew");
-    let plan = mgr
-        .bootstrap_plan()
-        .expect("brew always plans to provision itself");
+    let planned = mgr.bootstrap_plan();
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "Homebrew has no Windows build and its installer is bash: {planned:?}"
+        );
+        return;
+    }
+    let plan = planned.expect("brew plans to provision itself on every host it runs on");
     // What `bootstrap` runs: Homebrew's install.sh, fetched with curl, landing
     // in the same prefix `path_dirs` reports.
     assert_eq!(plan.method, "homebrew installer");

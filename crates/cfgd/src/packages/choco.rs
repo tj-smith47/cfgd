@@ -93,7 +93,17 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
+        // Windows only: the arm below is a PowerShell install script for a
+        // manager that exists on no other platform, and a plan's method is
+        // binding at execution.
+        #[cfg(windows)]
+        {
+            Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
 
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
@@ -364,7 +374,11 @@ mod tests {
     fn chocolatey_manager_name_and_traits() {
         let mgr = ChocolateyManager;
         assert_eq!(mgr.name(), "chocolatey");
-        assert!(mgr.bootstrap_plan().is_some());
+        assert_eq!(
+            mgr.bootstrap_plan().is_some(),
+            cfg!(windows),
+            "chocolatey's installer is PowerShell for a Windows-only manager, so only Windows plans it"
+        );
     }
 
     #[test]
@@ -527,27 +541,36 @@ Tags: git vcs dvcs
 
     #[test]
     fn chocolatey_bootstrap_plan_declares_the_installer_shim_dir_on_windows() {
-        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        let planned = ChocolateyManager.bootstrap_plan();
+        if !cfg!(windows) {
+            assert!(
+                planned.is_none(),
+                "nothing off Windows can run chocolatey's installer: {planned:?}"
+            );
+            return;
+        }
+        let plan = planned.expect("Windows plans chocolatey's own installer");
         assert_eq!(plan.method, "system");
         assert!(plan.requires.is_empty());
-        // `bootstrap` is a PowerShell install script; the shims it creates only
-        // exist on the platform that can run it.
-        if cfg!(windows) {
-            assert_eq!(plan.creates_path_dirs.len(), 1);
-            assert!(
-                plan.creates_path_dirs[0].ends_with("/bin"),
-                "{:?}",
-                plan.creates_path_dirs
-            );
-            assert!(!plan.creates_path_dirs[0].contains('\\'));
-        } else {
-            assert!(plan.creates_path_dirs.is_empty());
-        }
+        assert_eq!(plan.creates_path_dirs.len(), 1);
+        assert!(
+            plan.creates_path_dirs[0].ends_with("/bin"),
+            "{:?}",
+            plan.creates_path_dirs
+        );
+        assert!(!plan.creates_path_dirs[0].contains('\\'));
     }
 
     #[test]
     fn chocolatey_path_dirs_matches_the_bootstrap_plans_declaration() {
-        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        if !cfg!(windows) {
+            // Off Windows there is no plan to agree with; `path_dirs` still
+            // answers for a host that carries chocolatey some other way.
+            return;
+        }
+        let plan = ChocolateyManager
+            .bootstrap_plan()
+            .expect("Windows plans chocolatey's own installer");
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

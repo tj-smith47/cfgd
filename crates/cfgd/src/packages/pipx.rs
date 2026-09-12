@@ -117,6 +117,9 @@ impl PackageManager for PipxManager {
             // planner say WHY pipx cannot be provisioned instead of dropping it
             // — `pip3` is not installable under that name from any system
             // manager, so `feasible_bootstrap_plan` still answers `None`.
+            // every-platform-ok: the pip arm spawns `pip3`/`pip` itself with no
+            // shell in between, and every mediated arm is named only because
+            // the probe above found its mediator on this host.
             "pip" => Some(
                 BootstrapPlan::new("pip")
                     .requiring([pipx_pip_tool()])

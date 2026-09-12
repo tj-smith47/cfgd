@@ -372,11 +372,21 @@ impl PackageManager for BrewManager {
         // `curl` is named, not gated on: the installer needs it, but brew has
         // always offered to provision itself regardless, and narrowing that here
         // would drop the manager instead of reporting the missing tool.
-        Some(
-            BootstrapPlan::new("homebrew installer")
-                .requiring(["curl"])
-                .creating(brew_path_dirs()),
-        )
+        //
+        // `None` on Windows: the installer is a bash script and Homebrew has no
+        // Windows build to install.
+        #[cfg(windows)]
+        {
+            None
+        }
+        #[cfg(not(windows))]
+        {
+            Some(
+                BootstrapPlan::new("homebrew installer")
+                    .requiring(["curl"])
+                    .creating(brew_path_dirs()),
+            )
+        }
     }
 
     // bootstrap-arm-ok: one installer script, run as the linuxbrew user when root

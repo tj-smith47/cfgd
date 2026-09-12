@@ -28,6 +28,10 @@ const NPM_FALLBACK_METHOD: &str = "nvm";
 /// The installer's pipeline is fetched with curl and RUN by bash. FreeBSD's
 /// base system carries neither, so naming only curl would let the plan be
 /// approved and then die inside the install.
+///
+/// Compiled off Windows only, where a shell can run the installer: see
+/// [`NpmManager::bootstrap_plan_given`].
+#[cfg(not(windows))]
 pub(super) fn nvm_bootstrap_plan() -> BootstrapPlan {
     BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl", "bash"])
 }
@@ -623,6 +627,14 @@ impl PackageManager for NpmManager {
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
         match detect_brew_system_method(&NPM_MEDIATED, NPM_FALLBACK_METHOD, delivered) {
+            // nvm is a POSIX shell installer with no Windows build, and no
+            // mediator of the cascade above runs on Windows either, so npm has
+            // no route there and the plan is absent rather than infeasible: a
+            // method is binding at execution, so naming nvm would schedule a
+            // provision the apply could only fail.
+            #[cfg(windows)]
+            NPM_FALLBACK_METHOD => None,
+            #[cfg(not(windows))]
             NPM_FALLBACK_METHOD => Some(nvm_bootstrap_plan()),
             method => Some(BootstrapPlan::new(method)),
         }
@@ -635,7 +647,9 @@ impl PackageManager for NpmManager {
             return Ok(());
         }
 
-        // Fall back to nvm
+        // Fall back to nvm. The arm is absent on Windows, where nvm's installer
+        // cannot run, so the plan never names it there either.
+        #[cfg(not(windows))]
         if command_available("curl") {
             let result = pkg_run(
                 cx,
@@ -662,9 +676,16 @@ impl PackageManager for NpmManager {
             return Err(planned_method_unavailable("npm", method).into());
         }
 
+        // The reader installs Node themselves on Windows, so the refusal names
+        // the managers that carry it rather than stopping at the bare fact.
+        #[cfg(windows)]
+        let message =
+            "no method available to install npm; install Node.js with winget, chocolatey or scoop";
+        #[cfg(not(windows))]
+        let message = "no method available to install npm";
         Err(PackageError::BootstrapFailed {
             manager: "npm".into(),
-            message: "no method available to install npm".into(),
+            message: message.into(),
         }
         .into())
     }
@@ -942,39 +963,46 @@ mod tests {
 
     #[test]
     fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
-        // The cascade always has an arm — brew, a system manager, or nvm — so
-        // the plan itself is unconditional; whether the nvm arm's `curl` can be
-        // had is `feasible_bootstrap_plan`'s question.
-        let plan = NpmManager.bootstrap_plan();
-        assert!(plan.is_some());
-        if let Some(plan) = plan {
-            // The method names whichever arm of `bootstrap`'s cascade this host
-            // reaches; only the nvm fallback shells out to a tool of its own,
-            // and no arm creates a PATH dir the manager can name before node
-            // exists (`path_dirs` reads the resolved prefix out of state).
-            let can = |t: &str| command_available(t);
-            let expected_method = if brew_available() {
-                "brew"
-            } else if can("apt") {
-                "apt"
-            } else if can("dnf") {
-                "dnf"
-            } else if can("pkg") {
-                "pkg"
-            } else {
-                "nvm"
-            };
-            assert_eq!(plan.method, expected_method);
-            assert_eq!(
-                plan.requires,
-                if expected_method == "nvm" {
-                    vec!["curl".to_string(), "bash".to_string()]
-                } else {
-                    Vec::<String>::new()
-                }
+        let planned = NpmManager.bootstrap_plan();
+        // The method names whichever arm of `bootstrap`'s cascade this host
+        // reaches; only the nvm fallback shells out to tools of its own, and no
+        // arm creates a PATH dir the manager can name before node exists
+        // (`path_dirs` reads the resolved prefix out of state). Whether the nvm
+        // arm's tools can be had is `feasible_bootstrap_plan`'s question.
+        let can = |t: &str| command_available(t);
+        let expected_method = if brew_available() {
+            Some("brew")
+        } else if can("apt") {
+            Some("apt")
+        } else if can("dnf") {
+            Some("dnf")
+        } else if can("pkg") {
+            Some("pkg")
+        } else if cfg!(windows) {
+            // nvm's installer needs a shell Windows has not got, so a host no
+            // mediator reaches is offered no arm at all.
+            None
+        } else {
+            Some("nvm")
+        };
+        let Some(expected_method) = expected_method else {
+            assert!(
+                planned.is_none(),
+                "npm has no route on a Windows host no mediator reaches: {planned:?}"
             );
-            assert!(plan.creates_path_dirs.is_empty());
-        }
+            return;
+        };
+        let plan = planned.expect("the cascade reached an arm this host can run");
+        assert_eq!(plan.method, expected_method);
+        assert_eq!(
+            plan.requires,
+            if expected_method == "nvm" {
+                vec!["curl".to_string(), "bash".to_string()]
+            } else {
+                Vec::<String>::new()
+            }
+        );
+        assert!(plan.creates_path_dirs.is_empty());
     }
 
     #[test]

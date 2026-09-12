@@ -65,11 +65,22 @@ impl PackageManager for NixManager {
         // The multi-user (`--daemon`) install puts the nix binaries in the
         // default profile; a per-user profile only appears once something is
         // installed into it.
-        Some(
-            BootstrapPlan::new("nix installer")
-                .requiring(["curl"])
-                .creating([NIX_PROFILE_BIN_DIR]),
-        )
+        //
+        // `None` on Windows: the installer is a POSIX shell script piped into
+        // `sh`, and nix itself runs there only inside WSL, which is a different
+        // machine as far as this host is concerned.
+        #[cfg(windows)]
+        {
+            None
+        }
+        #[cfg(not(windows))]
+        {
+            Some(
+                BootstrapPlan::new("nix installer")
+                    .requiring(["curl"])
+                    .creating([NIX_PROFILE_BIN_DIR]),
+            )
+        }
     }
 
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
@@ -677,9 +688,15 @@ mod tests {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let plan = NixManager
-            .bootstrap_plan()
-            .expect("the cascade is unconditional");
+        let planned = NixManager.bootstrap_plan();
+        if cfg!(windows) {
+            assert!(
+                planned.is_none(),
+                "the installer is a POSIX shell script, so Windows is offered no arm: {planned:?}"
+            );
+            return;
+        }
+        let plan = planned.expect("every host with a shell plans the installer");
         // Feasibility is a separate question, asked of the same plan.
         assert_eq!(
             NixManager.feasible_bootstrap_plan().is_some(),
@@ -697,9 +714,12 @@ mod tests {
 
     #[test]
     fn nix_path_dirs_matches_the_bootstrap_plans_declaration() {
-        let plan = NixManager
-            .bootstrap_plan()
-            .expect("the cascade is unconditional");
+        let planned = NixManager.bootstrap_plan();
+        if cfg!(windows) {
+            assert!(planned.is_none(), "Windows is offered no arm: {planned:?}");
+            return;
+        }
+        let plan = planned.expect("every host with a shell plans the installer");
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

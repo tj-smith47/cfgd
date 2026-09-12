@@ -59,11 +59,23 @@ impl PackageManager for CargoManager {
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        Some(
-            BootstrapPlan::new("rustup")
-                .requiring(["curl"])
-                .creating(cargo_bin_dir()),
-        )
+        // `None` on Windows: the arm below pipes rustup's installer into `sh`,
+        // which Windows has no copy of, and a plan's method is binding at
+        // execution, so naming it there would schedule a provision that can
+        // only fail. The Windows route is `rustup-init.exe`, which cfgd does not
+        // run.
+        #[cfg(windows)]
+        {
+            None
+        }
+        #[cfg(not(windows))]
+        {
+            Some(
+                BootstrapPlan::new("rustup")
+                    .requiring(["curl"])
+                    .creating(cargo_bin_dir()),
+            )
+        }
     }
 
     // Reads `cargo_bin_dir()` directly rather than the recorded state row: the
@@ -354,13 +366,19 @@ tokei v12.1.2:
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
-        let plan = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
-        // The plan is unconditional: it describes what the cascade needs, and
-        // whether this host can carry that out is `feasible_bootstrap_plan`'s
-        // question — so the planner can name `curl` as the cause when it
-        // cannot.
-        assert!(plan.is_some());
-        let Some(plan) = plan else { return };
+        let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
+        if cfg!(windows) {
+            assert!(
+                planned.is_none(),
+                "the installer is piped into `sh`, so Windows is offered no arm: {planned:?}"
+            );
+            return;
+        }
+        // Off Windows the plan describes what the cascade needs whatever this
+        // host carries, and whether the host can carry it out is
+        // `feasible_bootstrap_plan`'s question, so the planner can name `curl`
+        // as the cause when it cannot.
+        let plan = planned.expect("every host with a shell plans rustup");
         // What `bootstrap` runs: rustup's install script, fetched with curl,
         // landing cargo (and everything `cargo install` builds) in ~/.cargo/bin.
         assert_eq!(plan.method, "rustup");
@@ -375,8 +393,15 @@ tokei v12.1.2:
     fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
+        if cfg!(windows) {
+            let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
+            assert!(planned.is_none(), "Windows is offered no arm: {planned:?}");
+            return;
+        }
         cfgd_core::with_test_home(home.path(), || {
-            let plan = CargoManager.bootstrap_plan().unwrap();
+            let plan = CargoManager
+                .bootstrap_plan()
+                .expect("every host with a shell plans rustup");
             let printer = cfgd_core::test_helpers::test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

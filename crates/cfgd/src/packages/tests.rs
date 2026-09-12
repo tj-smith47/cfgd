@@ -3072,68 +3072,39 @@ fn all_package_managers_unique_names() {
     );
 }
 
+/// Which managers can be provisioned here, and which can never be.
+///
+/// A manager's own bootstrap arm runs only where its installer can: the POSIX
+/// shell arms (brew's and nix's installers, rustup piped into `sh`, npm's nvm)
+/// exist off Windows, chocolatey's and scoop's PowerShell installers exist on
+/// Windows alone, and snap and flatpak are Linux mediators. A plan's method is
+/// binding at execution, so a manager with no runnable arm here plans nothing
+/// rather than naming one.
 #[test]
 fn all_package_managers_bootstrap_consistency() {
     let managers = all_package_managers();
 
-    // snap and flatpak are Linux-only; they plan nothing elsewhere.
-    #[cfg(target_os = "linux")]
-    let bootstrappable: HashSet<&str> = [
-        "brew",
-        "cargo",
-        "npm",
-        "pipx",
-        "nix",
-        "go",
-        "chocolatey",
-        "scoop",
-        "snap",
-        "flatpak",
-    ]
-    .into();
-    #[cfg(not(target_os = "linux"))]
-    let bootstrappable: HashSet<&str> = [
-        "brew",
-        "cargo",
-        "npm",
-        "pipx",
-        "nix",
-        "go",
-        "chocolatey",
-        "scoop",
-    ]
-    .into();
+    let mut bootstrappable: HashSet<&str> = ["pipx", "go"].into();
+    if cfg!(windows) {
+        bootstrappable.extend(["chocolatey", "scoop"]);
+    } else {
+        bootstrappable.extend(["brew", "cargo", "npm", "nix"]);
+    }
+    if cfg!(target_os = "linux") {
+        bootstrappable.extend(["snap", "flatpak"]);
+    }
 
-    #[cfg(target_os = "linux")]
-    let not_bootstrappable: HashSet<&str> = [
-        "brew-tap",
-        "brew-cask",
-        "apt",
-        "dnf",
-        "apk",
-        "pacman",
-        "zypper",
-        "yum",
-        "pkg",
-        "winget",
-    ]
-    .into();
-    #[cfg(not(target_os = "linux"))]
-    let not_bootstrappable: HashSet<&str> = [
-        "brew-tap",
-        "brew-cask",
-        "apt",
-        "dnf",
-        "apk",
-        "pacman",
-        "zypper",
-        "yum",
-        "pkg",
-        "winget",
-        "snap",
-        "flatpak",
-    ]
-    .into();
+    // The complement, derived from the registry rather than retyped, so a
+    // manager added to cfgd is classified by this test instead of escaping it.
+    let not_bootstrappable: HashSet<&str> = managers
+        .iter()
+        .map(|m| m.name())
+        .filter(|name| !bootstrappable.contains(name))
+        .collect();
+    assert!(
+        not_bootstrappable.contains("winget") && not_bootstrappable.contains("apt"),
+        "a manager that ships with its own operating system is never bootstrappable: {not_bootstrappable:?}"
+    );
 
     for m in &managers {
         if not_bootstrappable.contains(m.name()) {
@@ -3241,10 +3212,14 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     for (name, plan, feasible) in plans {
         assert!(!plan.method.trim().is_empty(), "{name}: empty method");
         // The prerequisite population is closed on purpose: a plan may only
-        // name a tool a system manager can actually install for it.
+        // name a tool whose absence the planner can give as the cause. `curl`
+        // is installable from a system manager; `pip3`, `pip` and `bash` are
+        // not obtainable under those names from any of them, so a host without
+        // one makes the plan infeasible and the manager is refused with the
+        // tool named instead of being dropped.
         for tool in &plan.requires {
             assert!(
-                ["curl", "pip3", "pip"].contains(&tool.as_str()),
+                ["curl", "pip3", "pip", "bash"].contains(&tool.as_str()),
                 "{name}: unknown prerequisite {tool}"
             );
         }
@@ -5268,13 +5243,24 @@ fn a_freebsd_host_plans_npm_via_pkg() {
 /// The wiring half of [`npm_nvm_fallback_requires_bash`]: with no mediator on
 /// the host and none delivered by the run, the cascade declines all the way to
 /// npm's own arm and the plan carries what that arm needs.
+///
+/// On Windows that arm does not exist, so the same cascade ends in no plan:
+/// nvm's installer is a shell script, and a plan's method is binding at
+/// execution, so naming it would schedule a provision the apply could only
+/// fail.
 #[test]
 #[serial_test::serial]
-fn a_host_with_no_mediator_at_all_plans_npm_through_its_own_nvm_arm() {
+fn a_host_with_no_mediator_at_all_plans_npm_only_where_its_own_arm_runs() {
     let _guards = silence_every_mediator_but_pkg();
-    let plan = super::npm::NpmManager
-        .bootstrap_plan_given(&|_| false)
-        .expect("npm always has an arm of its own");
+    let planned = super::npm::NpmManager.bootstrap_plan_given(&|_| false);
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "nvm cannot run on Windows, so npm names no arm there: {planned:?}"
+        );
+        return;
+    }
+    let plan = planned.expect("every host with a shell has npm's own arm");
     assert_eq!(
         plan.method, "nvm",
         "a host no mediator reaches falls to npm's own installer"
@@ -5295,6 +5281,11 @@ fn a_host_with_no_mediator_at_all_plans_npm_through_its_own_nvm_arm() {
 /// Read off the arm's own producer rather than off `bootstrap_plan_given`: the
 /// cascade prefers brew and every system mediator over this arm, so a host
 /// carrying any of them never returns it.
+///
+/// The arm is compiled off Windows only, where nvm's installer cannot run, so
+/// there is nothing for this to assert there; the absence of the plan itself is
+/// pinned by `all_package_managers_bootstrap_consistency`.
+#[cfg(not(windows))]
 #[test]
 fn npm_nvm_fallback_requires_bash() {
     let plan = super::npm::nvm_bootstrap_plan();

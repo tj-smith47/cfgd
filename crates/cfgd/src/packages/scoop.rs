@@ -104,7 +104,17 @@ impl PackageManager for ScoopManager {
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
+        // Windows only: the arm below is a PowerShell install script for a
+        // manager that exists on no other platform, and a plan's method is
+        // binding at execution.
+        #[cfg(windows)]
+        {
+            Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
 
     fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
@@ -319,7 +329,11 @@ mod tests {
     fn scoop_manager_name_and_traits() {
         let mgr = ScoopManager;
         assert_eq!(mgr.name(), "scoop");
-        assert!(mgr.bootstrap_plan().is_some());
+        assert_eq!(
+            mgr.bootstrap_plan().is_some(),
+            cfg!(windows),
+            "scoop's installer is PowerShell for a Windows-only manager, so only Windows plans it"
+        );
     }
 
     #[test]
@@ -333,31 +347,42 @@ mod tests {
         assert_eq!(available, command_available("scoop"));
     }
 
+    /// `bootstrap` is a PowerShell install script for a manager no other
+    /// platform carries, so the plan exists on Windows alone and declares the
+    /// shims directory it creates there.
     #[test]
     fn scoop_bootstrap_plan_declares_the_shims_dir_on_windows() {
         let home = tempfile::tempdir().unwrap();
-        let plan = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan())
-            .expect("always planned");
+        let planned = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan());
+        if !cfg!(windows) {
+            assert!(
+                planned.is_none(),
+                "nothing off Windows can run scoop's installer: {planned:?}"
+            );
+            return;
+        }
+        let plan = planned.expect("Windows plans scoop's own installer");
         assert_eq!(plan.method, "system");
         assert!(plan.requires.is_empty());
-        // `bootstrap` is a PowerShell install script; the shims it creates only
-        // exist on the platform that can run it.
-        if cfg!(windows) {
-            assert!(
-                plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
-                "{:?}",
-                plan.creates_path_dirs
-            );
-        } else {
-            assert!(plan.creates_path_dirs.is_empty());
-        }
+        assert!(
+            plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
+            "{:?}",
+            plan.creates_path_dirs
+        );
     }
 
     #[test]
     fn scoop_path_dirs_matches_the_bootstrap_plans_declaration() {
+        if !cfg!(windows) {
+            // Off Windows there is no plan to agree with; `path_dirs` still
+            // answers for a host that carries scoop some other way.
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         cfgd_core::with_test_home(home.path(), || {
-            let plan = ScoopManager.bootstrap_plan().expect("always planned");
+            let plan = ScoopManager
+                .bootstrap_plan()
+                .expect("Windows plans scoop's own installer");
             let printer = cfgd_core::test_helpers::test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

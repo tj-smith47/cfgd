@@ -124,6 +124,9 @@ impl PackageManager for GoInstallManager {
         // mediator that cannot run, which under a binding plan is a guaranteed
         // failure rather than a provision. `go` has no bootstrap arm of its
         // own, so when none of them is present there is no plan.
+        //
+        // every-platform-ok: every arm is a mediator the probe found on this
+        // host, so a platform carrying none of them is offered nothing.
         detect_brew_or_system_method(&GO_MEDIATED, delivered).map(BootstrapPlan::new)
     }
 
