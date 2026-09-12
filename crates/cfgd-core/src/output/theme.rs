@@ -35,9 +35,9 @@ const ICON_INFO: &str = "◉";
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
 /// optionally carries an `(r, g, b)` triple for high-fidelity rendering on
-/// truecolor-capable terminals. The decision between truecolor and 256-color
-/// is taken at render time inside `apply_to`, so existing call sites are
-/// unaffected by the upgrade.
+/// truecolor-capable terminals. Which of the two depths a slot renders in is
+/// stamped by [`Self::with_colors`] beside the colour decision itself, so one
+/// render cannot mix depths.
 #[derive(Debug, Clone, Default)]
 pub struct ThemedStyle {
     /// `console::Style` carrying attrs and (when no `rgb` is present) the
@@ -57,6 +57,13 @@ pub struct ThemedStyle {
     /// that forgets to stamp renders UNSTYLED — that fails a positive assertion
     /// loudly, where the opposite default makes a negative one pass vacuously.
     colors: bool,
+    /// Whether this style emits its `rgb` triple as a 24-bit foreground rather
+    /// than quantizing it to a 256-colour slot. Stamped beside `colors` and
+    /// never re-derived while rendering: the syntax highlighter writes its own
+    /// foreground runs, and a depth answered per span let one screen carry
+    /// 24-bit highlighting beside 256-colour headings on a host whose
+    /// `COLORTERM` the two readers disagreed about.
+    truecolor: bool,
     /// Whether this style has been given an actual foreground colour (a
     /// truecolor hex or a named `console::Color`), independent of `colors`
     /// (which says only whether emitting it is currently allowed). Backs the
@@ -134,6 +141,7 @@ impl ThemedStyle {
                 rgb: Some((r, g, b)),
                 attrs: AttrSet::default(),
                 colors: false,
+                truecolor: false,
                 has_color: true,
             },
             None => Self::default(),
@@ -148,6 +156,7 @@ impl ThemedStyle {
             rgb: None,
             attrs: AttrSet::default(),
             colors: false,
+            truecolor: false,
             has_color: true,
         }
     }
@@ -224,9 +233,21 @@ impl ThemedStyle {
     /// with the flag because the 256-colour fallback arm of `StyledText::fmt`
     /// delegates to `console::Style::apply_to`, which otherwise re-consults the
     /// process-global colour flag and strips whatever this style decided.
+    ///
+    /// The colour DEPTH is answered here too, from the same terminal the colour
+    /// decision was taken against, so a slot carries one depth for as long as it
+    /// lives rather than asking the environment again per span.
     pub fn with_colors(mut self, enabled: bool) -> Self {
         self.colors = enabled;
+        self.truecolor = enabled && supports_truecolor();
         self.inner = self.inner.force_styling(enabled);
+        self
+    }
+
+    /// Override the depth [`Self::with_colors`] derived, for a caller that must
+    /// render the same bytes on every host. Call it AFTER the colour stamp.
+    pub fn with_truecolor(mut self, enabled: bool) -> Self {
+        self.truecolor = enabled && self.colors;
         self
     }
 
@@ -268,7 +289,7 @@ impl ThemedStyle {
     ///   attrs included. An attribute IS styling: a stream the printer decided
     ///   against carries no SGR, so `--color never` output is byte-identical
     ///   whatever `--theme` names.
-    /// - `supports_truecolor()` is true AND an RGB triple is present → emit
+    /// - the stamped depth is 24-bit AND an RGB triple is present → emit
     ///   `\x1b[<attrs>;38;2;R;G;Bm{text}\x1b[0m`.
     /// - Otherwise → delegate to `console::Style::apply_to`, which yields
     ///   the 256-color fallback path (existing behavior).
@@ -300,7 +321,7 @@ impl<D: Display> Display for StyledText<'_, D> {
         }
 
         if let Some((r, g, b)) = self.style.rgb
-            && supports_truecolor()
+            && self.style.truecolor
         {
             if !attrs.has_attrs() {
                 return write!(f, "\x1b[38;2;{r};{g};{b}m{}\x1b[0m", self.text);
@@ -410,6 +431,12 @@ pub struct Theme {
     /// `colors` is — a preset cannot be assembled with the slots and the
     /// decision disagreeing.
     hyperlinks: bool,
+    /// Whether this theme's styles, and the syntax highlighter rendering under
+    /// it, emit 24-bit foregrounds. Stamped by [`Theme::with_colors`] from the
+    /// terminal the colour decision was taken against, and readable through
+    /// [`Theme::truecolor`] because the highlighter writes its own escapes and
+    /// has to take the same answer the style slots took.
+    truecolor: bool,
     /// Which entry of the syntect registry a code block is highlighted with,
     /// stamped by [`Theme::preset`] and read through [`Theme::syntect_theme`].
     /// `None` renders the block plain. Private for the same reason the two
@@ -466,6 +493,7 @@ impl Default for Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            truecolor: false,
             syntax_theme: Some(SYNTAX_THEME_DEFAULT),
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
@@ -513,6 +541,7 @@ impl Theme {
         // Colour withdrawn withdraws the hyperlink with it, whatever order the
         // two stamps arrive in: an OSC 8 sequence is an escape like any other.
         self.hyperlinks &= enabled;
+        self.truecolor = enabled && supports_truecolor();
         self.primary = self.primary.map(|s| s.with_colors(enabled));
         self.header = self.header.with_colors(enabled);
         self.success = self.success.with_colors(enabled);
@@ -533,6 +562,37 @@ impl Theme {
     /// Whether styles from this theme may emit colour.
     pub fn colors(&self) -> bool {
         self.colors
+    }
+
+    /// Pin the colour depth every span under this theme renders in, over the
+    /// answer [`Self::with_colors`] derived from the terminal. Every capture
+    /// pins it, so a golden comparing bytes says the same thing on a host whose
+    /// `COLORTERM` is unset as on one that advertises 24-bit.
+    pub fn with_truecolor(mut self, enabled: bool) -> Self {
+        let enabled = enabled && self.colors;
+        self.truecolor = enabled;
+        self.primary = self.primary.map(|s| s.with_truecolor(enabled));
+        self.header = self.header.with_truecolor(enabled);
+        self.success = self.success.with_truecolor(enabled);
+        self.warning = self.warning.with_truecolor(enabled);
+        self.error = self.error.with_truecolor(enabled);
+        self.info = self.info.with_truecolor(enabled);
+        self.muted = self.muted.with_truecolor(enabled);
+        self.running = self.running.with_truecolor(enabled);
+        self.diff_add = self.diff_add.with_truecolor(enabled);
+        self.diff_remove = self.diff_remove.with_truecolor(enabled);
+        self.diff_context = self.diff_context.with_truecolor(enabled);
+        self.accent = self.accent.with_truecolor(enabled);
+        self.secondary = self.secondary.with_truecolor(enabled);
+        self.type_hint = self.type_hint.with_truecolor(enabled);
+        self
+    }
+
+    /// Whether a span under this theme emits a 24-bit foreground. Read by the
+    /// syntax highlighter, whose escapes syntect writes rather than the style
+    /// gate, so both halves of one render land in one depth.
+    pub fn truecolor(&self) -> bool {
+        self.truecolor
     }
 
     /// Stamp whether a linked value may emit an OSC 8 hyperlink. Only the
@@ -989,6 +1049,7 @@ impl Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            truecolor: false,
             syntax_theme: None,
             // minimal spends no colour at all.
             primary: None,
@@ -1126,6 +1187,7 @@ fn apply_color(style: &mut ThemedStyle, hex: &str) {
             rgb: Some((r, g, b)),
             attrs: AttrSet::default(),
             colors: false,
+            truecolor: false,
             has_color: true,
         }
         .with_attrs(attrs)

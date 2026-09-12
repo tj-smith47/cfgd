@@ -29,7 +29,6 @@
 use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
 use syntect::parsing::SyntaxSet;
-use syntect::util::as_24_bit_terminal_escaped;
 
 use crate::escape_control_chars;
 
@@ -45,6 +44,29 @@ const SCRIPT_BODY_LANG: &str = "bash";
 // wrote and so cannot close; this is the reset that closes them, appended only
 // under `render_syntax_highlight`'s colour check.
 const SYNTECT_RESET: &str = "\x1b[0m";
+
+/// Render syntect's highlighted runs as foreground escapes in `truecolor`'s
+/// depth, the counterpart of [`super::theme::ThemedStyle::apply_to`] for spans
+/// syntect coloured. Backgrounds are dropped, as
+/// `syntect::util::as_24_bit_terminal_escaped(.., false)` drops them: a code
+/// block sits inside the report's own background.
+fn escape_ranges(ranges: &[(syntect::highlighting::Style, &str)], truecolor: bool) -> String {
+    let mut out = String::new();
+    for (style, text) in ranges {
+        let fg = style.foreground;
+        let depth = if truecolor {
+            format!("2;{};{};{}", fg.r, fg.g, fg.b)
+        } else {
+            format!("5;{}", super::theme::ansi256_from_rgb(fg.r, fg.g, fg.b))
+        };
+        // style-gate-ok: the foreground of a run syntect coloured, which the
+        // gate never wrote; the depth is the theme's own answer and the colour
+        // check in the one caller decides whether any of this runs.
+        out.push_str(&format!("\x1b[38;{depth}m"));
+        out.push_str(text);
+    }
+    out
+}
 
 impl Renderer {
     /// Render a unified diff using `theme.diff_*` styles. Lines starting with
@@ -137,6 +159,11 @@ impl Renderer {
         let Some(theme) = self.theme.syntect_theme() else {
             return unstyled();
         };
+        // The depth the theme's own slots render in: syntect writes its
+        // foreground runs without passing through the style gate, so a depth
+        // read only there let one screen carry 24-bit highlighting under a
+        // 256-colour heading.
+        let truecolor = self.theme.truecolor();
         let mut h = HighlightLines::new(syntax, theme);
         let mut lines = Vec::new();
         for line in code.lines() {
@@ -169,10 +196,7 @@ impl Renderer {
                         *text = text.strip_suffix('\n').unwrap_or(text);
                     }
                     ranges.retain(|(_, text)| !text.is_empty());
-                    format!(
-                        "{}{SYNTECT_RESET}",
-                        as_24_bit_terminal_escaped(&ranges, false)
-                    )
+                    format!("{}{SYNTECT_RESET}", escape_ranges(&ranges, truecolor))
                 }
                 // The highlighter gave up on this one line. Its TEXT is what an
                 // operator approves from, so the line stands unstyled; empty
@@ -368,6 +392,34 @@ mod tests {
             kv_at < diff_at,
             "a kv buffered before the diff must render first: {out:?}"
         );
+    }
+
+    /// One render carries one colour depth. syntect writes its own foreground
+    /// runs, so before the theme answered the depth a 256-colour host rendered
+    /// the headings and markers of a module view at `38;5;` while the script
+    /// body beneath them stayed 24-bit.
+    #[test]
+    fn one_render_highlights_in_the_same_depth_its_theme_slots_use() {
+        let syntax_set = syntect::parsing::SyntaxSet::load_defaults_newlines();
+        for (truecolor, present, absent) in [(true, "38;2;", "38;5;"), (false, "38;5;", "38;2;")] {
+            let theme = Theme::preset("dracula")
+                .expect("dracula is a registered preset")
+                .with_colors(true)
+                .with_truecolor(truecolor);
+            let slot = theme.secondary.apply_to("postApply").to_string();
+            let r = Renderer::new(theme, Verbosity::Normal);
+            let body = r.highlight_lines("echo hi", "bash", &syntax_set).join("");
+            for (what, rendered) in [("a theme slot", &slot), ("a highlighted body", &body)] {
+                assert!(
+                    rendered.contains(present),
+                    "{what} must render {present} at truecolor={truecolor}: {rendered:?}"
+                );
+                assert!(
+                    !rendered.contains(absent),
+                    "{what} must not render {absent} at truecolor={truecolor}: {rendered:?}"
+                );
+            }
+        }
     }
 
     #[test]

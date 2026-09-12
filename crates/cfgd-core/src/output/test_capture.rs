@@ -138,7 +138,14 @@ fn build_test_printer(
 ) -> Printer {
     let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
     Printer {
-        renderer: Arc::new(Renderer::new(theme.with_colors(colors), verbosity)),
+        // The depth is pinned, not detected: a capture that renders escapes at
+        // all must render the same ones on a host with no `COLORTERM` as on one
+        // advertising 24-bit, or a test comparing bytes asserts about the
+        // developer's terminal.
+        renderer: Arc::new(Renderer::new(
+            theme.with_colors(colors).with_truecolor(colors),
+            verbosity,
+        )),
         output_format: format,
         sink_stderr: sink.clone(),
         sink_stdout: sink,
