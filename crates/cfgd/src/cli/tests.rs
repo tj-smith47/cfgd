@@ -35890,9 +35890,9 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 /// `qualifier` / `verdict` parts, every section head, every kv row (`kv`,
 /// `kv_block`, a hand-built `KvPair`), every bullet, every table row, every
 /// spinner finish and every question a prompt asks. A slot is read as the
-/// statement the sink opens, however
-/// rustfmt broke it, plus the twenty rows above it, because a row's value is
-/// often built well before the block that prints it.
+/// statement the sink opens, however rustfmt broke it, plus the twenty rows
+/// above it, because a row's value is often built well before the block that
+/// prints it.
 ///
 /// Four shapes are passed over, each because the absolute path is right there
 /// or because something else folds it: a `tracing` / `warn!` / `info!` line (a
