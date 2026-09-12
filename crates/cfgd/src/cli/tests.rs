@@ -16074,21 +16074,32 @@ fn every_failure_the_cli_renders_says_what_to_do_next() {
     );
 }
 
-/// The half-open line range of the function containing line `n`, found from the
-/// `fn` header's own indentation: rustfmt closes an item at the indent it opened
-/// at, which reads an extent without counting braces inside the string literals
-/// a render function is full of.
+/// The half-open line range of the function containing line `n`: the first row
+/// of its signature through to its closing `}`, which the range excludes.
+///
+/// The one reading of "the enclosing function" every walk in this file takes,
+/// over [`enclosing_fn_start`] and [`enclosing_fn_end`]. Counting braces on
+/// literal-blanked lines answers where a function ends; matching the `fn`
+/// header's own indentation does not, because a signature rustfmt broke over
+/// several rows closes at an indent that header line never carried.
 fn enclosing_fn_span(lines: &[&str], n: usize) -> Option<(usize, usize)> {
-    let start = (0..=n).rev().find(|i| {
-        let code = lines[*i].trim_start();
-        code.starts_with("fn ") || code.starts_with("pub fn ") || code.contains(" fn ")
-    })?;
-    let indent = lines[start].len() - lines[start].trim_start().len();
-    let closer = format!("{}}}", " ".repeat(indent));
-    let end = (start + 1..lines.len())
-        .find(|i| lines[*i] == closer)
-        .unwrap_or(lines.len());
-    Some((start, end))
+    let open = enclosing_fn_start(lines, n);
+    opens_a_function(lines, open).then(|| {
+        (
+            opening_statement(lines, open),
+            enclosing_fn_end(lines, open),
+        )
+    })
+}
+
+/// That same function as text, its closing `}` included; the whole file for a
+/// line sitting inside no function at all, which is what a scope test reads
+/// when the walk cannot bound it.
+fn enclosing_fn_text(lines: &[&str], n: usize) -> String {
+    match enclosing_fn_span(lines, n) {
+        Some((start, end)) => lines[start..=end].join("\n"),
+        None => lines.join("\n"),
+    }
 }
 
 /// The past-tense verbs a successful result line opens with, seeded from the
@@ -18092,28 +18103,6 @@ const RELATIVE_TIME_HELPERS: &[&str] = &[
     "scan_note",
 ];
 
-/// The top-level function containing byte offset `at`, as text.
-///
-/// The unit a time cell is judged in: a cell can be built into a `Vec<String>`
-/// rows away from the `Table::new` naming its column, and an index-matched
-/// walk would simply fail to find it — reporting nothing rather than reporting
-/// a raw instant.
-fn enclosing_fn_body(lines: &[&str], line: usize) -> String {
-    let is_fn_start = |l: &str| {
-        l.starts_with("fn ")
-            || l.starts_with("pub fn ")
-            || (l.starts_with("pub(") && l.contains(" fn "))
-    };
-    let start = (0..=line)
-        .rev()
-        .find(|&i| is_fn_start(lines[i]))
-        .unwrap_or(0);
-    let end = ((start + 1)..lines.len())
-        .find(|&i| lines[i] == "}")
-        .map_or(lines.len(), |i| i + 1);
-    lines[start..end].join("\n")
-}
-
 /// A rendered cell whose column names a moment reads as a RELATIVE time, not as
 /// the stored instant.
 ///
@@ -18125,8 +18114,10 @@ fn enclosing_fn_body(lines: &[&str], line: usize) -> String {
 /// Every human surface now goes through [`cfgd_core::humanize_age_cell`] or its
 /// forward twin, and every payload keeps the ISO 8601 instant.
 ///
-/// Judged per FUNCTION rather than per cell on purpose: see
-/// [`enclosing_fn_body`]. A column that genuinely must show the instant — a
+/// Judged per FUNCTION rather than per cell on purpose: a cell can be built
+/// into a `Vec<String>` rows away from the `Table::new` naming its column, and
+/// an index-matched walk would simply fail to find it, reporting nothing rather
+/// than reporting a raw instant. A column that genuinely must show the instant — a
 /// forensic dump, a value that is not a clock reading — says so with an
 /// `// instant-ok: <why>` marker, the same hatch shape
 /// `every_rendered_label_is_title_case` takes.
@@ -18142,7 +18133,7 @@ fn every_time_column_renders_a_relative_time() {
             }
             seen.push(label.clone());
             let n = body[..at].matches('\n').count();
-            let scope = enclosing_fn_body(&lines, n);
+            let scope = enclosing_fn_text(&lines, n);
             if RELATIVE_TIME_HELPERS.iter().any(|h| scope.contains(h))
                 || label_hatched(&lines, n, "// instant-ok:")
             {
@@ -18173,32 +18164,6 @@ fn every_time_column_renders_a_relative_time() {
         names_a_moment("Last Run") && names_a_moment("CreatedAt") && !names_a_moment("Format"),
         "the label rule itself must separate the names it exists to judge"
     );
-}
-
-/// The function containing line `n`, methods included: from the nearest `fn`
-/// line at or above it to the closing brace at that line's own indent.
-///
-/// [`enclosing_fn_body`]'s counterpart for a rule whose population lives inside
-/// `impl` blocks, where a column-zero `fn` scan finds nothing and silently
-/// widens every scope to the whole file.
-fn enclosing_fn_block(lines: &[&str], n: usize) -> String {
-    let is_fn_start = |l: &str| {
-        let t = l.trim_start();
-        t.starts_with("fn ")
-            || t.starts_with("pub fn ")
-            || t.starts_with("async fn ")
-            || t.starts_with("pub async fn ")
-            || (t.starts_with("pub(") && t.contains(" fn "))
-    };
-    let start = (0..=n).rev().find(|&i| is_fn_start(lines[i])).unwrap_or(0);
-    let closer = format!(
-        "{}}}",
-        &lines[start][..lines[start].len() - lines[start].trim_start().len()]
-    );
-    let end = ((start + 1)..lines.len())
-        .find(|&i| lines[i] == closer)
-        .map_or(lines.len(), |i| i + 1);
-    lines[start..end].join("\n")
 }
 
 /// A run that closes with the shared rollup opens with the shared header.
@@ -18235,7 +18200,7 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
             if !ROLLUPS.iter().any(|call| line.contains(call)) {
                 continue;
             }
-            let scope = enclosing_fn_block(&lines, n);
+            let scope = enclosing_fn_text(&lines, n);
             // The witness check below compares against `/`-spelled module
             // paths, so the entry is folded: a native render makes the walk
             // report itself broken on Windows and nowhere else.
@@ -35879,15 +35844,19 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 
 /// The first unmatched `{` above `from`, which opens the block that line sits
 /// in.
+///
+/// Braces are counted on [`blank_string_literals`]'s output: a production
+/// literal carrying a lone `{` or `}` would otherwise re-scope every walk
+/// reading this.
 fn unmatched_open_above(lines: &[&str], from: usize) -> usize {
     let mut balance = 0i32;
     let mut i = from;
     while i > 0 {
         i -= 1;
-        let line = lines[i];
-        if line.trim_start().starts_with("//") {
+        if lines[i].trim_start().starts_with("//") {
             continue;
         }
+        let line = blank_string_literals(lines[i]);
         balance += line.matches('}').count() as i32;
         balance -= line.matches('{').count() as i32;
         if balance < 0 {
@@ -35929,16 +35898,18 @@ fn enclosing_fn_start(lines: &[&str], sink: usize) -> usize {
     0
 }
 
-/// The closing `}` of the body opening at `start`.
+/// The closing `}` of the body opening at `start`, counted on
+/// [`blank_string_literals`]'s output for the reason
+/// [`unmatched_open_above`] states.
 fn enclosing_fn_end(lines: &[&str], start: usize) -> usize {
     let mut balance = 0i32;
     let mut i = start;
     while i + 1 < lines.len() {
         i += 1;
-        let line = lines[i];
-        if line.trim_start().starts_with("//") {
+        if lines[i].trim_start().starts_with("//") {
             continue;
         }
+        let line = blank_string_literals(lines[i]);
         balance += line.matches('{').count() as i32;
         balance -= line.matches('}').count() as i32;
         if balance < 0 {
