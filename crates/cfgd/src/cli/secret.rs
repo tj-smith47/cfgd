@@ -47,7 +47,11 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Encrypted {} via {}", file.posix(), backend_name),
+                format!(
+                    "Encrypted {} via {}",
+                    cfgd_core::fold_home_in_text(&file.display_posix()),
+                    backend_name
+                ),
             )
             .hint(crate::cli::success_next_step(
                 crate::cli::Mutation::SecretEncrypted,
@@ -104,7 +108,13 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     if printer.is_structured() {
         printer.emit(
             Doc::new()
-                .status(Role::Ok, format!("Decrypted {}", file.posix()))
+                .status(
+                    Role::Ok,
+                    format!(
+                        "Decrypted {}",
+                        cfgd_core::fold_home_in_text(&file.display_posix())
+                    ),
+                )
                 .with_data(serde_json::json!({
                     "path": cfgd_core::to_posix_string(file),
                     "backend": backend_name,
@@ -118,7 +128,13 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Decrypted {}", file.posix()))
+            .status(
+                Role::Ok,
+                format!(
+                    "Decrypted {}",
+                    cfgd_core::fold_home_in_text(&file.display_posix())
+                ),
+            )
             .with_data(serde_json::json!({
                 "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
@@ -165,7 +181,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 Role::Ok,
                 format!(
                     "Edited and re-encrypted {} via {}",
-                    file.posix(),
+                    cfgd_core::fold_home_in_text(&file.display_posix()),
                     backend_name
                 ),
             )
@@ -212,7 +228,10 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Doc::new()
                 .status(
                     Role::Info,
-                    format!("Secrets already initialized at {}", key_path.posix()),
+                    format!(
+                        "Secrets already initialized at {}",
+                        cfgd_core::fold_home_in_text(&key_path.display_posix())
+                    ),
                 )
                 .with_data(serde_json::json!({
                     "backend": "age",
@@ -232,9 +251,14 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     };
 
     let init_sec = printer.section("Secrets Initialized");
-    let mut pairs: Vec<(String, String)> = vec![("Age key".to_string(), key_path.display_posix())];
+    // Every row of this block is a display slot: the `-o json` payload below
+    // keeps the absolute path a script needs.
+    let mut pairs: Vec<(String, String)> = vec![(
+        "Age key".to_string(),
+        cfgd_core::fold_home_in_text(&key_path.display_posix()),
+    )];
     if let Some(ref p) = sops_path {
-        pairs.push((".sops.yaml".to_string(), p.clone()));
+        pairs.push((".sops.yaml".to_string(), cfgd_core::fold_home_in_text(p)));
     }
     init_sec.kv_block(pairs);
     drop(init_sec);

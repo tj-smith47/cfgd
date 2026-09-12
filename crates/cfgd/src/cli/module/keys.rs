@@ -120,9 +120,16 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
             .status(Role::Info, "No signing keys found")
             .hint_commands("Generate with:", &["cfgd module keys generate"]);
     } else {
+        // The rows are a display slot and the key files sit under home; the
+        // payload below keeps the absolute path a script needs.
         let pairs: Vec<(String, String)> = entries
             .iter()
-            .map(|e| (e.name.clone(), e.fingerprint.clone().unwrap_or_default()))
+            .map(|e| {
+                (
+                    cfgd_core::fold_home_in_text(&e.name),
+                    e.fingerprint.clone().unwrap_or_default(),
+                )
+            })
             .collect();
         doc = doc.kv_block(pairs);
     }
@@ -178,13 +185,19 @@ pub fn cmd_module_keys_rotate(
     std::fs::rename(&old_key, &backup_key)?;
     printer.status_simple(
         Role::Info,
-        format!("Backed up old private key to {}", backup_key.posix()),
+        format!(
+            "Backed up old private key to {}",
+            cfgd_core::fold_home_in_text(&backup_key.display_posix())
+        ),
     );
     if old_pub.exists() {
         std::fs::rename(&old_pub, &backup_pub)?;
         printer.status_simple(
             Role::Info,
-            format!("Backed up old public key to {}", backup_pub.posix()),
+            format!(
+                "Backed up old public key to {}",
+                cfgd_core::fold_home_in_text(&backup_pub.display_posix())
+            ),
         );
     }
 
