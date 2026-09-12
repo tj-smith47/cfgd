@@ -13,9 +13,13 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
+#[cfg(not(windows))]
+use super::shared::detect_brew_system_method;
+#[cfg(windows)]
+use super::shared::detect_windows_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver,
 };
 // The nvm arm's own helpers, with the arm itself.
 #[cfg(not(windows))]
@@ -47,7 +51,23 @@ pub(super) fn nvm_bootstrap_plan() -> BootstrapPlan {
 /// What a mediator installs to deliver npm. Read by `bootstrap` and by
 /// `mediated_packages`, so a batched provision asks apt for exactly the names
 /// the solo bootstrap does.
-const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"], &["www/npm"]);
+const NPM_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("node"),
+    arms: &[
+        ("apt", &["nodejs", "npm"]),
+        ("dnf", &["nodejs", "npm"]),
+        ("yum", &["nodejs", "npm"]),
+        // openSUSE carries node per major version and has no unversioned
+        // `nodejs` package at all.
+        ("zypper", &["nodejs24", "npm24"]),
+        ("pacman", &["nodejs", "npm"]),
+        ("apk", &["nodejs", "npm"]),
+        ("pkg", &["www/npm"]),
+        ("winget", &["OpenJS.NodeJS.LTS"]),
+        ("chocolatey", &["nodejs-lts"]),
+        ("scoop", &["nodejs-lts"]),
+    ],
+};
 
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
@@ -634,15 +654,17 @@ impl PackageManager for NpmManager {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
+        //
+        // nvm is a POSIX shell installer with no Windows build, so there is no
+        // arm of npm's own to decline toward on Windows: a host carrying none of
+        // winget, chocolatey or scoop is offered nothing, a method being binding
+        // at execution.
+        #[cfg(windows)]
+        {
+            detect_windows_method(&NPM_MEDIATED, delivered).map(BootstrapPlan::new)
+        }
+        #[cfg(not(windows))]
         match detect_brew_system_method(&NPM_MEDIATED, NPM_FALLBACK_METHOD, delivered) {
-            // nvm is a POSIX shell installer with no Windows build, and no
-            // mediator of the cascade above runs on Windows either, so npm has
-            // no route there and the plan is absent rather than infeasible: a
-            // method is binding at execution, so naming nvm would schedule a
-            // provision the apply could only fail.
-            #[cfg(windows)]
-            NPM_FALLBACK_METHOD => None,
-            #[cfg(not(windows))]
             NPM_FALLBACK_METHOD => Some(nvm_bootstrap_plan()),
             method => Some(BootstrapPlan::new(method)),
         }
@@ -684,16 +706,9 @@ impl PackageManager for NpmManager {
             return Err(planned_method_unavailable("npm", method).into());
         }
 
-        // The reader installs Node themselves on Windows, so the refusal names
-        // the managers that carry it rather than stopping at the bare fact.
-        #[cfg(windows)]
-        let message =
-            "no method available to install npm; install Node.js with winget, chocolatey or scoop";
-        #[cfg(not(windows))]
-        let message = "no method available to install npm";
         Err(PackageError::BootstrapFailed {
             manager: "npm".into(),
-            message: message.into(),
+            message: "no method available to install npm".into(),
         }
         .into())
     }

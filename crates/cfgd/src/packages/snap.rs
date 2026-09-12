@@ -12,14 +12,36 @@ use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, partition_already_installed,
     resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam,
-    system_manager_arms, tool_cmd_with_resolver, upgrade_each,
+    tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct SnapManager;
 
 /// What a mediator installs to deliver snap. There is no brew arm: snapd is a
 /// Linux service, not a formula.
-const SNAP_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"], &[]);
+const SNAP_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        ("apt", &["snapd"]),
+        ("dnf", &["snapd"]),
+        ("yum", &["snapd"]),
+        ("zypper", &["snapd"]),
+        // no-driven-route-ok: snapd reaches Arch through the AUR, which pacman
+        // does not install from.
+        ("pacman", &[]),
+        // no-driven-route-ok: snapd is built against glibc and Alpine packages
+        // none of it.
+        ("apk", &[]),
+        // no-driven-route-ok: snapd needs Linux namespaces and AppArmor, so
+        // FreeBSD has no port of it.
+        ("pkg", &[]),
+        // no-driven-route-ok: the same reason the three Windows managers carry
+        // no snapd to install.
+        ("winget", &[]),
+        ("chocolatey", &[]),
+        ("scoop", &[]),
+    ],
+};
 
 pub(super) fn find_snap() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("snap", &[])
@@ -60,6 +82,8 @@ impl PackageManager for SnapManager {
             // it: the method a plan carries is binding at execution.
             detect_system_method(&SNAP_MEDIATED, delivered).map(BootstrapPlan::new)
         }
+        // no-driven-route-ok: snapd is a Linux daemon, so no mediator on any
+        // other platform has one to install.
         #[cfg(not(target_os = "linux"))]
         {
             let _ = delivered;

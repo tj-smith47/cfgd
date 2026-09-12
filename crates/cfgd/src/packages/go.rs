@@ -11,15 +11,28 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_brew_arm, bootstrap_via_system_manager, detect_brew_or_system_method,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
-    tool_cmd_with_resolver,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
 
 /// What a mediator installs to deliver the Go toolchain: brew calls it `go`,
 /// every system manager calls it `golang`.
-const GO_MEDIATED: MediatedArms = system_manager_arms(Some("go"), &["golang"], &["lang/go"]);
+const GO_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("go"),
+    arms: &[
+        ("apt", &["golang"]),
+        ("dnf", &["golang"]),
+        ("yum", &["golang"]),
+        ("zypper", &["go"]),
+        ("pacman", &["go"]),
+        ("apk", &["go"]),
+        ("pkg", &["lang/go"]),
+        ("winget", &["GoLang.Go"]),
+        ("chocolatey", &["golang"]),
+        ("scoop", &["go"]),
+    ],
+};
 
 fn go_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks = vec![

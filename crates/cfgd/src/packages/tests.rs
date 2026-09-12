@@ -1802,7 +1802,15 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
     // snap's real arms: every Linux mediator, and no FreeBSD port. A manager
     // that declines an arm must never have it named, or the plan binds
     // execution to a step the cascade skips.
-    let snap_arms = shared::system_manager_arms(None, &["snapd"], &[]);
+    let snap_arms = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["snapd"]),
+            ("dnf", &["snapd"]),
+            ("zypper", &["snapd"]),
+            ("pkg", &[]),
+        ],
+    };
     match shared::detect_system_method(&snap_arms, &|_| false) {
         Some("apt") => assert!(runnable("apt-get")),
         Some("dnf") => assert!(runnable("dnf")),
@@ -1838,8 +1846,24 @@ fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one()
     .into_iter()
     .map(cfgd_core::test_helpers::EnvVarGuard::unset)
     .collect();
-    let ported = shared::system_manager_arms(None, &["golang"], &["lang/go"]);
-    let unported = shared::system_manager_arms(None, &["snapd"], &[]);
+    let ported = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["golang"]),
+            ("dnf", &["golang"]),
+            ("zypper", &["golang"]),
+            ("pkg", &["lang/go"]),
+        ],
+    };
+    let unported = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["snapd"]),
+            ("dnf", &["snapd"]),
+            ("zypper", &["snapd"]),
+            ("pkg", &[]),
+        ],
+    };
     assert_eq!(
         shared::detect_system_method(&ported, &|m| m == "pkg"),
         Some("pkg"),
@@ -1855,13 +1879,234 @@ fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one()
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
     // detect_brew_system_method cascades brew → apt → dnf → pkg → fallback
-    let arms = shared::brew_then_system_arms("pipx", &["pipx"], &["devel/py-pipx"]);
+    let arms = shared::MediatedArms {
+        brew: Some("pipx"),
+        arms: &[
+            ("apt", &["pipx"]),
+            ("dnf", &["pipx"]),
+            ("pkg", &["devel/py-pipx"]),
+        ],
+    };
     let method = shared::detect_brew_system_method(&arms, "pip", &|_| false);
     assert!(
         ["brew", "apt", "dnf", "pkg", "pip"].contains(&method),
         "expected brew, apt, dnf, pkg, or pip, got: {}",
         method
     );
+}
+
+/// One mediated manager, by the name its registry entry carries.
+fn mediated_manager(name: &str) -> Box<dyn PackageManager> {
+    match name {
+        "npm" => Box::new(super::npm::NpmManager),
+        "pipx" => Box::new(super::pipx::PipxManager),
+        "go" => Box::new(super::go::GoInstallManager),
+        "cargo" => Box::new(super::cargo::CargoManager),
+        other => panic!("{other} declares no mediated arms"),
+    }
+}
+
+/// Every arm a mediated manager declares installs through that arm's OWN
+/// manager: the verb comes from the family's or the Windows manager's own
+/// install declaration, and the package names from that repository. Driven
+/// through each manager's real `bootstrap` with the method a plan would have
+/// named, so the argv asserted here is the argv an apply runs.
+///
+/// The Windows arms are driven on any host. A planned method is binding, so the
+/// apply looks its arm up in both tables and answers for the arm the plan named
+/// rather than re-judging it against the host it woke up on.
+#[test]
+#[serial_test::serial]
+fn every_mediated_arm_installs_through_its_own_managers_argv() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // cargo's arms deliver rustup alone, so its bootstrap settles a toolchain
+    // behind every one of them; the shim catches that second spawn.
+    let rustup = cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 0, "", "");
+
+    // winget's install argv is one shape whatever the id, so the flags are
+    // spelled once here rather than per row.
+    let winget = |id: &str| {
+        format!("install --id {id} --silent --accept-package-agreements --accept-source-agreements")
+    };
+    // (manager, planned method, the arm's own seam, the argv it must log)
+    let cases: Vec<(&str, &str, &str, String)> = vec![
+        (
+            "npm",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm nodejs npm".into(),
+        ),
+        ("npm", "apk", "CFGD_APK_BIN", "add nodejs npm".into()),
+        ("npm", "yum", "CFGD_YUM_BIN", "install -y nodejs npm".into()),
+        (
+            "npm",
+            "zypper",
+            "CFGD_ZYPPER_BIN",
+            "install -y nodejs24 npm24".into(),
+        ),
+        (
+            "npm",
+            "winget",
+            "CFGD_WINGET_BIN",
+            winget("OpenJS.NodeJS.LTS"),
+        ),
+        (
+            "npm",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y nodejs-lts".into(),
+        ),
+        (
+            "npm",
+            "scoop",
+            "CFGD_SCOOP_BIN",
+            "install nodejs-lts".into(),
+        ),
+        (
+            "pipx",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm python-pipx".into(),
+        ),
+        ("pipx", "apk", "CFGD_APK_BIN", "add pipx".into()),
+        (
+            "pipx",
+            "zypper",
+            "CFGD_ZYPPER_BIN",
+            "install -y python3-pipx".into(),
+        ),
+        (
+            "pipx",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y pipx".into(),
+        ),
+        ("pipx", "scoop", "CFGD_SCOOP_BIN", "install pipx".into()),
+        (
+            "go",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm go".into(),
+        ),
+        ("go", "apk", "CFGD_APK_BIN", "add go".into()),
+        ("go", "yum", "CFGD_YUM_BIN", "install -y golang".into()),
+        ("go", "zypper", "CFGD_ZYPPER_BIN", "install -y go".into()),
+        ("go", "winget", "CFGD_WINGET_BIN", winget("GoLang.Go")),
+        (
+            "go",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y golang".into(),
+        ),
+        ("go", "scoop", "CFGD_SCOOP_BIN", "install go".into()),
+        (
+            "cargo",
+            "winget",
+            "CFGD_WINGET_BIN",
+            winget("Rustlang.Rustup"),
+        ),
+        (
+            "cargo",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y rustup.install".into(),
+        ),
+        ("cargo", "scoop", "CFGD_SCOOP_BIN", "install rustup".into()),
+    ];
+
+    for (manager, method, seam, expected) in cases {
+        let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        mediated_manager(manager)
+            .bootstrap(&cx)
+            .unwrap_or_else(|e| panic!("{manager} via {method} must install: {e}"));
+        let logged = shim.argv_log();
+        assert!(
+            logged.lines().any(|line| line.trim() == expected),
+            "{manager} via {method} must spawn `{expected}`, logged: {logged}"
+        );
+    }
+
+    let toolchain = rustup.argv_log();
+    assert_eq!(
+        toolchain
+            .lines()
+            .filter(|line| line.trim() == "default stable")
+            .count(),
+        3,
+        "each of cargo's three arms settles the toolchain behind it: {toolchain}"
+    );
+}
+
+/// An arm a mediator declined is not a route, so a plan that somehow named one
+/// is refused rather than answered with the Linux names. The same refusal a
+/// mediator present-but-unnamed arm gets, which is what keeps a declined arm
+/// from silently installing the wrong package.
+#[test]
+#[serial_test::serial]
+fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    for (manager, method, seam) in [
+        ("pipx", "yum", "CFGD_YUM_BIN"),
+        ("pipx", "winget", "CFGD_WINGET_BIN"),
+        ("cargo", "apt", "CFGD_APT_GET_BIN"),
+    ] {
+        let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = mediated_manager(manager)
+            .bootstrap(&cx)
+            .expect_err("a declined arm installs nothing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("installs {manager} via {method}")),
+            "the refusal names the manager and the method: {msg}"
+        );
+        assert_eq!(
+            shim.invocation_count(),
+            0,
+            "a declined arm spawns nothing: {}",
+            shim.argv_log()
+        );
+    }
+}
+
+/// A host carrying none of winget, chocolatey and scoop refuses a plan that
+/// named one of them, and spawns nothing: the mediator went away between the
+/// plan and the apply, which is a re-plan rather than a substitution.
+#[test]
+#[serial_test::serial]
+fn a_plan_naming_a_windows_mediator_this_host_lacks_is_refused_without_a_spawn() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _seams: Vec<_> = ["CFGD_WINGET_BIN", "CFGD_CHOCO_BIN", "CFGD_SCOOP_BIN"]
+        .into_iter()
+        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .collect();
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    for method in ["winget", "chocolatey", "scoop"] {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = super::npm::NpmManager
+            .bootstrap(&cx)
+            .expect_err("no mediator is here to run the planned arm");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("installs npm via {method}"))
+                && msg.contains("not available on this host"),
+            "the refusal names the planned method and says it is gone: {msg}"
+        );
+        assert!(
+            !cfgd_core::test_helpers::captured_text(&buf).contains("Installing"),
+            "nothing was spawned: {}",
+            cfgd_core::test_helpers::captured_text(&buf)
+        );
+    }
 }
 
 // --- pip user-scripts directory (the pipx `pip` arm's declared dir) ---

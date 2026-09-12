@@ -11,14 +11,32 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, parse_version_field, partition_already_installed,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
-    tool_cmd_with_resolver, upgrade_each,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    upgrade_each,
 };
 
 pub struct FlatpakManager;
 
 /// What a mediator installs to deliver flatpak. Linux-only, so no brew arm.
-const FLATPAK_MEDIATED: MediatedArms = system_manager_arms(None, &["flatpak"], &[]);
+const FLATPAK_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        ("apt", &["flatpak"]),
+        ("dnf", &["flatpak"]),
+        ("yum", &["flatpak"]),
+        ("zypper", &["flatpak"]),
+        ("pacman", &["flatpak"]),
+        ("apk", &["flatpak"]),
+        // no-driven-route-ok: flatpak runs on Linux namespaces and cgroups, so
+        // FreeBSD has no port of it.
+        ("pkg", &[]),
+        // no-driven-route-ok: the same reason the three Windows managers carry
+        // no flatpak client to install.
+        ("winget", &[]),
+        ("chocolatey", &[]),
+        ("scoop", &[]),
+    ],
+};
 
 pub(super) fn find_flatpak() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("flatpak", &[])
@@ -58,6 +76,8 @@ impl PackageManager for FlatpakManager {
             // it: the method a plan carries is binding at execution.
             detect_system_method(&FLATPAK_MEDIATED, delivered).map(BootstrapPlan::new)
         }
+        // no-driven-route-ok: the flatpak client is a Linux runtime, so no
+        // mediator on any other platform has one to install.
         #[cfg(not(target_os = "linux"))]
         {
             let _ = delivered;

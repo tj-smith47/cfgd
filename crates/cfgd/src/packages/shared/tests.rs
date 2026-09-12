@@ -1613,7 +1613,15 @@ fn refusal_with_no_system_tool(arms: &MediatedArms, manager_name: &str) -> Strin
 #[test]
 #[serial_test::serial]
 fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
-    let ported = system_manager_arms(None, &["golang"], &["lang/go"]);
+    let ported = MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["golang"]),
+            ("dnf", &["golang"]),
+            ("zypper", &["golang"]),
+            ("pkg", &["lang/go"]),
+        ],
+    };
     let err = refusal_with_no_system_tool(&ported, "go");
     for offered in ["apt", "dnf", "zypper", "pkg"] {
         assert!(
@@ -1622,7 +1630,13 @@ fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
         );
     }
 
-    let armless = refusal_with_no_system_tool(&system_manager_arms(None, &[], &[]), "go");
+    let armless = refusal_with_no_system_tool(
+        &MediatedArms {
+            brew: None,
+            arms: &[],
+        },
+        "go",
+    );
     assert!(
         armless.contains("names no mediator to install it"),
         "a manager offering no arm at all says its own table is empty, not the host's: {armless}"
@@ -1976,12 +1990,26 @@ fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
 /// A stand-in manager's mediated arms for the cascade helpers: a brew formula,
 /// the Linux package names, and a FreeBSD port origin.
 #[cfg(unix)]
-const TEST_MEDIATED: MediatedArms =
-    brew_then_system_arms("ripgrep", &["ripgrep"], &["textproc/ripgrep"]);
+const TEST_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("ripgrep"),
+    arms: &[
+        ("apt", &["ripgrep"]),
+        ("dnf", &["ripgrep"]),
+        ("pkg", &["textproc/ripgrep"]),
+    ],
+};
 
 /// A manager with no brew arm and no FreeBSD port — snap's real shape.
 #[cfg(unix)]
-const TEST_SYSTEM_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"], &[]);
+const TEST_SYSTEM_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        ("apt", &["snapd"]),
+        ("dnf", &["snapd"]),
+        ("zypper", &["snapd"]),
+        ("pkg", &[]),
+    ],
+};
 
 /// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
 /// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test

@@ -4,15 +4,47 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::Result;
-use cfgd_core::providers::{BootstrapPlan, PackageManager};
+use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
+#[cfg(windows)]
+use super::shared::detect_windows_method;
 use super::shared::{
-    bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_shell_script, bootstrap_via_system_manager, home_relative_dir,
+    pkg_run, planned_method_failed, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
+
+/// cargo's own bootstrap arm: rustup's installer, fetched and run by a POSIX
+/// shell. The ONE spelling, so the plan's method and the route that answers to
+/// it cannot drift apart.
+const RUSTUP_METHOD: &str = "rustup";
+
+/// What a mediator installs to deliver cargo.
+///
+/// Every arm delivers RUSTUP rather than cargo: upstream ships no repository
+/// package of the toolchain, and a distro copy would be a second installation
+/// the rustup cfgd then manages cannot see. The POSIX route is rustup's own
+/// installer, which is why the Unix arms are declined here.
+const CARGO_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        // no-driven-route-ok: rustup's own installer is upstream's route on
+        // every POSIX host, and it is what then installs a toolchain.
+        ("apt", &[]),
+        ("dnf", &[]),
+        ("yum", &[]),
+        ("zypper", &[]),
+        ("pacman", &[]),
+        ("apk", &[]),
+        ("pkg", &[]),
+        ("winget", &["Rustlang.Rustup"]),
+        ("chocolatey", &["rustup.install"]),
+        ("scoop", &["rustup"]),
+    ],
+};
 
 /// Cargo fallback locations when `cargo` is not on `$PATH`.
 fn cargo_fallbacks() -> Vec<PathBuf> {
@@ -31,6 +63,55 @@ pub(super) fn cargo_available() -> bool {
 
 pub(super) fn cargo_cmd() -> Command {
     tool_cmd_with_resolver("cargo", find_cargo)
+}
+
+/// Fallback locations for the rustup a mediated arm installs, for a run whose
+/// command resolution was memoized before the install put it there.
+fn rustup_fallbacks() -> Vec<PathBuf> {
+    let exe = if cfg!(windows) {
+        "rustup.exe"
+    } else {
+        "rustup"
+    };
+    home_relative_dir("~/.cargo/bin")
+        .map(|dir| vec![dir.join(exe)])
+        .unwrap_or_default()
+}
+
+fn rustup_cmd() -> Command {
+    tool_cmd_with_resolver("rustup", || {
+        resolve_tool_with_fallbacks("rustup", &rustup_fallbacks())
+    })
+}
+
+/// Install the default toolchain behind a rustup a mediated arm just placed.
+///
+/// Only chocolatey's `rustup.install` runs `rustup-init -y` for you; winget's
+/// `Rustlang.Rustup` and scoop's `rustup` place the binary and leave the
+/// toolchain unset, so `cargo.exe` does not exist yet. `rustup default stable`
+/// is idempotent, so the arm that already has a toolchain pays a no-op rather
+/// than a second download.
+fn install_default_toolchain(cx: &PackageContext<'_>, planned: Option<&str>) -> Result<()> {
+    let result = pkg_run(
+        cx,
+        rustup_cmd().args(["default", "stable"]),
+        "Installing the stable Rust toolchain",
+    )
+    .map_err(|e| PackageError::BootstrapFailed {
+        manager: "cargo".into(),
+        message: format!("rustup default stable failed: {e}"),
+    })?;
+    if result.status.success() {
+        return Ok(());
+    }
+    Err(match planned {
+        Some(method) => planned_method_failed("cargo", method, &result),
+        None => PackageError::BootstrapFailed {
+            manager: "cargo".into(),
+            message: "rustup default stable failed".into(),
+        },
+    }
+    .into())
 }
 
 // Single source for the rustup-installed bin dir, so `bootstrap_plan`'s
@@ -58,20 +139,20 @@ impl PackageManager for CargoManager {
         cargo_available()
     }
 
-    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        // `None` on Windows: the arm below pipes rustup's installer into `sh`,
-        // which Windows has no copy of, and a plan's method is binding at
-        // execution, so naming it there would schedule a provision that can
-        // only fail. The Windows route is `rustup-init.exe`, which cfgd does not
-        // run.
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+        // Windows has no `sh` for rustup's installer pipeline, so the route
+        // there is a mediator that packages rustup itself. A host carrying none
+        // of the three is offered nothing: a method is binding at execution.
         #[cfg(windows)]
         {
-            None
+            detect_windows_method(&CARGO_MEDIATED, delivered)
+                .map(|method| BootstrapPlan::new(method).creating(cargo_bin_dir()))
         }
         #[cfg(not(windows))]
         {
+            let _ = delivered;
             Some(
-                BootstrapPlan::new("rustup")
+                BootstrapPlan::new(RUSTUP_METHOD)
                     .requiring(["curl"])
                     .creating(cargo_bin_dir()),
             )
@@ -82,21 +163,32 @@ impl PackageManager for CargoManager {
     // rustup cascade always lands cargo in the same `~`-relative place, so
     // there is nothing a live probe would learn that the plan's own
     // declaration does not already know.
-    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+    fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
         cargo_bin_dir()
             .into_iter()
             .map(cfgd_core::to_posix_string)
             .collect()
     }
 
-    // bootstrap-arm-ok: rustup's installer is the only route to cargo
-    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // Which route runs is decided by the method the plan named rather than
+        // by this host: a mediated arm delivers rustup alone, so the toolchain
+        // is a second step behind it, while rustup's own installer does both.
+        let planned = cx.planned_method();
+        if planned.is_some_and(|method| method != RUSTUP_METHOD) || cfg!(windows) {
+            bootstrap_via_system_manager(cx, &CARGO_MEDIATED, "cargo")?;
+            return install_default_toolchain(cx, planned);
+        }
         bootstrap_via_shell_script(
             cx,
             "cargo",
             "Installing Rust via rustup",
             "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
         )
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        CARGO_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(

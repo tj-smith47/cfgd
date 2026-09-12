@@ -401,6 +401,22 @@ pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
     })
 }
 
+/// The spawn that installs `pkgs` through the `name` family, composed from that
+/// family's own [`SimpleManager::install_cmd`] declaration.
+///
+/// The one way a mediated bootstrap installs through a Unix family, so pacman's
+/// `-S --noconfirm` and apk's `add` are spelled where the family declares them
+/// and a provision cannot reach for a verb the family does not use. `None` for a
+/// name no family here holds.
+pub(super) fn family_install_command(name: &str, pkgs: &[&str]) -> Option<Command> {
+    let mgr = simple_manager(name)?;
+    let effective = strip_sudo_for_exec(mgr.install_cmd);
+    let (prog, args) = effective.split_first()?;
+    let mut cmd = cmd_with_seam(prog);
+    cmd.args(args).args(pkgs);
+    Some(cmd)
+}
+
 pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",

@@ -9,7 +9,7 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    MediatedArms, bootstrap_via_brew_then_system, detect_brew_system_method,
     partition_already_installed, pip_user_scripts_dir, pkg_run, planned_method_failed,
     planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
     run_pkg_query, tool_cmd_with_resolver, upgrade_each,
@@ -23,7 +23,27 @@ pub struct PipxManager;
 const PIPX_FALLBACK_METHOD: &str = "pip";
 
 /// What a mediator installs to deliver pipx — same role as npm's table.
-const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"], &["devel/py-pipx"]);
+const PIPX_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("pipx"),
+    arms: &[
+        ("apt", &["pipx"]),
+        ("dnf", &["pipx"]),
+        // no-driven-route-ok: RHEL 7's repositories carry no pipx at all, and
+        // yum is the manager only on releases that old.
+        ("yum", &[]),
+        // openSUSE ships a binary RPM per Python flavour; the `python3-` name is
+        // the capability that resolves to the default flavour.
+        ("zypper", &["python3-pipx"]),
+        ("pacman", &["python-pipx"]),
+        ("apk", &["pipx"]),
+        ("pkg", &["devel/py-pipx"]),
+        // no-driven-route-ok: winget publishes no pipx, so a winget-only host
+        // reaches pipx through the pip arm below instead.
+        ("winget", &[]),
+        ("chocolatey", &["pipx"]),
+        ("scoop", &["pipx"]),
+    ],
+};
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
@@ -70,14 +90,26 @@ pub(super) fn pipx_available() -> bool {
     find_pipx().is_some()
 }
 
-// The tool the pip fallback would run: whichever of pip3/pip is present,
+// The names the pip fallback looks for, most likely first. A CPython install on
+// Windows writes `pip.exe` into its Scripts directory and no `pip3` alias, while
+// a Linux distribution ships `pip3` and often reserves `pip` for Python 2.
+fn pip_tool_order() -> [&'static str; 2] {
+    if cfg!(windows) {
+        ["pip", "pip3"]
+    } else {
+        ["pip3", "pip"]
+    }
+}
+
+// The tool the pip fallback would run: whichever of the two above is present,
 // else the preferred name. Shared by `bootstrap_plan` and `path_dirs` so
 // both always name the same interpreter.
 fn pipx_pip_tool() -> &'static str {
-    ["pip3", "pip"]
+    let order = pip_tool_order();
+    order
         .into_iter()
         .find(|t| command_available(t))
-        .unwrap_or("pip3")
+        .unwrap_or(order[0])
 }
 
 // Single source for the pip fallback's user-scripts dir, so
@@ -160,7 +192,7 @@ impl PackageManager for PipxManager {
         // Fall back to pip. Resolved to a full path rather than spawned by bare
         // name: `command_path` searches the directories cfgd bootstrapped this
         // run as well as `$PATH`, and a bare-name spawn searches only `$PATH`.
-        let Some((pip_cmd, pip_path)) = ["pip3", "pip"]
+        let Some((pip_cmd, pip_path)) = pip_tool_order()
             .into_iter()
             .find_map(|tool| cfgd_core::command_path(tool).map(|path| (tool, path)))
         else {

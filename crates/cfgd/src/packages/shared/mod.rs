@@ -782,20 +782,67 @@ pub(super) fn brew_available() -> bool {
 /// execution can spawn.
 type SystemArm = (&'static str, &'static str);
 
-/// The system arms of [`bootstrap_via_brew_then_system`].
-const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf"), ("pkg", "pkg")];
-
-/// The arms of [`bootstrap_via_system_manager`], which reaches one manager more
-/// than the brew cascade does.
+/// The arms a mediated bootstrap reaches on a Unix host, in the order it tries
+/// them. One table rather than a per-cascade one: which mediators a manager
+/// offers is the manager's own declaration, so a cascade that reached fewer of
+/// them only hid an arm its mediator had already named.
 const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
     ("apt", "apt-get"),
     ("dnf", "dnf"),
+    ("yum", "yum"),
     ("zypper", "zypper"),
+    ("pacman", "pacman"),
+    ("apk", "apk"),
     ("pkg", "pkg"),
 ];
 
+/// The arms a mediated bootstrap reaches on Windows, in the order it tries
+/// them. winget leads because it ships with Windows 10 and 11, so it is the one
+/// a host carries with nothing installed first.
+const WINDOWS_MANAGER_ARMS: &[SystemArm] = &[
+    ("winget", "winget"),
+    ("chocolatey", "choco"),
+    ("scoop", "scoop"),
+];
+
+/// What one mediator installs through one arm: the arm's plan method paired
+/// with the package names that arm installs.
+///
+/// Per arm rather than one list for every Linux family because one piece of
+/// software is spelled differently per repository: node is `nodejs` on Debian
+/// and `nodejs24` on openSUSE, and pipx is `python-pipx` on Arch. An EMPTY list
+/// is how a mediator declines an arm, and a declined arm says why beside its
+/// declaration.
+type ArmPackages = (&'static str, &'static [&'static str]);
+
+/// The arms a mediated bootstrap reaches on THIS host: the Windows three there,
+/// the Unix families everywhere else.
+///
+/// Read by every detector and by the cascade's fall-through walk, so a plan
+/// built here and the install that runs it consider the same mediators. The
+/// PLANNED path deliberately looks in both tables instead (see [`arm_tool`]):
+/// a method is binding, and a plan that named an arm answers for it rather
+/// than being re-judged against the host's table.
+fn host_arms() -> &'static [SystemArm] {
+    if cfg!(windows) {
+        WINDOWS_MANAGER_ARMS
+    } else {
+        SYSTEM_MANAGER_ARMS
+    }
+}
+
+/// The command an arm spawns, whichever table holds it, or `None` for a method
+/// no arm names.
+fn arm_tool(method: &str) -> Option<&'static str> {
+    SYSTEM_MANAGER_ARMS
+        .iter()
+        .chain(WINDOWS_MANAGER_ARMS)
+        .find(|(arm, _)| *arm == method)
+        .map(|(_, tool)| *tool)
+}
+
 /// One manager's mediated bootstrap: the packages a mediating manager installs
-/// to deliver it, per mediator family.
+/// to deliver it, per arm.
 ///
 /// Declared once per manager and read twice — by its `bootstrap`, which hands
 /// these lists to the cascade helpers below, and by its
@@ -806,50 +853,39 @@ const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
 pub(super) struct MediatedArms {
     /// The brew formula, or `None` for a manager with no brew arm.
     pub(super) brew: Option<&'static str>,
-    /// The package names the Linux system arms install.
-    pub(super) system: &'static [&'static str],
-    /// The FreeBSD port origins the `pkg` arm installs, or empty for a manager
-    /// with no FreeBSD port. Distinct from [`Self::system`] because the ports
-    /// tree names these differently from every Linux distro — FreeBSD's Python
-    /// packages carry a version prefix (`py311-pipx`) that no generic name
-    /// resolves, and a port ORIGIN (`devel/py-pipx`) is version-free, so it
-    /// keeps naming the right package as the default Python flavour moves.
-    pub(super) pkg: &'static [&'static str],
-    /// Which system arms deliver it — the same table the manager's own
-    /// bootstrap cascade walks.
-    pub(super) system_arms: &'static [SystemArm],
+    /// One entry per arm this manager was asked about, keyed by plan method.
+    /// The `pkg` entry names FreeBSD port ORIGINS (`devel/py-pipx`): the ports
+    /// tree spells Python packages with a flavour prefix (`py311-pipx`) that no
+    /// generic name resolves, while an origin is flavour-free and keeps naming
+    /// the right port as the default flavour moves.
+    pub(super) arms: &'static [ArmPackages],
 }
 
 impl MediatedArms {
-    /// The packages the system arm `method` installs for this manager, or
-    /// `None` when this manager offers that arm nothing to install.
+    /// The packages the arm `method` installs for this manager, or `None` when
+    /// this manager offers that arm nothing to install.
     ///
     /// The one place a mediator becomes a package list, so the cascade that
     /// RUNS an arm and the batch that asks the same mediator for names cannot
     /// answer differently. An empty list is how a manager declines an arm: no
     /// FreeBSD port means no `pkg` arm, not a `pkg install` of the Linux names.
     pub(super) fn system_packages_for(&self, method: &str) -> Option<&'static [&'static str]> {
-        if !self.system_arms.iter().any(|(arm, _)| *arm == method) {
-            return None;
-        }
-        let pkgs = if method == "pkg" {
-            self.pkg
-        } else {
-            self.system
-        };
-        (!pkgs.is_empty()).then_some(pkgs)
+        self.arms
+            .iter()
+            .find(|(arm, _)| *arm == method)
+            .map(|(_, pkgs)| *pkgs)
+            .filter(|pkgs| !pkgs.is_empty())
     }
 
-    /// The system arms this manager actually offers, as prose an error names
-    /// (`apt, dnf, or pkg`). Read off [`Self::system_arms`] through
+    /// The arms this manager actually offers ON THIS HOST, as prose an error
+    /// names (`apt, dnf, or pkg`). Read off [`host_arms`] through
     /// [`Self::system_packages_for`], so a failure sentence cannot claim a
     /// mediator the cascade never tried.
     ///
-    /// `None` for a manager that offers no system arm at all, so no caller can
-    /// compose a sentence that trails off after `via `.
+    /// `None` for a manager that offers this host no arm at all, so no caller
+    /// can compose a sentence that trails off after `via `.
     pub(super) fn offered_arm_names(&self) -> Option<String> {
-        let offered: Vec<&str> = self
-            .system_arms
+        let offered: Vec<&str> = host_arms()
             .iter()
             .filter(|(method, _)| self.system_packages_for(method).is_some())
             .map(|(method, _)| *method)
@@ -875,35 +911,6 @@ impl MediatedArms {
     }
 }
 
-/// The arms of a manager whose bootstrap runs [`bootstrap_via_brew_then_system`].
-pub(super) const fn brew_then_system_arms(
-    brew: &'static str,
-    system: &'static [&'static str],
-    pkg: &'static [&'static str],
-) -> MediatedArms {
-    MediatedArms {
-        brew: Some(brew),
-        system,
-        pkg,
-        system_arms: BREW_SYSTEM_ARMS,
-    }
-}
-
-/// The arms of a manager whose bootstrap runs [`bootstrap_via_system_manager`],
-/// optionally after a brew arm of its own.
-pub(super) const fn system_manager_arms(
-    brew: Option<&'static str>,
-    system: &'static [&'static str],
-    pkg: &'static [&'static str],
-) -> MediatedArms {
-    MediatedArms {
-        brew,
-        system,
-        pkg,
-        system_arms: SYSTEM_MANAGER_ARMS,
-    }
-}
-
 /// The first arm of `arms` the run can actually use, or `None`: one the run
 /// delivers first, else one this host already has.
 ///
@@ -915,7 +922,7 @@ fn detect_system_arm(
     arms: &MediatedArms,
     delivered: &dyn Fn(&str) -> bool,
 ) -> Option<&'static str> {
-    arms.system_arms
+    host_arms()
         .iter()
         .filter(|(method, _)| arms.system_packages_for(method).is_some())
         .find(|(method, tool)| delivered(method) || system_tool_available(tool))
@@ -968,6 +975,22 @@ pub(super) fn detect_brew_or_system_method(
 /// [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
 pub(super) fn detect_system_method(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    detect_system_arm(arms, delivered)
+}
+
+/// Which of winget, chocolatey and scoop can run here, or `None` when none of
+/// them is present. Windows-only, like the arms it reads. Binding on execution
+/// for the same reason [`detect_brew_system_method`] is.
+///
+/// The counterpart of [`detect_system_method`] for the managers whose own
+/// bootstrap arm is POSIX-only: naming that arm on Windows would schedule a
+/// provision the apply could only fail, so a manager with no Windows mediator
+/// present offers no plan at all.
+#[cfg(windows)]
+pub(super) fn detect_windows_method(
     arms: &MediatedArms,
     delivered: &dyn Fn(&str) -> bool,
 ) -> Option<&'static str> {
@@ -1296,7 +1319,10 @@ fn bootstrap_system_arms(
         if fallback_method == Some(method) {
             return Ok(false);
         }
-        let Some((_, tool)) = arms.system_arms.iter().find(|(arm, _)| *arm == method) else {
+        // Looked up across both tables rather than this host's: the plan named
+        // the arm and the apply answers for that arm, so a method is refused
+        // for being unavailable, never for belonging to another platform.
+        let Some(tool) = arm_tool(method) else {
             return Err(planned_method_unavailable(manager_name, method).into());
         };
         let Some(pkgs) = arms.system_packages_for(method) else {
@@ -1313,7 +1339,7 @@ fn bootstrap_system_arms(
         };
     }
 
-    for (method, tool) in arms.system_arms {
+    for (method, tool) in host_arms() {
         let Some(pkgs) = arms.system_packages_for(method) else {
             continue;
         };
@@ -1337,9 +1363,38 @@ fn system_tool_available(tool: &str) -> bool {
     cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
 }
 
-/// Run one system arm's install. The window's label names the COMMAND that is
-/// running (`apt-get`), while a failure names the METHOD (`apt`) — the manager
-/// the plan line, the concurrency lane and every other binding failure use.
+/// The spawns one arm needs to install `pkgs`, each composed from that arm's
+/// own manager's install declaration.
+///
+/// Nothing here spells an install verb: the family table owns how apt, pacman
+/// and apk install, and each Windows manager owns its own argv, so a mediated
+/// bootstrap cannot spell a verb differently from an ordinary install of the
+/// same package. A Windows arm carries no `sudo` either, which is why it is
+/// built from the manager's own factory rather than from [`sudo_cmd_with_seam`].
+///
+/// winget takes one id per spawn, so an arm naming several ids there yields
+/// several commands; everything else installs a whole list at once. `None` for
+/// a method no manager here can spell.
+fn arm_install_commands(method: &str, pkgs: &[&str]) -> Option<Vec<Command>> {
+    match method {
+        "winget" => Some(
+            pkgs.iter()
+                .map(|p| super::winget::install_cmd_for(p))
+                .collect(),
+        ),
+        "chocolatey" => Some(vec![super::choco::install_cmd_for(pkgs)]),
+        "scoop" => Some(vec![super::scoop::install_cmd_for(pkgs)]),
+        _ => super::simple::family_install_command(method, pkgs).map(|cmd| vec![cmd]),
+    }
+}
+
+/// Run one arm's install. The window's label names the COMMAND that is running
+/// (`apt-get`), while a failure names the METHOD (`apt`) — the manager the plan
+/// line, the concurrency lane and every other binding failure use.
+///
+/// Several spawns settle as the FIRST failure, or as the last success: an arm
+/// whose manager takes one package per spawn has installed nothing useful once
+/// one of them fails.
 fn run_system_install(
     cx: &PackageContext<'_>,
     manager_name: &str,
@@ -1348,18 +1403,24 @@ fn run_system_install(
     method: &str,
     tool: &str,
 ) -> Result<CommandOutput> {
-    pkg_run(
-        cx,
-        sudo_cmd_with_seam(tool).args(["install", "-y"]).args(pkgs),
-        format!("Installing {} via {}", subject, tool),
-    )
-    .map_err(|e| {
-        PackageError::BootstrapFailed {
-            manager: manager_name.into(),
-            message: format!("{} install failed: {}", method, e),
+    let fail = |message: String| PackageError::BootstrapFailed {
+        manager: manager_name.into(),
+        message,
+    };
+    let cmds = arm_install_commands(method, pkgs)
+        .filter(|cmds| !cmds.is_empty())
+        .ok_or_else(|| fail(format!("{method} declares no way to install {subject}")))?;
+    let mut last = None;
+    for mut cmd in cmds {
+        let result = pkg_run(cx, &mut cmd, format!("Installing {} via {}", subject, tool))
+            .map_err(|e| fail(format!("{} install failed: {}", method, e)))?;
+        let failed = !result.status.success();
+        last = Some(result);
+        if failed {
+            break;
         }
-        .into()
-    })
+    }
+    last.ok_or_else(|| fail(format!("{method} declares no way to install {subject}")).into())
 }
 
 /// Try to install a manager via common system package managers (apt, then dnf,
