@@ -5277,7 +5277,10 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     assert!(
         output.contains(&format!(
             "Config file: {} — not found",
-            config_path.display()
+            // The row reads the same field `-o json` serializes, which is
+            // folded to forward slashes, so the expectation is folded too
+            // rather than spelling this host's separator.
+            cfgd_core::to_posix_string(&config_path)
         )),
         "Fail line should name the explicit path, got: {output}"
     );

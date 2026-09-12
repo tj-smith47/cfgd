@@ -553,8 +553,12 @@ mod tests {
         drop(printer);
 
         let human = cap.human();
+        // The warning folds the home directory, and a Windows temp directory
+        // sits under the user profile, so the row names the file in the
+        // report's own spelling rather than the recorded id's.
+        let named = cfgd_core::fold_home_in_text(&id);
         assert!(
-            human.contains(&id),
+            human.contains(&named),
             "the warning must name the modified file: {human}"
         );
 
