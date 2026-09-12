@@ -40,7 +40,11 @@ pub fn restore_file_from_backup(
             if let Err(e) = std::fs::remove_file(target) {
                 printer.status_simple(
                     Role::Warn,
-                    format!("rollback: failed to remove {}: {}", target.posix(), e),
+                    format!(
+                        "rollback: failed to remove {}: {}",
+                        crate::fold_home_in_text(&target.display_posix()),
+                        e
+                    ),
                 );
                 return RestoreOutcome::Failed;
             }
@@ -82,7 +86,7 @@ pub fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to clear {} before restore: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     e
                 ),
             );
@@ -95,7 +99,7 @@ pub fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to create parent dir {}: {}",
-                    parent.posix(),
+                    crate::fold_home_in_text(&parent.display_posix()),
                     e
                 ),
             );
@@ -104,7 +108,11 @@ pub fn restore_file_from_backup(
         if let Err(e) = crate::atomic_write(target, &bk.content) {
             printer.status_simple(
                 Role::Warn,
-                format!("rollback: failed to restore {}: {}", target.posix(), e),
+                format!(
+                    "rollback: failed to restore {}: {}",
+                    crate::fold_home_in_text(&target.display_posix()),
+                    e
+                ),
             );
             return RestoreOutcome::Failed;
         }
@@ -122,7 +130,7 @@ pub fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: restored {} but failed to set permissions {:o}: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     mode,
                     e
                 ),
@@ -143,7 +151,7 @@ pub fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to clear {} before symlink restore: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     e
                 ),
             );
@@ -154,7 +162,7 @@ pub fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to restore symlink {}: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     e
                 ),
             );
@@ -183,7 +191,7 @@ fn restore_through_link(
                 Role::Warn,
                 format!(
                     "rollback: failed to clear {} before symlink restore: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     e
                 ),
             );
@@ -194,7 +202,7 @@ fn restore_through_link(
                 Role::Warn,
                 format!(
                     "rollback: failed to restore symlink {}: {}",
-                    target.posix(),
+                    crate::fold_home_in_text(&target.display_posix()),
                     e
                 ),
             );
@@ -206,7 +214,7 @@ fn restore_through_link(
             Role::Warn,
             format!(
                 "rollback: failed to restore {} through its symlink: {}",
-                target.posix(),
+                crate::fold_home_in_text(&target.display_posix()),
                 e
             ),
         );
@@ -230,7 +238,7 @@ fn restore_through_link(
             Role::Warn,
             format!(
                 "rollback: restored {} but failed to set permissions {:o}: {}",
-                target.posix(),
+                crate::fold_home_in_text(&target.display_posix()),
                 mode,
                 e
             ),

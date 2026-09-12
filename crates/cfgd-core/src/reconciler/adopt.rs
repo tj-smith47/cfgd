@@ -367,7 +367,9 @@ pub fn sweep_unmanaged_file_targets(
                                             format!(
                                                 "module '{}': {}",
                                                 module_name,
-                                                file_target.posix()
+                                                crate::fold_home_in_text(
+                                                    &file_target.display_posix()
+                                                )
                                             ),
                                         )
                                         .detail(UNMANAGED_SKIP_REASON);

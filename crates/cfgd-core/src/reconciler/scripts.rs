@@ -668,7 +668,7 @@ fn execute_script_inner(
                     Role::Skipped,
                     Some(&format!(
                         "creates path already exists: {}",
-                        resolved_creates.posix()
+                        crate::fold_home_in_text(&resolved_creates.display_posix())
                     )),
                 );
                 return Ok((resource_desc, false, None));
