@@ -35950,25 +35950,26 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     const LOOKBACK: usize = 20;
     // A per-file floor for the files that hold a known population, so a read
     // going blind in one of them fails instead of passing on another's slots.
-    const FLOOR_FILES: [(&str, usize); 8] = [
-        ("cfgd-core/src/reconciler/restore.rs", 21),
-        ("cfgd/src/cli/module/keys.rs", 12),
-        ("cfgd/src/cli/module/export.rs", 12),
-        ("cfgd/src/files/plan.rs", 11),
+    const FLOOR_FILES: [(&str, usize); 6] = [
+        ("cfgd-core/src/reconciler/restore.rs", 11),
         ("cfgd/src/cli/config_migration.rs", 10),
-        ("cfgd/src/cli/module/crud.rs", 9),
-        ("cfgd/src/cli/profile/migrate.rs", 9),
-        ("cfgd/src/cli/secret.rs", 8),
+        ("cfgd/src/cli/module/keys.rs", 9),
+        ("cfgd/src/files/plan.rs", 8),
+        ("cfgd/src/cli/secret.rs", 6),
+        ("cfgd/src/cli/profile/migrate.rs", 6),
     ];
     // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
     // nowhere reads no files, and one holding no command code judges no slot.
     const FLOOR_SOURCES: usize = 280;
-    const FLOOR_SLOTS: usize = 160;
+    const FLOOR_SLOTS: usize = 95;
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders: Vec<String> = Vec::new();
     let mut per_file: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // A sink's lookback reaches rows an earlier sink's window already covered,
+    // so a render is judged by whichever sink reaches it first and counted once.
+    let mut judged: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
     let (mut sources, mut slots) = (0usize, 0usize);
     for root in &roots {
         for path in rust_sources_under(root) {
@@ -36015,6 +36016,9 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
                     }
                     let above = lines[i.saturating_sub(8)..=i].join("\n");
                     if PASSED_OVER.iter().any(|tell| above.contains(tell)) {
+                        continue;
+                    }
+                    if !judged.insert((shown.clone(), folded[i].0)) {
                         continue;
                     }
                     slots += 1;
