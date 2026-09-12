@@ -211,7 +211,6 @@ mod tests {
     use super::super::{Theme, Verbosity};
     use super::*;
     use crate::output::strip_ansi;
-    use serial_test::serial;
 
     fn build() -> (Arc<Renderer>, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -397,12 +396,7 @@ mod tests {
     /// `detail_style` paints the detail slot and nothing else. `None` — every
     /// existing call site — must emit a detail carrying no SGR of its own, or
     /// the seam would silently restyle output it was added beside.
-    /// Serial because dracula's slots carry an RGB triple, so every render
-    /// below asks `supports_truecolor()` — which reads `COLORTERM` /
-    /// `NO_COLOR` — and the expected detail is rendered separately from the
-    /// two captures it is compared against.
     #[test]
-    #[serial]
     fn detail_style_paints_only_the_detail_slot() {
         let theme = Theme::from_preset("dracula").with_colors(true);
         let muted_detail = theme.muted.apply_to("unchanged").to_string();

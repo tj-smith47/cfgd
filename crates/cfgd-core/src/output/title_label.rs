@@ -125,12 +125,7 @@ mod tests {
         );
     }
 
-    /// Serial because `supports_truecolor()` reads `COLORTERM` / `NO_COLOR`,
-    /// and the composed render is compared against slot renders taken
-    /// afterwards — a concurrent env mutation between the two would split the
-    /// comparison.
     #[test]
-    #[serial_test::serial]
     fn the_heading_is_three_slots_label_separator_value() {
         let theme = Theme::from_preset("dracula").with_colors(true);
         let styled = TitleLabel::new("Profile", "work").styled(&theme);
