@@ -206,7 +206,7 @@ pub(super) fn export_devcontainer(
             .with_data(serde_json::json!({
                 "name": name,
                 "format": "devcontainer",
-                "outputDir": feature_dir.display().to_string(),
+                "outputDir": cfgd_core::to_posix_string(&feature_dir),
                 "installScript": install_path_str,
                 "featureJson": feature_path_str,
             })),

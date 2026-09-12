@@ -19,7 +19,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
             let full = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                file.display().to_string(),
+                cfgd_core::to_posix_string(file),
                 "backend_unavailable",
                 first_line(&full),
                 secret_path_detail(file, &full),
@@ -32,7 +32,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         let full = format!("{}", e);
         return Err(crate::cli::cli_error_ctx(
             e.into(),
-            file.display().to_string(),
+            cfgd_core::to_posix_string(file),
             "encryption_failed",
             first_line(&full),
             serde_json::json!({
@@ -68,7 +68,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
             let full = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                file.display().to_string(),
+                cfgd_core::to_posix_string(file),
                 "backend_unavailable",
                 first_line(&full),
                 secret_path_detail(file, &full),
@@ -83,7 +83,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
             let full = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
                 e.into(),
-                file.display().to_string(),
+                cfgd_core::to_posix_string(file),
                 "decryption_failed",
                 first_line(&full),
                 serde_json::json!({
@@ -135,7 +135,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
             let full = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                file.display().to_string(),
+                cfgd_core::to_posix_string(file),
                 "backend_unavailable",
                 first_line(&full),
                 secret_path_detail(file, &full),
@@ -148,7 +148,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
         let full = format!("{}", e);
         return Err(crate::cli::cli_error_ctx(
             e.into(),
-            file.display().to_string(),
+            cfgd_core::to_posix_string(file),
             "edit_failed",
             first_line(&full),
             serde_json::json!({
@@ -226,7 +226,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let sops_config = config_dir.join(".sops.yaml");
     let sops_path = if sops_config.exists() {
-        Some(sops_config.display().to_string())
+        Some(cfgd_core::to_posix_string(&sops_config))
     } else {
         None
     };

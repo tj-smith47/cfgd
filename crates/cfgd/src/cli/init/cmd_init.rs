@@ -109,7 +109,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         }
         drop(row);
         let output = InitOutput {
-            target_dir: target_dir.display().to_string(),
+            target_dir: cfgd_core::to_posix_string(&target_dir),
         };
         printer.emit(Doc::new().with_data(&output));
         return Ok(());
@@ -486,7 +486,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The "Next Steps" section is suppressed whenever an apply ran — the
     // apply branch already produced its own report.
     let output = InitOutput {
-        target_dir: target_dir.display().to_string(),
+        target_dir: cfgd_core::to_posix_string(&target_dir),
     };
     let doc = if !should_apply {
         Doc::new()

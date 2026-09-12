@@ -1098,7 +1098,7 @@ pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) ->
             path: config_path.to_path_buf(),
         })
         .into(),
-        config_path.display().to_string(),
+        cfgd_core::to_posix_string(config_path),
         "no_config",
         format!("config file not found: {}", config_path.display_posix()),
         serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),

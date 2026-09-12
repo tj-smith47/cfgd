@@ -147,7 +147,7 @@ pub fn cmd_module_create(
         .map(|(basename, target)| config::ModuleFileEntry {
             patch: None,
             source: format!("files/{}", basename),
-            target: target.display().to_string(),
+            target: cfgd_core::to_posix_string(target),
             strategy: None,
             private: is_private,
             encryption: None,
@@ -397,7 +397,7 @@ pub fn cmd_module_create(
                         .detail("run `cfgd apply` to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
-                        "path": module_dir.display().to_string(),
+                        "path": cfgd_core::to_posix_string(&module_dir),
                         "applied": false,
                     })));
                     return Ok(());
@@ -413,7 +413,7 @@ pub fn cmd_module_create(
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "name": name,
-        "path": module_dir.display().to_string(),
+        "path": cfgd_core::to_posix_string(&module_dir),
         "applied": applied,
     })));
 
@@ -596,7 +596,7 @@ pub fn cmd_module_update_local(
         doc.spec.files.push(config::ModuleFileEntry {
             patch: None,
             source: format!("files/{}", basename),
-            target: target.display().to_string(),
+            target: cfgd_core::to_posix_string(target),
             strategy: None,
             private: args.private,
             encryption: None,
@@ -611,12 +611,13 @@ pub fn cmd_module_update_local(
     // Remove files
     for target in &remove_files {
         let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
-        let target_str = expanded.display().to_string();
+        // The two spellings are compared, so both fold.
+        let target_str = cfgd_core::to_posix_string(&expanded);
         let before = doc.spec.files.len();
         let mut removed_source = None;
         doc.spec.files.retain(|f| {
             let f_target = cfgd_core::expand_tilde(&PathBuf::from(&f.target));
-            if f_target.display().to_string() == target_str || f.target == *target {
+            if cfgd_core::to_posix_string(&f_target) == target_str || f.target == *target {
                 removed_source = Some(f.source.clone());
                 false
             } else {
@@ -845,7 +846,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 .hint(super::success_next_step(super::Mutation::ModuleUpdated))
                 .with_data(serde_json::json!({
                     "name": name,
-                    "path": module_yaml.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&module_yaml),
                     "valid": true,
                 })),
         );
@@ -855,7 +856,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 .status(Role::Warn, "Saved with validation errors")
                 .with_data(serde_json::json!({
                     "name": name,
-                    "path": module_yaml.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&module_yaml),
                     "valid": false,
                 })),
         );

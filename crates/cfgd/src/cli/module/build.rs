@@ -70,7 +70,7 @@ pub fn cmd_module_build(
                     )
                 })?;
             printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
-            output_artifacts.push(output_dir.display().to_string());
+            output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
 
             if let Some(art) = artifact {
                 let cfgd_core::oci::PushOutcome { digest, .. } =
@@ -123,7 +123,7 @@ pub fn cmd_module_build(
                         ));
                     }
                 };
-                output_artifacts.push(output_dir.display().to_string());
+                output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
                 builds.push((output_dir, t.to_string()));
             }
 

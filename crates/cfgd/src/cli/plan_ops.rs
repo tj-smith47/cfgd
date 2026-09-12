@@ -276,8 +276,10 @@ pub(in crate::cli) fn manager_action_output(
 /// direct filesystem target (package installs, system-configurator writes,
 /// live-session refresh, secret-provider resolution into the env file).
 pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String> {
+    // `-o json` is read on a host other than the one that wrote it, so the
+    // value folds to `/` like every other serialized path.
     fn show(path: &std::path::Path) -> String {
-        path.display().to_string()
+        cfgd_core::to_posix_string(path)
     }
     match action {
         reconciler::Action::File(fa) => match fa {

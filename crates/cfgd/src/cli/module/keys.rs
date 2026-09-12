@@ -106,7 +106,7 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
                     cfgd_core::unix_secs_to_iso8601(secs)
                 });
             entries.push(super::KeyListEntry {
-                name: pub_path.display().to_string(),
+                name: cfgd_core::to_posix_string(&pub_path),
                 fingerprint,
                 created,
             });
@@ -252,8 +252,8 @@ pub fn cmd_module_keys_rotate(
             )
         } else {
             let backups = [
-                backup_key.display().to_string(),
-                backup_pub.display().to_string(),
+                cfgd_core::to_posix_string(&backup_key),
+                cfgd_core::to_posix_string(&backup_pub),
             ];
             (
                 format!(
@@ -298,7 +298,7 @@ pub fn cmd_module_keys_rotate(
                     e.to_string(),
                     serde_json::json!({
                         "artifact": artifact,
-                        "newKeyPath": new_key_path.display().to_string(),
+                        "newKeyPath": cfgd_core::to_posix_string(&new_key_path),
                     }),
                 ));
             }
@@ -306,7 +306,7 @@ pub fn cmd_module_keys_rotate(
     }
 
     let backup_pub_path = if old_pub.exists() || backup_pub.exists() {
-        Some(backup_pub.display().to_string())
+        Some(cfgd_core::to_posix_string(&backup_pub))
     } else {
         None
     };
@@ -319,7 +319,7 @@ pub fn cmd_module_keys_rotate(
             }))
             .with_data(serde_json::json!({
                 "dir": key_dir,
-                "backupPrivateKey": backup_key.display().to_string(),
+                "backupPrivateKey": cfgd_core::to_posix_string(&backup_key),
                 "backupPublicKey": backup_pub_path,
                 "artifactsResigned": resigned,
             })),

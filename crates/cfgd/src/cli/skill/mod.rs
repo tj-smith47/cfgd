@@ -105,7 +105,7 @@ impl SkillInstallResult {
     fn installed(provider: String, path: PathBuf) -> Self {
         Self {
             provider,
-            path: Some(path.display().to_string()),
+            path: Some(cfgd_core::to_posix_string(&path)),
             status: SkillResultStatus::Installed,
             reason: None,
             warn: false,
@@ -116,7 +116,7 @@ impl SkillInstallResult {
     fn removed(provider: String, path: PathBuf) -> Self {
         Self {
             provider,
-            path: Some(path.display().to_string()),
+            path: Some(cfgd_core::to_posix_string(&path)),
             status: SkillResultStatus::Removed,
             reason: None,
             warn: false,
@@ -127,7 +127,7 @@ impl SkillInstallResult {
     fn updated(provider: String, path: PathBuf) -> Self {
         Self {
             provider,
-            path: Some(path.display().to_string()),
+            path: Some(cfgd_core::to_posix_string(&path)),
             status: SkillResultStatus::Updated,
             reason: None,
             warn: false,

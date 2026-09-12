@@ -900,7 +900,9 @@ impl super::CfgdFileManager {
         managed: &ManagedFileSpec,
         profile: &MergedProfile,
     ) -> Result<Option<u32>> {
-        let target_str = target.display().to_string();
+        // The map's keys come from YAML, where a target is authored with `/`, so
+        // the probe folds instead of carrying this host's separator.
+        let target_str = cfgd_core::to_posix_string(target);
 
         // Per-file permissions take priority (intended for managed files).
         // Global files.permissions map is a fallback (intended for unmanaged paths,
@@ -1497,7 +1499,7 @@ mod tests {
         fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
 
         let mut permissions = HashMap::new();
-        permissions.insert(target.display().to_string(), "600".to_string());
+        permissions.insert(cfgd_core::to_posix_string(&target), "600".to_string());
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![spec(
@@ -1547,7 +1549,7 @@ mod tests {
         std::os::unix::fs::symlink(&stale, &target).unwrap();
 
         let mut permissions = HashMap::new();
-        permissions.insert(target.display().to_string(), "600".to_string());
+        permissions.insert(cfgd_core::to_posix_string(&target), "600".to_string());
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![spec(
@@ -1595,7 +1597,7 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
 
         let mut permissions = HashMap::new();
-        permissions.insert(target.display().to_string(), "600".to_string());
+        permissions.insert(cfgd_core::to_posix_string(&target), "600".to_string());
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![spec(
@@ -1632,7 +1634,7 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
 
         let mut permissions = HashMap::new();
-        permissions.insert(target.display().to_string(), "600".to_string());
+        permissions.insert(cfgd_core::to_posix_string(&target), "600".to_string());
 
         let resolved = make_resolved(FilesSpec {
             managed: vec![spec(
@@ -1750,7 +1752,7 @@ mod tests {
         let target = config_dir.join("newfile.txt");
 
         let mut permissions = HashMap::new();
-        permissions.insert(target.display().to_string(), "600".to_string());
+        permissions.insert(cfgd_core::to_posix_string(&target), "600".to_string());
 
         let managed = ManagedFileSpec {
             patch: None,

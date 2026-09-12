@@ -1,5 +1,6 @@
 use super::*;
 use crate::cli::output_types::DoctorConfigState;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 use cfgd_core::providers::PackageManagerExt;
 
@@ -106,7 +107,7 @@ fn collect_doctor_output(
                 (
                     DoctorConfigCheck {
                         valid: true,
-                        path: cli.config.display().to_string(),
+                        path: cfgd_core::to_posix_string(&cli.config),
                         name: Some(cfg.metadata.name.clone()),
                         profile: cfg.spec.profile.clone(),
                         error: None,
@@ -118,7 +119,7 @@ fn collect_doctor_output(
             Err(e) => (
                 DoctorConfigCheck {
                     valid: false,
-                    path: cli.config.display().to_string(),
+                    path: cfgd_core::to_posix_string(&cli.config),
                     name: None,
                     profile: None,
                     error: Some(format!("{}", e)),
@@ -141,7 +142,7 @@ fn collect_doctor_output(
         (
             DoctorConfigCheck {
                 valid: false,
-                path: cli.config.display().to_string(),
+                path: cfgd_core::to_posix_string(&cli.config),
                 name: None,
                 profile: None,
                 error: Some(cfgd_core::Absence::NotFound.to_string()),
@@ -422,7 +423,7 @@ fn collect_doctor_output(
     // as a profile (canonical bundles included, payload dirs excluded).
     let profiles_scan = cfgd_core::config::scan_profiles_tolerant(&profiles_dir_path);
     let profiles_dir_extra = DoctorProfilesDir {
-        path: profiles_dir_path.display().to_string(),
+        path: profiles_dir_path.display_posix(),
         exists: profiles_dir_path.exists(),
         profile_count: profiles_scan.as_ref().map(Vec::len).unwrap_or(0),
         error: profiles_scan.as_ref().err().map(|e| e.to_string()),
@@ -440,7 +441,7 @@ fn collect_doctor_output(
                 let cached_path = cache_dir.as_ref().and_then(|cd| {
                     let p = cd.join(&source.name);
                     if p.exists() {
-                        Some(p.display().to_string())
+                        Some(p.display_posix())
                     } else {
                         None
                     }
@@ -492,15 +493,12 @@ fn collect_doctor_output(
             sops_available: health.sops_available,
             sops_version: health.sops_version.clone(),
             age_key_exists: health.age_key_exists,
-            age_key_path: health
-                .age_key_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
+            age_key_path: health.age_key_path.as_ref().map(cfgd_core::to_posix_string),
             sops_config_exists: health.sops_config_exists,
             sops_config_path: health
                 .sops_config_path
                 .as_ref()
-                .map(|p| p.display().to_string()),
+                .map(cfgd_core::to_posix_string),
             providers: health
                 .providers
                 .iter()

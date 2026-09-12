@@ -90,7 +90,7 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             let msg = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
                 e.into(),
-                config_path.display().to_string(),
+                cfgd_core::to_posix_string(config_path),
                 "parse_failed",
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
