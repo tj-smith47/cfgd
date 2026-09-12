@@ -35876,83 +35876,145 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     );
 }
 
-/// The two commands whose subject IS a path the caller named fold the home
-/// directory in every display slot they print.
+/// Every display slot in the production sources of both crates folds the home
+/// directory.
 ///
-/// `cfgd secret <verb> <file>` and `cfgd module keys rotate --dir <dir>` print
-/// back the path they were handed, and the path a person hands either of them
-/// usually sits under their home directory. Both keep the absolute path in their
-/// `-o json` payload and in the failure strings they record, so the fold belongs
-/// to the display slot alone, and a walk is the only thing that reaches the arms
-/// no fixture can drive: two of `secret`'s error arms need a backend that fails
-/// on a real file, and the key-restore arm needs two renames to fail in order.
+/// A command that prints back a path usually prints one under the home
+/// directory of whoever ran it, and one report spelling `$HOME` two ways is the
+/// defect `fold_home_in_text` exists to stop. The walk is the only thing that
+/// reaches the arms no fixture can drive: a backend that fails on a real file,
+/// a key restore needing two renames to fail in order, a rollback whose every
+/// warning arm needs a different filesystem refusal.
 ///
-/// A slot is judged as a statement however rustfmt broke it, plus the few lines
+/// A slot is read as a statement however rustfmt broke it, plus the few lines
 /// above it, because a render is often bound to a name one line up and
-/// interpolated. A slot that must print the absolute path says so with
-/// `// absolute-path-ok: <why>`.
+/// interpolated. Three shapes are not display slots and are passed over: a
+/// `tracing` line (a journal is read from other hosts, per
+/// `path-handling.md`), a hint (`Renderer::render_hint` folds its own text and
+/// every command it carries), and anything carrying
+/// `// absolute-path-ok: <why>` on its line or in the comment block above it —
+/// a stored id, an `-o json` field or a returned error.
 #[test]
-fn every_display_slot_of_a_caller_named_path_folds_the_home_directory() {
+fn every_display_slot_of_both_crates_folds_the_home_directory() {
     const SINKS: &[&str] = &[
         "printer.status",
-        "printer.hint",
         "printer.alert",
         ".detail(",
         ".status(",
         ".status_simple(",
         ".kv_block(",
         ".qualifier(",
-        ".hint_commands(",
     ];
     const RENDERS: &[&str] = &[".posix()", ".display_posix()", ".display()"];
     const HATCH: &str = "// absolute-path-ok:";
-    // The floor is per file, so a read that goes blind in one of them fails
-    // rather than passing on the other's slots.
-    const WALKED: [(&str, usize); 2] = [("cli/secret.rs", 5), ("cli/module/keys.rs", 4)];
+    // A per-file floor for the files that hold a known population, so a read
+    // going blind in one of them fails instead of passing on another's slots.
+    const FLOOR_FILES: [(&str, usize); 6] = [
+        ("cfgd-core/src/reconciler/restore.rs", 11),
+        ("cfgd/src/files/plan.rs", 8),
+        ("cfgd/src/cli/config_migration.rs", 7),
+        ("cfgd/src/cli/secret.rs", 6),
+        ("cfgd/src/cli/profile/migrate.rs", 6),
+        ("cfgd/src/cli/module/keys.rs", 4),
+    ];
+    // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
+    // nowhere reads no files, and one holding no command code judges no slot.
+    const FLOOR_SOURCES: usize = 280;
+    const FLOOR_SLOTS: usize = 65;
 
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut offenders: Vec<String> = Vec::new();
-    for (relative, floor) in WALKED {
-        let path = src.join(relative);
-        let body = production_body(&walked_file_body(&path));
-        let lines: Vec<&str> = body.lines().collect();
-        let mut judged = 0usize;
-        let mut n = 0usize;
-        while n < lines.len() {
-            if lines[n].trim_start().starts_with("//")
-                || !SINKS.iter().any(|sink| lines[n].contains(sink))
-            {
-                n += 1;
+    let mut per_file: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let (mut sources, mut slots) = (0usize, 0usize);
+    for root in &roots {
+        for path in rust_sources_under(root) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
-            // A statement rustfmt broke over many lines still ends at its `;`.
-            // Where the sink is a builder chain whose `;` is further out than the
-            // window, the window itself is the bound, so a render under the sink
-            // is read rather than missed.
-            let last = (n + 13).min(lines.len() - 1);
-            let end = (n..=last)
-                .find(|&i| lines[i].trim_end().ends_with(';'))
-                .unwrap_or(last);
-            let window = lines[n.saturating_sub(6)..=end].join("\n");
-            if RENDERS.iter().any(|render| window.contains(render)) {
-                judged += 1;
-                if !window.contains("fold_home_in_text") && !window.contains(HATCH) {
-                    offenders.push(format!("{relative}:{}: {}", n + 1, lines[n].trim()));
+            sources += 1;
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let folded = cfgd_core::test_helpers::logical_source_lines(&production);
+            let lines: Vec<&str> = folded.iter().map(|(_, line)| line.as_str()).collect();
+            let shown = cfgd_core::to_posix_string(&path);
+            let mut n = 0usize;
+            while n < lines.len() {
+                if lines[n].trim_start().starts_with("//")
+                    || !SINKS.iter().any(|sink| lines[n].contains(sink))
+                {
+                    n += 1;
+                    continue;
                 }
+                // A statement rustfmt broke over many lines still ends at its
+                // `;`. Where the sink is a builder chain whose `;` is further
+                // out than the window, the window itself is the bound, so a
+                // render under the sink is read rather than missed.
+                let last = (n + 13).min(lines.len() - 1);
+                let end = (n..=last)
+                    .find(|&i| lines[i].trim_end().ends_with(';'))
+                    .unwrap_or(last);
+                for i in n.saturating_sub(6)..=end {
+                    let line = lines[i];
+                    if line.trim_start().starts_with("//")
+                        || !RENDERS.iter().any(|render| line.contains(render))
+                    {
+                        continue;
+                    }
+                    let near = lines[i.saturating_sub(3)..=i].join("\n");
+                    if near.contains("tracing::") || near.contains("hint(") {
+                        continue;
+                    }
+                    slots += 1;
+                    *per_file.entry(shown.clone()).or_default() += 1;
+                    // rustfmt may break the fold's own call, so the two rows
+                    // above the render answer for it.
+                    if lines[i.saturating_sub(2)..=i]
+                        .iter()
+                        .any(|l| l.contains("fold_home_in_text"))
+                    {
+                        continue;
+                    }
+                    let mut hatched = line.contains(HATCH);
+                    let mut j = i;
+                    while j > 0 && lines[j - 1].trim_start().starts_with("//") {
+                        j -= 1;
+                        hatched |= lines[j].contains(HATCH);
+                    }
+                    if hatched {
+                        continue;
+                    }
+                    offenders.push(format!("{shown}:{}: {}", folded[i].0 + 1, line.trim()));
+                }
+                n = end + 1;
             }
-            n = end + 1;
         }
+    }
+    assert!(
+        sources >= FLOOR_SOURCES && slots >= FLOOR_SLOTS,
+        "the walk read {sources} sources and judged {slots} display slots — under the \
+         floor, so it is looking at the wrong roots"
+    );
+    for (relative, floor) in FLOOR_FILES {
+        let judged = per_file
+            .iter()
+            .find(|(path, _)| path.ends_with(relative))
+            .map(|(_, count)| *count)
+            .unwrap_or_default();
         assert!(
             judged >= floor,
-            "the walk judged {judged} display slots in {relative}, under its floor of {floor} \
-             — it has gone blind in that file"
+            "the walk judged {judged} display slots in {relative}, under its floor of \
+             {floor} — it has gone blind in that file"
         );
     }
     assert!(
         offenders.is_empty(),
-        "a display slot of a command whose subject is a caller-named path folds the home \
-         directory through `cfgd_core::fold_home_in_text`, or says why the absolute path is \
-         right with `{HATCH} <why>`:\n{}",
+        "a display slot folds the home directory through `cfgd_core::fold_home_in_text`, \
+         or says why the absolute path is right with `{HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
 }
