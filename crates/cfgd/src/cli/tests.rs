@@ -35892,7 +35892,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
 /// `tracing` line (a journal is read from other hosts, per
 /// `path-handling.md`), a hint (`Renderer::render_hint` folds its own text and
 /// every command it carries), and anything carrying
-/// `// absolute-path-ok: <why>` on its line or in the comment block above it —
+/// `// absolute-path-ok: <why>` on its line or in the comment block above it:
 /// a stored id, an `-o json` field or a returned error.
 #[test]
 fn every_display_slot_of_both_crates_folds_the_home_directory() {
