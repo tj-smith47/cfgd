@@ -1775,6 +1775,13 @@ fn package_owner(
 /// the module report's split of its erroring checks across the Packages and
 /// Shell sections both ask it, so neither can read a key the way the other
 /// would not.
+///
+/// Asked of the SHAPE and not of the file's name, which the env engine spells
+/// differently per platform and per dialect: the producer folds the path it
+/// actually probed through `to_posix_string`, so a Windows key keeps its drive
+/// and answers `is_absolute` there exactly as a POSIX key does here. Matching a
+/// basename instead would accept a key that is no path at all, and every key
+/// this predicate sees was minted on the host now reading it.
 fn check_key_names_env_surface(key: &str) -> bool {
     std::path::Path::new(key).is_absolute() || key.starts_with("~/")
 }
@@ -5398,6 +5405,12 @@ mod tests {
     /// never reached.
     #[test]
     fn a_wide_module_view_reports_an_erroring_env_check() {
+        let home = tempfile::tempdir().unwrap();
+        let env_file = cfgd_core::reconciler::primary_env_file(home.path());
+        let env_file_name = env_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("the primary env file is a file");
         let output = ModuleStatus {
             name: "nvim".to_string(),
             packages: 0,
@@ -5423,8 +5436,12 @@ mod tests {
             drift_checked_live: true,
             last_scan_at: None,
             scoped_scans: Default::default(),
+            // Composed the way the producer composes it, off the file this host
+            // would actually have probed: the key is classified by whether it
+            // is an absolute path, and a POSIX path spelled by hand is not one
+            // on Windows, where the rows then kept verdicts no check earned.
             system_errors: vec![super::super::output_types::SystemCheckError {
-                key: "/home/user/.cfgd.env".to_string(),
+                key: cfgd_core::to_posix_string(&env_file),
                 error: "Is a directory (os error 21)".to_string(),
             }],
             standing: Vec::new(),
@@ -5446,7 +5463,7 @@ mod tests {
             .find(|l| l.contains("error checking drift"))
             .unwrap_or_else(|| panic!("the wide view renders the failed check: {rendered}"));
         assert!(
-            error_line.contains(".cfgd.env") && error_line.contains("Is a directory"),
+            error_line.contains(&env_file_name) && error_line.contains("Is a directory"),
             "the row names the probed file and the failure: {error_line}"
         );
         let editor_line = rendered

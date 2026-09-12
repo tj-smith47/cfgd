@@ -14227,7 +14227,9 @@ fn cmd_apply_phase_post_scripts_catches_module_post_scripts() {
     let (config_dir, state_dir) = setup_test_env();
     let marker = config_dir.path().join("post_script_marker");
 
-    // native-ok: the hook body is a command this host's own shell runs.
+    // native-ok: the host's own shell parses this path, so it stays native.
+    // `touch` resolves on Windows too: `cmd.exe` finds it in Git for Windows'
+    // `usr/bin`, which the Windows test leg has on PATH.
     create_module_in_dir(
         config_dir.path(),
         "nvim",
@@ -15495,6 +15497,62 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         "a managed-env-file fixture takes its path and its generated lines from \
          production's own renderers, or it only ever holds on the platform it \
          was written on:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A check-error key is classified by SHAPE: `check_key_names_env_surface` asks
+/// `Path::is_absolute`, the one question that tells an env surface's own path
+/// apart from a `<manager>:<package>` floor id and a configurator's bare name.
+/// Absoluteness is a platform answer — `/home/user/.cfgd.env` is absolute here
+/// and carries no drive on Windows, so it is relative there — and a fixture
+/// spelling a key that way classified as the env surface on Linux and as a
+/// loose system key on Windows, where the Shell rows kept the green verdicts
+/// the failed check had not earned.
+///
+/// The producer composes its key from the file it actually probed
+/// (`to_posix_string(primary_env_file(home))`), so a fixture does the same. The
+/// population is held EMPTY and floored on the constructions it read: no such
+/// key is ever hand-spelled, so there is nothing for a hatch to excuse.
+#[test]
+fn no_check_error_fixture_spells_its_key_as_a_host_path() {
+    let root = cfgd_core::test_helpers::workspace_root();
+    let mut read = 0usize;
+    let mut offenders = Vec::new();
+    for dir in [
+        "crates/cfgd/src",
+        "crates/cfgd/tests",
+        "crates/cfgd-core/src",
+    ] {
+        for path in rust_sources_under(&root.join(dir)) {
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                if !line.contains("SystemCheckError {") {
+                    continue;
+                }
+                read += 1;
+                let window = &lines[n..(n + 4).min(lines.len())];
+                if let Some(spelled) = window.iter().find(|l| {
+                    let t = l.trim_start();
+                    !t.starts_with("//")
+                        && t.contains("key:")
+                        && (t.contains("\"/") || t.contains("\"~/"))
+                }) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, spelled.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        read >= 10,
+        "the walk no longer reaches the check-error constructions — it read {read}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a check-error key is classified by whether it is an absolute path, which is a \
+         platform answer — compose it as the producer does, from \
+         `cfgd_core::to_posix_string(cfgd_core::reconciler::primary_env_file(home))`:\n{}",
         offenders.join("\n")
     );
 }
@@ -36646,6 +36704,129 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
          bootstrap_via_system_manager, consult `planned_method` in an arm of its own, \
          or say why one arm is all it has with `// bootstrap-arm-ok:`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// Whether a `bootstrap_plan_given` body can hand back a plan at all. A body
+/// that only ever answers `None` describes a manager cfgd installs nowhere, so
+/// no platform question arises.
+fn plan_body_can_offer_a_plan(body: &[&str]) -> bool {
+    body.iter().any(|l| {
+        let t = l.trim_start();
+        !t.starts_with("//") && (t.contains("Some(") || t.contains("map(BootstrapPlan::new)"))
+    })
+}
+
+/// Whether such a body decides by platform rather than by probe alone.
+fn plan_body_decides_by_platform(body: &[&str]) -> bool {
+    body.iter().any(|l| {
+        let t = l.trim_start();
+        (t.starts_with("#[cfg(") || t.contains("cfg!("))
+            && (t.contains("windows") || t.contains("target_os"))
+    })
+}
+
+/// A plan's method is binding at execution: the apply runs the arm the plan
+/// named and fails rather than substituting another. So a plan offered on a
+/// host whose arm cannot run there schedules a provision that can only fail —
+/// npm planned `nvm` on Windows, where nothing runs the installer's shell
+/// pipeline, and the run died inside the install instead of refusing the
+/// manager with a cause the reader could act on.
+///
+/// Whether an arm runs is a platform question, and only the source says what
+/// the platforms this host is not answer. So every `bootstrap_plan_given` that
+/// can offer a plan either decides by platform in its own body, or says with
+/// `// every-platform-ok: <why>` that its arm runs on all of them.
+#[test]
+fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let files = rust_sources_under(&packages_dir);
+    let mut offering = 0usize;
+    let mut offenders = Vec::new();
+    for path in files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let production = production_body(&std::fs::read_to_string(&path).unwrap());
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains(" fn bootstrap_plan_given(") {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len());
+            let body = &lines[n..end];
+            if !plan_body_can_offer_a_plan(body) {
+                continue;
+            }
+            offering += 1;
+            if plan_body_decides_by_platform(body)
+                || body.iter().any(|l| l.contains("// every-platform-ok:"))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        offering >= 10,
+        "the walk no longer reaches the managers that plan a bootstrap — it found {offering}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a manager that offers a bootstrap plan must say which platforms can run its \
+         arm — gate the arm on a `cfg`, or say with `// every-platform-ok: <why>` that \
+         it runs on all of them:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The two halves above, driven negatively: a bare `Some` with no platform
+/// decision is caught, the same body gated is not, and a body that offers
+/// nothing is outside the population whatever its comments say.
+#[test]
+fn the_plan_platform_walk_reads_an_arm_a_cfg_withholds() {
+    let head =
+        "    fn bootstrap_plan_given(&self, _d: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {";
+    let ungated = vec![
+        head,
+        "        Some(BootstrapPlan::new(\"rustup\").requiring([\"curl\"]))",
+        "    }",
+    ];
+    assert!(plan_body_can_offer_a_plan(&ungated));
+    assert!(
+        !plan_body_decides_by_platform(&ungated),
+        "a plan offered with no platform decision is what the walk is for"
+    );
+
+    let gated = vec![
+        head,
+        "        #[cfg(windows)]",
+        "        {",
+        "            None",
+        "        }",
+        "        #[cfg(not(windows))]",
+        "        {",
+        "            Some(BootstrapPlan::new(\"rustup\").requiring([\"curl\"]))",
+        "        }",
+        "    }",
+    ];
+    assert!(plan_body_can_offer_a_plan(&gated));
+    assert!(plan_body_decides_by_platform(&gated));
+
+    let never = vec![
+        head,
+        "        // Some(plan) would be a lie: winget ships with Windows.",
+        "        None",
+        "    }",
+    ];
+    assert!(
+        !plan_body_can_offer_a_plan(&never),
+        "a commented-out plan is no plan, so the body is outside the population"
     );
 }
 
