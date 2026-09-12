@@ -155,22 +155,25 @@ pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
         || output_format.is_structured()
 }
 
-/// Stamp OSC 8 hyperlinks onto `theme` iff colour resolved on and the terminal
-/// is a known emitter. Read by the two PRODUCTION constructors only: a capture
-/// never detects, so no golden can pick up an escape from the developer's own
-/// terminal. `build` re-applies the same `colors`, and `with_colors` withdraws
-/// the stamp with the colour, so the two cannot end up disagreeing.
-fn stamp_hyperlinks(theme: Theme, colors: bool) -> Theme {
-    // Colour off already settles the answer, so the terminal is never asked:
-    // the probe reads several environment variables on every construction, and
-    // `with_hyperlinks` would discard what it learned. `-o json`, `NO_COLOR`
-    // and a piped stdout are the common case, not the rare one.
+/// Stamp what THIS terminal can show onto `theme` iff colour resolved on: OSC 8
+/// hyperlinks where it is a known emitter, and 24-bit foregrounds where it
+/// advertises them. The two PRODUCTION constructors are the only callers, so
+/// nothing a capture renders can pick up a capability from the developer's own
+/// terminal. `build` re-applies the same `colors`, which withdraws the hyperlink
+/// stamp with the colour and leaves the depth alone, so the three cannot end up
+/// disagreeing.
+fn stamp_terminal_capabilities(theme: Theme, colors: bool) -> Theme {
+    // Colour off already settles both answers, so the terminal is never asked:
+    // each probe reads several environment variables on every construction, and
+    // a colourless theme emits neither escape. `-o json`, `NO_COLOR` and a piped
+    // stdout are the common case, not the rare one.
     if !colors {
         return theme.with_colors(false);
     }
     theme
         .with_colors(true)
         .with_hyperlinks(super::terminal_supports_hyperlinks())
+        .with_truecolor(super::theme::supports_truecolor())
 }
 
 /// The depth an action row renders at in a report: under its phase's section
@@ -211,7 +214,7 @@ impl Printer {
         let colors = colors.resolve(&output_format);
         Self::build(
             verbosity,
-            stamp_hyperlinks(theme, colors),
+            stamp_terminal_capabilities(theme, colors),
             output_format,
             colors,
         )
@@ -235,7 +238,7 @@ impl Printer {
         let colors = colors.resolve(&output_format);
         Self::build(
             verbosity,
-            stamp_hyperlinks(theme, colors),
+            stamp_terminal_capabilities(theme, colors),
             output_format,
             colors,
         )
@@ -1475,6 +1478,46 @@ mod tests {
             !out.is_empty(),
             "a derived printer's progress bar never reached the parent's recording draw \
              target — it stood up a fresh MultiProgress instead of inheriting one"
+        );
+    }
+
+    /// The terminal's colour DEPTH is probed where a production printer is
+    /// built and nowhere else, so a theme any other caller builds renders its
+    /// full triples whatever the host advertises — a capture comparing bytes
+    /// cannot pick up the developer's own `COLORTERM`.
+    #[test]
+    #[serial]
+    fn only_a_production_printer_reads_the_terminals_colour_depth() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+
+        let unset = EnvVarGuard::unset("COLORTERM");
+        let quantizing = Printer::with_format(
+            Verbosity::Normal,
+            Some("dracula"),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(
+            !quantizing.renderer.theme.truecolor(),
+            "a production printer on a terminal advertising no 24-bit support quantizes"
+        );
+        assert!(
+            Theme::from_preset("dracula").with_colors(true).truecolor(),
+            "a theme built outside a production printer keeps its full depth"
+        );
+
+        drop(unset);
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+        let full = Printer::with_format(
+            Verbosity::Normal,
+            Some("dracula"),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(
+            full.renderer.theme.truecolor(),
+            "a terminal advertising 24-bit support gets the full triple"
         );
     }
 

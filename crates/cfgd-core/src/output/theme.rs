@@ -36,8 +36,8 @@ const ICON_INFO: &str = "◉";
 /// 256-color fallback path and for non-color attributes like bold/dim) and
 /// optionally carries an `(r, g, b)` triple for high-fidelity rendering on
 /// truecolor-capable terminals. Which of the two depths a slot renders in is
-/// stamped by [`Self::with_colors`] beside the colour decision itself, so one
-/// render cannot mix depths.
+/// stamped by [`Self::with_truecolor`], once per theme, so one render cannot
+/// mix depths.
 #[derive(Debug, Clone, Default)]
 pub struct ThemedStyle {
     /// `console::Style` carrying attrs and (when no `rgb` is present) the
@@ -57,13 +57,15 @@ pub struct ThemedStyle {
     /// that forgets to stamp renders UNSTYLED — that fails a positive assertion
     /// loudly, where the opposite default makes a negative one pass vacuously.
     colors: bool,
-    /// Whether this style emits its `rgb` triple as a 24-bit foreground rather
-    /// than quantizing it to a 256-colour slot. Stamped beside `colors` and
-    /// never re-derived while rendering: the syntax highlighter writes its own
-    /// foreground runs, and a depth answered per span let one screen carry
-    /// 24-bit highlighting beside 256-colour headings on a host whose
-    /// `COLORTERM` the two readers disagreed about.
-    truecolor: bool,
+    /// Whether this style quantizes its `rgb` triple into the nearest 256-colour
+    /// slot instead of emitting the 24-bit foreground. A style renders its full
+    /// triple unless the terminal probe at a PRODUCTION printer's construction
+    /// says the host cannot show it, so a theme built anywhere else spells the
+    /// same bytes on every host. Never re-derived while rendering: the syntax
+    /// highlighter writes its own foreground runs, and a depth answered per span
+    /// let one screen carry 24-bit highlighting beside 256-colour headings on a
+    /// host whose `COLORTERM` the two readers disagreed about.
+    ansi256: bool,
     /// Whether this style has been given an actual foreground colour (a
     /// truecolor hex or a named `console::Color`), independent of `colors`
     /// (which says only whether emitting it is currently allowed). Backs the
@@ -130,10 +132,10 @@ impl ThemedStyle {
         Self::default()
     }
 
-    /// Build a style from a `#rrggbb` hex string. On terminals that advertise
-    /// truecolor support (`COLORTERM=truecolor|24bit`), `apply_to` emits the
-    /// exact 24-bit color. Otherwise the color is quantized to the nearest
-    /// ANSI 256-color slot for compatibility.
+    /// Build a style from a `#rrggbb` hex string. `apply_to` emits the exact
+    /// 24-bit color unless the theme was stamped for a terminal that advertises
+    /// no truecolor support, where the color is quantized to the nearest ANSI
+    /// 256-color slot for compatibility.
     pub fn from_hex(hex: &str) -> Self {
         match parse_hex_rgb(hex) {
             Some((r, g, b)) => Self {
@@ -141,7 +143,7 @@ impl ThemedStyle {
                 rgb: Some((r, g, b)),
                 attrs: AttrSet::default(),
                 colors: false,
-                truecolor: false,
+                ansi256: false,
                 has_color: true,
             },
             None => Self::default(),
@@ -156,7 +158,7 @@ impl ThemedStyle {
             rgb: None,
             attrs: AttrSet::default(),
             colors: false,
-            truecolor: false,
+            ansi256: false,
             has_color: true,
         }
     }
@@ -233,21 +235,17 @@ impl ThemedStyle {
     /// with the flag because the 256-colour fallback arm of `StyledText::fmt`
     /// delegates to `console::Style::apply_to`, which otherwise re-consults the
     /// process-global colour flag and strips whatever this style decided.
-    ///
-    /// The colour DEPTH is answered here too, from the same terminal the colour
-    /// decision was taken against, so a slot carries one depth for as long as it
-    /// lives rather than asking the environment again per span.
     pub fn with_colors(mut self, enabled: bool) -> Self {
         self.colors = enabled;
-        self.truecolor = enabled && supports_truecolor();
         self.inner = self.inner.force_styling(enabled);
         self
     }
 
-    /// Override the depth [`Self::with_colors`] derived, for a caller that must
-    /// render the same bytes on every host. Call it AFTER the colour stamp.
+    /// Stamp the depth this style's `rgb` triple renders in: the full 24-bit
+    /// foreground, or the nearest 256-colour slot. Independent of the colour
+    /// stamp, so the two can arrive in either order.
     pub fn with_truecolor(mut self, enabled: bool) -> Self {
-        self.truecolor = enabled && self.colors;
+        self.ansi256 = !enabled;
         self
     }
 
@@ -321,7 +319,7 @@ impl<D: Display> Display for StyledText<'_, D> {
         }
 
         if let Some((r, g, b)) = self.style.rgb
-            && self.style.truecolor
+            && !self.style.ansi256
         {
             if !attrs.has_attrs() {
                 return write!(f, "\x1b[38;2;{r};{g};{b}m{}\x1b[0m", self.text);
@@ -432,11 +430,12 @@ pub struct Theme {
     /// decision disagreeing.
     hyperlinks: bool,
     /// Whether this theme's styles, and the syntax highlighter rendering under
-    /// it, emit 24-bit foregrounds. Stamped by [`Theme::with_colors`] from the
-    /// terminal the colour decision was taken against, and readable through
-    /// [`Theme::truecolor`] because the highlighter writes its own escapes and
-    /// has to take the same answer the style slots took.
-    truecolor: bool,
+    /// it, quantize a 24-bit foreground into a 256-colour slot. Stamped by
+    /// [`Theme::with_truecolor`] from the terminal a PRODUCTION printer was
+    /// built against, and readable through [`Theme::truecolor`] because the
+    /// highlighter writes its own escapes and has to take the same answer the
+    /// style slots took.
+    ansi256: bool,
     /// Which entry of the syntect registry a code block is highlighted with,
     /// stamped by [`Theme::preset`] and read through [`Theme::syntect_theme`].
     /// `None` renders the block plain. Private for the same reason the two
@@ -493,7 +492,7 @@ impl Default for Theme {
         Self {
             colors: false,
             hyperlinks: false,
-            truecolor: false,
+            ansi256: false,
             syntax_theme: Some(SYNTAX_THEME_DEFAULT),
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
@@ -541,7 +540,6 @@ impl Theme {
         // Colour withdrawn withdraws the hyperlink with it, whatever order the
         // two stamps arrive in: an OSC 8 sequence is an escape like any other.
         self.hyperlinks &= enabled;
-        self.truecolor = enabled && supports_truecolor();
         self.primary = self.primary.map(|s| s.with_colors(enabled));
         self.header = self.header.with_colors(enabled);
         self.success = self.success.with_colors(enabled);
@@ -564,13 +562,13 @@ impl Theme {
         self.colors
     }
 
-    /// Pin the colour depth every span under this theme renders in, over the
-    /// answer [`Self::with_colors`] derived from the terminal. Every capture
-    /// pins it, so a golden comparing bytes says the same thing on a host whose
-    /// `COLORTERM` is unset as on one that advertises 24-bit.
+    /// Stamp the colour depth every span under this theme renders in. A theme
+    /// renders its full triples until a terminal probe downgrades it, which the
+    /// two production constructors do and nothing else does: a golden comparing
+    /// bytes then says the same thing on a host whose `COLORTERM` is unset as on
+    /// one that advertises 24-bit.
     pub fn with_truecolor(mut self, enabled: bool) -> Self {
-        let enabled = enabled && self.colors;
-        self.truecolor = enabled;
+        self.ansi256 = !enabled;
         self.primary = self.primary.map(|s| s.with_truecolor(enabled));
         self.header = self.header.with_truecolor(enabled);
         self.success = self.success.with_truecolor(enabled);
@@ -592,7 +590,7 @@ impl Theme {
     /// syntax highlighter, whose escapes syntect writes rather than the style
     /// gate, so both halves of one render land in one depth.
     pub fn truecolor(&self) -> bool {
-        self.truecolor
+        !self.ansi256
     }
 
     /// Stamp whether a linked value may emit an OSC 8 hyperlink. Only the
@@ -1049,7 +1047,7 @@ impl Theme {
         Self {
             colors: false,
             hyperlinks: false,
-            truecolor: false,
+            ansi256: false,
             syntax_theme: None,
             // minimal spends no colour at all.
             primary: None,
@@ -1088,7 +1086,12 @@ impl Theme {
 /// the convention used by `bat`, `delta`, `git diff --color`, `lsd`, `eza`,
 /// and friends. Honors `NO_COLOR` so the signal can't override an explicit
 /// opt-out.
-pub fn supports_truecolor() -> bool {
+///
+/// Visible to `output/` alone, and called from one place inside it: the two
+/// production printer constructors stamp the answer onto their theme, and a
+/// caller reaching the environment for itself is how one screen came to carry
+/// two depths.
+pub(super) fn supports_truecolor() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
@@ -1182,12 +1185,13 @@ fn apply_color(style: &mut ThemedStyle, hex: &str) {
         // The colour decision belongs to the printer, not to the palette an
         // override names, so it survives the slot being rebuilt.
         let colors = style.colors;
+        let ansi256 = style.ansi256;
         *style = ThemedStyle {
             inner: Style::new().fg(Color::Color256(ansi256_from_rgb(r, g, b))),
             rgb: Some((r, g, b)),
             attrs: AttrSet::default(),
             colors: false,
-            truecolor: false,
+            ansi256,
             has_color: true,
         }
         .with_attrs(attrs)
@@ -1410,10 +1414,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn hex_style_emits_truecolor_escape_when_supported() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+    fn hex_style_emits_its_truecolor_escape_by_default() {
         let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
@@ -1433,21 +1434,17 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn hex_style_with_bold_emits_truecolor_with_attr() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let style = colored_then_bolded("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1;38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
 
     #[test]
-    #[serial]
-    fn hex_style_falls_back_to_256_when_no_truecolor() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::unset("COLORTERM");
-        let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
+    fn hex_style_quantizes_to_256_when_the_depth_is_stamped_off() {
+        let style = ThemedStyle::from_hex("#bd93f9")
+            .with_colors(true)
+            .with_truecolor(false);
         let out = style.apply_to("hi").to_string();
         // Output must contain the 256-color SGR for the quantized slot.
         let (r, g, b) = (0xbd, 0x93, 0xf9);
@@ -1455,11 +1452,11 @@ mod tests {
         let needle = format!("38;5;{expected_slot}");
         assert!(
             out.contains(&needle),
-            "expected fallback to contain {needle:?}, got: {out:?}"
+            "expected the quantized slot {needle:?}, got: {out:?}"
         );
         assert!(
             !out.contains("38;2;"),
-            "must not emit truecolor SGR in fallback: {out:?}"
+            "must not emit a truecolor SGR once the depth is stamped off: {out:?}"
         );
     }
 
