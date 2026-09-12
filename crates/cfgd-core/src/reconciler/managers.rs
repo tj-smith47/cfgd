@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::providers::{
     PackageAction, PackageManager, PackageManagerExt, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS,
-    is_system_manager,
+    installs_prerequisites,
 };
 
 use super::env_engine::ManagerPathDir;
@@ -1004,12 +1004,17 @@ pub(super) fn fold_provision_path_dirs<'a>(
 /// The system manager a prerequisite is installed from on this host, in
 /// registration order — the platform's own preference — or `None` when the host
 /// has none, which is the refusal path.
+///
+/// Asks [`installs_prerequisites`] rather than `is_system_manager`: the Windows
+/// managers mediate a bootstrap but nothing yet spells what cfgd's prerequisite
+/// tools are called on them, so a node naming one would promise an install that
+/// resolves no package.
 fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageManager> {
     registry
         .package_managers()
         .iter()
         .map(|pm| pm.as_ref())
-        .find(|pm| is_system_manager(pm.name()) && pm.is_available())
+        .find(|pm| installs_prerequisites(pm.name()) && pm.is_available())
 }
 
 #[cfg(test)]

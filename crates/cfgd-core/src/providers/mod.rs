@@ -1032,11 +1032,13 @@ pub fn prerequisite_obtainable(tool: &str) -> bool {
         || (SYSTEM_INSTALLABLE_TOOLS.contains(&tool)
             && SYSTEM_MANAGER_NAMES
                 .iter()
+                .filter(|manager| installs_prerequisites(manager))
                 .any(|manager| crate::command_available(manager)))
 }
 
-/// The registered names of the managers that ship with an operating system and
-/// so are the only source a cfgd prerequisite may be installed from.
+/// The registered names of the managers that ship with an operating system, or
+/// are that system's own way of getting software, and so are the only source a
+/// mediated bootstrap may run through.
 ///
 /// The ONE population, because two questions have to agree on it and neither
 /// can see the other's inputs: a provider's `bootstrap_plan` asks "could this
@@ -1044,11 +1046,41 @@ pub fn prerequisite_obtainable(tool: &str) -> bool {
 /// asks "which registered manager installs it" holding no PATH probes of its
 /// own. A list on one side only means a plan that promises a provisioning the
 /// planner then cannot schedule.
-pub const SYSTEM_MANAGER_NAMES: &[&str] = &["apt", "dnf", "yum", "zypper", "pacman", "apk", "pkg"];
+pub const SYSTEM_MANAGER_NAMES: &[&str] = &[
+    "apt",
+    "dnf",
+    "yum",
+    "zypper",
+    "pacman",
+    "apk",
+    "pkg",
+    "winget",
+    "chocolatey",
+    "scoop",
+];
+
+/// The Windows members of [`SYSTEM_MANAGER_NAMES`]: managers that ship with, or
+/// are the platform's own way of getting, software on Windows, and so can
+/// mediate a bootstrap there.
+///
+/// Held apart because the PREREQUISITE half of the question is not yet answered
+/// for them: [`SYSTEM_INSTALLABLE_TOOLS`] spells what cfgd's prerequisite tools
+/// are called on the Unix families only, and `winget install --id curl` resolves
+/// nothing. Both prerequisite questions exclude this list together through
+/// [`installs_prerequisites`], so neither side can promise a provisioning the
+/// other cannot schedule.
+pub const WINDOWS_MANAGER_NAMES: &[&str] = &["winget", "chocolatey", "scoop"];
 
 /// Whether a registered manager name is one of [`SYSTEM_MANAGER_NAMES`].
 pub fn is_system_manager(name: &str) -> bool {
     SYSTEM_MANAGER_NAMES.contains(&name)
+}
+
+/// Whether a system manager can install one of [`SYSTEM_INSTALLABLE_TOOLS`]:
+/// every member of [`SYSTEM_MANAGER_NAMES`] but the Windows three, whose package
+/// names for those tools nothing spells yet.
+pub fn installs_prerequisites(name: &str) -> bool {
+    is_system_manager(name) && !WINDOWS_MANAGER_NAMES.contains(&name)
 }
 
 // --- SystemConfigurator trait ---
