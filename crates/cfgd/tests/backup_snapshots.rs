@@ -881,7 +881,7 @@ fn backup_rollback_lists_only_the_units_that_have_a_copy() {
     let mut yaml = std::fs::read_to_string(&profile).unwrap();
     yaml.push_str(&format!(
         "    - name: other\n      source: {}\n      retention: 3\n",
-        untouched.display()
+        cfgd_core::to_posix_string(&untouched)
     ));
     std::fs::write(&profile, yaml).unwrap();
 

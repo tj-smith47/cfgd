@@ -95,7 +95,7 @@ fn write_config(dir: &Path, with_gpg_check: bool, tampered_file: bool) {
         std::fs::write(&target, "tampered\n").unwrap();
         spec.push_str(&format!(
             "  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
-            target.display()
+            cfgd_core::to_posix_string(&target)
         ));
     }
     let profile = format!(

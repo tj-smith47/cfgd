@@ -213,7 +213,7 @@ fn plan_json_exposes_action_target_paths() {
         .expect("file action exposes a targets array");
     assert_eq!(
         targets,
-        &vec![serde_json::json!(target.display().to_string())],
+        &vec![serde_json::json!(cfgd_core::to_posix_string(&target))],
         "structured targets must equal the managed file's absolute destination"
     );
 }

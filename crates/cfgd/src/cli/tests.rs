@@ -14227,6 +14227,7 @@ fn cmd_apply_phase_post_scripts_catches_module_post_scripts() {
     let (config_dir, state_dir) = setup_test_env();
     let marker = config_dir.path().join("post_script_marker");
 
+    // native-ok: the hook body is a command this host's own shell runs.
     create_module_in_dir(
         config_dir.path(),
         "nvim",
@@ -19180,7 +19181,7 @@ spec:
       target: {}
       strategy: Copy
 "#,
-            target.display()
+            cfgd_core::to_posix_string(&target)
         ),
     );
     std::fs::write(
@@ -35795,16 +35796,52 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     );
 }
 
-/// Whether a line opens a cfgd document a fixture plants on disk: a template
-/// carrying a line break and one of the four keys every such document spells.
+/// Whether a line opens a cfgd document a fixture plants on disk: a line
+/// naming one of the keys such a document spells, written either as an escaped
+/// template or as the first line of a raw literal.
+///
+/// The two nested keys are listed because a fixture often assembles its
+/// document from fragments, and the fragment carrying the path names no
+/// top-level key of its own.
 ///
 /// Kept beside the walk below rather than inside it so the fixture test can ask
 /// the same question of a line it spells itself.
 fn opens_a_cfgd_document(line: &str) -> bool {
-    line.contains("\\n")
-        && ["apiVersion:", "kind:", "metadata:", "spec:"]
-            .iter()
-            .any(|key| line.contains(key))
+    [
+        "apiVersion:",
+        "kind:",
+        "metadata:",
+        "spec:",
+        "target:",
+        "source:",
+    ]
+    .iter()
+    .any(|key| line.contains(key))
+        && (line.contains("\\n") || line.contains("r#\""))
+}
+
+/// The identifier a `let` line binds, for a fixture that renders its path into
+/// a variable the document below it interpolates by name.
+fn binds_a_path_variable(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("let ")?;
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+    let name = rest.split([':', ' ', '=']).next()?;
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    plain.then_some(name)
+}
+
+/// Whether one of a statement's lines hands that identifier over as an
+/// argument, which is the only way a document reads a value bound above it: a
+/// key the document merely spells in its own text (`name: nvim`) carries no
+/// value from the fixture.
+fn passes_identifier(statement: &str, name: &str) -> bool {
+    statement.lines().any(|line| {
+        let arg = line.trim().trim_start_matches('&').trim_end_matches(',');
+        arg == name || arg.strip_suffix(".clone()") == Some(name)
+    })
 }
 
 /// Every native path render a test region interpolates into one of those
@@ -35827,29 +35864,49 @@ fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, us
         // rarely opens, so the hatch is read from the line above the first line
         // of the statement holding it.
         let mut opened = n;
-        while opened > 0
-            && n - opened < 6
-            && !lines[opened - 1].trim_end().ends_with([';', '{', '}'])
-        {
+        while opened > 0 && n - opened < 14 && !lines[opened - 1].trim_end().ends_with([';', '{']) {
             opened -= 1;
         }
         let hatch_from = opened.saturating_sub(1);
+        let mut judged: Vec<usize> = Vec::new();
         let mut depth = 0i32;
         for (i, text) in lines[n..].iter().enumerate() {
             depth += text.matches(['(', '[', '{']).count() as i32;
             depth -= text.matches([')', ']', '}']).count() as i32;
+            judged.push(n + i);
+            if depth <= 0 && text.trim_end().ends_with([';', '?', ')']) {
+                break;
+            }
+        }
+        // A render is often bound to a variable a line or two above the
+        // document and interpolated by name, which is the same offence one
+        // statement further out. Only an interpolating document can read such a
+        // binding, so a literal holding the identifier as part of its own text
+        // is left alone.
+        let last = judged.last().copied().unwrap_or(n);
+        let statement = lines[opened..=last].join("\n");
+        let above = opened.saturating_sub(20);
+        if statement.contains("format!") {
+            for (j, line) in lines[above..opened].iter().enumerate() {
+                if NATIVE.iter().any(|f| line.contains(f))
+                    && binds_a_path_variable(line)
+                        .is_some_and(|name| passes_identifier(&statement, name))
+                {
+                    judged.push(above + j);
+                }
+            }
+        }
+        for j in judged {
+            let text = lines[j];
             if FOLDED.iter().any(|f| text.contains(f)) {
                 folded += 1;
             } else if NATIVE.iter().any(|f| text.contains(f)) {
-                let hatched = lines[hatch_from..=n + i]
+                let hatched = lines[hatch_from.min(j.saturating_sub(1))..=j.max(n)]
                     .iter()
                     .any(|l| l.contains(NATIVE_HATCH));
                 if !hatched {
-                    offenders.push((n + i, (*text).to_string()));
+                    offenders.push((j, text.to_string()));
                 }
-            }
-            if depth <= 0 && text.trim_end().ends_with([';', '?', ')']) {
-                break;
             }
         }
     }
@@ -35966,6 +36023,51 @@ fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
     assert!(
         native_paths_in_declared_documents(&elsewhere).0.is_empty(),
         "a native render outside a planted document is not this walk's business"
+    );
+
+    // A fragment naming only nested keys is the same document one statement out.
+    let fragment = format!(
+        "    spec.push_str(&format!(\n        \"  files:\\n    managed:\\n      \
+         - source: files/a.txt\\n        target: {{}}\\n\",\n        target{native},\n    ));"
+    );
+    assert_eq!(
+        native_paths_in_declared_documents(&fragment).0.len(),
+        1,
+        "a fragment carrying only nested keys is a document too"
+    );
+
+    // A raw literal spells its document over real lines, so its keys and the
+    // render each sit on a line of their own.
+    let raw = format!(
+        "    let body = format!(\n        r#\"apiVersion: cfgd.io/v1alpha1\nkind: \
+         Module\nspec:\n  files:\n    - target: {{}}\n\"#,\n        target{native},\n    );"
+    );
+    assert_eq!(
+        native_paths_in_declared_documents(&raw).0.len(),
+        1,
+        "a raw document literal is read like a template"
+    );
+
+    let bound = format!(
+        "    let target_str = target{native}.to_string();\n    let body = format!(\n        \
+         \"apiVersion: cfgd.io/v1alpha1\\nkind: Module\\nspec:\\n  files:\\n    \
+         - target: {{}}\\n\",\n        target_str,\n    );"
+    );
+    assert_eq!(
+        native_paths_in_declared_documents(&bound).0.len(),
+        1,
+        "a binding the document interpolates is judged with the document"
+    );
+
+    let coincidence = format!(
+        "    let name = path{native}.to_string();\n    let body = format!(\n        \
+         \"apiVersion: cfgd.io/v1alpha1\\nkind: Module\\nmetadata:\\n  name: nvim\\n\",\n    );"
+    );
+    assert!(
+        native_paths_in_declared_documents(&coincidence)
+            .0
+            .is_empty(),
+        "a key the document spells is not a value it reads"
     );
 }
 

@@ -2698,7 +2698,7 @@ fn backup_run_all_clean_exits_0() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: clean\n      source: {}\n      retention: 3\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2724,7 +2724,7 @@ fn backup_run_dirty_success_exits_nonzero() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: dirty\n      source: {}\n      retention: 3\n      postBackup:\n        - \"exit 1\"\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2754,7 +2754,7 @@ fn backup_run_failed_unit_exits_nonzero() {
     let missing_source = dir.path().join("does-not-exist.txt");
     let backups_yaml = format!(
         "    - name: broken\n      source: {}\n      retention: 3\n",
-        missing_source.display()
+        cfgd_core::to_posix_string(&missing_source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2784,7 +2784,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: clean\n      source: {}\n      retention: 3\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 

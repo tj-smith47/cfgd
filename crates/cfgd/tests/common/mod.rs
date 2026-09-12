@@ -769,7 +769,7 @@ pub fn rollback_state_with_created_files_setup()
         .collect();
     for (index, path) in created.iter().enumerate() {
         state
-            .store_absent_backup(apply_id_2, &path.display().to_string())
+            .store_absent_backup(apply_id_2, &cfgd_core::to_posix_fs_key(path))
             .unwrap();
         let jid = state
             .journal_begin(
@@ -777,7 +777,7 @@ pub fn rollback_state_with_created_files_setup()
                 index,
                 "files",
                 "file",
-                &format!("file:create:{}", path.display()),
+                &format!("file:create:{}", cfgd_core::to_posix_string(path)),
                 None,
             )
             .unwrap();
@@ -800,7 +800,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let state_dir = tempfile::tempdir().unwrap();
 
     let target = workspace.path().join("config.txt");
-    let file_path = target.display().to_string();
+    let file_path = cfgd_core::to_posix_fs_key(&target);
 
     std::fs::create_dir_all(state_dir.path()).unwrap();
     let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
@@ -809,7 +809,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let apply_id_1 = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)
         .unwrap();
-    let resource_id_1 = format!("file:create:{}", target.display());
+    let resource_id_1 = format!("file:create:{}", cfgd_core::to_posix_string(&target));
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id_1, None)
         .unwrap();
@@ -821,7 +821,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let apply_id_2 = state
         .record_apply("test", "hash2", ApplyStatus::Success, None)
         .unwrap();
-    let resource_id_2 = format!("file:update:{}", target.display());
+    let resource_id_2 = format!("file:update:{}", cfgd_core::to_posix_string(&target));
     state
         .store_file_backup(apply_id_2, &file_path, &file_state)
         .unwrap();
