@@ -4758,6 +4758,99 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     );
 }
 
+/// The words that make a substituted value a PATH, so a capture's unstable
+/// spans that are not paths (a mock registry's URL, a digest, a platform
+/// triple) stay outside the rule.
+const SUBSTITUTED_PATH_WORDS: [&str; 7] = [
+    "path",
+    "dir",
+    "home",
+    "root",
+    "display()",
+    "to_str()",
+    "to_string_lossy()",
+];
+
+/// The positive population: what the walk requires to still be reading tests
+/// that substitute a path at all. `>=`, so a new snapshot test never trips it
+/// and a wholesale loss of the helper does.
+const NORMALIZER_CALL_FLOOR: usize = 50;
+
+/// Every path a test substitutes for a label is substituted through
+/// [`crate::normalize_for_snapshot`].
+///
+/// A display slot folds the home directory, so a report renders `~/…` wherever
+/// its subject lies under the home — which on Windows every
+/// `tempfile::tempdir()` does. A hand-written `.replace(<absolute path>,
+/// "<DIR>")` then matches nothing: the capture keeps the folded path, the golden
+/// keeps the label, and the test fails on that platform alone, which is how
+/// three `module keys` goldens and one `doctor` row expectation came to disagree
+/// with Windows. The helper substitutes BOTH spellings of every path handed to
+/// it, so no verdict turns on where the host puts its temp directory.
+///
+/// Judged on the pair: a `.replace(` whose first argument names a path and whose
+/// second is an angle-bracketed label. The region is the test one — a file under
+/// a `tests/` directory whole, every other from its first `#[cfg(test)]` on —
+/// because a production fold substitutes a path for a marker too, and
+/// `fold_home_in_text` is the one this rule is named after.
+///
+/// `// hand-substitution-ok: <why>` hatches a substitution the helper cannot
+/// perform.
+#[test]
+fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
+    let mut normalized = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        let name = posix.rsplit('/').next().unwrap_or(&posix);
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        let from = if name.starts_with("test") || posix.contains("/tests/") {
+            Some(0)
+        } else {
+            lines.iter().position(|l| opens_a_test_region(l))
+        };
+        let Some(from) = from else { continue };
+        for (idx, line) in lines.iter().enumerate().skip(from) {
+            // The code half of the line: a comment naming either spelling is
+            // prose, and this file's own doc comment names both.
+            let ends = blank_string_literals(line).find("//").unwrap_or(line.len());
+            let code = &line[..ends];
+            normalized += code.matches("normalize_for_snapshot(").count();
+            for call in code.split(".replace(").skip(1) {
+                let Some((subject, label)) = call.split_once(',') else {
+                    continue;
+                };
+                let names_a_path = SUBSTITUTED_PATH_WORDS
+                    .iter()
+                    .any(|word| subject.contains(word));
+                if !names_a_path || !label.contains("\"<") {
+                    continue;
+                }
+                if hatched(&lines, idx, "hand-substitution-ok:") {
+                    continue;
+                }
+                offenders.push(format!("{posix}:{}: {}", idx + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        normalized >= NORMALIZER_CALL_FLOOR,
+        "the walk read {normalized} calls to the normalizer, under its floor of \
+         {NORMALIZER_CALL_FLOOR} — it has stopped reading the tests that \
+         substitute a path"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a path substituted by hand misses the `~/`-folded spelling a display \
+         slot renders, so the expectation holds only where the temp directory \
+         lies outside the home; substitute through \
+         `cfgd_core::normalize_for_snapshot(captured, &[(path, \"<LABEL>\")])`, \
+         or say why it cannot with `// hand-substitution-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The pins whose body runs at one uid only, per suffix: floor = what the
 /// workspace holds today, `>=` so an addition never trips it and a member
 /// falling out of the walk's reach does.
