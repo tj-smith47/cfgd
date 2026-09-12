@@ -212,16 +212,15 @@ pub fn cmd_module_keys_rotate(
                 old_key.posix(),
                 e
             ));
+            // The two display slots fold the home directory; the recorded
+            // failure above keeps the absolute path for `-o json`.
+            let shown = cfgd_core::fold_home_in_text(&backup_key.display_posix());
             printer
                 .status(
                     Role::Fail,
-                    format!(
-                        "Failed to restore private key from {}: {}",
-                        backup_key.posix(),
-                        e
-                    ),
+                    format!("Failed to restore private key from {shown}: {e}"),
                 )
-                .detail(format!("backup remains at {}", backup_key.posix()));
+                .detail(format!("backup remains at {shown}"));
         }
         if backup_pub.exists()
             && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
@@ -233,16 +232,15 @@ pub fn cmd_module_keys_rotate(
                 old_pub.posix(),
                 e
             ));
+            // The two display slots fold the home directory; the recorded
+            // failure above keeps the absolute path for `-o json`.
+            let shown = cfgd_core::fold_home_in_text(&backup_pub.display_posix());
             printer
                 .status(
                     Role::Fail,
-                    format!(
-                        "Failed to restore public key from {}: {}",
-                        backup_pub.posix(),
-                        e
-                    ),
+                    format!("Failed to restore public key from {shown}: {e}"),
                 )
-                .detail(format!("backup remains at {}", backup_pub.posix()));
+                .detail(format!("backup remains at {shown}"));
         }
 
         let (bail_msg, json_extra) = if restore_failures.is_empty() {
@@ -258,7 +256,8 @@ pub fn cmd_module_keys_rotate(
             (
                 format!(
                     "key restore FAILED — keys are at {} and {}; manually restore. cosign generate-key-pair failed",
-                    backups[0], backups[1]
+                    cfgd_core::fold_home_in_text(&backups[0]),
+                    cfgd_core::fold_home_in_text(&backups[1])
                 ),
                 serde_json::json!({
                     "dir": key_dir,
