@@ -218,6 +218,7 @@ pub fn cmd_diff(
             // Target order, as `fm.diff` sorted: two runs finding the same
             // drift read the same, whatever the declaration order was.
             for managed in crate::files::CfgdFileManager::sorted_managed_specs(&resolved.merged) {
+                // absolute-path-ok: the recorded drift row id, matched against stored rows
                 let rid = cfgd_core::expand_tilde(&managed.target).display_posix();
                 if !drifted_ids.contains(rid.as_str()) {
                     continue;

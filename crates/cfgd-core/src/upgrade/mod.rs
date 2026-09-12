@@ -655,6 +655,7 @@ fn download_to_file(
 
     tmp.persist(dest)
         .map_err(|e| UpgradeError::DownloadFailed {
+            // absolute-path-ok: a human-facing error names the file as the filesystem does
             message: format!("rename to {}: {}", dest.posix(), e.error),
         })?;
 

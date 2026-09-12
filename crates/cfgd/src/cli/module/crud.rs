@@ -808,6 +808,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             .into(),
             name,
             "not_found",
+            // absolute-path-ok: a human-facing error names the file as the filesystem does
             format!("Module '{}' not found at {}", name, module_yaml.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_yaml) }),
         ));
@@ -898,6 +899,7 @@ pub fn cmd_module_delete(
             .into(),
             name,
             "not_found",
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             format!("Module '{}' not found at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));

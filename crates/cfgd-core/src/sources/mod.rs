@@ -826,6 +826,7 @@ impl SourceManager {
         );
         cmd.args([
             "-C",
+            // absolute-path-ok: git argv, not a display slot
             &source_dir.display().to_string(),
             "fetch",
             "origin",
@@ -924,6 +925,7 @@ impl SourceManager {
             &spec.origin.branch,
             "--end-of-options",
             &spec.origin.url,
+            // absolute-path-ok: the clone destination in git argv, not a display slot
             &source_dir.display().to_string(),
         ]);
 
@@ -2087,6 +2089,7 @@ pub fn git_clone_with_fallback(
             return Err(format!(
                 // native-ok: human-facing error message
                 "Cannot inspect clone destination {}: {e}",
+                // absolute-path-ok: a human-facing error names the directory as the filesystem does
                 target.display()
             ));
         }
@@ -2095,12 +2098,14 @@ pub fn git_clone_with_fallback(
         return Err(format!(
             // native-ok: human-facing error message
             "Refusing to clone {url} into {}: directory is not empty",
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             target.display()
         ));
     }
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
+    // absolute-path-ok: the clone destination in git argv, not a display slot
     let target_arg = target.display().to_string();
     let mut args = vec!["clone"];
     // Depth is a transfer-size guard for remotes, the same split the libgit2

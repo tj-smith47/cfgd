@@ -427,6 +427,7 @@ pub fn cmd_backup_list(
                     });
             BackupListEntry {
                 name: spec.name.clone(),
+                // absolute-path-ok: the serialized listing field; the table cell folds its own copy
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
                 schedule_owner: spec.schedule_owner.label().to_string(),

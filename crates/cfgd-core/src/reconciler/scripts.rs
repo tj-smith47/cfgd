@@ -210,6 +210,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
     let mut env = vec![
         (
             "CFGD_CONFIG_DIR".to_string(),
+            // absolute-path-ok: an env var the script itself reads, not a display slot
             ctx.config_dir.display().to_string(),
         ),
         ("CFGD_PROFILE".to_string(), ctx.profile_name.to_string()),
@@ -229,6 +230,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
     }
     if let Some(dir) = ctx.module_dir {
+        // absolute-path-ok: an env var the script itself reads, not a display slot
         env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
     }
     prepend_bootstrapped_path_dirs(&mut env, ctx.path_dirs);
@@ -766,6 +768,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                     ),
                 }));
@@ -786,6 +789,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "script '{}' exists but is not executable ({})",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,
                     ),
@@ -1057,18 +1061,21 @@ fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()
                 "script '{}' cannot run: working directory is not a directory ({}): {}",
                 run_str,
                 kind,
+                // absolute-path-ok: a human-facing error names the directory as the filesystem does
                 working_dir.posix()
             )))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(invalid(format!(
             "script '{}' cannot run: working directory does not exist: {}",
             run_str,
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             working_dir.posix()
         ))),
         Err(e) => Err(invalid(format!(
             "script '{}' cannot run: working directory inaccessible ({}): {}",
             run_str,
             e,
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             working_dir.posix()
         ))),
     }
@@ -1152,6 +1159,7 @@ pub(crate) fn run_filter_script(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "patch script '{}' exists but is not executable ({})",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,
                     ),
@@ -1300,6 +1308,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "shopt -s expand_aliases; source \"{}\" 2>/dev/null; {}",
+                    // absolute-path-ok: the shell command the child runs, not a display slot
                     p.display(),
                     run_str,
                 ),
@@ -1313,6 +1322,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "setopt aliases; source \"{}\" 2>/dev/null; {}",
+                    // absolute-path-ok: the shell command the child runs, not a display slot
                     p.display(),
                     run_str,
                 ),
