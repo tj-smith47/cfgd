@@ -3,7 +3,7 @@ use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::test_helpers::{rust_sources_under, walked_file_body};
+use cfgd_core::test_helpers::{blank_string_literals, rust_sources_under, walked_file_body};
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -34977,33 +34977,6 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
          `.module-cache` fallback (or carries `// {HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
-}
-
-/// Strip `"…"` string-literal bodies to spaces, so an identifier scan never
-/// mistakes a quoted key (`"restoreErrors"`) for a variable reference; a `\`
-/// inside a literal consumes the char it escapes rather than closing early.
-fn blank_string_literals(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_str = false;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(' ');
-            if c == '\\' {
-                if chars.next().is_some() {
-                    out.push(' ');
-                }
-            } else if c == '"' {
-                in_str = false;
-            }
-        } else if c == '"' {
-            in_str = true;
-            out.push(' ');
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Every identifier-shaped token in `text`, quoted literals blanked first.

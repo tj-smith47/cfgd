@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
-    KNOWN_GOLDEN_ROOTS, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
-    snapshot_root_files, walked_file_body, workspace_root,
+    KNOWN_GOLDEN_ROOTS, blank_string_literals, rust_sources_under, snapshot_golden_roots,
+    snapshot_goldens, snapshot_root_files, walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
@@ -396,92 +396,6 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
             "the fence must not flag this: {allowed:?}"
         );
     }
-}
-
-/// Blank the bodies of string and char literals on one line, byte-for-byte
-/// (each literal-interior byte becomes a space, quotes stay), so byte
-/// positions found on the blanked line index the raw line exactly. Handles
-/// `"…"` with escapes, `r"…"`/`r#"…"#` raw strings, and char literals —
-/// discriminated from lifetimes by closing-quote proximity, the same test
-/// `audit.sh`'s `strip_strings` uses. Line-scoped by construction: a literal
-/// that spans lines has only its first line blanked, and its interior lines
-/// are read as code — the same bound every fence in this file already lives
-/// with.
-fn blank_string_literals(line: &str) -> String {
-    let bytes = line.as_bytes();
-    let mut out = bytes.to_vec();
-    let is_ident = |b: u8| b == b'_' || b.is_ascii_alphanumeric();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j] != b'"' {
-                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
-                        out[j] = b' ';
-                        out[j + 1] = b' ';
-                        j += 2;
-                    } else {
-                        out[j] = b' ';
-                        j += 1;
-                    }
-                }
-                i = j + 1;
-            }
-            b'r' if i == 0 || !is_ident(bytes[i - 1]) => {
-                let mut hashes = 0;
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j] == b'#' {
-                    hashes += 1;
-                    j += 1;
-                }
-                if j < bytes.len() && bytes[j] == b'"' {
-                    let mut k = j + 1;
-                    while k < bytes.len() {
-                        if bytes[k] == b'"'
-                            && bytes[k + 1..].len() >= hashes
-                            && bytes[k + 1..k + 1 + hashes].iter().all(|&b| b == b'#')
-                        {
-                            break;
-                        }
-                        out[k] = b' ';
-                        k += 1;
-                    }
-                    i = (k + 1 + hashes).min(bytes.len());
-                } else {
-                    i += 1;
-                }
-            }
-            b'\'' => {
-                // A char literal's body is one escape or exactly one char —
-                // a single ASCII byte, or 2-4 non-ASCII bytes — and a
-                // lifetime never closes. Requiring that shape (not mere
-                // closing-quote proximity) keeps `<'a>('x')` from blanking
-                // the paren between two quotes. Escapes scan a bounded
-                // window so `'\u{2764}'` still blanks.
-                let close = if bytes.get(i + 1) == Some(&b'\\') {
-                    (i + 3..bytes.len().min(i + 13)).find(|&k| bytes[k] == b'\'')
-                } else {
-                    (i + 2..bytes.len().min(i + 6))
-                        .find(|&k| bytes[k] == b'\'')
-                        .filter(|&k| k == i + 2 || bytes[i + 1..k].iter().all(|&b| b >= 0x80))
-                };
-                match close {
-                    Some(k) => {
-                        for b in &mut out[i + 1..k] {
-                            *b = b' ';
-                        }
-                        i = k + 1;
-                    }
-                    None => i += 1,
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    // Every replaced byte is ASCII space and quote/escape bytes are ASCII, so
-    // the buffer is valid UTF-8 by construction.
-    String::from_utf8(out).unwrap_or_else(|_| line.to_string())
 }
 
 /// The code half of a line: what is left once its comments are gone, judged
