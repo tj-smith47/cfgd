@@ -35842,6 +35842,54 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     );
 }
 
+/// `doctor`'s `-o json` payload keeps the absolute path its own rows fold.
+///
+/// Three of its payload fields carry an `// absolute-path-ok:` reason saying the
+/// rows rendering them fold their own copy. Nothing held the other half of that
+/// claim: a fold applied at the field instead of at the row would have left
+/// every human line reading exactly as it does today, and handed the consumer a
+/// path it cannot open.
+#[test]
+fn the_doctor_payload_spells_the_home_directory_absolutely() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let config_path = home.path().join(".config/cfgd/cfgd.yaml");
+    std::fs::create_dir_all(config_path.parent().expect("the config has a parent"))
+        .expect("create the config directory under home");
+    std::fs::write(&config_path, TEST_CONFIG_YAML).expect("plant a config under home");
+
+    let cli = Cli {
+        config: config_path.clone(),
+        config_explicit: true,
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        ..test_cli_with_state(home.path(), Some(home.path().join("state")))
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    super::doctor::run_doctor(&cli, &printer).expect("doctor runs against a config under home");
+    printer.flush();
+
+    let payload = cfgd_core::test_helpers::captured_text(&buf);
+    let parsed = extract_json(&payload);
+    let posix = cfgd_core::to_posix_string(&config_path);
+    // The premise the claim rests on: this path is one a display slot folds, so
+    // the absolute spelling is a decision rather than the only form it has.
+    assert_ne!(
+        cfgd_core::fold_home_in_text(&posix),
+        posix,
+        "the fixture must put the config under the home it folds against"
+    );
+    assert_eq!(
+        parsed["config"]["path"],
+        serde_json::json!(posix),
+        "the payload names the config by the path a consumer can open:\n{payload}"
+    );
+    assert!(
+        !payload.contains("~/"),
+        "no payload field spells a path under home as `~/`:\n{payload}"
+    );
+}
+
 /// The first unmatched `{` above `from`, which opens the block that line sits
 /// in.
 ///
