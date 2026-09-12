@@ -220,9 +220,9 @@ pub fn cmd_module_keys_rotate(
         {
             restore_failures.push(format!(
                 "{} {} {}: {}",
-                backup_key.posix(),
+                backup_key.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 ICON_ARROW,
-                old_key.posix(),
+                old_key.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 e
             ));
             // The two display slots fold the home directory; the recorded
@@ -240,9 +240,9 @@ pub fn cmd_module_keys_rotate(
         {
             restore_failures.push(format!(
                 "{} {} {}: {}",
-                backup_pub.posix(),
+                backup_pub.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 ICON_ARROW,
-                old_pub.posix(),
+                old_pub.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 e
             ));
             // The two display slots fold the home directory; the recorded
@@ -296,6 +296,7 @@ pub fn cmd_module_keys_rotate(
     let mut resigned: Vec<String> = Vec::new();
     for artifact in artifacts {
         let sp = printer.spinner(format!("Re-signing {artifact}"));
+        // absolute-path-ok: cosign opens the key, so it is handed the real path
         match cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string())) {
             Ok(()) => {
                 sp.finish_ok(format!("Re-signed {artifact}"));

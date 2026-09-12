@@ -62,14 +62,17 @@ pub fn maybe_migrate_macos_config(
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let (legacy, native) = cfgd_core::macos_legacy_config_migration(&home)?;
 
-    let move_opt = format!("Move it to {}", native.posix());
+    let move_opt = format!(
+        "Move it to {}",
+        cfgd_core::fold_home_in_text(&native.display_posix())
+    );
     let keep_opt = "Keep it at ~/.config (set XDG_CONFIG_HOME in your shell config)".to_string();
     let options = vec![move_opt.clone(), keep_opt];
     let message = format!(
         "Your cfgd config is at {}, but the native macOS location is now {}. \
          How would you like to proceed?",
-        legacy.posix(),
-        native.posix(),
+        cfgd_core::fold_home_in_text(&legacy.display_posix()),
+        cfgd_core::fold_home_in_text(&native.display_posix()),
     );
 
     // `prompt_select` self-rejects non-TTY / structured output; treat any such
@@ -741,7 +744,12 @@ mod tests {
         // The success line reads as a full sentence ending in the new state path,
         // not merely a substring — the human-facing status shape is load-bearing.
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        let expected = format!("Migrated state database to {}", new_state.posix());
+        // The slot folds the home directory, and a Windows temp dir lies under
+        // the home, so an unfolded expectation matches nothing there.
+        let expected = format!(
+            "Migrated state database to {}",
+            cfgd_core::fold_home_in_text(&new_state.display_posix())
+        );
         let matched = out.lines().any(|l| l.trim_end().ends_with(&expected));
         assert!(
             matched,

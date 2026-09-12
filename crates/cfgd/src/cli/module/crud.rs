@@ -239,7 +239,10 @@ pub fn cmd_module_create(
 
     // The heading above already names the module; a section respelling it
     // makes the reader check whether two subjects are in play.
-    let summary_sec = printer.section(format!("Created at {}", module_dir.posix()));
+    let summary_sec = printer.section(format!(
+        "Created at {}",
+        cfgd_core::fold_home_in_text(&module_dir.display_posix())
+    ));
     if !doc.spec.packages.is_empty() {
         summary_sec.kv(
             "Packages",

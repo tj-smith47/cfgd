@@ -103,7 +103,10 @@ pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str
                 .managed
                 .iter()
                 .map(|file: &ManagedFileSpec| {
-                    KvPair::new(&file.source, file.target.display_posix().to_string())
+                    KvPair::new(
+                        &file.source,
+                        cfgd_core::fold_home_in_text(&file.target.display_posix()),
+                    )
                 })
                 .collect(),
         ),
@@ -125,9 +128,13 @@ pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str
                 .map(|secret: &SecretSpec| {
                     let value = match (&secret.target, &secret.envs) {
                         (Some(t), Some(envs)) => {
-                            format!("{} (envs: {})", t.posix(), envs.join(", "))
+                            format!(
+                                "{} (envs: {})",
+                                cfgd_core::fold_home_in_text(&t.display_posix()),
+                                envs.join(", ")
+                            )
                         }
-                        (Some(t), None) => t.display_posix().to_string(),
+                        (Some(t), None) => cfgd_core::fold_home_in_text(&t.display_posix()),
                         (None, Some(envs)) => format!("envs: {}", envs.join(", ")),
                         (None, None) => "(invalid)".to_string(),
                     };

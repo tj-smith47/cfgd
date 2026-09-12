@@ -586,6 +586,7 @@ pub fn run_backup_restore(
     // The declared path as `backup list`'s Source column spells it: the run
     // header states what the unit READS, the action row what the restore
     // WRITES, so a `--to` or a followed link shows as the two disagreeing.
+    // absolute-path-ok: the run header folds its own Source row.
     let unit_source = spec.source.posix().to_string();
     let profile_inherits = local_resolved.inherits_chain();
     let run_ctx = cfgd_core::reconciler::RunContext {
@@ -820,6 +821,7 @@ pub fn run_backup_rollback(
     let copy = cfgd_core::backup::rollback_copy(&unit)
         .ok_or_else(|| no_rollback_copy_error(name, &unit.source()))?;
 
+    // absolute-path-ok: the run header folds its own Source row.
     let unit_source = spec.source.posix().to_string();
     let profile_inherits = local_resolved.inherits_chain();
     let run_ctx = cfgd_core::reconciler::RunContext {
@@ -1021,6 +1023,7 @@ pub fn run_backup_run(
     // (`Backup: docs` / `Source …`); a run over every declared unit names them
     // in its owner groups and has no one source to state.
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    // absolute-path-ok: the run header folds its own Source row.
     let unit_source = named.map(|spec| spec.source.posix().to_string());
     // `run_ctx`, not a second `ctx`: `cli::RunContext` (bound above) and
     // `reconciler::RunContext` are both in scope in this module, and one name
@@ -1110,6 +1113,7 @@ pub fn run_backup_gc(
     let actions = scan.action_count();
 
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    // absolute-path-ok: the run header folds its own Source row.
     let unit_source = named.map(|spec| spec.source.posix().to_string());
     let profile_inherits = local_resolved.inherits_chain();
     let run_ctx = cfgd_core::reconciler::RunContext {

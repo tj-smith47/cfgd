@@ -186,15 +186,17 @@ pub(super) fn export_devcontainer(
     let feature_path = feature_dir.join("devcontainer-feature.json");
     cfgd_core::atomic_write_str(&feature_path, &feature_json)?;
 
+    // absolute-path-ok: an `-o json` field below, and the bullet folds its own copy
     let install_path_str = install_path.display_posix();
+    // absolute-path-ok: an `-o json` field below, and the bullet folds its own copy
     let feature_path_str = feature_path.display_posix();
     let out_sec = printer.section(format!(
         "Exported module '{}' as DevContainer Feature to {}",
         name,
-        feature_dir.posix()
+        cfgd_core::fold_home_in_text(&feature_dir.display_posix())
     ));
-    out_sec.bullet(install_path_str.clone());
-    out_sec.bullet(feature_path_str.clone());
+    out_sec.bullet(cfgd_core::fold_home_in_text(&install_path_str));
+    out_sec.bullet(cfgd_core::fold_home_in_text(&feature_path_str));
     drop(out_sec);
 
     printer.emit(

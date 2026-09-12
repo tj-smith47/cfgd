@@ -850,7 +850,7 @@ pub(in crate::cli) fn display_plan_preview(
                         std::fs::read_to_string(source).unwrap_or_default()
                     };
                     printer
-                        .section(target.display_posix())
+                        .section(cfgd_core::fold_home_in_text(&target.display_posix()))
                         .diff(&target_content, &source_content);
                 }
             }

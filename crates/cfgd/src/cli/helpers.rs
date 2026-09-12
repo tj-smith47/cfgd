@@ -1616,6 +1616,7 @@ pub(in crate::cli) fn sign_and_attest(
         cfgd_core::oci::attach_attestation(
             artifact,
             // native-ok: local predicate path for the co-located cosign subprocess
+            // absolute-path-ok: cosign opens the predicate, so it is handed the real path
             &pred_path.display().to_string(),
             key,
         )

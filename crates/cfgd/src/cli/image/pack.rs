@@ -96,7 +96,10 @@ pub fn cmd_image_pack(
     };
 
     let mut header = vec![
-        ("Directory".to_string(), dir.posix().to_string()),
+        (
+            "Directory".to_string(),
+            cfgd_core::fold_home_in_text(&dir.display_posix()),
+        ),
         ("Artifact".to_string(), artifact.to_string()),
     ];
     // `Base` earns its row: nothing else in the block reports it. `Platform`

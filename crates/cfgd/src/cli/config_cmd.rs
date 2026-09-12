@@ -8,7 +8,10 @@ use cfgd_core::yes_no;
 pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
         .heading("Configuration")
-        .kv("File", config_path.display_posix())
+        .kv(
+            "File",
+            cfgd_core::fold_home_in_text(&config_path.display_posix()),
+        )
         .kv(
             "Profile",
             cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),
