@@ -61,8 +61,8 @@ impl DeclaredScript {
                 interactive: false,
             },
             ScriptEntry::Full(cmd) => {
-                // Destructured, so a seventh knob does not compile until it is
-                // carried here and given a clause in `marker`.
+                // Destructured, so a knob added to `ScriptCommand` does not
+                // compile until it is carried here.
                 let ScriptCommand {
                     run,
                     timeout,
@@ -97,11 +97,13 @@ impl DeclaredScript {
     /// Every knob `ScriptCommand` carries states itself here, because the
     /// module-upgrade screen reports a step as changed when any of them moved:
     /// a knob that stayed silent would render a removal and an addition whose
-    /// blocks read identically. [`DeclaredScript::of`] destructures
-    /// `ScriptCommand` exhaustively, so a knob added to it does not compile
-    /// until it is carried here and given a clause. A knob left at its default
-    /// renders no clause, so the line names what the author wrote and nothing
-    /// else.
+    /// blocks read identically. Two mechanisms hold that: [`DeclaredScript::of`]
+    /// destructures `ScriptCommand` exhaustively, so a knob added to it does not
+    /// compile until it is carried across, and
+    /// `a_marker_states_one_clause_for_every_knob_a_step_declares` destructures
+    /// [`DeclaredScript`] in turn, so a carried knob does not compile until it
+    /// is asserted to have a clause here. A knob left at its default renders no
+    /// clause, so the line names what the author wrote and nothing else.
     ///
     /// A command or path clause carries its bytes as the body does: escaped,
     /// because the operator approves what will run, and a home directory folded
@@ -480,6 +482,68 @@ mod tests {
         assert_eq!(
             surfaces.script_summary().as_deref(),
             Some("preApply (1 script), postApply (2 scripts)")
+        );
+    }
+
+    /// Every knob a step declares reaches the marker as one clause, in the
+    /// order the line states them.
+    ///
+    /// The destructure is the mechanism: a field carried across from
+    /// `ScriptCommand` but never given a clause in `marker` compiles perfectly
+    /// well, so a knob added to [`DeclaredScript`] without a clause and an
+    /// expectation here fails to build instead of rendering nothing.
+    #[test]
+    fn a_marker_states_one_clause_for_every_knob_a_step_declares() {
+        let step = DeclaredScript::of(&ScriptEntry::Full(ScriptCommand {
+            run: "echo hi".into(),
+            timeout: Some("900s".into()),
+            idle_timeout: Some("30s".into()),
+            continue_on_error: Some(true),
+            shell: crate::config::ScriptShell::Bash,
+            only_if: Some("test -x /usr/bin/rg".into()),
+            unless: Some("test -e /opt/app/done".into()),
+            creates: Some("/opt/app/bin".into()),
+            interactive: true,
+            workdir: Some("/opt/app".into()),
+        }));
+        let DeclaredScript {
+            body,
+            timeout,
+            idle_timeout,
+            continue_on_error,
+            shell,
+            workdir,
+            only_if,
+            unless,
+            creates,
+            interactive,
+        } = &step;
+        let declared = |knob: &Option<String>| knob.clone().expect("the fixture declares it");
+        assert!(
+            *continue_on_error && *interactive,
+            "the fixture declares both flag knobs, or their clauses go unasserted"
+        );
+        let expected = [
+            "1/3".to_string(),
+            format!("timeout {}", declared(timeout)),
+            format!("idleTimeout {}", declared(idle_timeout)),
+            "continueOnError".to_string(),
+            format!("shell {}", shell.expect("the fixture declares a shell")),
+            format!("workdir {}", declared(workdir)),
+            format!("onlyIf {}", declared(only_if)),
+            format!("unless {}", declared(unless)),
+            format!("creates {}", declared(creates)),
+            "interactive".to_string(),
+        ];
+        let marker = step.marker(1, 3);
+        assert_eq!(
+            marker,
+            expected.join(&format!(" {MARKER_SEPARATOR} ")),
+            "one clause per declared knob, position first"
+        );
+        assert!(
+            !marker.contains(body.as_str()),
+            "the body is the block under the marker, not a clause in it: {marker:?}"
         );
     }
 
