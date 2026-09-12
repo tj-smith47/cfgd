@@ -13,15 +13,14 @@ Component Health (checked 5m ago)
   ✓ profile:default  — Synced (2 packages, 1 file)
   ✓ cfgd:env         — Synced (1 env file)
   ✓ module:base      — Synced (5 packages, 3 files)
-  ✓ module:dev-tools — Synced (18 packages, 12 files, 3 scripts)
+  ✓ module:dev-tools — Synced (18 packages, 12 files)
 
 Managed Resources
-  Type     Owner             Resource                                    Source
-  ─────────────────────────────────────────────────────────────────────────────
-  file     profile:default   ~/.bashrc                                   local
-  package  profile:default   brew: bat, ripgrep                          local
-  env      cfgd:env          /home/user/.cfgd.env                        local
-  file     module:dev-tools  /home/user/.config/nvim (12 files)          local
-  package  module:dev-tools  apt: cargo, gcc, git                        local
-  package  module:dev-tools  brew: age, fd, neovim                       local
-  script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local
+  Type     Owner             Resource                            Source
+  ─────────────────────────────────────────────────────────────────────
+  file     profile:default   ~/.bashrc                           local
+  package  profile:default   brew: bat, ripgrep                  local
+  env      cfgd:env          /home/user/.cfgd.env                local
+  file     module:dev-tools  /home/user/.config/nvim (12 files)  local
+  package  module:dev-tools  apt: cargo, gcc, git                local
+  package  module:dev-tools  brew: age, fd, neovim               local

@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{
-    Doc, KvPair, Printer, Role, ScriptsForm, SectionBuilder, condense_script_label, renderer::Table,
+    Doc, KvPair, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
 };
 
 #[derive(Serialize)]
@@ -86,8 +86,13 @@ pub struct ModuleStatusEntry {
     /// second count taken off the resolved declaration.
     pub packages: usize,
     pub files: usize,
-    /// How many scripts the module's recorded `script` row stands for — the
-    /// number that row's own cell prints, and 0 for a module with no such row.
+    /// How many scripts the module's recorded `script` row stands for, and 0
+    /// for a module with no such row.
+    ///
+    /// `-o json` only. A script is declared and then run, and nothing checks
+    /// one afterwards, so no human row of this report states a fact about a
+    /// module's scripts; a consumer reading the recorded rows still gets the
+    /// tally beside them.
     pub scripts: usize,
     pub status: String,
     /// Why this host resolves the module to nothing — the reason the header's
@@ -108,7 +113,7 @@ pub struct ModuleStatusEntry {
 /// The detail the Managed Resources table renders beside one module's recorded
 /// rows: the id records WHAT was applied, and this is what the current
 /// resolution can add about it (which directory the files land in, which
-/// manager installs a package, which hooks the module declares).
+/// manager installs a package).
 ///
 /// Empty for a module the config no longer carries — the row still names what
 /// cfgd manages, with only the recorded id behind it.
@@ -116,21 +121,22 @@ pub struct ModuleStatusEntry {
 pub struct ModuleDeclared {
     /// Directory the module's declared file targets share, POSIX-folded.
     pub file_root: Option<String>,
-    /// Resolved package name to every manager the module declares it under.
+    /// Package name to every manager the module declares it under, under BOTH
+    /// spellings resolution knows it by: the canonical name the module wrote
+    /// and the resolved name its manager installs (`gcc` and apt's
+    /// `build-essential` are one package). A recorded row holds whichever
+    /// spelling the apply that wrote it had, and a row whose names this map
+    /// cannot find loses its manager prefix and renders as a bare list beside
+    /// rows spelled `apt:`, `npm:`, `pipx:`.
     ///
     /// A SET per name, because one name can be declared twice: `nvim` resolves
     /// `neovim` under the host's native manager AND under `npm`. Keyed
-    /// name-to-one-manager, the second declaration overwrote the first, and the
-    /// native row — whose names then disagreed about who installs them — lost
-    /// its manager prefix entirely and rendered a bare package list beside rows
-    /// spelled `apt:`, `npm:`, `pipx:`.
+    /// name-to-one-manager, the second declaration overwrote the first and the
+    /// native row's names then disagreed about who installs them.
     pub package_managers: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// `3 preApply, 6 postApply`, from [`cfgd_core::modules::ModuleSurfaces`] —
-    /// the same tally, and the same rendering, `cfgd status <module>` reports.
-    pub script_summary: Option<String>,
-    /// The total [`Self::script_summary`] breaks down, from the same
-    /// `ModuleSurfaces` — the headline slot's number, so the summary line and
-    /// the row it summarizes cannot count one module's hooks twice.
+    /// How many scripts the module declares, from
+    /// [`cfgd_core::modules::ModuleSurfaces`] — the `-o json` tally beside the
+    /// module's recorded `script` row, which no human row of this report reads.
     pub scripts: usize,
 }
 
@@ -142,13 +148,14 @@ impl ModuleDeclared {
             package_managers: module.packages.iter().fold(
                 std::collections::BTreeMap::new(),
                 |mut map, p| {
-                    map.entry(p.resolved_name.clone())
-                        .or_default()
-                        .insert(p.manager.clone());
+                    for name in [&p.canonical_name, &p.resolved_name] {
+                        map.entry(name.clone())
+                            .or_default()
+                            .insert(p.manager.clone());
+                    }
                     map
                 },
             ),
-            script_summary: surfaces.script_summary(),
             scripts: surfaces.script_total(),
         }
     }
@@ -1074,6 +1081,10 @@ pub struct ManagedResourceDetail {
 
 /// The Managed Resources rows, as `[Type, Owner, Resource, Method, Source]`.
 ///
+/// A row [`records_a_script`] claims is not one of them, and the Component
+/// Health counts skip the same rows, so the table and the counts above it
+/// cannot disagree about what this host manages.
+///
 /// A recorded row is a state-matching key rather than a report: a `module`
 /// row's id carries the owner and the surface inside it, and a `package` row
 /// is ONE package where a reader wants the list a manager installed. Both are
@@ -1117,6 +1128,9 @@ fn managed_resource_rows(
         std::collections::BTreeMap::new();
 
     for r in items {
+        if records_a_script(r) {
+            continue;
+        }
         if let Some((manager, package)) = package_id_parts(&r.resource_type, &r.resource_id) {
             own_packages
                 .entry((manager, r.source.as_str()))
@@ -1125,12 +1139,7 @@ fn managed_resource_rows(
             continue;
         }
         let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
-            // Same rationale as the Drift section above: condense a "script" /
-            // "Running script" resource_id only for this table cell, never the
-            // stored id itself.
-            let resource = if r.resource_type == "script" || r.resource_type == "Running script" {
-                condense_script_label(&r.resource_id)
-            } else if is_session_env_row(r) {
+            let resource = if is_session_env_row(r) {
                 session_env_resource()
             } else {
                 cfgd_core::fold_home_in_text(&r.resource_id)
@@ -1190,9 +1199,6 @@ fn managed_resource_rows(
         }
         let resource = match surface {
             "packages" => module_packages_resource(item, declared),
-            "script" => declared
-                .and_then(|d| d.script_summary.clone())
-                .unwrap_or_else(|| NO_DETAIL.to_string()),
             _ if item.is_empty() => NO_DETAIL.to_string(),
             _ => item.to_string(),
         };
@@ -1407,6 +1413,22 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
         .filter(|(module, rest)| !module.is_empty() && !rest.is_empty())
 }
 
+/// Whether a recorded row names a script a run executed rather than a resource
+/// this host manages: a module's `<name>:script` row, and the profile-level
+/// `script` / `Running script` rows an inline lifecycle step writes.
+///
+/// A script is declared and then run, and no check ever looks at it again, so
+/// there is no status to state about one. Both walks that read recorded rows
+/// ask this — the Managed Resources table and the Component Health counts that
+/// must agree with it — and `-o json` still carries every row raw.
+fn records_a_script(r: &cfgd_core::state::ManagedResource) -> bool {
+    if r.resource_type == "script" || r.resource_type == "Running script" {
+        return true;
+    }
+    module_id_parts(&r.resource_type, &r.resource_id)
+        .is_some_and(|(_, rest)| rest.split(':').next() == Some("script"))
+}
+
 /// A module's file deployment: where the files land, and how many the apply
 /// that recorded the row declared. The count is the recorded fact; the root is
 /// what the current resolution says about it. Full paths are
@@ -1463,16 +1485,19 @@ fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -
 /// the one its row-mates agree on. Taking one manager per name instead let
 /// `neovim`, declared natively AND under npm, decide the whole native row's
 /// answer was ambiguous.
+///
+/// A name the module no longer declares is skipped rather than answered for:
+/// resolution says nothing about it, and letting it veto the row dropped the
+/// manager prefix from a row whose other fifteen names all named one.
 fn row_manager<'a>(names: &[&str], declared: Option<&'a ModuleDeclared>) -> Option<&'a str> {
     let declared = declared?;
     let mut shared: Option<std::collections::BTreeSet<&str>> = None;
     for name in names {
-        let managers: std::collections::BTreeSet<&str> = declared
-            .package_managers
-            .get(*name)?
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let Some(declared_managers) = declared.package_managers.get(*name) else {
+            continue;
+        };
+        let managers: std::collections::BTreeSet<&str> =
+            declared_managers.iter().map(String::as_str).collect();
         shared = Some(match shared {
             Some(acc) => acc.intersection(&managers).copied().collect(),
             None => managers,
@@ -1501,15 +1526,18 @@ fn module_files_count(recorded: &str) -> Option<usize> {
 }
 
 /// One module's share of the Managed Resources table: a slot per module-owned
-/// kind the Type column spells (`env` is cfgd's own, so it has none here).
+/// kind the Type column spells (`env` is cfgd's own, so it has none here),
+/// plus the script count only `-o json` reads.
 ///
 /// A named struct rather than a tuple because the headline reads every slot in
-/// order and a fourth kind reaching the table has to be given one — an unnamed
+/// order and a kind reaching the table has to be given one — an unnamed
 /// position is what let the `script` rows fall out of the summary silently.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ModuleTally {
     pub packages: usize,
     pub files: usize,
+    /// `-o json`'s `scripts`, which the table states no row for and the
+    /// headline counts no clause for.
     pub scripts: usize,
 }
 
@@ -1524,7 +1552,9 @@ pub(super) struct ModuleTally {
 /// itself.
 ///
 /// `declared` is what the table's own cells read for the same rows, so the two
-/// renderings of one row cannot name different numbers.
+/// renderings of one row cannot name different numbers. The `scripts` slot is
+/// the exception: it serves `-o json` alone, the table rendering no script row
+/// and the health clause counting no scripts.
 pub(super) fn recorded_module_tallies(
     items: &[cfgd_core::state::ManagedResource],
     declared: &std::collections::BTreeMap<String, ModuleDeclared>,
@@ -1542,8 +1572,8 @@ pub(super) fn recorded_module_tallies(
             "files" => entry.files += module_files_count(detail).unwrap_or(0),
             // Every hook a module runs collapses onto one `module:<name>:script`
             // id, so the recorded row carries no count of its own and the number
-            // is the one its table cell prints — assigned, not accumulated,
-            // because a second such row is the same row.
+            // comes from the declaration — assigned, not accumulated, because a
+            // second such row is the same row.
             "script" => entry.scripts = declared.get(module).map_or(0, |d| d.scripts),
             _ => {}
         }
@@ -1945,7 +1975,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
     let mut recorded: std::collections::BTreeMap<String, std::collections::BTreeMap<&str, usize>> =
         std::collections::BTreeMap::new();
     for r in &output.managed_resources {
-        if module_id_parts(&r.resource_type, &r.resource_id).is_some() {
+        if module_id_parts(&r.resource_type, &r.resource_id).is_some() || records_a_script(r) {
             continue;
         }
         let noun = if r.resource_type == ENV_RESOURCE_TYPE {
@@ -2062,11 +2092,9 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             let (verdict, role, counts) = match module {
                 Some(m) => {
                     let (word, role) = cfgd_core::state::module_status_display(&m.status, drift);
-                    let totals = [
-                        ("package", m.packages),
-                        ("file", m.files),
-                        ("script", m.scripts),
-                    ];
+                    // No script clause: the table below lists no script row, and
+                    // a health row counts what the table lists.
+                    let totals = [("package", m.packages), ("file", m.files)];
                     let counts = match shortfall {
                         Some(kinds) => shortfall_counts(kinds, &totals),
                         // Drifted with no countable noun (the whole-module
@@ -2148,13 +2176,13 @@ fn health_counts<'a>(kinds: impl Iterator<Item = (&'a str, usize)>) -> Option<St
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// A recorded owner's kind counts in render order: the three nouns every
+/// A recorded owner's kind counts in render order: the two nouns every
 /// module row also leads with, then anything else in the map's own
 /// alphabetical order.
 fn ordered_kind_counts<'a>(
     kinds: &'a std::collections::BTreeMap<&'a str, usize>,
 ) -> impl Iterator<Item = (&'a str, usize)> {
-    const LEAD: [&str; 3] = ["package", "file", "script"];
+    const LEAD: [&str; 2] = ["package", "file"];
     LEAD.iter()
         .filter_map(|noun| kinds.get(*noun).map(|n| (*noun, *n)))
         .chain(
@@ -2177,7 +2205,6 @@ fn display_type(kind: &str) -> &str {
     match kind {
         "file" | "files" => "file",
         "package" | "packages" => "package",
-        "script" | "Running script" => "script",
         ENV_RC_RESOURCE_TYPE => "rc",
         ENV_SESSION_RESOURCE_TYPE => "session",
         other => other,
@@ -2217,8 +2244,8 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         // `Aliases` and `Env` are the two halves of the shell surface `diff`
         // reports under `Shell` and the drift engine records as the `shell`
         // kind, so the dashboard names them the same way: a total with the
-        // halves nested under it, the shape `Scripts` already uses. Aliases
-        // lead, the order every surface naming the pair renders them in.
+        // halves nested under it. Aliases lead, the order every surface
+        // naming the pair renders them in.
         if output.env > 0 || output.aliases > 0 {
             rows.push(KvPair::new(
                 "Shell",
@@ -2230,20 +2257,6 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             if output.env > 0 {
                 rows.push(KvPair::nested("Env", output.env.to_string()));
             }
-        }
-        // A total with one row per declaring hook beneath it: a single-line
-        // summary reads as the one hook that declares most and hides the rest.
-        let hooks = output.declared.script_counts();
-        if !hooks.is_empty() {
-            rows.push(KvPair::new(
-                "Scripts",
-                output.declared.script_total().to_string(),
-            ));
-            rows.extend(
-                hooks
-                    .into_iter()
-                    .map(|(hook, count)| KvPair::nested(hook, count.to_string())),
-            );
         }
         if !output.system.is_empty() {
             rows.push(KvPair::new("System", output.system.join(", ")));
@@ -2300,10 +2313,9 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
         // would let one report state a verdict twice.
-        ModuleStatusView::Inventory {
-            show_values,
-            scripts,
-        } => render_module_inventories(doc, output, show_values, scripts),
+        ModuleStatusView::Inventory { show_values } => {
+            render_module_inventories(doc, output, show_values)
+        }
     };
 
     // Same rule as the fleet report, same staleness gate, and it belongs to
@@ -2338,22 +2350,13 @@ pub enum ModuleStatusView {
     /// Counts, then the drift the scan found (the default).
     Compact,
     /// One row per declared item, with each one's verdict inline (`-o wide`).
-    /// `show_values` renders the declared value beside a name; `scripts` is
-    /// the form the Scripts section takes.
-    Inventory {
-        show_values: bool,
-        scripts: ScriptsForm,
-    },
+    /// `show_values` renders the declared value beside a name.
+    Inventory { show_values: bool },
 }
 
 /// The wide view's inventories: one section per declared surface, each row
 /// carrying its own verdict.
-fn render_module_inventories(
-    doc: Doc,
-    output: &ModuleStatus,
-    show_values: bool,
-    scripts: ScriptsForm,
-) -> Doc {
+fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool) -> Doc {
     // A check that could not run belongs to the section whose rows it is about,
     // read through the ONE key-grammar answerer the Component Health
     // attribution asks: an env surface's own path is a finding about the Shell
@@ -2561,13 +2564,7 @@ fn render_module_inventories(
         });
     }
 
-    // Execution order, never alphabetical: the order is the fact — a
-    // `postApply` that runs after a `preApply` is the only thing the list says
-    // about when either one happens. Nothing here is ever checked (no drift
-    // engine watches a hook body), so every row is a declaration, which is
-    // also why it goes through the same composer `cfgd module show` renders:
-    // one module's scripts read the same on either report.
-    cfgd_core::modules::scripts_section(doc, &output.declared.scripts, scripts)
+    doc
 }
 
 /// Doc for the `cfgd status <module>` not-found path. Renders the module
@@ -2614,7 +2611,7 @@ pub(super) fn cmd_status(
     module_filter: Option<&str>,
     exit_code: bool,
     scan: bool,
-    detail: crate::cli::InventoryDetail,
+    show_values: bool,
 ) -> anyhow::Result<()> {
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
@@ -2623,15 +2620,11 @@ pub(super) fn cmd_status(
     let do_scan = exit_code || scan;
     let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
-        // `--show-values` and `--show-scripts` are requests to see the
-        // declared items themselves, which only the itemized view has rows for
-        // — so either implies it rather than silently doing nothing beside the
-        // counts.
-        let view = if printer.is_wide() || detail.values || detail.scripts == ScriptsForm::Full {
-            ModuleStatusView::Inventory {
-                show_values: detail.values,
-                scripts: detail.scripts,
-            }
+        // `--show-values` is a request to see the declared items themselves,
+        // which only the itemized view has rows for, so it implies that view
+        // rather than silently doing nothing beside the counts.
+        let view = if printer.is_wide() || show_values {
+            ModuleStatusView::Inventory { show_values }
         } else {
             ModuleStatusView::Compact
         };
@@ -4052,21 +4045,19 @@ mod tests {
     }
 
     /// A module row's id carries the owner and the surface; the detail the
-    /// reader wants (where files land, which manager installs, how many hooks)
-    /// lives in the resolution beside it.
+    /// reader wants (where files land, which manager installs) lives in the
+    /// resolution beside it.
     #[test]
     fn a_module_row_names_its_owner_and_reads_its_detail_from_the_resolution() {
         let declared = ModuleDeclared {
             file_root: Some("/home/u/.config/nvim".to_string()),
             package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
-            script_summary: Some("preApply (3 scripts), postApply (6 scripts)".to_string()),
             scripts: 9,
         };
         let rows = managed_resource_rows(
             &[
                 recorded("module", "nvim:files:6"),
                 recorded("module", "nvim:packages:git,gcc"),
-                recorded("module", "nvim:script"),
             ],
             &[nvim_entry(declared)],
             Some("base"),
@@ -4076,11 +4067,7 @@ mod tests {
         assert!(rows.iter().all(|r| r[1] == "module:nvim"), "{rows:?}");
         assert_eq!(
             resources,
-            vec![
-                "/home/u/.config/nvim (6 files)",
-                "apt: gcc, git",
-                "preApply (3 scripts), postApply (6 scripts)",
-            ]
+            vec!["/home/u/.config/nvim (6 files)", "apt: gcc, git"]
         );
     }
 
@@ -4102,6 +4089,55 @@ mod tests {
         assert_eq!(rows[0][2], "git, neovim");
     }
 
+    /// Every package row spells the manager the plan resolved, whichever
+    /// spelling of its names the recorded id happens to hold.
+    ///
+    /// Resolution knows one package under two names — the canonical one the
+    /// module wrote and the one its manager installs (`gcc` is apt's
+    /// `build-essential`) — so the map [`ModuleDeclared::of`] builds is keyed
+    /// under both. It was keyed under the resolved name alone, and a row
+    /// recorded under canonical names then found nothing and rendered a bare
+    /// list beside rows spelled `apt:`, `brew:`, `npm:`. A name the module no
+    /// longer declares is skipped rather than vetoing the row.
+    #[test]
+    fn a_package_row_names_the_manager_the_plan_resolved_under_either_spelling() {
+        let declared_package =
+            |canonical: &str, resolved: &str| cfgd_core::modules::ResolvedPackage {
+                canonical_name: canonical.to_string(),
+                resolved_name: resolved.to_string(),
+                manager: "apt".to_string(),
+                manager_declared: false,
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+                min_version: None,
+            };
+        let module = cfgd_core::modules::ResolvedModule {
+            name: "nvim".to_string(),
+            packages: vec![
+                declared_package("gcc", "build-essential"),
+                declared_package("curl", "curl"),
+            ],
+            files: vec![],
+            ..cfgd_core::test_helpers::make_resolved_module("nvim")
+        };
+        let declared = ModuleDeclared::of(&module);
+        for recorded_names in ["gcc,curl", "build-essential,curl"] {
+            assert_eq!(
+                module_packages_resource(recorded_names, Some(&declared)),
+                format!("apt: {}", module_package_names(recorded_names).join(", ")),
+                "the row spells the manager for `{recorded_names}`"
+            );
+        }
+        assert_eq!(
+            module_packages_resource("curl,ghost", Some(&declared)),
+            "apt: curl, ghost",
+            "a name the module no longer declares does not veto the prefix"
+        );
+    }
+
     /// A module the current config no longer resolves still has recorded rows.
     /// Each keeps whatever the id itself carries and says nothing it cannot
     /// know.
@@ -4118,7 +4154,7 @@ mod tests {
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
-        assert_eq!(resources, vec!["4 files", "zsh", "-"]);
+        assert_eq!(resources, vec!["4 files", "zsh"]);
     }
 
     /// The live-session row names the RESOURCE cfgd manages, not the act it
@@ -4165,6 +4201,10 @@ mod tests {
     /// A recorded type is a state-matching token; the Type column names the
     /// surface in the same words a module row's own id spells them, so one
     /// table never calls one thing two names depending on who declared it.
+    ///
+    /// A profile's inline script is recorded under its own type and reaches no
+    /// column at all: it was declared and then run, and nothing checks one
+    /// afterwards, so the table states no fact about it.
     #[test]
     fn the_type_column_names_the_surface_not_the_recorded_token() {
         let rows = managed_resource_rows(
@@ -4178,13 +4218,14 @@ mod tests {
             &ManagedResourceDetail::default(),
         );
         // Owner order, so the surfaces are named in the order the tree
-        // renders them: the profile's two rows, then cfgd's own env file.
+        // renders them: the profile's managed file, then cfgd's own env file.
+        // The script the profile ran renders no row.
         let types: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-        assert_eq!(types, vec!["file", "script", "env"]);
-        // The env file is cfgd's own; the managed file and the profile script
-        // are the profile's, and each row says which.
+        assert_eq!(types, vec!["file", "env"]);
+        // The env file is cfgd's own and the managed file is the profile's,
+        // and each row says which.
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
-        assert_eq!(owners, vec!["profile:base", "profile:base", "cfgd:env"]);
+        assert_eq!(owners, vec!["profile:base", "cfgd:env"]);
     }
 
     /// Every kind the Type column can print, in the singular — `kubectl get`'s
@@ -4192,10 +4233,11 @@ mod tests {
     /// carries how many.
     ///
     /// The population is both producers: every `resource_type`
-    /// `action_resource_info` records (plus the legacy `"Running script"` that
-    /// `execute_script` stamped), and the three surfaces a module row's own id
-    /// spells. A new kind reaching this column without an arm renders whatever
-    /// its producer spelled, so it is listed here or it is not covered.
+    /// `action_resource_info` records and the two surfaces a module row's own
+    /// id spells, less the script rows [`records_a_script`] keeps out of the
+    /// table altogether. A new kind reaching this column without an arm
+    /// renders whatever its producer spelled, so it is listed here or it is
+    /// not covered.
     #[test]
     fn every_kind_the_type_column_prints_is_singular() {
         const RECORDED_KINDS: &[&str] = &[
@@ -4203,15 +4245,13 @@ mod tests {
             "package",
             "secret",
             "system",
-            "script",
             "module",
             "env",
             "env-rc",
             "env-session",
             "manager",
-            "Running script",
         ];
-        const MODULE_SURFACES: &[&str] = &["files", "packages", "script"];
+        const MODULE_SURFACES: &[&str] = &["files", "packages"];
 
         for kind in RECORDED_KINDS.iter().chain(MODULE_SURFACES) {
             let word = display_type(kind);
@@ -4229,7 +4269,6 @@ mod tests {
         // same kind of thing.
         assert_eq!(display_type("files"), display_type("file"));
         assert_eq!(display_type("packages"), display_type("package"));
-        assert_eq!(display_type("Running script"), display_type("script"));
         // The three env surfaces are three kinds, not one: the table says
         // which of them a row is, so no two of them fold onto one word.
         assert_eq!(display_type("env"), "env");
@@ -4407,15 +4446,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -4462,15 +4493,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -4531,34 +4554,14 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| {
-            cmd_status(
-                &cli,
-                p,
-                None,
-                false,
-                false,
-                crate::cli::InventoryDetail::default(),
-            )
-            .unwrap()
-        });
+        let cold = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| {
-            cmd_status(
-                &cli,
-                p,
-                None,
-                false,
-                false,
-                crate::cli::InventoryDetail::default(),
-            )
-            .unwrap()
-        });
+        let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
         // The two verbs that build a `Plan`: their header reads its module
@@ -4761,9 +4764,11 @@ mod tests {
     }
 
     /// The module health line's units agree with their own counts: a module
-    /// with one of each reads `1 package, 1 file, 1 script`, many stay
-    /// plural, and a zero count is dropped rather than reported — a module
-    /// holding nothing reads its bare verdict with no parenthetical at all.
+    /// with one of each reads `1 package, 1 file`, many stay plural, and a
+    /// zero count is dropped rather than reported — a module holding nothing
+    /// reads its bare verdict with no parenthetical at all. The scripts the
+    /// entries declare are counted by no clause: the table below lists no
+    /// script row.
     #[test]
     fn module_status_line_units_agree_with_their_counts() {
         let output = StatusOutput {
@@ -4835,12 +4840,16 @@ mod tests {
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
-            out.contains("Synced (1 package, 1 file, 1 script)"),
-            "a single package, file and script must read singular: {out}"
+            out.contains("Synced (1 package, 1 file)"),
+            "a single package and file must read singular: {out}"
         );
         assert!(
-            out.contains("Synced (3 packages, 12 files, 7 scripts)"),
+            out.contains("Synced (3 packages, 12 files)"),
             "many must stay plural: {out}"
+        );
+        assert!(
+            !out.contains("script"),
+            "a declared script is counted by no health clause: {out}"
         );
         let git_row = out
             .lines()
@@ -5377,10 +5386,7 @@ mod tests {
             // The invocation the wording above describes: `--show-values`,
             // under which a clean row is a kv pair. An errored probe is not a
             // clean row, so the verdict has to survive the flag.
-            ModuleStatusView::Inventory {
-                show_values: true,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: true },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -5455,10 +5461,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &output,
-            ModuleStatusView::Inventory {
-                show_values: true,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: true },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -5585,7 +5588,6 @@ mod tests {
             status: "installed".to_string(),
             platform_skip_reason: None,
             declared: ModuleDeclared {
-                script_summary: Some("postApply (1 script)".to_string()),
                 scripts: 1,
                 ..ModuleDeclared::default()
             },
@@ -5745,8 +5747,12 @@ mod tests {
 
     /// A module's Component Health row and the Managed Resources table answer
     /// the same question and must give the same number: the row said `28 packages`
-    /// over a table listing 24, and later omitted the module's scripts while
-    /// the table two lines below listed seven of them.
+    /// over a table listing 24.
+    ///
+    /// The module declares scripts, which neither surface states: the table
+    /// lists no script row at either width, so the headline counts none. The
+    /// recorded `nvim:script` row is still in the input, because `-o json`
+    /// carries it.
     #[test]
     fn the_module_headline_counts_what_the_table_lists() {
         let resources = vec![
@@ -5756,7 +5762,6 @@ mod tests {
             recorded("module", "nvim:script"),
         ];
         let declared = ModuleDeclared {
-            script_summary: Some("postApply (7 scripts)".to_string()),
             scripts: 7,
             ..ModuleDeclared::default()
         };
@@ -5796,13 +5801,12 @@ mod tests {
             .sum();
         assert_eq!(tally.packages, listed, "headline vs table: {out}");
         assert!(
-            rows.iter()
-                .any(|row| row[0] == "script" && row[2] == "postApply (7 scripts)"),
-            "the table lists the scripts the headline must name: {rows:?}"
+            rows.iter().all(|row| row[0] != "script"),
+            "a declared script is no managed resource: {rows:?}"
         );
         assert!(
-            out.contains("4 packages, 6 files, 7 scripts"),
-            "the headline reports the recorded tally: {out}"
+            out.contains("4 packages, 6 files") && !out.contains("script"),
+            "the headline counts what the table lists: {out}"
         );
 
         // The same invariant under wide: the exploded per-file rows count
@@ -5836,6 +5840,10 @@ mod tests {
         assert_eq!(
             tally.files, file_rows,
             "wide table vs headline: {wide_rows:?}"
+        );
+        assert!(
+            wide_rows.iter().all(|row| row[0] != "script"),
+            "wide lists no script row either: {wide_rows:?}"
         );
     }
 
@@ -5972,14 +5980,14 @@ mod tests {
     /// that folds a recorded token onto the Type word — so a kind reaching that
     /// column cannot skip this walk: the literals it folds are exactly the
     /// module-owned ones, cfgd's own env tokens naming their group through
-    /// consts and belonging to no module. The headline dropped the `script`
-    /// rows for as long as its tally was an unnamed pair, which is why the slot
-    /// is proven by rendering rather than by counting fields.
+    /// consts and belonging to no module. The headline dropped rows whose
+    /// tally was an unnamed pair, which is why the slot is proven by rendering
+    /// rather than by counting fields.
     #[test]
     fn every_module_owned_kind_the_table_lists_has_a_slot_in_the_headline() {
         let words = folded_type_column_words();
         assert!(
-            words.len() >= 3,
+            words.len() >= 2,
             "the walk no longer reaches `display_type`'s arms: {words:?}"
         );
         for word in &words {
@@ -5988,14 +5996,6 @@ mod tests {
             let (id, declared) = match word.as_str() {
                 "package" => ("nvim:packages:neovim", ModuleDeclared::default()),
                 "file" => ("nvim:files:1", ModuleDeclared::default()),
-                "script" => (
-                    "nvim:script",
-                    ModuleDeclared {
-                        script_summary: Some("postApply (1 script)".to_string()),
-                        scripts: 1,
-                        ..ModuleDeclared::default()
-                    },
-                ),
                 other => panic!(
                     "the Type column prints {other:?}, which this walk cannot record — \
                      give it a recorded id here and a slot in `ModuleTally`"
@@ -6290,15 +6290,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6333,18 +6325,7 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            Some("test-mod"),
-            false,
-            false,
-            crate::cli::InventoryDetail {
-                values: true,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, true).unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -6375,15 +6356,7 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(
-            &cli,
-            &printer,
-            Some("test-mod"),
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
         drop(printer);
 
         let out = cap.human();
@@ -6404,15 +6377,7 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap_err();
+        let err = cmd_status(&cli, &printer, None, false, false, false).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -6426,15 +6391,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6475,15 +6432,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6522,15 +6471,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6571,15 +6512,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6603,15 +6536,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6625,13 +6550,14 @@ mod tests {
         );
     }
 
-    // onChange scripts persist under resource_type
-    // "Running script" (execute_script's own return value), distinct from
-    // the main pre/post-apply phase scripts' "script" type
-    // (apply_script_action's return value). Both must condense for human
-    // display; the stored/JSON id must stay the raw multi-line body.
+    // onChange scripts persist under resource_type "Running script"
+    // (execute_script's own return value), distinct from the main
+    // pre/post-apply phase scripts' "script" type (apply_script_action's
+    // return value). Neither reaches the human table: a script is declared and
+    // then run, and nothing checks one afterwards. The stored id stays the raw
+    // multi-line body, which `-o json` carries (the test below).
     #[test]
-    fn cmd_status_running_script_managed_resource_condenses_for_human_display() {
+    fn cmd_status_renders_no_table_row_for_a_recorded_script() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
@@ -6642,25 +6568,13 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            !output.contains("echo two"),
-            "human table cell must not leak the raw multi-line body: {output}"
-        );
-        assert!(
-            output.contains("echo one"),
-            "condensed label should reference the first line: {output}"
+            !output.contains("echo one") && !output.contains("echo two"),
+            "no row of the human report names a script cfgd ran: {output}"
         );
     }
 
@@ -6676,15 +6590,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6710,14 +6616,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        );
+        let res = cmd_status(&cli, &printer, None, false, false, false);
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -6730,14 +6629,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(
-            &cli,
-            &printer,
-            None,
-            true,
-            true,
-            crate::cli::InventoryDetail::default(),
-        );
+        let res = cmd_status(&cli, &printer, None, true, true, false);
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -6764,15 +6656,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            true,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6855,15 +6739,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            true,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6890,15 +6766,7 @@ mod tests {
         // up there too — a reader healing drift needs the declared value in
         // front of them, not only the terse absence word.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(
-            &cli,
-            &human_printer,
-            None,
-            false,
-            true,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
@@ -6995,15 +6863,7 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                false,
-                scan,
-                crate::cli::InventoryDetail::default(),
-            )
-            .unwrap();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             let editor_line = human
@@ -7021,15 +6881,7 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7131,15 +6983,7 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                false,
-                scan,
-                crate::cli::InventoryDetail::default(),
-            )
-            .unwrap();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
@@ -7162,15 +7006,7 @@ mod tests {
             let mut cli = test_cli_for(config_path.clone(), &state_dir);
             cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
             let (printer, buf) = test_printers_json();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                false,
-                scan,
-                crate::cli::InventoryDetail::default(),
-            )
-            .unwrap();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
             drop(printer);
             let captured = cfgd_core::test_helpers::captured_text(&buf);
             let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7246,15 +7082,7 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), &state_dir);
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            true,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
         let human = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
@@ -7266,15 +7094,7 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            true,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7320,15 +7140,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -7361,15 +7173,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(
-            &cli,
-            &printer,
-            Some("test-mod"),
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7752,10 +7556,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -7989,10 +7790,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8165,10 +7963,7 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8204,10 +7999,7 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8242,10 +8034,7 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8281,10 +8070,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8300,13 +8086,17 @@ mod tests {
         );
     }
 
-    /// A declared alias, env var and script hook with no check standing
-    /// behind them: `Packages` and `Deployed Files` already degrade an
-    /// unchecked declaration to `not scanned` (the two pins above), but
-    /// `Shell` and `Scripts` rendered every row `Role::Ok` regardless — the
-    /// same doctrine (`no_recorded_verdict_claims_a_check_that_never_ran`)
-    /// extended to every inventory row: a row reporting a bare declaration
-    /// renders as a declaration, never a verdict it never earned.
+    /// A declared alias and env var with no check standing behind them:
+    /// `Packages` and `Deployed Files` already degrade an unchecked
+    /// declaration to `not scanned` (the two pins above), but `Shell` rendered
+    /// every row `Role::Ok` regardless — the same doctrine
+    /// (`no_recorded_verdict_claims_a_check_that_never_ran`) extended to every
+    /// inventory row: a row reporting a bare declaration renders as a
+    /// declaration, never a verdict it never earned.
+    ///
+    /// The module declares a `postApply` hook too, and this report names it
+    /// nowhere: a script is never checked, so the one honest thing to say
+    /// about it is nothing.
     #[test]
     fn no_declared_inventory_row_wears_a_verdict_glyph() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -8332,10 +8122,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -8346,10 +8133,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no Shell section: {out}"))
             .1;
         assert!(
-            shell_onward.contains("EDITOR")
-                && shell_onward.contains("ll")
-                && shell_onward.contains("postApply"),
+            shell_onward.contains("EDITOR") && shell_onward.contains("ll"),
             "every declared item must still be named: {shell_onward}"
+        );
+        assert!(
+            !out.contains("postApply") && !out.contains("Scripts"),
+            "a declared script is not a fact this report states: {out}"
         );
         assert!(
             !shell_onward.contains('✓'),
@@ -8629,15 +8418,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8686,15 +8467,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8970,15 +8743,7 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            crate::cli::InventoryDetail::default(),
-        )
-        .unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -9238,10 +9003,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);
@@ -9332,10 +9094,7 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: ScriptsForm::Condensed,
-            },
+            ModuleStatusView::Inventory { show_values: false },
         )
         .unwrap();
         drop(printer);

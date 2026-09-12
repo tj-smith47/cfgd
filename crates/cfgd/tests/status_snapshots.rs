@@ -17,7 +17,7 @@
 //!   - `status/per_module_wide.txt` — `-o wide`: inventories in place of the
 //!     counts, each finding inline on its own row, no Drift section.
 //!   - `status/per_module_show_values.txt` — `--show-values`: the same
-//!     inventories carrying declared values and whole script bodies.
+//!     inventories carrying the declared values in full.
 //!
 //! Goldens live under `tests/output_snapshots/status/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test status_snapshots
@@ -32,13 +32,11 @@ use cfgd::cli::status::{
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
-use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
+use cfgd_core::output::Printer;
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
 };
 use pretty_assertions::assert_eq;
-
-mod common;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -74,7 +72,6 @@ fn dev_tools_declared() -> ModuleDeclared {
             )
         })
         .collect(),
-        script_summary: surfaces.script_summary(),
         scripts: surfaces.script_total(),
     }
 }
@@ -725,100 +722,19 @@ fn status_per_module_clean_human() {
 fn status_per_module_wide_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory {
-            show_values: false,
-            scripts: ScriptsForm::Condensed,
-        },
+        ModuleStatusView::Inventory { show_values: false },
         "status/per_module_wide.txt",
     );
 }
 
 /// `--show-values`: the same inventories with the declared value beside each
-/// name. The Scripts rows stay condensed — env values are what the flag names.
+/// name.
 #[test]
 fn status_per_module_show_values_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory {
-            show_values: true,
-            scripts: ScriptsForm::Condensed,
-        },
+        ModuleStatusView::Inventory { show_values: true },
         "status/per_module_show_values.txt",
-    );
-}
-
-/// `--show-scripts`: each step states its position and the knobs it declares,
-/// then its whole body. Env values stay masked — scripts are what the flag
-/// names.
-#[test]
-fn status_per_module_show_scripts_human() {
-    emit_module(
-        &per_module_scanned_output(),
-        ModuleStatusView::Inventory {
-            show_values: false,
-            scripts: ScriptsForm::Full,
-        },
-        "status/per_module_show_scripts.txt",
-    );
-}
-
-/// `--show-all`: both halves of the pair at once.
-#[test]
-fn status_per_module_show_all_human() {
-    emit_module(
-        &per_module_scanned_output(),
-        ModuleStatusView::Inventory {
-            show_values: true,
-            scripts: ScriptsForm::Full,
-        },
-        "status/per_module_show_all.txt",
-    );
-}
-
-/// The bytes the approved pitch settled, from the real renderer, on the verb
-/// the pitch captured them from second: the Scripts heading, the bare hook
-/// name heading its steps, the first step's muted marker line and the first
-/// highlighted row of its body (panel 2, which repeats panel 1's Scripts
-/// section). `cfgd module show` pins the same four lines, so the two verbs
-/// cannot render one module's scripts as two different shapes.
-#[test]
-fn status_per_module_show_scripts_renders_the_approved_dracula_bytes() {
-    let mut output = per_module_scanned_output();
-    output.declared.scripts = vec![HookScripts {
-        hook: "postApply",
-        steps: std::iter::once(declared_step(
-            "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim 2>&1 | tail -5 || true\nfi",
-            Some("120s"),
-            None,
-            true,
-        ))
-        .chain((2..=7).map(|n| declared_step(&format!("echo step {n}"), None, None, false)))
-        .collect(),
-    }];
-    let (printer, buf) = Printer::for_test_with_theme_colored(
-        Theme::preset("dracula").expect("dracula is a registered preset"),
-        Verbosity::Normal,
-    );
-    printer.emit(build_module_status_doc(
-        &output,
-        ModuleStatusView::Inventory {
-            show_values: false,
-            scripts: ScriptsForm::Full,
-        },
-        NOW,
-    ));
-    drop(printer);
-    // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
-    let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let rendered: Vec<&str> = out
-        .lines()
-        .skip_while(|l| !l.contains("Scripts"))
-        .take(4)
-        .collect();
-    assert_eq!(
-        rendered,
-        common::PITCH_SCRIPTS_LINES,
-        "the approved bytes: {out:?}"
     );
 }
 
@@ -851,11 +767,11 @@ fn status_per_module_scanned_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.json");
 }
 
-/// The Scripts group is a TOTAL with one indented row per declaring hook, in
-/// execution order — a single `6 postApply` line hid every other hook behind
-/// the one that happened to declare most.
+/// The compact view states no fact about the module's scripts: a script is
+/// declared and then run, and nothing checks one afterwards. `cfgd module
+/// show` is where a reader sees them; `-o json` keeps the tally.
 #[test]
-fn status_per_module_scripts_row_breaks_down_per_hook() {
+fn status_per_module_compact_states_nothing_about_scripts() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_status_doc(
         &per_module_output(),
@@ -864,19 +780,14 @@ fn status_per_module_scripts_row_breaks_down_per_hook() {
     ));
     drop(printer);
     let human = cap.human();
-    let rows: Vec<&str> = human
-        .lines()
-        .skip_while(|l| !l.trim_start().starts_with("Scripts"))
-        .take(3)
-        .collect();
+    assert!(
+        !human.contains("Scripts") && !human.contains("postApply"),
+        "no script row on the compact report: {human}"
+    );
     assert_eq!(
-        rows,
-        vec![
-            "  Scripts       3",
-            "    preApply    1",
-            "    postApply   2",
-        ],
-        "Scripts is a total with a per-hook breakdown under it: {human}"
+        cap.json().expect("doc captured json")["scriptCounts"],
+        serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}]),
+        "the tally a structured consumer reads is unchanged"
     );
 }
 

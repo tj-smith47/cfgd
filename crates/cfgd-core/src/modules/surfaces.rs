@@ -338,32 +338,9 @@ impl ModuleSurfaces {
         }
     }
 
-    /// The per-hook script tally a summary row renders: `preApply (3 scripts),
-    /// postApply (6 scripts)`, in execution order. `None` when the module
-    /// declares no scripts at all, so the row is left out rather than reading
-    /// empty.
-    ///
-    /// Subject first, count parenthesised: the row this lands in sits beside a
-    /// module's file row (`/home/tj/.config/nvim (6 files)`), and a resource
-    /// cell that led with its count would read as a different kind of fact than
-    /// its neighbour.
-    pub fn script_summary(&self) -> Option<String> {
-        if self.scripts.is_empty() {
-            return None;
-        }
-        Some(
-            self.scripts
-                .iter()
-                .map(|h| format!("{} ({})", h.hook, crate::pluralize(h.steps.len(), "script")))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    }
-
     /// The per-hook script counts, in execution order — the breakdown rows a
     /// report renders beneath its total, and the `scriptCounts` payload field.
-    /// Empty when the module declares no scripts, the same condition
-    /// [`Self::script_summary`] answers `None` to.
+    /// Empty when the module declares no scripts.
     pub fn script_counts(&self) -> Vec<(String, usize)> {
         self.scripts
             .iter()
@@ -396,9 +373,9 @@ mod tests {
     }
 
     #[test]
-    fn script_summary_counts_each_hook_in_execution_order() {
+    fn the_hook_tally_is_read_in_execution_order() {
         let surfaces = ModuleSurfaces::of(&spec_with_scripts(ScriptSpec {
-            // Declared out of order on purpose: the summary reports the order
+            // Declared out of order on purpose: the tally reports the order
             // the hooks RUN in, not the order the YAML happened to list them.
             post_apply: vec![
                 ScriptEntry::Simple("a".into()),
@@ -408,8 +385,8 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            surfaces.script_summary().as_deref(),
-            Some("preApply (1 script), postApply (2 scripts)")
+            surfaces.script_counts(),
+            vec![("preApply".to_string(), 1), ("postApply".to_string(), 2)]
         );
         assert_eq!(surfaces.hook_names(), vec!["preApply", "postApply"]);
     }
@@ -453,8 +430,8 @@ mod tests {
             );
         }
         assert_eq!(
-            surfaces.script_summary(),
-            ModuleSurfaces::of(&spec).script_summary(),
+            surfaces.script_counts(),
+            ModuleSurfaces::of(&spec).script_counts(),
             "one module, one tally, whichever side it is read from"
         );
     }
@@ -479,10 +456,6 @@ mod tests {
         // list above: summing `script_counts` restates the implementation and
         // would pass whatever both sides drifted to together.
         assert_eq!(surfaces.script_total(), 3);
-        assert_eq!(
-            surfaces.script_summary().as_deref(),
-            Some("preApply (1 script), postApply (2 scripts)")
-        );
     }
 
     /// Every knob a step declares reaches the marker as one clause, in the
@@ -568,18 +541,18 @@ mod tests {
     }
 
     #[test]
-    fn a_module_with_no_scripts_has_no_summary() {
+    fn a_module_with_no_scripts_declares_no_hooks() {
         assert!(
             ModuleSurfaces::of(&ModuleSpec::default())
-                .script_summary()
-                .is_none()
+                .script_counts()
+                .is_empty()
         );
         // An empty hook is not a declared hook — it opens no phase and has
         // nothing to report.
         assert!(
             ModuleSurfaces::of(&spec_with_scripts(ScriptSpec::default()))
-                .script_summary()
-                .is_none()
+                .script_counts()
+                .is_empty()
         );
     }
 }

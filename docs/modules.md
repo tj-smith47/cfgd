@@ -571,7 +571,7 @@ holding managed state, modules among them:
 Component Health (checked 3m ago)
   ✓ profile:work — Synced (2 packages, 1 file)
   ✓ cfgd:env     — Synced (1 env file)
-  ✓ module:nvim  — Synced (3 packages, 12 files, 2 scripts)
+  ✓ module:nvim  — Synced (3 packages, 12 files)
   ○ module:git   — NotApplied
 ```
 
@@ -617,10 +617,10 @@ The `-o json` payload's `status` field carries the stored token instead
 (`installed`, `error`, `not applied`).
 
 `cfgd status --module <name>` reports the declared counts and the drift a scan
-found; `-o wide` itemizes each surface instead, `--show-values` adds the
-declared env values, `--show-scripts` / `-s` each script's full body, and
-`--show-all` / `-a` both (see
-[`cfgd status`](cli-reference.md#cfgd-status)).
+found; `-o wide` itemizes each surface instead and `--show-values` adds the
+declared env values (see [`cfgd status`](cli-reference.md#cfgd-status)). It
+states nothing about the module's scripts, because nothing checks a script after
+the run that executes it: `cfgd module show <name>` lists them.
 
 Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 

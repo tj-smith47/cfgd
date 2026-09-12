@@ -213,8 +213,6 @@ impl CliTestHarness {
                 scan: false,
                 exit_code: false,
                 show_values: false,
-                show_scripts: false,
-                show_all: false,
             }),
         }
     }
@@ -466,12 +464,16 @@ fn no_subcommand_declares_its_own_yes_flag() {
     }
 }
 
-/// Both verbs that list a module's declared scripts carry the same two flags
-/// with the same short spellings, so one invocation's muscle memory reads the
-/// other verb. `--show-values` is env values only on both: a reader who asked
-/// for values and got seven script bodies cannot ask for the values alone.
+/// `cfgd module show` is the one verb that lists a module's declared scripts,
+/// so it alone carries the two flags that ask for their bodies. A script is
+/// declared and then run with nothing checking it afterwards, so `status` says
+/// nothing about one and declares neither flag.
+///
+/// `--show-values` stays on both verbs, with no short spelling and a help line
+/// naming no script: a reader who asked for env values and got seven script
+/// bodies cannot ask for the values alone.
 #[test]
-fn both_module_inventory_verbs_carry_the_same_show_flags() {
+fn only_module_show_carries_the_script_body_flags() {
     use clap::CommandFactory;
 
     let root = Cli::command();
@@ -485,23 +487,42 @@ fn both_module_inventory_verbs_carry_the_same_show_flags() {
         .and_then(|module| module.get_subcommands().find(|c| c.get_name() == "show"))
         .expect("cfgd module show is declared");
 
+    for (long, short) in [("show-scripts", 's'), ("show-all", 'a')] {
+        let arg = module_show
+            .get_arguments()
+            .find(|a| a.get_long() == Some(long))
+            .unwrap_or_else(|| panic!("`cfgd module show` declares --{long}"));
+        assert_eq!(
+            arg.get_short(),
+            Some(short),
+            "`cfgd module show --{long}` must spell its short -{short}"
+        );
+        assert!(
+            matches!(arg.get_action(), clap::ArgAction::SetTrue),
+            "`cfgd module show --{long}` is a boolean, so it takes no value"
+        );
+        assert!(
+            status
+                .get_arguments()
+                .all(|a| a.get_long() != Some(long) && a.get_short() != Some(short)),
+            "`cfgd status` declares neither --{long} nor -{short}"
+        );
+        assert!(
+            Cli::try_parse_from(["cfgd", "status", &format!("--{long}")]).is_err()
+                && Cli::try_parse_from([
+                    "cfgd",
+                    "status",
+                    "--module",
+                    "nvim",
+                    &format!("-{short}")
+                ])
+                .is_err(),
+            "`cfgd status --{long}` must not parse"
+        );
+    }
+
     for verb in [status, module_show] {
         let name = verb.get_name();
-        for (long, short) in [("show-scripts", 's'), ("show-all", 'a')] {
-            let arg = verb
-                .get_arguments()
-                .find(|a| a.get_long() == Some(long))
-                .unwrap_or_else(|| panic!("`cfgd {name}` declares --{long}"));
-            assert_eq!(
-                arg.get_short(),
-                Some(short),
-                "`cfgd {name} --{long}` must spell its short -{short}"
-            );
-            assert!(
-                matches!(arg.get_action(), clap::ArgAction::SetTrue),
-                "`cfgd {name} --{long}` is a boolean, so it takes no value"
-            );
-        }
         let values = verb
             .get_arguments()
             .find(|a| a.get_long() == Some("show-values"))
@@ -517,6 +538,8 @@ fn both_module_inventory_verbs_carry_the_same_show_flags() {
             "`cfgd {name} --show-values` renders no script body, so its help says none: {values_help}"
         );
     }
+    assert!(Cli::try_parse_from(["cfgd", "status", "--show-values"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "module", "show", "nvim", "--show-values"]).is_ok());
 }
 
 /// The module both inventory verbs are driven over below: one env value worth
@@ -606,10 +629,11 @@ fn env_row_words(rendered: &str) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-/// `--show-values` alone names the env value and leaves every script row
-/// condensed to its first line, on both verbs.
+/// `--show-values` names the declared env value on both verbs. On `cfgd
+/// module show` it leaves every script row condensed to its first line; on
+/// `cfgd status --module` it renders no script row at all.
 #[test]
-fn show_values_alone_renders_condensed_script_rows_on_both_verbs() {
+fn show_values_names_the_declared_value_on_both_verbs() {
     let shown = inventory_flag_output(&["module", "show", "flags-mod", "--show-values"]);
     assert!(
         shown.contains("supersecretvalue") && shown.contains("echo first"),
@@ -621,38 +645,41 @@ fn show_values_alone_renders_condensed_script_rows_on_both_verbs() {
     );
     let status = inventory_flag_output(&["status", "--module", "flags-mod", "--show-values"]);
     assert!(
-        env_row_words(&status) == ["EDITOR", "supersecretvalue"] && status.contains("echo first"),
+        env_row_words(&status) == ["EDITOR", "supersecretvalue"],
         "--show-values itemizes the inventories with the value beside the name, got: {status}"
     );
     assert!(
-        !status.contains("echo second"),
-        "a condensed row stops at the body's first line on this verb too, got: {status}"
+        !status.contains("echo first") && !status.contains("postApply"),
+        "this verb states nothing about a declared script, got: {status}"
     );
 }
 
-/// On `cfgd status --module`, either script flag selects the itemized view the
-/// rows live on, and each one carries the form it asked for. Without them the
-/// same module reads as counts.
+/// `cfgd status --module` states nothing about the module's scripts at either
+/// width: a script is declared and then run, and nothing checks one
+/// afterwards, so there is no fact to report. `cfgd module show` is where a
+/// reader sees them.
 #[test]
-fn status_per_module_script_flags_itemize_the_inventories() {
-    let compact = inventory_flag_output(&["status", "--module", "flags-mod"]);
+fn status_per_module_states_nothing_about_scripts_at_either_width() {
+    for args in [
+        vec!["status", "--module", "flags-mod"],
+        vec!["status", "--module", "flags-mod", "-o", "wide"],
+        vec!["status", "--module", "flags-mod", "--show-values"],
+    ] {
+        let out = inventory_flag_output(&args);
+        assert!(
+            !out.contains("Scripts") && !out.contains("postApply") && !out.contains("echo first"),
+            "{args:?} names a script: {out}"
+        );
+        assert!(
+            out.contains("Shell"),
+            "{args:?} still reports the rest of the module: {out}"
+        );
+    }
+    // The verb that does list them still renders every step.
+    let shown = inventory_flag_output(&["module", "show", "flags-mod", "-s"]);
     assert!(
-        !compact.contains("echo first"),
-        "with neither flag the report states counts and no step body, got: {compact}"
-    );
-    let scripts = inventory_flag_output(&["status", "--module", "flags-mod", "-s"]);
-    assert!(
-        scripts.contains("postApply") && scripts.contains("echo second"),
-        "-s itemizes the inventories and renders each whole body, got: {scripts}"
-    );
-    assert!(
-        scripts.contains("EDITOR") && !scripts.contains("supersecretvalue"),
-        "-s names the env var and leaves its value out, got: {scripts}"
-    );
-    let all = inventory_flag_output(&["status", "--module", "flags-mod", "-a"]);
-    assert!(
-        env_row_words(&all) == ["EDITOR", "supersecretvalue"] && all.contains("echo second"),
-        "-a itemizes the inventories with both halves, got: {all}"
+        shown.contains("postApply") && shown.contains("echo second"),
+        "`module show -s` renders each whole body, got: {shown}"
     );
 }
 
@@ -1176,8 +1203,6 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
             scan,
             exit_code,
             show_values: _,
-            show_scripts: _,
-            show_all: _,
         }) = parsed.command
         else {
             panic!("{argv:?} did not parse as status");
@@ -1187,18 +1212,12 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
         assert_eq!(module.as_deref(), want_module, "{argv:?} module");
     }
 
-    // `--scan` has no short form, and the letter a reader might reach for is
-    // spoken for: `-s` is `--show-scripts`, which reads the declaration rather
-    // than the machine.
-    let parsed = Cli::try_parse_from(["cfgd", "status", "-s"]).expect("-s parses");
-    let Some(Command::Status {
-        scan, show_scripts, ..
-    }) = parsed.command
-    else {
-        panic!("-s did not parse as status");
-    };
-    assert!(show_scripts, "-s is --show-scripts");
-    assert!(!scan, "-s must not reach --scan");
+    // `--scan` has no short form, and no other short flag stands in for it:
+    // `status` declares no `-s` at all.
+    assert!(
+        Cli::try_parse_from(["cfgd", "status", "-s"]).is_err(),
+        "`status` declares no -s"
+    );
 }
 
 /// `--model` / `--provider` / `--yes` govern every `generate` target, not just
@@ -2061,8 +2080,6 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
             scan: false,
             exit_code: false,
             show_values: false,
-            show_scripts: false,
-            show_all: false,
         }),
     }
 }
@@ -5338,15 +5355,7 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -5360,7 +5369,7 @@ fn cmd_status_module_not_found() {
         Some("nonexistent"),
         false,
         false,
-        super::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     h.assert_output_contains("nonexistent");
@@ -5371,15 +5380,8 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        Some("test-mod"),
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false, false, false)
+        .unwrap();
     h.assert_output_contains("test-mod");
 }
 
@@ -5541,8 +5543,6 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
             scan: false,
             exit_code: false,
             show_values: false,
-            show_scripts: false,
-            show_all: false,
         }),
     };
     let printer = test_printer();
@@ -5749,15 +5749,7 @@ fn cmd_status_after_apply() {
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -6048,15 +6040,7 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert!(
         parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -6128,8 +6112,6 @@ fn execute_status_command() {
         scan: false,
         exit_code: false,
         show_values: false,
-        show_scripts: false,
-        show_all: false,
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Status");
@@ -6724,15 +6706,7 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     // The default table keeps the aggregate — and renders a manifest of one
     // as the file's own path, because a count of one is not an aggregate.
     let (printer, buf) = test_printer_capture();
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     let table = out
@@ -6762,15 +6736,7 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let rendered = cfgd_core::output::strip_ansi(&cap.human());
     // Only the table's own rows: the Component Health headline above it
@@ -6817,20 +6783,123 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    super::status::cmd_status(
-        &json_cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&json_cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
     assert!(
         json.contains("nvim:files:2"),
         "json keeps the raw aggregate resource id: {json}"
+    );
+}
+
+/// A module's scripts are declared and then run, and nothing checks one
+/// afterwards, so `status` states nothing about them: the Managed Resources
+/// table lists no `script` row at either width, the Component Health row counts
+/// no scripts, and the wide per-module view renders no Scripts section. The
+/// apply still records the `module:<name>:script` row, and `-o json` still
+/// carries the tally beside it, which is what a structured consumer reads.
+#[test]
+#[cfg(unix)]
+fn no_status_surface_renders_a_row_for_a_module_that_declares_scripts() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe =
+        cfgd_core::reconciler::with_env_host_probe_override_guard(declared_env_host_probe(false));
+
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - hooked\n",
+    )
+    .unwrap();
+    create_module_in_dir(
+        config_dir.path(),
+        "hooked",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  files:\n    - source: files/hookedrc\n      target: ~/.hookedrc\n      strategy: Copy\n  scripts:\n    postApply:\n      - echo hooked\n",
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("hooked")
+            .join("files")
+            .join("hookedrc"),
+        "hooked\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&cli, &test_printer(), &args);
+    assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+
+    for wide in [false, true] {
+        let mut view_cli =
+            test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+        if wide {
+            view_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+        }
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_format(if wide {
+            cfgd_core::output::OutputFormat::Wide
+        } else {
+            cfgd_core::output::OutputFormat::Table
+        });
+        super::status::cmd_status(&view_cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let rendered = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            !rendered.contains("script"),
+            "the fleet report states nothing about scripts (wide: {wide}): {rendered}"
+        );
+        assert!(
+            rendered.contains("~/.hookedrc"),
+            "the module's file row still renders (wide: {wide}): {rendered}"
+        );
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_format(if wide {
+            cfgd_core::output::OutputFormat::Wide
+        } else {
+            cfgd_core::output::OutputFormat::Table
+        });
+        super::status::cmd_status(&view_cli, &printer, Some("hooked"), false, false, false)
+            .unwrap();
+        drop(printer);
+        let module_view = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            !module_view.contains("Scripts") && !module_view.contains("postApply"),
+            "the module report states nothing about scripts (wide: {wide}): {module_view}"
+        );
+    }
+
+    // The recorded row and its tally are unchanged: only the human rendering
+    // dropped them.
+    let mut json_cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+    let (printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    super::status::cmd_status(&json_cli, &printer, None, false, false, false).unwrap();
+    drop(printer);
+    let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
+    assert!(
+        json.contains("hooked:script"),
+        "json keeps the recorded script row: {json}"
+    );
+    assert!(
+        json.contains("\"scripts\":1"),
+        "json keeps the per-module script tally: {json}"
     );
 }
 
@@ -6906,15 +6975,7 @@ fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let wide = cfgd_core::output::strip_ansi(&cap.human());
     let table_row = wide
@@ -6987,15 +7048,7 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
     assert!(result.is_ok(), "second apply: {:?}", result.err());
 
     let (printer, buf) = test_printer_capture();
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     let table = out
@@ -7015,15 +7068,7 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&wide_cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let wide = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
@@ -7055,15 +7100,7 @@ fn cmd_status_with_modules() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(
-            &cli,
-            &printer,
-            None,
-            false,
-            false,
-            super::InventoryDetail::default(),
-        )
-        .is_ok(),
+        super::status::cmd_status(&cli, &printer, None, false, false, false,).is_ok(),
         "status should succeed when profile references modules"
     );
 
@@ -7124,15 +7161,7 @@ fn cmd_status_with_drift_events() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -12680,15 +12709,7 @@ fn cmd_status_module_structured_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        Some("json-mod"),
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&cli, &printer, Some("json-mod"), false, false, false).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -14522,10 +14543,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         // in a Drift section, and closes on the same command for it.
         for view in [
             super::status::ModuleStatusView::Compact,
-            super::status::ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            super::status::ModuleStatusView::Inventory { show_values: false },
         ] {
             let (printer, buf) = test_printer_capture();
             printer.emit(super::status::build_module_status_doc(
@@ -20341,15 +20359,7 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -22667,14 +22677,7 @@ fn cmd_diff_module_with_files_shows_the_drifted_file() {
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    );
+    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false);
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",
@@ -29389,15 +29392,7 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
         )
         .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
@@ -29545,15 +29540,7 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &f.h.cli(),
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -29991,15 +29978,7 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains(PINNED_CONFLICT_ANNOTATION),
@@ -30064,15 +30043,7 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
     let warnings = json["warnings"]
         .as_array()
@@ -30100,15 +30071,7 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains("pip3.11") && output.contains("'.'"),
@@ -30211,15 +30174,8 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &f.h.cli(),
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .expect("a read-only dashboard renders through a classification failure");
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false)
+        .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -30247,15 +30203,8 @@ fn a_degraded_status_json_payload_says_so_structurally() {
     });
     write_broken_manifest(&f.h);
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .expect("a read-only dashboard renders through a classification failure");
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
+        .expect("a read-only dashboard renders through a classification failure");
     let json = f.h.json_output();
     assert_eq!(
         json["classificationDegraded"],
@@ -30283,15 +30232,8 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         extra_spec: NOTIFYING_POLICY,
         ..Default::default()
     });
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .expect("a clean classification renders");
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
+        .expect("a clean classification renders");
     let json = f.h.json_output();
     assert_eq!(
         json["classificationDegraded"],
@@ -30417,15 +30359,8 @@ fn a_sourceless_status_skips_source_classification_entirely() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &h.cli(),
-        &printer,
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .expect("no sources, no classification, no failure");
+    super::status::cmd_status(&h.cli(), &printer, None, false, false, false)
+        .expect("no sources, no classification, no failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -30594,15 +30529,7 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        None,
-        false,
-        false,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
 
     let pending = json["pendingDecisions"]
@@ -32615,7 +32542,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             "the verdict leads the detail, `{row}` puts it behind its counts"
         );
         assert!(
-            detail.ends_with("(2 packages, 3 files, 4 scripts)"),
+            detail.ends_with("(2 packages, 3 files)"),
             "the counts are the verdict's parenthetical: {row}"
         );
     }
@@ -35672,10 +35599,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             "cfgd status <module> -o wide",
             super::status::build_module_status_doc(
                 &module,
-                super::status::ModuleStatusView::Inventory {
-                    show_values: false,
-                    scripts: cfgd_core::output::ScriptsForm::Condensed,
-                },
+                super::status::ModuleStatusView::Inventory { show_values: false },
                 now,
             ),
         ),
@@ -36154,15 +36078,7 @@ fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
     let h = CliTestHarness::builder()
         .profile("default", GPG_CHECK_PROFILE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        true,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
     h.assert_output_contains("gpgKeys");
     h.assert_output_contains("error checking drift");
 }
@@ -36182,15 +36098,7 @@ fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
         .json()
         .profile("default", GPG_CHECK_PROFILE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        None,
-        false,
-        true,
-        super::InventoryDetail::default(),
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
     let parsed = h.json_output();
     let errors = parsed
         .get("systemErrors")
@@ -36248,15 +36156,7 @@ fn diff_and_scan_agree_on_the_findings() {
         super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
     });
     let (scan_rows, scan_out) = drift_rows(&|h: &CliTestHarness| {
-        super::status::cmd_status(
-            &h.cli(),
-            h.printer(),
-            None,
-            false,
-            true,
-            super::InventoryDetail::default(),
-        )
-        .unwrap();
+        super::status::cmd_status(&h.cli(), h.printer(), None, false, true, false).unwrap();
     });
 
     assert!(
@@ -37495,8 +37395,10 @@ fn every_backup_unit_the_cli_builds_is_projected() {
 /// A module's declared hooks reach a human surface as a `Scripts` section
 /// through ONE composer, `cfgd_core::modules::scripts_section`: the marker
 /// line, the highlighting, the per-step blank and the hook heading are all
-/// decided there, so `cfgd module show` and `cfgd status --module` cannot show
-/// one module two shapes.
+/// decided there, so the condensed and full forms of `cfgd module show` cannot
+/// show one module two shapes. It is the only verb that lists them — `status`
+/// states nothing about a script, which is declared and then run with no check
+/// behind it.
 ///
 /// Three things are judged. Outside `output/` (which owns the slots
 /// themselves), nothing paints a block of text for itself without being
@@ -37545,8 +37447,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
     const INVENTORY_TELLS: &[&str] =
         &["HookScripts", "DeclaredScript", "SCRIPTS_SECTION", ".steps"];
     /// The slots that open a named section or heading, where `Scripts` would
-    /// name a second inventory. A `Scripts` kv KEY is the compact count row and
-    /// is not one of these.
+    /// name a second inventory.
     const SECTION_SLOTS: &[&str] = &[
         ".section(",
         ".subsection(",

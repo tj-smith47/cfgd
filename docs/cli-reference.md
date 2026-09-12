@@ -591,8 +591,6 @@ cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 cfgd status --module nvim -o wide           # itemized inventories instead of counts
 cfgd status --module nvim --show-values     # inventories with declared env values (implies -o wide)
-cfgd status --module nvim --show-scripts    # inventories with each script's full body
-cfgd status --module nvim --show-all        # both: declared env values and full script bodies
 cfgd status --scan                          # live scan of this machine right now
 cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
@@ -717,9 +715,9 @@ what the scan found. `Status` leads the block. The report names no scope: you
 named the module on the command line, so restating it tells you only what you
 just typed; the scope the last run recorded stays in `-o json`. `Shell` is the total of
 the module's declared aliases and env vars, broken down one indented row per
-half; `Scripts` is the total, broken down one indented row per hook in the
-order the hooks run, so a module's `preApply` work is distinguishable from its
-`postApply` work without opening the module:
+half. Nothing checks a script after the run that executes it, so this report
+states nothing about a module's scripts; `cfgd module show` lists each hook and
+its steps:
 
 ```
 Status: nvim
@@ -730,9 +728,6 @@ Status: nvim
   Shell         6
     Aliases     3
     Env         3
-  Scripts       9
-    preApply    3
-    postApply   6
 
 Drift
   ⚠ module:nvim:files ~/.config/nvim/stylua.toml — content differs
@@ -759,8 +754,8 @@ the live check found; the payload's `lastScanAt` still names the recorded
 machine-wide stamp, because a single module's scan never writes one — it
 stamps its own chain under `scopedScans`.
 
-`-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
-order rather than an object (a JSON object is a sorted map on the way out, and
+`-o json` carries the per-hook step counts as `scriptCounts`, an ARRAY in
+execution order rather than an object (a JSON object is a sorted map on the way out, and
 alphabetical is not the order the hooks run in). The `scripts` field beside it
 keeps the hook names it always carried:
 
@@ -789,7 +784,7 @@ nothing was checked.
 `-o wide` replaces the counts with the inventories, each row backed by a check
 carrying its own verdict, and drops the `Drift` section: every finding is
 already inline on the row for the thing it was found on. A row with no check
-behind it (a Scripts hook, or a Shell alias/env var without `--scan`) renders
+behind it (a Shell alias or env var without `--scan`) renders
 as a bare declaration instead — a name, never a verdict it never earned:
 
 ```
@@ -812,27 +807,18 @@ Shell
   Env
     ✓ EDITOR
     ✓ PAGER
-
-Scripts
-  preApply
-    set -euo pipefail …
-  postApply
-    nvim --headless '+Lazy! sync' +qa
-    echo done
 ```
 
-Packages, files, aliases and env vars list alphabetically; scripts stay in
-execution order, because that order is the fact. No drift engine ever watches a
-hook body, so a Scripts row is always a bare declaration — no verdict glyph —
-regardless of `--scan`. Aliases precede env vars wherever the pair is named —
+Packages, files, aliases and env vars list alphabetically. Aliases precede env
+vars wherever the pair is named —
 the counts, these inventories, `cfgd module show`'s sections, the profile
 inventory `cfgd profile show`, `cfgd source show` and `cfgd source add` render,
 and `-o json`'s field order alike. `--show-values` renders the same inventories
 with each declared alias and env value beside its name, as the key/value rows
 `cfgd module show` lists them under the same two headings; a row a check found
-drifted keeps its warning glyph and its cause. `--show-scripts` / `-s` renders
-each script's whole body instead of its condensed first line, and `--show-all` /
-`-a` does both; each implies `-o wide`.
+drifted keeps its warning glyph and its cause. This view lists no scripts
+either: `cfgd module show` is where a module's hooks and their bodies are
+read.
 
 A check that could not run renders on this view as a row under the section whose
 items it is about: a failed env probe under `Shell`, a `minVersion` the manager
@@ -852,8 +838,8 @@ going to install it, scan or no scan. `-o json` carries the same verdicts as
 `packageState[].state` (`installed`, `notInstalled`, `notScanned`,
 `platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
-is identical under every view: `-o wide`, `--show-values`, `--show-scripts` and
-`--show-all` change the human render only.
+is identical under every view: `-o wide` and `--show-values` change the human
+render only.
 
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).

@@ -272,8 +272,6 @@ spec:
             scan: false,
             exit_code: false,
             show_values: false,
-            show_scripts: false,
-            show_all: false,
         }),
         config: config_dir.path().join("cfgd.yaml"),
         config_explicit: false,
@@ -329,8 +327,6 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
             scan: false,
             exit_code: false,
             show_values: false,
-            show_scripts: false,
-            show_all: false,
         }),
         config: dir.join("cfgd.yaml"),
         config_explicit: false,
@@ -7899,17 +7895,11 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         ),
         (
             "cfgd status <module> -o wide",
-            crate::cli::status::ModuleStatusView::Inventory {
-                show_values: false,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::status::ModuleStatusView::Inventory { show_values: false },
         ),
         (
             "cfgd status <module> --show-values",
-            crate::cli::status::ModuleStatusView::Inventory {
-                show_values: true,
-                scripts: cfgd_core::output::ScriptsForm::Condensed,
-            },
+            crate::cli::status::ModuleStatusView::Inventory { show_values: true },
         ),
     ] {
         let (printer, buf) =

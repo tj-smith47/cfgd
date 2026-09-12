@@ -18,11 +18,4 @@ Shell
     ✓ EDITOR
     ⚠ PAGER — missing
 
-Scripts
-  preApply
-    set -euo pipefail …
-  postApply
-    nvim --headless '+Lazy! sync' +qa
-    echo done …
-
 → Run `cfgd apply --module dev-tools` to reconcile

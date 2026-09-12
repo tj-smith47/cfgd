@@ -6,9 +6,6 @@ Status: dev-tools
   Shell         3
     Aliases     1
     Env         2
-  Scripts       3
-    preApply    1
-    postApply   2
   System        shell
   Dependencies  base
 
