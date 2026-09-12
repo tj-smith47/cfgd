@@ -228,9 +228,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let platform = cfgd_core::platform::Platform::current();
             let mgr_map = registry.manager_map();
-            // own-context-ok: `init` reads the state store its own
-            // `--state-dir` / `--scope` arguments name, which is not the one a
-            // `RunContext` resolves, and this arm builds exactly one.
+            // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
+            // `RunContext` to ask for the run's context; this arm builds
+            // exactly one.
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let mut resolved_modules = modules::resolve_modules(
                 args.apply_modules,
@@ -335,9 +335,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
-            // own-context-ok: `init` reads the state store its own
-            // `--state-dir` / `--scope` arguments name, which is not the one a
-            // `RunContext` resolves, and this arm builds exactly one.
+            // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
+            // `RunContext` to ask for the run's context; this arm builds
+            // exactly one.
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
             let mut resolved_modules = if !module_names.is_empty() {

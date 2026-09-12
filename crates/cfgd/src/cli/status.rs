@@ -259,14 +259,19 @@ pub struct ModuleStatus {
     /// checked without any machine-wide scan having run.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub scoped_scans: std::collections::BTreeMap<String, String>,
-    /// A `--scan` run's checks that could not run — today only the env probe
-    /// (the primary managed env file exists but could not be read, so every
-    /// env verdict of this scan is unknown). The SAME `systemErrors` shape
-    /// the fleet payload carries for the same fact, so a consumer parses one
-    /// list of `{key, error}` rows on both surfaces. Rendered as the
-    /// first-class `error checking drift` row `diff` mints for the identical
-    /// probe, and it drives the `Error` exit ahead of `DriftDetected` —
-    /// unknown outranks known.
+    /// A `--scan` run's checks that could not run, from the two passes a
+    /// module scan makes: the env probe, keyed by the managed env file's own
+    /// path (it exists but could not be read, so every env verdict of this
+    /// scan is unknown), and the declared-floor pass, keyed
+    /// `<manager>:<package>` for a pinned `minVersion` its manager could not
+    /// compare. The itemized view files each row under the section its items
+    /// belong to, and only the env probe withholds the Shell verdicts.
+    ///
+    /// The SAME `systemErrors` shape the fleet payload carries for the same
+    /// fact, so a consumer parses one list of `{key, error}` rows on both
+    /// surfaces. Rendered as the first-class `error checking drift` row `diff`
+    /// mints for the identical check, and it drives the `Error` exit ahead of
+    /// `DriftDetected` — unknown outranks known.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
     /// Rows this module's scope owns that the scan above did not re-check —
@@ -2352,11 +2357,13 @@ fn render_module_inventories(
     // A check that could not run belongs to the section whose rows it is about,
     // read through the ONE key-grammar answerer the Component Health
     // attribution asks: an env surface's own path is a finding about the Shell
-    // rows, and every other key the module report's producers mint is a
-    // package floor (`<manager>:<package>`), which is a finding about the
-    // Packages rows. A declared `minVersion` nothing could compare once
-    // degraded every alias and env var to `not scanned` on the strength of a
-    // failure that never looked at them.
+    // rows, and a package floor (`<manager>:<package>`) about the Packages
+    // rows. A declared `minVersion` nothing could compare once degraded every
+    // alias and env var to `not scanned` on the strength of a failure that
+    // never looked at them. A key in NEITHER grammar falls with the package
+    // rows rather than being dropped: the two passes a module scan makes mint
+    // only those two shapes, so nothing reaches the fallback today, and a
+    // misfiled row still states the failure a silent one would hide.
     let (env_probe_errors, package_check_errors): (Vec<_>, Vec<_>) = output
         .system_errors
         .iter()

@@ -16066,8 +16066,9 @@ fn every_result_line_opens_with_a_past_tense_verb() {
 /// chain resolution and once for the declared-floor pass — and the comment at
 /// the package join claimed an enumeration the run had already paid for twice.
 ///
-/// `// own-context-ok: <why>` hatches a site whose store is not the run's
-/// (`init` opens the one its own arguments name).
+/// `// own-context-ok: <why>`, on the call's line or in the comment run directly
+/// above it, hatches a site with no `RunContext` to ask (`cmd_init` takes no
+/// `&Cli`).
 #[test]
 fn no_cli_site_builds_a_second_package_context() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
@@ -16091,7 +16092,7 @@ fn no_cli_site_builds_a_second_package_context() {
                 threaded += 1;
             }
             if !line.contains("PackageContext::new(")
-                || label_hatched(&lines, n, "// own-context-ok:")
+                || line_hatched(&lines, n, "// own-context-ok:")
             {
                 continue;
             }
@@ -16100,11 +16101,14 @@ fn no_cli_site_builds_a_second_package_context() {
     }
     assert!(
         threaded >= 8,
-        "the walk reads the threaded sites too, and found only {threaded} —          `RunContext::package_context` has been renamed out from under it"
+        "the walk reads the threaded sites too, and found only {threaded} — \
+         `RunContext::package_context` has been renamed out from under it"
     );
     assert!(
         offenders.is_empty(),
-        "a command under cli/ builds its own PackageContext instead of taking          the run's `ctx.package_context()`, so its managers are enumerated a          second time (say why with `// own-context-ok:`):\n{}",
+        "a command under cli/ builds its own PackageContext instead of taking \
+         the run's `ctx.package_context()`, so its managers are enumerated a \
+         second time (say why with `// own-context-ok:`):\n{}",
         offenders.join("\n")
     );
 }
@@ -16266,21 +16270,32 @@ fn is_title_case(label: &str) -> bool {
     })
 }
 
-/// Whether the literal on line `n` is covered by `marker`, on its own line, on
-/// the line above, or on the doc block of the function that builds it — rows
-/// pushed in a loop are nowhere near the reason they keep their own spelling.
-fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+/// Whether line `n` itself is covered by `marker`: on the line, or anywhere in
+/// the comment run directly above it, so a reason that needed two lines to say
+/// still hatches the one line it was written for. The NARROW half of
+/// [`label_hatched`], for a walk whose subject is one call rather than a row
+/// pushed in a loop — a marker in the enclosing function's doc block would
+/// hatch every call in that function.
+fn line_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
     if lines[n].contains(marker) {
         return true;
     }
-    // The whole comment run directly above the line, so a reason that needed
-    // two lines to say still hatches the line it was written for.
     let mut above = n;
     while above > 0 && lines[above - 1].trim_start().starts_with("//") {
         above -= 1;
         if lines[above].contains(marker) {
             return true;
         }
+    }
+    false
+}
+
+/// Whether the literal on line `n` is covered by `marker`, on its own line, on
+/// the line above, or on the doc block of the function that builds it — rows
+/// pushed in a loop are nowhere near the reason they keep their own spelling.
+fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
+    if line_hatched(lines, n, marker) {
+        return true;
     }
     let mut i = n;
     while i > 0 {
