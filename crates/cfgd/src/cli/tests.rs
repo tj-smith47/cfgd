@@ -37090,6 +37090,7 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let files = rust_sources_under(&packages_dir);
     let mut offering = 0usize;
+    let mut gated = 0usize;
     let mut offenders = Vec::new();
     for path in files
         .into_iter()
@@ -37112,9 +37113,11 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
                 continue;
             }
             offering += 1;
-            if plan_body_decides_by_platform(body)
-                || body.iter().any(|l| l.contains("// every-platform-ok:"))
-            {
+            if plan_body_decides_by_platform(body) {
+                gated += 1;
+                continue;
+            }
+            if body.iter().any(|l| l.contains("// every-platform-ok:")) {
                 continue;
             }
             offenders.push(format!("{}:{}", path.display(), n + 1));
@@ -37123,6 +37126,11 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
     assert!(
         offering >= 10,
         "the walk no longer reaches the managers that plan a bootstrap — it found {offering}"
+    );
+    assert!(
+        gated >= 8,
+        "the walk no longer reaches the plans whose arm one platform runs and another \
+         does not — it found {gated}"
     );
     assert!(
         offenders.is_empty(),
@@ -37175,6 +37183,288 @@ fn the_plan_platform_walk_reads_an_arm_a_cfg_withholds() {
     assert!(
         !plan_body_can_offer_a_plan(&never),
         "a commented-out plan is no plan, so the body is outside the population"
+    );
+}
+
+/// The managers whose bootstrap route is legitimately withheld, each beside the
+/// file that declares it. A manager here either ships with the platform that
+/// has it (`winget`, a distribution's own `apt` or `pacman`), exists on one
+/// platform only (`choco`, `scoop`, `snap`, `flatpak`), is installed by a
+/// sibling that shares its binary (`brew-tap`, `brew-cask`), runs an installer
+/// nothing else packages (`nix`, `brew`), or is a user-written definition
+/// cfgd never installs at all (`scripted`).
+const WITHHELD_BOOTSTRAP_ROUTES: &[(&str, &str)] = &[
+    ("brew", "brew/mod.rs"),
+    ("brew-cask", "brew/mod.rs"),
+    ("brew-tap", "brew/mod.rs"),
+    ("chocolatey", "choco.rs"),
+    ("flatpak", "flatpak.rs"),
+    ("nix", "nix.rs"),
+    ("scoop", "scoop.rs"),
+    ("scripted", "scripted/mod.rs"),
+    ("simple", "simple/mod.rs"),
+    ("snap", "snap.rs"),
+    ("winget", "winget.rs"),
+];
+
+/// The marker a withheld route and a declined arm both carry.
+const NO_DRIVEN_ROUTE_MARKER: &str = "// no-driven-route-ok:";
+
+/// Whether a `bootstrap_plan_given` body can answer `None` — the shape that
+/// says "this host is offered no route at all", whether a `cfg` withholds it on
+/// one platform or the body withholds it everywhere.
+fn plan_body_withholds_a_route(body: &[&str]) -> bool {
+    body.iter().any(|l| {
+        let t = l.trim();
+        t == "None" || t == "None," || t.ends_with(" None")
+    })
+}
+
+/// npm on Windows told the reader to go and install Node, while cfgd already
+/// drove winget, choco and scoop on that same host. The gap was not npm's: a
+/// mediator answering `None` is answering that nothing on this platform can
+/// install its tool, which is a claim about the whole manager population and
+/// only the source can say whether it is true.
+///
+/// So a body that withholds a route belongs to a manager whose route genuinely
+/// cannot exist — the roster above, named here so a manager outside it fails —
+/// or it says why on the branch with `// no-driven-route-ok: <why>`.
+#[test]
+fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    for (manager, file) in WITHHELD_BOOTSTRAP_ROUTES {
+        assert!(
+            packages_dir.join(file).is_file(),
+            "the roster names {manager} as declared in {file}, which no longer exists"
+        );
+    }
+    let rostered: Vec<&str> = WITHHELD_BOOTSTRAP_ROUTES.iter().map(|(_, f)| *f).collect();
+
+    let mut withholding = 0usize;
+    let mut offenders = Vec::new();
+    for path in rust_sources_under(&packages_dir)
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        let relative = path
+            .strip_prefix(&packages_dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains(" fn bootstrap_plan_given(") {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len());
+            let body = &lines[n..end];
+            if !plan_body_withholds_a_route(body) {
+                continue;
+            }
+            withholding += 1;
+            if rostered.contains(&relative.as_str())
+                || body.iter().any(|l| l.contains(NO_DRIVEN_ROUTE_MARKER))
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        withholding >= 11,
+        "the walk no longer reaches the managers that withhold a route — it found \
+         {withholding}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a manager that hands back no bootstrap plan is claiming no manager on that \
+         platform can install its tool — give it an arm in its table, add it to \
+         WITHHELD_BOOTSTRAP_ROUTES, or say why with `{NO_DRIVEN_ROUTE_MARKER} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// One arms table as the source declares it: the arm names in order, and which
+/// of them carry an empty package list.
+struct DeclaredArms {
+    name: String,
+    arms: Vec<String>,
+    declined_unmarked: Vec<String>,
+}
+
+/// Read every `MediatedArms` literal out of one source. Entries are
+/// `("<arm>", &[…])` one per line, and a declined arm's reason may be written
+/// once above a contiguous run of declines, so the scan upward accepts the
+/// marker anywhere in the comment-and-decline run that opens the group.
+fn declared_arms_tables(body: &str) -> Vec<DeclaredArms> {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut tables = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let Some(head) = line.strip_suffix(": MediatedArms = MediatedArms {") else {
+            continue;
+        };
+        let name = head.trim().trim_start_matches("const ").to_string();
+        let end = (n + 1..lines.len())
+            .find(|&i| lines[i] == "};")
+            .unwrap_or(lines.len());
+        let mut arms = Vec::new();
+        let mut declined_unmarked = Vec::new();
+        for i in n + 1..end {
+            let t = lines[i].trim();
+            if !t.starts_with("(\"") {
+                continue;
+            }
+            let Some(arm) = t[2..].split('"').next() else {
+                continue;
+            };
+            arms.push(arm.to_string());
+            if !t.contains("&[])") {
+                continue;
+            }
+            let marked = (n + 1..=i).rev().take_while(|&j| {
+                let p = lines[j].trim();
+                j == i || p.starts_with("//") || p.starts_with("(\"")
+            });
+            if !marked
+                .clone()
+                .any(|j| lines[j].contains(NO_DRIVEN_ROUTE_MARKER))
+            {
+                declined_unmarked.push(arm.to_string());
+            }
+        }
+        tables.push(DeclaredArms {
+            name,
+            arms,
+            declined_unmarked,
+        });
+    }
+    tables
+}
+
+/// `system_packages_for` is the ONE resolution of a mediator to the packages it
+/// installs for a manager, so an arm a table simply omits is indistinguishable
+/// from one it decided against: both answer `None`, and the mediator is offered
+/// no plan on a host carrying only that manager. npm's missing Windows rows are
+/// how a winget host came to read "install Node yourself".
+///
+/// So every table covers the whole registered population, Windows members
+/// included, and an arm it genuinely cannot install declares an empty list with
+/// `// no-driven-route-ok: <why>` beside it.
+#[test]
+fn every_mediated_arms_table_names_every_system_manager_or_declines_it() {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut tables = 0usize;
+    let mut offenders = Vec::new();
+    for path in rust_sources_under(&packages_dir)
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+    {
+        for table in declared_arms_tables(&cfgd_core::test_helpers::production_slice_of(&path)) {
+            tables += 1;
+            for manager in cfgd_core::providers::SYSTEM_MANAGER_NAMES {
+                if !table.arms.iter().any(|a| a == manager) {
+                    offenders.push(format!(
+                        "{} names no {manager} arm in {}",
+                        path.display(),
+                        table.name
+                    ));
+                }
+            }
+            for arm in &table.declined_unmarked {
+                offenders.push(format!(
+                    "{}'s {} declines {arm} without saying why",
+                    path.display(),
+                    table.name
+                ));
+            }
+        }
+    }
+    assert!(
+        tables >= 6,
+        "the walk no longer reaches the mediators that declare an arms table — it found \
+         {tables}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every mediator names a package for every registered system manager, or declines \
+         the arm with an empty list and `{NO_DRIVEN_ROUTE_MARKER} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The two walks above, driven negatively: a withheld route with no roster
+/// entry and no marker is caught, the marked twin is not, and a table that
+/// omits an arm or declines one silently is read as such.
+#[test]
+fn the_withheld_route_walks_read_an_unmarked_refusal() {
+    let head =
+        "    fn bootstrap_plan_given(&self, _d: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {";
+    let unmarked = vec![
+        head,
+        "        #[cfg(windows)]",
+        "        {",
+        "            None",
+        "        }",
+        "    }",
+    ];
+    assert!(
+        plan_body_withholds_a_route(&unmarked),
+        "a cfg-gated `None` is exactly what the walk is for"
+    );
+    assert!(
+        !unmarked.iter().any(|l| l.contains(NO_DRIVEN_ROUTE_MARKER)),
+        "the fixture carries no reason, so a manager off the roster fails on it"
+    );
+    let offering = vec![
+        head,
+        "        detect_windows_method(&X_MEDIATED, d).map(BootstrapPlan::new)",
+        "    }",
+    ];
+    assert!(
+        !plan_body_withholds_a_route(&offering),
+        "a body that can only answer a method withholds nothing"
+    );
+
+    let silent = declared_arms_tables(
+        "const X_MEDIATED: MediatedArms = MediatedArms {\n    \
+         brew: None,\n    arms: &[\n        (\"apt\", &[\"x\"]),\n        \
+         (\"winget\", &[]),\n    ],\n};\n",
+    );
+    let [table] = silent.as_slice() else {
+        panic!("the fixture declares one table, read back {}", silent.len());
+    };
+    assert_eq!(table.name, "X_MEDIATED");
+    assert_eq!(table.arms, ["apt", "winget"]);
+    assert_eq!(
+        table.declined_unmarked,
+        ["winget"],
+        "an empty list with no reason above it is what the walk reports"
+    );
+    assert!(
+        !cfgd_core::providers::SYSTEM_MANAGER_NAMES
+            .iter()
+            .all(|m| table.arms.iter().any(|a| a == m)),
+        "the fixture omits most of the population, which the walk reports too"
+    );
+
+    let marked = declared_arms_tables(
+        "const Y_MEDIATED: MediatedArms = MediatedArms {\n    \
+         brew: None,\n    arms: &[\n        // no-driven-route-ok: nothing there \
+         packages it.\n        (\"winget\", &[]),\n        (\"scoop\", &[]),\n    ],\n};\n",
+    );
+    let [marked] = marked.as_slice() else {
+        panic!("the fixture declares one table");
+    };
+    assert!(
+        marked.declined_unmarked.is_empty(),
+        "one reason above a contiguous run of declines covers the run"
     );
 }
 
