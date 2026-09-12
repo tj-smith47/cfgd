@@ -337,7 +337,7 @@ fn lock_for(target: &Path) -> Result<FileLockGuard> {
             .into(),
         ))
     })?;
-    let key = crate::sha256_hex(target.to_string_lossy().as_bytes());
+    let key = crate::sha256_hex(crate::to_posix_string(target).as_bytes());
     let dir = runtime.join("skill-locks").join(key);
     acquire_apply_lock(&dir).map_err(|e| SkillError::Lock(Box::new(e)).into())
 }

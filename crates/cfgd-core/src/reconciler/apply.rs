@@ -1066,15 +1066,14 @@ impl<'a> super::Reconciler<'a> {
                     .collect(),
             );
 
-            // Collect git source info
             let git_sources: Vec<serde_json::Value> = module
                 .files
                 .iter()
                 .filter(|f| f.is_git_source)
                 .map(|f| {
                     serde_json::json!({
-                        "source": f.source.display().to_string(),
-                        "target": f.target.display().to_string(),
+                        "source": crate::to_posix_string(&f.source),
+                        "target": crate::to_posix_string(&f.target),
                     })
                 })
                 .collect();

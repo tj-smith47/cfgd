@@ -107,7 +107,7 @@ pub(super) fn merge_with_policy(
                             } else {
                                 owner.source.clone()
                             },
-                            resource: managed.target.to_string_lossy().to_string(),
+                            resource: crate::to_posix_string(&managed.target),
                         });
                     }
                     // Detect conflict between two non-local sources
@@ -118,13 +118,13 @@ pub(super) fn merge_with_policy(
                         // Same priority = unresolvable (no deterministic winner)
                         if layer.priority == owner.priority {
                             return Err(CompositionError::UnresolvableConflict {
-                                resource: managed.target.to_string_lossy().to_string(),
+                                resource: crate::to_posix_string(&managed.target),
                                 source_names: vec![owner.source.clone(), layer.source.clone()],
                             });
                         }
                         // Different priorities: higher priority wins, record override
                         conflicts.push(ConflictResolution {
-                            resource_id: managed.target.to_string_lossy().to_string(),
+                            resource_id: crate::to_posix_string(&managed.target),
                             resolution_type: ResolutionType::Override,
                             winning_source: layer.source.clone(),
                             details: format!(
