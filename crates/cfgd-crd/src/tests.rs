@@ -848,6 +848,28 @@ fn module_validate_rejects_empty_depends() {
 }
 
 #[test]
+fn module_validate_rejects_a_hook_with_an_empty_run() {
+    let spec = ModuleSpec {
+        hooks: Some(cfgd_schema::ScriptSpec {
+            post_apply: vec![cfgd_schema::ScriptEntry::Simple("   ".to_string())],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let errors = spec
+        .validate()
+        .expect_err("a hook step that runs nothing must be refused");
+
+    assert_eq!(
+        errors,
+        vec!["spec.hooks: scripts.postApply[0] has an empty 'run'".to_string()],
+        "the CRD refuses a hook body in the words the local parser uses, so a module the \
+         agent rejects is not admitted by the cluster"
+    );
+}
+
+#[test]
 fn module_validate_rejects_malformed_oci_ref() {
     let spec = ModuleSpec {
         oci_artifact: Some("  ".to_string()),

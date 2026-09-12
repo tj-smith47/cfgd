@@ -1126,6 +1126,11 @@ impl ModuleSpec {
                 errors.push(format!("spec.depends[{i}] must not be empty"));
             }
         }
+        if let Some(ref hooks) = self.hooks
+            && let Err(e) = cfgd_schema::validate_script_bodies("spec.hooks", hooks)
+        {
+            errors.push(e.to_string());
+        }
         if let Some(ref oci) = self.oci_artifact
             && !is_valid_oci_reference(oci)
         {
