@@ -869,13 +869,13 @@ fn module_validate_rejects_a_hook_with_an_empty_run() {
     );
 }
 
-/// The second hook declaration on the Module CRD: a scalar `postApply` command
-/// whose body is blank.
+/// The second hook declaration on the Module CRD: a scalar `postApply` script
+/// path whose value is blank.
 ///
 /// The webhook builds an init container for every module declaring this field,
-/// so a blank body is a container that runs nothing and a module the agent
-/// refuses on every machine it reaches. The refusal comes from the same shape
-/// rule the list-shaped hooks answer to, which is why the wording matches.
+/// so a blank value is a container that runs nothing. The refusal comes from the
+/// same shape rule the list-shaped hooks answer to, worded for what this field
+/// holds: there is no `run` key to be empty, the value itself is blank.
 #[test]
 fn module_validate_rejects_a_blank_post_apply_script() {
     let spec = ModuleSpec {
@@ -891,8 +891,8 @@ fn module_validate_rejects_a_blank_post_apply_script() {
 
     assert_eq!(
         errors,
-        vec!["spec: scripts.postApply has an empty 'run'".to_string()],
-        "the scalar hook is refused in the same words as a hook step"
+        vec!["spec: scripts.postApply is blank".to_string()],
+        "a scalar field carries no 'run' key, so the refusal names the value it judged"
     );
     assert!(
         ModuleScripts {

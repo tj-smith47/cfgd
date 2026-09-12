@@ -8284,7 +8284,7 @@
       {
         "children": [
           {
-            "description": "Command run once after the module's files and packages are in place. Omitted, nothing runs.",
+            "description": "Path of a script to run once after the module is mounted into a pod, relative to the module's own directory (`setup.sh`, `bin/init.sh`). The admission webhook runs it from an init container that mounts the module at `/cfgd-modules/<name>`, so it names a file the module's artifact ships rather than a command line. Omitted, nothing runs. The inline commands a machine's agent runs around a deployment are `spec.hooks`, which carries a body per lifecycle hook.",
             "name": "postApply",
             "required": false,
             "type": "string"

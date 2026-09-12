@@ -395,6 +395,7 @@ pub fn validate_script_bodies(subject: &str, spec: &ScriptSpec) -> Result<(), Sc
             validate_script_body(
                 subject,
                 &format!("scripts.{hook}[{index}]"),
+                ScriptBodyShape::Step,
                 entry.run_str(),
             )?;
         }
@@ -409,13 +410,45 @@ pub fn validate_script_bodies(subject: &str, spec: &ScriptSpec) -> Result<(), Sc
 /// of steps or as the single command a scalar hook field carries: a blank body
 /// runs nothing wherever it was declared, and one wording keeps two surfaces
 /// from refusing the same document differently.
-pub fn validate_script_body(subject: &str, slot: &str, body: &str) -> Result<(), ScriptShapeError> {
+pub fn validate_script_body(
+    subject: &str,
+    slot: &str,
+    shape: ScriptBodyShape,
+    body: &str,
+) -> Result<(), ScriptShapeError> {
     if body.trim().is_empty() {
         return Err(ScriptShapeError(format!(
-            "{subject}: {slot} has an empty 'run'"
+            "{subject}: {slot} {}",
+            shape.blank_fault()
         )));
     }
     Ok(())
+}
+
+/// How a declared script body was written, which decides how a refusal words
+/// itself.
+///
+/// A reader fixes the authoring mistake by editing the YAML in front of them, so
+/// the refusal describes the shape it judged: a step in a list has a `run` key to
+/// name, while a scalar hook field holds the command itself and has no `run` key
+/// for a message to point at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptBodyShape {
+    /// A step in a hook's list, carrying its body under a `run` key.
+    Step,
+    /// A hook field holding one command as a plain scalar.
+    Scalar,
+}
+
+impl ScriptBodyShape {
+    /// What is wrong with a blank body of this shape, as the clause closing a
+    /// refusal that has already named the slot.
+    fn blank_fault(self) -> &'static str {
+        match self {
+            Self::Step => "has an empty 'run'",
+            Self::Scalar => "is blank",
+        }
+    }
 }
 
 /// Which layer owns a backup unit's schedule.

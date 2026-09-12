@@ -500,19 +500,25 @@ pub struct ModuleFileSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleScripts {
-    /// Command run once after the module's files and packages are in place.
-    /// Omitted, nothing runs.
+    /// Path of a script to run once after the module is mounted into a pod,
+    /// relative to the module's own directory (`setup.sh`, `bin/init.sh`). The
+    /// admission webhook runs it from an init container that mounts the module
+    /// at `/cfgd-modules/<name>`, so it names a file the module's artifact
+    /// ships rather than a command line. Omitted, nothing runs.
+    ///
+    /// The inline commands a machine's agent runs around a deployment are
+    /// `spec.hooks`, which carries a body per lifecycle hook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_apply: Option<String>,
 }
 
 impl ModuleScripts {
-    /// The post-apply command this module declares, if it declares one.
+    /// The post-apply script path this module declares, if it declares one.
     ///
-    /// A blank body runs nothing, so it is no declaration: [`ModuleSpec::validate`]
+    /// A blank path names no file, so it is no declaration: [`ModuleSpec::validate`]
     /// refuses one, and every reader asks this rather than `post_apply.is_some()`
     /// so a module already admitted under an older webhook cannot have an init
-    /// container built for a command there is nothing to run.
+    /// container built around a path there is nothing at.
     pub fn post_apply_body(&self) -> Option<&str> {
         self.post_apply
             .as_deref()
@@ -1150,6 +1156,7 @@ impl ModuleSpec {
             && let Err(e) = cfgd_schema::validate_script_body(
                 "spec",
                 &format!("scripts.{}", cfgd_schema::POST_APPLY_HOOK),
+                cfgd_schema::ScriptBodyShape::Scalar,
                 post_apply,
             )
         {
