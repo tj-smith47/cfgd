@@ -2124,6 +2124,92 @@ else
     log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
 fi
 
+log_section "Rules catalog signatures (shared-utils.md <-> the sources)"
+
+# The catalog spells an argument list per entry, and a reader takes it for the
+# real signature: `validate_script_body(subject, slot, body)` outlived the
+# `shape` argument the refusal gained, and four other entries had drifted the
+# same way. Only a plain identifier list is judged; an entry writing `…`, a
+# type, or a closure is describing a shape rather than quoting one.
+signature_gap="$(python3 - <<'PY'
+import pathlib
+import re
+
+doc = pathlib.Path(".claude/rules/shared-utils.md").read_text()
+shapes = set()
+for match in re.finditer(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\(([^`()]*)\)`", doc):
+    name, args = match.group(1), match.group(2).strip()
+    short = name.split("::")[-1]
+    if short in ("cfg", "format", "println") or not args:
+        continue
+    if any(ch in args for ch in '…&<>".=|'):
+        continue
+    shapes.add((short, len([a for a in args.split(",") if a.strip()]), match.group(0)))
+
+sources = {
+    path: path.read_text(errors="replace")
+    for path in pathlib.Path("crates").rglob("*.rs")
+}
+
+
+def arities(fn):
+    """Every param count the workspace defines for `fn`, receivers excluded."""
+    found = []
+    opener = re.compile(r"fn %s\s*(?:<[^>]*>)?\s*\(" % re.escape(fn))
+    for body in sources.values():
+        for match in opener.finditer(body):
+            start = match.end() - 1
+            depth, end = 0, start
+            while end < len(body):
+                if body[end] == "(":
+                    depth += 1
+                elif body[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            depth, parts, current, previous = 0, [], "", ""
+            for ch in body[start + 1:end]:
+                if ch in "(<[":
+                    depth += 1
+                elif ch in ")]" or (ch == ">" and previous != "-"):
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(current)
+                    current = ""
+                else:
+                    current += ch
+                previous = ch
+            if current.strip():
+                parts.append(current)
+            named = [
+                part.strip()
+                for part in parts
+                if part.strip() and "self" not in part.split(":")[0]
+            ]
+            found.append(len(named))
+    return found
+
+
+checked = 0
+for short, documented, spelling in sorted(shapes):
+    real = arities(short)
+    if not real:
+        continue
+    checked += 1
+    if documented not in real:
+        print(f"{spelling}: the sources define {sorted(set(real))} argument(s)")
+if checked < 200:
+    print(f"the scan judged only {checked} signatures; it has gone blind to the catalog")
+PY
+)"
+if [ -n "$signature_gap" ]; then
+    log_error "shared-utils.md entries whose argument list no definition matches:"
+    printf '%s\n' "$signature_gap"
+else
+    log_ok "Every shared-utils.md argument list matches a real definition"
+fi
+
 log_section "case_insensitive_enum! reaches serde through \$crate"
 
 # The macro is `#[macro_export]`ed, so its expansion lands in crates that carry
