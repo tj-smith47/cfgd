@@ -45,7 +45,10 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .heading("Available Profiles")
         .status(
             Role::Warn,
-            format!("Profiles directory not found: {}", profiles_dir.posix()),
+            format!(
+                "Profiles directory not found: {}",
+                cfgd_core::fold_home_in_text(&profiles_dir.display_posix())
+            ),
         )
         .with_data(&empty)
 }

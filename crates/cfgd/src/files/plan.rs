@@ -557,12 +557,16 @@ impl super::CfgdFileManager {
         printer: &Printer,
     ) -> Result<FileDriftResult> {
         let target_path = expand_tilde(target);
+        // absolute-path-ok: the drift row id, matched against stored rows
         let target_id = target_path.display_posix();
 
         if !source_path.exists() {
             printer.status_simple(
                 Role::Warn,
-                format!("Source not found: {}", source_path.posix()),
+                format!(
+                    "Source not found: {}",
+                    cfgd_core::fold_home_in_text(&source_path.display_posix())
+                ),
             );
             // Reported as a non-match, not as "no drift": the desired content
             // could not be determined, which is never the same as convergence.
@@ -1014,14 +1018,27 @@ pub(crate) fn render_patch_diff(
     match &evaluated {
         Err(e) => printer.status_simple(
             Role::Warn,
-            format!("{}: {}", target.display_posix(), patch_failure_detail(e)),
+            format!(
+                "{}: {}",
+                cfgd_core::fold_home_in_text(&target.display_posix()),
+                patch_failure_detail(e)
+            ),
         ),
         Ok(outcome) if !outcome.is_up_to_date() => {
             if target.exists() {
-                printer.status_simple(Role::Info, target.display_posix());
+                printer.status_simple(
+                    Role::Info,
+                    cfgd_core::fold_home_in_text(&target.display_posix()),
+                );
                 printer.diff(&outcome.current, &outcome.patched);
             } else {
-                printer.status_simple(Role::Info, format!("{} (new file)", target.posix()));
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "{} (new file)",
+                        cfgd_core::fold_home_in_text(&target.display_posix())
+                    ),
+                );
                 printer.syntax_highlight(&outcome.patched, &detect_language(target));
             }
         }

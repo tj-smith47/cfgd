@@ -931,7 +931,7 @@ pub(in crate::cli) fn scan_profile_names(
                         Role::Warn,
                         format!(
                             "Profile file '{}' has metadata.name '{}'; using '{}'",
-                            found.path.display(), // native-ok: human warn message, not a key
+                            cfgd_core::fold_home_in_text(&found.path.display_posix()),
                             doc.metadata.name,
                             found.name
                         ),
@@ -945,7 +945,7 @@ pub(in crate::cli) fn scan_profile_names(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
-                    found.path.display(), // native-ok: human warn message, not a key
+                    cfgd_core::fold_home_in_text(&found.path.display_posix()),
                     cfgd_core::output::collapse_to_subject_line(&e)
                 ),
             ),

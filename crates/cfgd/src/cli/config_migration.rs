@@ -93,7 +93,13 @@ pub fn maybe_migrate_macos_config(
 fn migrate_move(printer: &Printer, legacy: &Path, native: &Path) -> Option<PathBuf> {
     match cfgd_core::move_dir(legacy, native) {
         Ok(()) => {
-            printer.status_simple(Role::Ok, format!("Moved config to {}", native.posix()));
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Moved config to {}",
+                    cfgd_core::fold_home_in_text(&native.display_posix())
+                ),
+            );
             Some(native.to_path_buf())
         }
         Err(e) => {
@@ -102,7 +108,7 @@ fn migrate_move(printer: &Printer, legacy: &Path, native: &Path) -> Option<PathB
                 format!(
                     "Could not move config ({}); continuing from {}",
                     collapse_to_subject_line(&e),
-                    legacy.posix()
+                    cfgd_core::fold_home_in_text(&legacy.display_posix())
                 ),
             );
             None
@@ -122,9 +128,13 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
         std::env::set_var("XDG_CONFIG_HOME", &xdg);
     }
     match persist_xdg_pin(home) {
-        Ok(Some(rc)) => {
-            printer.status_simple(Role::Ok, format!("Set XDG_CONFIG_HOME in {}", rc.posix()))
-        }
+        Ok(Some(rc)) => printer.status_simple(
+            Role::Ok,
+            format!(
+                "Set XDG_CONFIG_HOME in {}",
+                cfgd_core::fold_home_in_text(&rc.display_posix())
+            ),
+        ),
         Ok(None) => printer.note(
             "Set XDG_CONFIG_HOME for this session; add \
              `export XDG_CONFIG_HOME=\"$HOME/.config\"` to your shell config to persist it.",
@@ -266,7 +276,10 @@ fn migrate_legacy_data_dirs_at(
     match cfgd_core::state::migrate_state_db(legacy, new_state) {
         Ok(true) => printer.status_simple(
             Role::Info,
-            format!("Migrated state database to {}", new_state.posix()),
+            format!(
+                "Migrated state database to {}",
+                cfgd_core::fold_home_in_text(&new_state.display_posix())
+            ),
         ),
         Ok(false) => {}
         Err(e) => printer.status_simple(
@@ -312,7 +325,10 @@ fn migrate_legacy_data_dirs_at(
         match cfgd_core::move_dir(&legacy_sources, new_sources) {
             Ok(()) => printer.status_simple(
                 Role::Info,
-                format!("Migrated sources cache to {}", new_sources.posix()),
+                format!(
+                    "Migrated sources cache to {}",
+                    cfgd_core::fold_home_in_text(&new_sources.display_posix())
+                ),
             ),
             Err(e) => printer.status_simple(
                 Role::Warn,
@@ -350,7 +366,13 @@ fn migrate_state_file(printer: &Printer, legacy: &Path, new_state: &Path, name: 
         return;
     }
     match cfgd_core::move_file(&src, &dst) {
-        Ok(()) => printer.status_simple(Role::Info, format!("Migrated {name} to {}", dst.posix())),
+        Ok(()) => printer.status_simple(
+            Role::Info,
+            format!(
+                "Migrated {name} to {}",
+                cfgd_core::fold_home_in_text(&dst.display_posix())
+            ),
+        ),
         Err(e) => printer.status_simple(
             Role::Warn,
             format!(

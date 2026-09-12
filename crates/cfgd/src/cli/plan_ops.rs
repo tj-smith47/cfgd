@@ -835,7 +835,10 @@ pub(in crate::cli) fn display_plan_preview(
                                 printer
                                     .status(
                                         Role::Warn,
-                                        format!("Cannot preview {}", target.posix()),
+                                        format!(
+                                            "Cannot preview {}",
+                                            cfgd_core::fold_home_in_text(&target.display_posix())
+                                        ),
                                     )
                                     .detail(cfgd_core::output::collapse_to_subject_line(e));
                                 continue;
@@ -1288,9 +1291,12 @@ fn prompt_conflict_policy(
         Some(m) => format!(
             "Module '{}': target exists as unmanaged file: {}",
             m,
-            target.posix()
+            cfgd_core::fold_home_in_text(&target.display_posix())
         ),
-        None => format!("Target exists as unmanaged file: {}", target.posix()),
+        None => format!(
+            "Target exists as unmanaged file: {}",
+            cfgd_core::fold_home_in_text(&target.display_posix())
+        ),
     };
     printer.status_simple(Role::Warn, subject);
     match printer.prompt_select("How should cfgd handle this file?", options) {

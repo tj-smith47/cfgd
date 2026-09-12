@@ -69,7 +69,13 @@ pub fn cmd_module_build(
                         serde_json::json!({ "dir": dir, "target": targets[0] }),
                     )
                 })?;
-            printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Built to {}",
+                    cfgd_core::fold_home_in_text(&output_dir.display_posix())
+                ),
+            );
             output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
 
             if let Some(art) = artifact {
@@ -109,7 +115,10 @@ pub fn cmd_module_build(
                 let sp = owner.spinner(format!("Building for {t}"));
                 let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
                     Ok(d) => {
-                        sp.finish_ok(format!("Built {t} to {}", d.posix()));
+                        sp.finish_ok(format!(
+                            "Built {t} to {}",
+                            cfgd_core::fold_home_in_text(&d.display_posix())
+                        ));
                         d
                     }
                     Err(e) => {

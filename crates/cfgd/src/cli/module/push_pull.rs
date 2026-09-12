@@ -191,7 +191,7 @@ fn build_module_signature(
                         Role::Warn,
                         format!(
                             "No sibling public key found at '{}'; the applied CRD will fail the disallowUnsigned admission check",
-                            pub_key_path.display() // native-ok: human-facing warning, not a stored/compared key
+                            cfgd_core::fold_home_in_text(&pub_key_path.display_posix())
                         ),
                     );
                     unsigned_cosign()

@@ -836,6 +836,7 @@ pub fn run_backup_rollback(
     cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
         .header(printer);
 
+    // absolute-path-ok: the `-o json` copy field; the prompt below folds its own
     let copy_display = copy.path.posix().to_string();
     let target = cfgd_core::backup::restore_target(&unit, None);
     if !yes && !confirm_rollback(printer, name, &copy_display, &target)? {

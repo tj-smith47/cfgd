@@ -404,7 +404,10 @@ pub fn cmd_profile_update(
         {
             printer.status_simple(
                 Role::Warn,
-                format!("Secret targeting '{}' already exists", target.posix()),
+                format!(
+                    "Secret targeting '{}' already exists",
+                    cfgd_core::fold_home_in_text(&target.display_posix())
+                ),
             );
             continue;
         }
@@ -412,7 +415,7 @@ pub fn cmd_profile_update(
             "{} {} {}",
             secret.source,
             printer.arrow(),
-            target.posix()
+            cfgd_core::fold_home_in_text(&target.display_posix())
         ));
         doc.spec.secrets.push(secret);
         changes += 1;

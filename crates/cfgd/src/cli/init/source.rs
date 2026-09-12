@@ -51,7 +51,10 @@ pub(crate) fn resolve_from(
         } else {
             let mut row = printer.status(
                 Role::Info,
-                format!("Already initialized at {}", dest.posix()),
+                format!(
+                    "Already initialized at {}",
+                    cfgd_core::fold_home_in_text(&dest.display_posix())
+                ),
             );
             if let Some(detail) = checkout_detail(&dest) {
                 row = row.detail(detail);

@@ -184,9 +184,9 @@ pub(crate) fn run_profile_migrate(
                         Role::Pending,
                         format!(
                             "Would move {} {} {}",
-                            from.posix(),
+                            cfgd_core::fold_home_in_text(&from.display_posix()),
                             printer.arrow(),
-                            to.posix()
+                            cfgd_core::fold_home_in_text(&to.display_posix())
                         ),
                     );
                     records.push(MigrationRecord {
@@ -268,7 +268,12 @@ pub(crate) fn run_profile_migrate(
                     Ok(()) => {
                         printer.status_simple(
                             Role::Ok,
-                            format!("Migrated '{}' {} {}", name, printer.arrow(), to.posix()),
+                            format!(
+                                "Migrated '{}' {} {}",
+                                name,
+                                printer.arrow(),
+                                cfgd_core::fold_home_in_text(&to.display_posix())
+                            ),
                         );
                         records.push(MigrationRecord {
                             name: name.clone(),
@@ -398,7 +403,7 @@ fn execute_move(
                         Role::Warn,
                         format!(
                             "`git mv` failed for {} ({})",
-                            from.posix(),
+                            cfgd_core::fold_home_in_text(&from.display_posix()),
                             cfgd_core::output::collapse_to_subject_line(&stderr),
                         ),
                     )

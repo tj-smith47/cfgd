@@ -570,6 +570,7 @@ pub fn cmd_module_update_local(
             let (source, _) = parse_file_spec(spec)?;
             let basename = source
                 .file_name()
+                // absolute-path-ok: a returned error names the path the caller typed
                 .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?
                 .to_string_lossy()
                 .to_string();
@@ -604,7 +605,7 @@ pub fn cmd_module_update_local(
         });
         printer
             .status(Role::Ok, "Added file")
-            .qualifier(target.posix().to_string());
+            .qualifier(cfgd_core::fold_home_in_text(&target.display_posix()));
         changes += 1;
     }
 
@@ -945,7 +946,13 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::remove_file(&target)?;
                     }
-                    purge_sec.status_simple(Role::Info, format!("Purged {}", target.posix()));
+                    purge_sec.status_simple(
+                        Role::Info,
+                        format!(
+                            "Purged {}",
+                            cfgd_core::fold_home_in_text(&target.display_posix())
+                        ),
+                    );
                     files_processed += 1;
                 }
             }
@@ -969,7 +976,13 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::copy(&source, &target)?;
                     }
-                    restore_sec.status_simple(Role::Info, format!("Restored {}", target.posix()));
+                    restore_sec.status_simple(
+                        Role::Info,
+                        format!(
+                            "Restored {}",
+                            cfgd_core::fold_home_in_text(&target.display_posix())
+                        ),
+                    );
                     files_processed += 1;
                 }
             }

@@ -102,7 +102,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
         let mut row = printer.status(
             Role::Info,
-            format!("Already initialized at {}", target_dir.posix()),
+            format!(
+                "Already initialized at {}",
+                cfgd_core::fold_home_in_text(&target_dir.display_posix())
+            ),
         );
         if let Some(detail) = super::source::checkout_detail(&target_dir) {
             row = row.detail(detail);
@@ -167,7 +170,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     }
 
     if !destination_named_by_clone {
-        printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
+        printer.status_simple(
+            Role::Ok,
+            format!(
+                "Initialized at {}",
+                cfgd_core::fold_home_in_text(&target_dir.display_posix())
+            ),
+        );
     }
 
     // Close the section explicitly, here, rather than letting it fall out of

@@ -39,7 +39,13 @@ fn cleanup_payload_dir(
     } else if remove_payload {
         std::fs::remove_dir_all(dir)?;
     } else {
-        printer.status_simple(Role::Info, format!("Kept {}", dir.posix()));
+        printer.status_simple(
+            Role::Info,
+            format!(
+                "Kept {}",
+                cfgd_core::fold_home_in_text(&dir.display_posix())
+            ),
+        );
     }
     Ok(())
 }

@@ -209,7 +209,13 @@ pub fn cmd_checkin(
         let push_sec = printer.section("Server Config");
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
-                push_sec.status_simple(Role::Ok, format!("Saved to {}", path.posix()));
+                push_sec.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Saved to {}",
+                        cfgd_core::fold_home_in_text(&path.display_posix())
+                    ),
+                );
                 push_sec.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
