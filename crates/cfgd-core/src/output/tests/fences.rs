@@ -487,6 +487,10 @@ fn balanced_close(text: &str) -> Option<usize> {
 /// cannot close the call early. Bounded at a few rows, so an unbalanced paren
 /// cannot swallow the rest of the file and pair the call with an unrelated
 /// `stderr` far below it.
+///
+/// The raw text is the ceiling as well: a `/* … */` span inside the argument
+/// is cut like code but pushed verbatim, so a tell written inside a block
+/// comment reads as a tell. No current call site writes one.
 fn call_argument(lines: &[&str], at: usize, from: usize) -> String {
     const MAX_LINES: usize = 6;
     let mut depth = 1usize;
