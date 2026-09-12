@@ -526,9 +526,10 @@ fn code_half(line: &str) -> String {
 }
 
 /// Whether the construction on `lines[at]` is exempted by a `// <marker> <why>`
-/// comment on its own line or the line above, with a reason written after it. The comment start is located on the
-/// literal-blanked line and the marker read from the true comment, so a line
-/// cannot claim the hatch by carrying the marker inside a string literal.
+/// comment on its own line or the line above, with a reason written after it.
+/// The comment start is located on the literal-blanked line and the marker is
+/// read from the true comment, so a line cannot claim the hatch by carrying the
+/// marker inside a string literal.
 fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     let marked = |line: &str| {
         blank_string_literals(line)
@@ -4499,15 +4500,16 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
 /// edits the fixture, and the literals stay where they were. Six call sites were
 /// in exactly that shape.
 ///
-/// Two shapes are welded and both are CHECKED here, each by the thing that welds
-/// it. An array BOUND to a name is welded by the assertion reading that name back
-/// (`for (slot, count) in slots`, `format!` off `slots[0].1`), so the name is
-/// required to appear again below the call, inside the same function body and
-/// before any later `let` rebinds it: bound and then asserted against retyped
-/// bytes, the binding guards nothing an array of literals does not. An INLINE array is welded by every value being read off
-/// the product under test (`tally.succeeded`, `class[0].1`), so every entry is
-/// parsed and a bare integer is the offence, because nothing connects that
-/// integer to the bytes asserted.
+/// Two shapes are welded and both are CHECKED here, each by the thing that
+/// welds it. An array BOUND to a name is welded by the assertion reading that
+/// name back (`for (slot, count) in slots`, `format!` off `slots[0].1`), so the
+/// name is required to appear again below the call, inside the same function
+/// body and before any later `let` rebinds it: bound and then asserted against
+/// retyped bytes, the binding guards nothing an array of literals does not. An
+/// INLINE array is welded by every value being read off the product under test
+/// (`tally.succeeded`, `class[0].1`), so every entry is parsed and a bare
+/// integer is the offence, because nothing connects that integer to the bytes
+/// asserted.
 ///
 /// Both readings judge the WHOLE argument: the accumulation runs to the balanced
 /// `]` rather than the first `]` CHARACTER, since a value may hold a bracket of
@@ -4862,12 +4864,13 @@ fn hand_substitutions(lines: &[&str], from: usize) -> Vec<usize> {
 /// with Windows. The helper substitutes BOTH spellings of every path handed to
 /// it, so no verdict turns on where the host puts its temp directory.
 ///
-/// Judged on the pair: a `.replace(` whose first argument names a path and whose
-/// second is an angle-bracketed label, read to the call's balanced close so a
-/// call rustfmt split over rows is judged like an inline one. The region is the test one — a file under
-/// a `tests/` directory whole, every other from its first `#[cfg(test)]` on —
-/// because a production fold substitutes a path for a marker too, and
-/// `fold_home_in_text` is the one this rule is named after.
+/// Judged on the pair: a `.replace(` whose first argument names a path and
+/// whose second is an angle-bracketed label, read to the call's balanced close
+/// so a call rustfmt split over rows is judged like an inline one. The region
+/// is the test one — a file under a `tests/` directory whole, every other from
+/// its first `#[cfg(test)]` on — because a production fold substitutes a path
+/// for a marker too, and `fold_home_in_text` is the one this rule is named
+/// after.
 ///
 /// `// hand-substitution-ok: <why>` hatches a substitution the helper cannot
 /// perform.
