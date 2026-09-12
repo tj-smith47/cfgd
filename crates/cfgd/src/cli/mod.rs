@@ -2867,9 +2867,11 @@ pub fn execute(
             cli,
             printer,
             module.as_deref(),
-            *exit_code,
-            *scan,
-            *show_values,
+            status::StatusRun {
+                exit_code: *exit_code,
+                scan: *scan,
+                show_values: *show_values,
+            },
         ),
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)

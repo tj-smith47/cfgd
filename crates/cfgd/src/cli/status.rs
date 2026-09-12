@@ -1128,7 +1128,7 @@ fn managed_resource_rows(
         std::collections::BTreeMap::new();
 
     for r in items {
-        if records_a_script(r) {
+        if records_a_script(&r.resource_type, &r.resource_id) {
             continue;
         }
         if let Some((manager, package)) = package_id_parts(&r.resource_type, &r.resource_id) {
@@ -1421,12 +1421,15 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
 /// there is no status to state about one. Both walks that read recorded rows
 /// ask this — the Managed Resources table and the Component Health counts that
 /// must agree with it — and `-o json` still carries every row raw.
-fn records_a_script(r: &cfgd_core::state::ManagedResource) -> bool {
-    if r.resource_type == "script" || r.resource_type == "Running script" {
-        return true;
-    }
-    module_id_parts(&r.resource_type, &r.resource_id)
-        .is_some_and(|(_, rest)| rest.split(':').next() == Some("script"))
+///
+/// The module arm reads the tail through
+/// [`cfgd_core::reconciler::module_row_facet`], the one reader of that
+/// grammar.
+fn records_a_script(resource_type: &str, resource_id: &str) -> bool {
+    resource_type == "script"
+        || resource_type == "Running script"
+        || (resource_type == "module"
+            && cfgd_core::reconciler::module_row_facet(resource_id) == Some("script"))
 }
 
 /// A module's file deployment: where the files land, and how many the apply
@@ -1975,7 +1978,9 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
     let mut recorded: std::collections::BTreeMap<String, std::collections::BTreeMap<&str, usize>> =
         std::collections::BTreeMap::new();
     for r in &output.managed_resources {
-        if module_id_parts(&r.resource_type, &r.resource_id).is_some() || records_a_script(r) {
+        if module_id_parts(&r.resource_type, &r.resource_id).is_some()
+            || records_a_script(&r.resource_type, &r.resource_id)
+        {
             continue;
         }
         let noun = if r.resource_type == ENV_RESOURCE_TYPE {
@@ -2605,14 +2610,34 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         })
 }
 
+/// What one `cfgd status` invocation asked for beyond the scope it named: the
+/// two flags that change what the run DOES, and the one knob that changes how
+/// much of a module it itemizes.
+///
+/// A named shape because three adjacent booleans in a call are three chances
+/// to transpose two of them, and every one of these reads as plausible in any
+/// position.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct StatusRun {
+    /// Exit nonzero when the run stands on drift, and scan to find out.
+    pub exit_code: bool,
+    /// Check the machine rather than reporting what is recorded.
+    pub scan: bool,
+    /// Render each declared item's own value beside its name.
+    pub show_values: bool,
+}
+
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
     module_filter: Option<&str>,
-    exit_code: bool,
-    scan: bool,
-    show_values: bool,
+    run: StatusRun,
 ) -> anyhow::Result<()> {
+    let StatusRun {
+        exit_code,
+        scan,
+        show_values,
+    } = run;
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
     // to see it. `exit_code` alone still decides whether the run EXITS
@@ -4118,13 +4143,18 @@ mod tests {
             name: "nvim".to_string(),
             packages: vec![
                 declared_package("gcc", "build-essential"),
+                declared_package("pip", "python3-pip"),
                 declared_package("curl", "curl"),
             ],
             files: vec![],
             ..cfgd_core::test_helpers::make_resolved_module("nvim")
         };
         let declared = ModuleDeclared::of(&module);
-        for recorded_names in ["gcc,curl", "build-essential,curl"] {
+        // Every name in these two rows resolves under a spelling of its own, so
+        // neither row has a name whose canonical and resolved spellings match
+        // and could carry the prefix for its row-mates: keyed by the resolved
+        // name alone, the canonical row finds nothing and renders bare.
+        for recorded_names in ["gcc,pip", "build-essential,python3-pip"] {
             assert_eq!(
                 module_packages_resource(recorded_names, Some(&declared)),
                 format!("apt: {}", module_package_names(recorded_names).join(", ")),
@@ -4274,6 +4304,42 @@ mod tests {
         assert_eq!(display_type("env"), "env");
         assert_eq!(display_type("env-rc"), "rc");
         assert_eq!(display_type("env-session"), "session");
+    }
+
+    /// No table wording a kind names a script, because no row reaches one.
+    ///
+    /// The population above says what the Type column prints; this says what
+    /// it must not. `script` and `Running script` are `resource_type` values an
+    /// apply still records, so the exclusion is the only thing keeping them off
+    /// the screen: [`records_a_script`] answers for each of them and for a
+    /// module's own `<name>:script` row, and neither of the two bodies that
+    /// word a kind — the fold `display_type` applies, the lead order
+    /// `ordered_kind_counts` counts in — spells either literal. An arm added
+    /// there would word a row nothing renders.
+    #[test]
+    fn no_table_wording_a_kind_names_a_script() {
+        for resource_type in ["script", "Running script"] {
+            assert!(
+                records_a_script(resource_type, "anything"),
+                "{resource_type:?} is a recorded row the table states nothing about"
+            );
+        }
+        assert!(
+            records_a_script("module", "nvim:script"),
+            "a module's own recorded script row is the same class"
+        );
+        for signature in ["fn display_type(", "fn ordered_kind_counts<"] {
+            let body = production_fn_body(signature);
+            let literals = string_literals(&body);
+            assert!(
+                !literals.is_empty(),
+                "{signature} no longer spells the kinds it words"
+            );
+            assert!(
+                literals.iter().all(|word| !word.contains("script")),
+                "{signature} words a script kind: {literals:?}"
+            );
+        }
     }
 
     /// A config dir whose profile resolves to something its DECLARED list does
@@ -4446,7 +4512,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -4493,7 +4559,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -4554,14 +4620,14 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let cold = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let status = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
         // The two verbs that build a `Plan`: their header reads its module
@@ -6036,15 +6102,22 @@ mod tests {
         }
     }
 
+    /// The text of one production function of this file, for a claim about the
+    /// arms it spells. The signature and the closing brace are both required,
+    /// so a rename fails the reader rather than handing back an empty body a
+    /// walk would pass over.
+    fn production_fn_body(signature: &str) -> String {
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
+        let source = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let start = source.find(signature).expect("the named production fn");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the fn's closing brace");
+        body[..end].to_string()
+    }
+
     /// The Type words `display_type` FOLDS a recorded token onto — its match
     /// arms read off this file, so the walk above sees a kind added there.
     fn folded_type_column_words() -> Vec<String> {
-        let source = include_str!("status.rs");
-        let start = source
-            .find("fn display_type(")
-            .expect("the Type column's mapping fn");
-        let body = &source[start..];
-        let end = body.find("\n}\n").expect("the fn's closing brace");
         // cfgd's own env groups name their arms through consts, but their
         // WORDS are literals in the same body; neither belongs to a module,
         // so both are dropped here rather than by spelling.
@@ -6052,7 +6125,7 @@ mod tests {
             display_type(ENV_RC_RESOURCE_TYPE),
             display_type(ENV_SESSION_RESOURCE_TYPE),
         ];
-        let mut words: Vec<String> = string_literals(&body[..end])
+        let mut words: Vec<String> = string_literals(&production_fn_body("fn display_type("))
             .into_iter()
             .map(|token| display_type(&token).to_string())
             .filter(|word| !cfgd_owned.contains(&word.as_str()))
@@ -6290,7 +6363,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6325,7 +6398,16 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, true).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            Some("test-mod"),
+            StatusRun {
+                show_values: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -6356,7 +6438,7 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
         drop(printer);
 
         let out = cap.human();
@@ -6377,7 +6459,7 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false, false, false).unwrap_err();
+        let err = cmd_status(&cli, &printer, None, StatusRun::default()).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -6391,7 +6473,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6432,7 +6514,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6471,7 +6553,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6512,7 +6594,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6536,7 +6618,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6568,7 +6650,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6590,7 +6672,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6616,7 +6698,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false, false, false);
+        let res = cmd_status(&cli, &printer, None, StatusRun::default());
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -6629,7 +6711,16 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true, true, false);
+        let res = cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                exit_code: true,
+                scan: true,
+                ..StatusRun::default()
+            },
+        );
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -6656,7 +6747,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6739,7 +6839,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6766,7 +6875,16 @@ mod tests {
         // up there too — a reader healing drift needs the declared value in
         // front of them, not only the terse absence word.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &human_printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
@@ -6863,7 +6981,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             let editor_line = human
@@ -6881,7 +7008,7 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6983,7 +7110,16 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
@@ -7006,7 +7142,16 @@ mod tests {
             let mut cli = test_cli_for(config_path.clone(), &state_dir);
             cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
             let (printer, buf) = test_printers_json();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let captured = cfgd_core::test_helpers::captured_text(&buf);
             let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7082,7 +7227,16 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), &state_dir);
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
         let human = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
@@ -7094,7 +7248,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7140,7 +7303,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -7173,7 +7336,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -8418,7 +8581,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8467,7 +8630,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8743,7 +8906,7 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(

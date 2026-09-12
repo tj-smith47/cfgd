@@ -1,6 +1,6 @@
 //! Snapshot tests for `cfgd status`.
 //!
-//! Five cases:
+//! Seven cases:
 //!   - `status/clean.{txt,json}` — fleet status with a clean last-apply, no
 //!     drift, no pending decisions, all modules installed. Exercises the
 //!     Last Apply + No-drift + Modules + Managed Resources path.
@@ -49,7 +49,7 @@ const NOW: &str = "2026-05-14T10:05:00Z";
 /// What the `dev-tools` module's own rows render from: the recorded id says
 /// how many files and which packages, and this is what the live resolution
 /// adds — where the files land, which manager installs each package, and the
-/// hooks the module declares.
+/// hook count `-o json` carries.
 fn dev_tools_declared() -> ModuleDeclared {
     let surfaces = declared_surfaces(18, 12);
     ModuleDeclared {
