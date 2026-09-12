@@ -98,11 +98,11 @@ pub fn cmd_verify(
     registry.set_system_config_dir(config_dir);
     let module_cache = module_cache_dir(cli)?;
 
-    // ONE context for both halves of the run: the reconciler's package check
-    // and the manager-drift plan below both diff against installed state, and
-    // sharing the context is what makes that one enumeration per manager for
-    // the whole command instead of one per half.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    // The run's own context, so every half reads one enumeration per manager:
+    // the reconciler's package check and the manager-drift plan below both diff
+    // against installed state, and a `--module` run resolved its chain against
+    // the same listing above.
+    let pkg_cx = ctx.package_context()?;
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.

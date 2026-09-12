@@ -16058,6 +16058,57 @@ fn every_result_line_opens_with_a_past_tense_verb() {
     );
 }
 
+/// One installed-state read per run: every production site under `cli/` takes
+/// the run's own `RunContext::package_context`, whose enumerations are shared
+/// for the whole invocation, rather than building a second `PackageContext` of
+/// its own. A second context memoizes separately, so `cfgd status --module
+/// --scan` asked every manager for its installed listing twice — once for the
+/// chain resolution and once for the declared-floor pass — and the comment at
+/// the package join claimed an enumeration the run had already paid for twice.
+///
+/// `// own-context-ok: <why>` hatches a site whose store is not the run's
+/// (`init` opens the one its own arguments name).
+#[test]
+fn no_cli_site_builds_a_second_package_context() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let files = rust_sources_under(&cli_dir);
+    let mut offenders = Vec::new();
+    let mut threaded = 0usize;
+    for path in files {
+        if path
+            .file_name()
+            .is_some_and(|n| n == "tests.rs" || n == "run_context.rs")
+        {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if line.contains("package_context()") {
+                threaded += 1;
+            }
+            if !line.contains("PackageContext::new(")
+                || label_hatched(&lines, n, "// own-context-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        threaded >= 8,
+        "the walk reads the threaded sites too, and found only {threaded} —          `RunContext::package_context` has been renamed out from under it"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a command under cli/ builds its own PackageContext instead of taking          the run's `ctx.package_context()`, so its managers are enumerated a          second time (say why with `// own-context-ok:`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The verdict's wording and its role are `nothing_to_do_verdict`'s to choose.
 /// A surface naming `MSG_NOTHING_TO_DO` itself re-decides both, and that is
 /// exactly how `plan` came to print a green up-to-date line under a block of

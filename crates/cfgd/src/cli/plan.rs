@@ -98,7 +98,7 @@ pub fn cmd_plan(
     // diffs against it, and `Reconciler::plan` diffs a module's declared
     // packages against the same enumeration, so a converged host asks each
     // manager once rather than once per surface.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    let pkg_cx = ctx.package_context()?;
 
     // An isolate names its own modules on the command line, so its row renders
     // only what the resolution ADDED to them.

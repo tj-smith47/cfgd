@@ -1727,6 +1727,26 @@ fn package_owner(
     profile_declares.then(|| profile_owner.cloned()).flatten()
 }
 
+/// Whether a check-error key names an env surface, the first of the three key
+/// grammars the erroring-check producers mint.
+///
+/// Judged by SHAPE rather than by a `/` substring: a slash is legal inside a
+/// package name (`npm:@scope/name`, `go:github.com/foo/bar`), so a substring
+/// test hands those to the env surface — the env owner reads `Unknown` while
+/// the module that declared the package still reads `Synced`. The env producer
+/// mints its key from a real path, which is absolute wherever a home directory
+/// resolved and keeps its leading `~/` where none did; both are accepted,
+/// because the tilde form is what the producer emits on a host with no `HOME`,
+/// and no package id takes either shape.
+///
+/// The ONE answer to that question: the Component Health attribution below and
+/// the module report's split of its erroring checks across the Packages and
+/// Shell sections both ask it, so neither can read a key the way the other
+/// would not.
+fn check_key_names_env_surface(key: &str) -> bool {
+    std::path::Path::new(key).is_absolute() || key.starts_with("~/")
+}
+
 /// Which Component Health owner a check that could not run belongs to, so the
 /// owner's verdict states the unknown instead of a word only an answered
 /// check earns.
@@ -1741,21 +1761,14 @@ fn package_owner(
 /// answerer [`recorded_owner`] asks, so a failed check on `~/.bashrc` lands on
 /// the owner whose row lists it rather than on its neighbour.
 ///
-/// The env arm is judged by SHAPE rather than by a `/` substring: a slash is
-/// legal inside a package name (`npm:@scope/name`, `go:github.com/foo/bar`),
-/// so a substring test hands those to the env surface — the env owner reads
-/// `Unknown` while the module that declared the package still reads `Synced`.
-/// The env producer mints its key from a real path, which is absolute
-/// wherever a home directory resolved and keeps its leading `~/` where none
-/// did; both are accepted, because the tilde form is what the producer emits
-/// on a host with no `HOME`, and no package id takes either shape.
+/// The env arm is [`check_key_names_env_surface`].
 fn check_error_owner(
     key: &str,
     output: &StatusOutput,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
     use cfgd_core::reconciler::Owner;
-    if std::path::Path::new(key).is_absolute() || key.starts_with("~/") {
+    if check_key_names_env_surface(key) {
         return Some(Owner::cfgd(env_method_group(
             cfgd_core::reconciler::recorded_env_method(key),
         )));
@@ -2336,25 +2349,50 @@ fn render_module_inventories(
     show_values: bool,
     scripts: ScriptsForm,
 ) -> Doc {
-    let mut doc = doc.section_if_nonempty("Packages", &output.package_state, |s, pkgs| {
-        let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        sorted.into_iter().fold(s, |s, pkg| {
-            // An installed row names the manager that has it and nothing
-            // else: the ✓ is the verdict, so repeating the word would say
-            // it twice. Every other row leads with the verdict, because
-            // that is the exception it reports, and names its manager
-            // after it — one name may be declared twice under two
-            // managers, and two rows reading `neovim — not scanned` say
-            // nothing about which entry is which.
-            let detail = match (&pkg.manager, pkg.state) {
-                (Some(m), ModulePackagePresence::Installed) => m.clone(),
-                (Some(m), state) => format!("{} ({m})", state.label()),
-                (None, state) => state.label().to_string(),
-            };
-            s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+    // A check that could not run belongs to the section whose rows it is about,
+    // read through the ONE key-grammar answerer the Component Health
+    // attribution asks: an env surface's own path is a finding about the Shell
+    // rows, and every other key the module report's producers mint is a
+    // package floor (`<manager>:<package>`), which is a finding about the
+    // Packages rows. A declared `minVersion` nothing could compare once
+    // degraded every alias and env var to `not scanned` on the strength of a
+    // failure that never looked at them.
+    let (env_probe_errors, package_check_errors): (Vec<_>, Vec<_>) = output
+        .system_errors
+        .iter()
+        .partition(|err| check_key_names_env_surface(&err.key));
+
+    let mut doc = if output.package_state.is_empty() && package_check_errors.is_empty() {
+        doc
+    } else {
+        doc.section("Packages", |s| {
+            let mut sorted: Vec<&ModulePackageStatus> = output.package_state.iter().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            let s = sorted.into_iter().fold(s, |s, pkg| {
+                // An installed row names the manager that has it and nothing
+                // else: the ✓ is the verdict, so repeating the word would say
+                // it twice. Every other row leads with the verdict, because
+                // that is the exception it reports, and names its manager
+                // after it — one name may be declared twice under two
+                // managers, and two rows reading `neovim — not scanned` say
+                // nothing about which entry is which.
+                let detail = match (&pkg.manager, pkg.state) {
+                    (Some(m), ModulePackagePresence::Installed) => m.clone(),
+                    (Some(m), state) => format!("{} ({m})", state.label()),
+                    (None, state) => state.label().to_string(),
+                };
+                s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+            });
+            // The same row the compact Drift section and `diff` render for the
+            // identical check, so `--exit-code`'s Error exit is never invisible
+            // on the wide report.
+            package_check_errors.iter().fold(s, |s, err| {
+                s.status_with(Role::Warn, err.subject(), |f| {
+                    f.qualifier("error checking drift").detail(&err.error)
+                })
+            })
         })
-    });
+    };
 
     // The cause a drifted file's row carries, keyed through the id producer
     // both halves already agree on (`drifted_ids` matches the same way): a
@@ -2411,7 +2449,7 @@ fn render_module_inventories(
     // has no Drift section to carry it.
     if !output.declared.env.is_empty()
         || !output.declared.aliases.is_empty()
-        || !output.system_errors.is_empty()
+        || !env_probe_errors.is_empty()
     {
         // A Shell row carries the report's own drift verdict for its item —
         // recorded or scanned, whatever filled `output.drift` — so an
@@ -2436,8 +2474,10 @@ fn render_module_inventories(
         };
         // With the env probe errored, every unanswered Shell verdict is
         // unknown: the item rows degrade to `not scanned` instead of a green
-        // the scan never reached.
-        let probe_errored = !output.system_errors.is_empty();
+        // the scan never reached. Judged on the env probe's own failures —
+        // a package floor the scan could not read says nothing about whether
+        // an alias was checked.
+        let probe_errored = !env_probe_errors.is_empty();
         // A live scan (`do_scan`) is a real check standing behind an item
         // with no cause: absence of a finding there means "checked and
         // clean", the same as a converged `Deployed Files` row. Without a
@@ -2506,7 +2546,7 @@ fn render_module_inventories(
             // the same row the compact Drift section and `diff` render for
             // the identical probe, so `--exit-code`'s Error exit is never
             // invisible on the wide report.
-            output.system_errors.iter().fold(s, |s, err| {
+            env_probe_errors.iter().fold(s, |s, err| {
                 s.status_with(Role::Warn, err.subject(), |f| {
                     f.qualifier("error checking drift").detail(&err.error)
                 })
@@ -2850,7 +2890,7 @@ pub(super) fn cmd_status(
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+        let pkg_cx = ctx.package_context()?;
         let fm = crate::files::CfgdFileManager::new(&config_dir, &resolved)?;
         let module_cache = module_cache_dir(cli)?;
         let report = super::live_drift::live_drift_results(
@@ -3141,6 +3181,9 @@ pub(super) fn cmd_status_module(
         )
     };
     if do_scan {
+        // The run's one context, so every pass below — the chain resolution,
+        // the declared-floor check, and the package join after this block —
+        // asks each manager for its installed listing once.
         let pkg_cx = ctx.package_context()?;
         let resolved_modules = resolve_chain(Some(&pkg_cx))?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
@@ -3199,10 +3242,6 @@ pub(super) fn cmd_status_module(
                 }
 
                 sp.set_message(format!("Scanning module:{mod_name} packages"));
-                // ONE context across every package of every resolved module,
-                // so a manager is enumerated once however many packages name
-                // it (`PackageContext::installed_for`'s memo).
-                let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
                 // The declared-floor pass over this chain's own packages,
                 // through the ONE engine the full walk reads: this surface
                 // RESOLVES version rows, so it evaluates them.
@@ -5354,6 +5393,104 @@ mod tests {
         assert!(
             editor_line.contains(NOT_SCANNED),
             "an unanswered check leaves no green verdict on the item rows: {editor_line}"
+        );
+    }
+
+    /// A `minVersion` the scan could not compare is a fact about a PACKAGE.
+    /// Judging the Shell rows on it degraded every alias and env var to
+    /// `not scanned` over a failure that never looked at them, and rendered the
+    /// package's own row among the Shell inventory. The key grammar is read
+    /// through the one answerer [`check_error_owner`] asks, so the two surfaces
+    /// cannot classify one key two ways.
+    #[test]
+    fn a_package_floor_check_error_leaves_the_shell_rows_their_verdicts() {
+        let output = ModuleStatus {
+            name: "nvim".to_string(),
+            packages: 1,
+            files: 0,
+            env: 1,
+            aliases: 1,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces {
+                env: vec![cfgd_core::config::EnvVar {
+                    name: "EDITOR".to_string(),
+                    value: "vim".to_string(),
+                    platforms: Vec::new(),
+                }],
+                aliases: vec![cfgd_core::config::ShellAlias {
+                    name: "gs".to_string(),
+                    command: "git status --short".to_string(),
+                    platforms: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                name: "fd".to_string(),
+                manager: Some("npm".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: vec![super::super::output_types::SystemCheckError {
+                key: "npm:fd".to_string(),
+                error: "npm ls reported no version".to_string(),
+            }],
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                show_values: true,
+                scripts: ScriptsForm::Condensed,
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let line_of = |needle: &str| {
+            rendered
+                .lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("the report holds {needle}: {rendered}"))
+        };
+        assert!(
+            line_of("error checking drift") < line_of("Shell"),
+            "the failed floor check renders under Packages, ahead of the Shell \
+             section it says nothing about: {rendered}"
+        );
+        assert!(
+            line_of("Packages") < line_of("error checking drift"),
+            "the row sits inside the Packages section: {rendered}"
+        );
+        for item in ["EDITOR", "gs"] {
+            let row = rendered
+                .lines()
+                .find(|l| l.contains(item))
+                .unwrap_or_else(|| panic!("the declared {item} row lists: {rendered}"));
+            assert!(
+                !row.contains(NOT_SCANNED),
+                "a package floor nothing could read leaves the Shell verdicts \
+                 alone: {row}"
+            );
+        }
+        let editor_row = rendered
+            .lines()
+            .find(|l| l.contains("EDITOR"))
+            .map(|l| l.split_whitespace().collect::<Vec<&str>>())
+            .unwrap_or_default();
+        assert_eq!(
+            editor_row,
+            vec!["EDITOR", "vim"],
+            "the clean env row is the kv pair `--show-values` asks for: {rendered}"
         );
     }
 

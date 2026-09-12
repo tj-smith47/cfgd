@@ -270,7 +270,7 @@ pub fn run_apply(
     // both run before a single action executes, so one enumeration per manager
     // answers both. Anything the apply itself installs or removes retires the
     // memo, so nothing downstream of an action can read a stale set.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    let pkg_cx = ctx.package_context()?;
 
     // Dry-run mode needs no secret providers wired up — just plan files for display.
     // Apply mode wires up the full file manager with secret providers.
@@ -562,7 +562,7 @@ pub fn run_apply(
             .map(|m| m.as_ref())
             .collect();
         gc_stale_package_tracking(state, &all_managers, &pkg_cx);
-        gc_orphaned_custom_packages(state, &registry, printer);
+        gc_orphaned_custom_packages(state, &registry, &pkg_cx);
     }
 
     // Whether this run's tree will DRAW anything, asked through the one
@@ -942,7 +942,7 @@ fn gc_stale_package_tracking(
 fn gc_orphaned_custom_packages(
     state: &cfgd_core::state::StateStore,
     registry: &cfgd_core::providers::ProviderRegistry,
-    printer: &cfgd_core::output::Printer,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) {
     let known = registry.manager_names();
     let orphans = match state.orphaned_package_resources(&known) {
@@ -955,8 +955,7 @@ fn gc_orphaned_custom_packages(
     if orphans.is_empty() {
         return;
     }
-    let cx = cfgd_core::providers::PackageContext::new(printer, state);
-    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
+    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, cx) {
         let rid = cfgd_core::state::package_resource_id(&mgr, &pkg);
         if let Err(e) = state.remove_managed_resource("package", &rid) {
             tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");

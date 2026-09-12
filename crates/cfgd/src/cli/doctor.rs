@@ -304,9 +304,7 @@ fn collect_doctor_output(
     let modules_registry = ctx.base_registry();
     let mgr_map = modules_registry.manager_map();
     let platform = Platform::current();
-    let doctor_cx = ctx
-        .state_opt()
-        .map(|state| cfgd_core::providers::PackageContext::new(printer, state));
+    let doctor_cx = ctx.package_context().ok();
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()

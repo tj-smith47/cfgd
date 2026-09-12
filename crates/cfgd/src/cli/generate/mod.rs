@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, MSG_RUN_APPLY, config_dir, open_state_store};
+use super::{Cli, MSG_RUN_APPLY, config_dir};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -181,8 +181,8 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let gen_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &gen_state);
+    let ctx = crate::cli::RunContext::new(cli, printer);
+    let pkg_cx = ctx.package_context()?;
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;

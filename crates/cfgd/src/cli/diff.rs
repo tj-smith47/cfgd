@@ -148,7 +148,7 @@ pub fn cmd_diff(
     // below is presentation over its report; the inline hunks are re-rendered
     // only for the entries the engine already found drifted.
     let report = {
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+        let pkg_cx = ctx.package_context()?;
         super::live_drift::live_drift_results(
             config_dir,
             &resolved,
@@ -611,7 +611,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     )?;
 
     let state = ctx.state()?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let mut diff_payload = DiffOutput::default();
     // The scoped record's two halves (module doc in `live_drift`): every key

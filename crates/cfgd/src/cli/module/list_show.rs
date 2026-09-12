@@ -403,7 +403,8 @@ pub(crate) fn cmd_module_show(
         "local"
     };
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let ctx = crate::cli::RunContext::new(cli, printer);
+    let state = ctx.state()?;
     let state_rec = state.module_state_by_name(name)?;
     // This surface runs no check, so the Status word states the record's fact
     // unless something else's check covers the module: the machine-wide scan
@@ -427,7 +428,7 @@ pub(crate) fn cmd_module_show(
 
     // Which manager already holds a bare entry is part of what "resolved"
     // means, so the display reads the same installed state the plan does.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let pkg_cx = ctx.package_context()?;
     let installed = Some(&pkg_cx);
     let packages: Vec<PackageDisplay> = if module.spec.packages.is_empty() {
         Vec::new()

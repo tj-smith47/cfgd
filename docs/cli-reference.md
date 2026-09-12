@@ -834,6 +834,12 @@ drifted keeps its warning glyph and its cause. `--show-scripts` / `-s` renders
 each script's whole body instead of its condensed first line, and `--show-all` /
 `-a` does both; each implies `-o wide`.
 
+A check that could not run renders on this view as a row under the section whose
+items it is about: a failed env probe under `Shell`, a `minVersion` the manager
+could not compare under `Packages`. Only the failed env probe withholds the
+Shell verdicts (every alias and env var then reads `not scanned`), since a floor
+nothing could read never looked at an alias.
+
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads

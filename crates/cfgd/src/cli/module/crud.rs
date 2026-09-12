@@ -277,12 +277,13 @@ pub fn cmd_module_create(
         drain_config_deprecations(printer, &mut cfg);
         let mut registry = super::build_registry_with_config(Some(&cfg));
         registry.set_system_config_dir(&config_dir);
-        let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+        let ctx = crate::cli::RunContext::new(cli, printer);
+        let store = ctx.state()?;
 
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+        let pkg_cx = ctx.package_context()?;
         let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
@@ -298,7 +299,7 @@ pub fn cmd_module_create(
             merged: config::MergedProfile::default(),
         };
 
-        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
             .with_config_dir(&config_dir)
             .diffing_installed(&pkg_cx)
             // No profile was resolved, so the module this run is about is what
