@@ -8,10 +8,10 @@ operator:
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
     # Pinned to the cfgd-operator crate's own version, which moves independently of
-    # the agent's (appVersion). Maintained by hand: anodizer's version_files sweep is
-    # a whole-file literal replace, so it cannot tell this pin from the CSI one below
-    # when the two crates share a literal (see the operator entry in .anodizer.yaml).
-    # `task chart:tags:check` catches a pin nobody pushed.
+    # the agent's (appVersion). Swept at tag time by the anchored version_files entry
+    # on the cfgd-operator crate, whose `match` spans this repository line to its tag
+    # so the CSI pin below cannot be rewritten with it. `task chart:tags:check`
+    # catches a pin nobody pushed.
     tag: "0.8.0"
     pullPolicy: IfNotPresent
   resources:
@@ -147,7 +147,7 @@ csiDriver:
   image:
     repository: ghcr.io/tj-smith47/cfgd-csi
     # Pinned to the cfgd-csi crate's own version; see the operator image comment
-    # above for why this is maintained by hand.
+    # above for how the two anchored sweeps stay off each other's line.
     tag: "0.7.1"
     pullPolicy: IfNotPresent
   cache:

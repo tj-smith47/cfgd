@@ -159,15 +159,18 @@ single-source-of-truth wiring.
   the published 0.9.0 chart resolved an operator tag nobody had pushed. The
   agent pin is swept by anodizer's `version_files` at tag time, so it must
   name the released version and exist on ghcr. The operator and CSI pins are
-  kept by hand (anodizer refuses one file enrolled by crates with different
-  bumps), so on a release branch each must equal the version `anodizer tag
-  --dry-run` predicts for its crate — the release cut from that very commit
-  publishes it, which is why the guard as an existence check could never
-  pass a pin bump (run 34063783806) — and off a release branch a pin may run
-  ahead of the released version, which the release branch's own run then
-  checks exactly. Both guards are registry/anodizer questions rather than
-  Rust ones; they sit in the one job that holds the tools they need
-  (`task`, anodizer on PATH from the action step, docker, helm, yq, jq),
+  swept at tag time too, by anchored `version_files` entries whose `match`
+  scopes each rewrite to its own crate's line, so each must equal its crate's
+  current version and exist on ghcr. The guard keeps its hand-maintained
+  branch for a pin no crate enrolls: on a release branch such a pin must
+  equal the version `anodizer tag --dry-run` predicts for its crate, because
+  the release cut from that very commit publishes it, which is why the guard
+  as an existence check could never pass a pin bump (run 34063783806); off a
+  release branch it may run ahead of the released version, which the release
+  branch's own run then checks exactly. Both guards are registry/anodizer
+  questions rather than Rust ones; they sit in the one job that holds the
+  tools they need (`task`, anodizer on PATH from the action step, docker,
+  helm, yq, jq),
   and that job checks out with `fetch-depth: 0` because the prediction
   walks the tags.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps

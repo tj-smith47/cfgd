@@ -1,4 +1,8 @@
 #!/bin/sh
+# Every /bin/sh this installer targets (dash, busybox ash, FreeBSD sh, bash, zsh)
+# implements `local`, and dropping it would leak every helper's variables into the
+# caller's scope, so the POSIX-only warning is disabled for the whole file.
+# shellcheck disable=SC3043
 # cfgd installer: detects OS/arch, downloads the matching release archive, verifies its checksum, installs to PATH.
 # Rendered by anodizer at release time, so the platform table below names the
 # assets this release actually uploaded.

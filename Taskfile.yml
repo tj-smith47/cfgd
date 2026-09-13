@@ -260,12 +260,13 @@ tasks:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
       # The chart's three components version independently (agent = appVersion,
-      # operator/csi = their own crate versions). The agent pin is swept by
-      # anodizer's version_files at tag time; the operator and CSI pins are kept
-      # by hand, so on a release branch each must already name the version the
-      # release cut from this commit publishes (`anodizer tag --dry-run`), and
-      # off one it may run ahead of the released version, which the release
-      # branch's own run then checks exactly. Anything else is asked of ghcr.
+      # operator/csi = their own crate versions). All three pins are swept by
+      # anodizer's version_files at tag time, so each must name its crate's
+      # current version. The `hand` branch below is for a pin no crate enrolls:
+      # on a release branch it must already name the version the release cut
+      # from this commit publishes (`anodizer tag --dry-run`), and off one it
+      # may run ahead of the released version, which the release branch's own
+      # run then checks exactly. Anything else is asked of ghcr.
       - cmd: |
           set -e
           predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
