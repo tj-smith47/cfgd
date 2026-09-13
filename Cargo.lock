@@ -580,6 +580,7 @@ dependencies = [
  "brontes",
  "cfgd-core",
  "cfgd-crd",
+ "cfgd-schema",
  "clap",
  "clap_complete",
  "clap_mangen",

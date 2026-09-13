@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::{ConfigError, PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::Role;
 use cfgd_core::providers::{
@@ -277,8 +277,9 @@ pub fn plan_packages_observed(
                 // A version-pinned entry is judged by its BARE name; record
                 // that name's identity too, so the classification looks the
                 // pin up in the same folded space the listing above uses.
-                if let Some((bare, _)) = entry.rsplit_once('@')
+                if let Some((bare, tail)) = entry.rsplit_once('@')
                     && !bare.is_empty()
+                    && cfgd_schema::announces_version_spec(tail)
                 {
                     actual.record_identity(manager.name(), bare, &manager.package_identity(bare));
                 }
@@ -938,11 +939,14 @@ pub fn resolve_manifest_packages_cached(
     config_dir: &Path,
     cache: &ManifestCache,
 ) -> Result<()> {
+    let mut merged: Vec<String> = Vec::new();
+
     // Brew: parse Brewfile, merge taps/formulae/casks
     if let Some(ref mut brew) = packages.brew
         && let Some(ref file) = brew.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
+        merged.push(file.clone());
         if path.exists()
             && let ParsedManifest::Brew(taps, formulae, casks) =
                 cache.get_or_parse(&path, "brew", |p| {
@@ -959,7 +963,8 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut apt) = packages.apt
         && let Some(ref file) = apt.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
+        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
             cfgd_core::union_extend(&mut apt.packages, &pkgs);
@@ -970,7 +975,8 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut npm) = packages.npm
         && let Some(ref file) = npm.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
+        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
             cfgd_core::union_extend(&mut npm.global, &pkgs);
@@ -981,14 +987,32 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut cargo) = packages.cargo
         && let Some(ref file) = cargo.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
+        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
             cfgd_core::union_extend(&mut cargo.packages, &pkgs);
         }
     }
 
+    // A name read out of a manifest becomes an argv token on the same command
+    // line a declared one does, and the parse that judged the declared lists
+    // ran before this merge appended to them.
+    if !merged.is_empty() {
+        let root = format!("spec.packages, merged from {}", merged.join(", "));
+        cfgd_core::config::validate_package_specs_under(&root, packages)?;
+    }
+
     Ok(())
+}
+
+/// The path a declared `<manager>.file` names, refusing one that reaches
+/// outside the config directory it is resolved against.
+fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
+    cfgd_core::validate_no_traversal(Path::new(file)).map_err(|why| ConfigError::Invalid {
+        message: format!("package manifest '{file}' is not a path cfgd will read: {why}"),
+    })?;
+    Ok(config_dir.join(file))
 }
 
 #[cfg(test)]

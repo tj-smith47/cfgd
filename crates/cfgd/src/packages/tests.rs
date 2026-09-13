@@ -2717,6 +2717,100 @@ fn parse_cargo_toml_invalid_toml() {
 
 // --- resolve_manifest_packages edge cases ---
 
+/// A manifest's names reach the same argv a declared one does, so the merge
+/// judges them against the same grammar the profile parse used, and names the
+/// file that carried the refused one.
+#[test]
+fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"foo&calc\"\n").unwrap();
+    std::fs::write(dir.path().join("packages.apt.txt"), "foo&calc\n").unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies": {"foo&calc": "^1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[dependencies]\n\"foo&calc\" = \"4\"\n",
+    )
+    .unwrap();
+
+    for (file, spec) in [
+        (
+            "Brewfile",
+            PackagesSpec {
+                brew: Some(cfgd_core::config::BrewSpec {
+                    file: Some("Brewfile".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "packages.apt.txt",
+            PackagesSpec {
+                apt: Some(cfgd_core::config::AptSpec {
+                    file: Some("packages.apt.txt".into()),
+                    packages: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "package.json",
+            PackagesSpec {
+                npm: Some(cfgd_core::config::NpmSpec {
+                    file: Some("package.json".into()),
+                    global: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Cargo.toml",
+            PackagesSpec {
+                cargo: Some(cfgd_core::config::CargoSpec {
+                    file: Some("Cargo.toml".into()),
+                    packages: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut spec = spec;
+        let why = resolve_manifest_packages(&mut spec, dir.path())
+            .expect_err("a manifest name a command line reads as syntax is refused")
+            .to_string();
+        assert!(
+            why.contains(file) && why.contains("foo&calc"),
+            "the refusal names the manifest and the name: {why}"
+        );
+    }
+}
+
+/// A declared manifest path is resolved against the config directory, so one
+/// that climbs out of it is refused before the join rather than read.
+#[test]
+fn a_manifest_path_that_climbs_out_of_the_config_dir_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("../elsewhere/packages.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, dir.path())
+        .expect_err("a manifest path leaving the config dir is refused")
+        .to_string();
+    assert!(
+        why.contains("../elsewhere/packages.txt") && why.contains(".."),
+        "the refusal names the declared path: {why}"
+    );
+}
+
 #[test]
 fn resolve_manifest_packages_npm_file() {
     let dir = tempfile::tempdir().unwrap();

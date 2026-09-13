@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -971,31 +972,51 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
 /// templates), so a manager or a sub-list added to the schema is covered the
 /// day it is added instead of the day someone remembers this function.
 pub fn validate_package_specs(packages: &PackagesSpec) -> Result<()> {
+    validate_package_specs_under("spec.packages", packages)
+}
+
+/// [`validate_package_specs`], rooted at a path of the caller's own.
+///
+/// For a caller that put the names there itself rather than reading them out
+/// of `spec.packages`: a manifest file merged into the lists after the
+/// document was parsed is judged under the file that carried it, so the
+/// refusal names where the name came from.
+pub fn validate_package_specs_under(root: &str, packages: &PackagesSpec) -> Result<()> {
     let value = serde_json::to_value(packages).map_err(|e| ConfigError::Invalid {
-        message: format!("spec.packages could not be read: {e}"),
+        message: format!("{root} could not be read: {e}"),
     })?;
-    validate_package_names_in("spec.packages", &value)
+    // One buffer for the whole walk: a leaf's subject is read by the validator
+    // and dropped, so a profile of two hundred packages need not mint two
+    // hundred short-lived Strings on a path that runs twice per command.
+    let mut subject = String::new();
+    validate_package_names_in(root, &value, &mut subject)
 }
 
 /// Walk one serialized node of `spec.packages`, judging every string that sits
 /// in an array and descending through the `custom[]` objects.
-fn validate_package_names_in(path: &str, value: &serde_json::Value) -> Result<()> {
+fn validate_package_names_in(
+    path: &str,
+    value: &serde_json::Value,
+    subject: &mut String,
+) -> Result<()> {
     match value {
         serde_json::Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
                 match item {
                     serde_json::Value::String(name) => {
-                        cfgd_schema::validate_package_name(&format!("{path}[{i}]"), name)
+                        subject.clear();
+                        let _ = write!(subject, "{path}[{i}]");
+                        cfgd_schema::validate_package_name(subject, name)
                             .map_err(|e| ConfigError::Invalid { message: e.0 })?;
                     }
-                    other => validate_package_names_in(&format!("{path}[{i}]"), other)?,
+                    other => validate_package_names_in(&format!("{path}[{i}]"), other, subject)?,
                 }
             }
         }
         serde_json::Value::Object(fields) => {
             for (key, field) in fields {
                 if field.is_array() || field.is_object() {
-                    validate_package_names_in(&format!("{path}.{key}"), field)?;
+                    validate_package_names_in(&format!("{path}.{key}"), field, subject)?;
                 }
             }
         }
