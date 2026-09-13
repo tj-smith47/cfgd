@@ -32051,7 +32051,11 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
     // string because the character before the `[` is a bracket. Brackets are
     // counted on the literal-blanked line less any trailing comment, because
     // chocolatey's bootstrap carries unbalanced parentheses inside its
-    // PowerShell script.
+    // PowerShell script. The label is read at the word's FIRST occurrence and a
+    // second one on the same line is not consulted, which is safe because every
+    // `run_pkg_cmd*` signature places `cmd` ahead of `error_kind`, so a one-line
+    // call carrying both an argv element and a kind label is judged by the argv
+    // one.
     let enclosing_calls = |lines: &[(usize, String)]| {
         let mut out: Vec<Option<String>> = Vec::with_capacity(lines.len());
         let mut open: Vec<String> = Vec::new();
