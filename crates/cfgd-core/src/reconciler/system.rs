@@ -52,6 +52,33 @@ impl<'a> super::Reconciler<'a> {
                     super::system_resource_key(configurator, key)
                 ))
             }
+            SystemAction::ConfigureAfterInstall {
+                configurator, tool, ..
+            } => {
+                // Re-probed rather than trusted: the plan was read before this
+                // run's own Bootstrap phase installed the tool, and the
+                // availability sweep the registry ran then is stale by exactly
+                // that install.
+                let Some(sc) = self
+                    .registry
+                    .system_configurators()
+                    .iter()
+                    .find(|sc| sc.name() == configurator && sc.is_available())
+                else {
+                    return Err(crate::errors::SystemError::ConfiguratorUnavailable {
+                        configurator: configurator.clone(),
+                        tool: tool.clone(),
+                    }
+                    .into());
+                };
+                let system = crate::effective::effective_system_map(profile, modules);
+                let Some(desired) = system.get(configurator.as_str()) else {
+                    return Ok(format!("system:{}", configurator));
+                };
+                let cx = SystemContext::with_notes(printer, notes);
+                sc.apply(desired, &cx)?;
+                Ok(format!("system:{}", configurator))
+            }
             SystemAction::Skip { configurator, .. } => {
                 Ok(format!("system:{} (skipped)", configurator))
             }

@@ -43,13 +43,15 @@ pub use apply::{
 };
 pub use env::recorded_manager_path_dirs;
 pub use env_engine::{
-    ENV_VERB_INJECT, ENV_VERB_WRITE, ManagerPathDir, launchd_env_plist, recorded_env_method,
+    ENV_VERB_INJECT, ENV_VERB_WRITE, MACOS_SYSTEM_ENV_SOURCE_LINE, ManagerPathDir,
+    interactive_rc_path, launchd_env_plist, recorded_env_method,
 };
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
     EnvHostProbeOverride, EnvHostProbeOverrideGuard, env_target_basenames,
     with_env_host_probe_override_guard,
 };
+pub use env_files::inject_rc_source_line;
 pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{

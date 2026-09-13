@@ -25,6 +25,11 @@ use super::env_files::{
 /// exists only in bash/zsh/csh. `.` is equivalent in bash and zsh, so one line
 /// loads correctly across every shell cfgd injects into.
 const UNIX_SOURCE_LINE: &str = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+/// The loader line for the macOS `environment` configurator's own managed
+/// file, composed here beside every other one so the two writers cannot spell
+/// the guard differently.
+pub const MACOS_SYSTEM_ENV_SOURCE_LINE: &str =
+    "[ -f ~/.config/cfgd/env.sh ] && . ~/.config/cfgd/env.sh";
 const PS_SOURCE_LINE: &str = ". ~/.cfgd-env.ps1";
 
 /// LaunchAgent label for the *user-scope* (`spec.env`) plist. Deliberately
@@ -815,11 +820,7 @@ fn unix_targets(
         content: generate_env_file_content(env, aliases, posix_path.as_ref(), origins),
         rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
-    let interactive_rc = if probe.shell.contains("zsh") {
-        home.join(".zshrc")
-    } else {
-        home.join(".bashrc")
-    };
+    let interactive_rc = interactive_rc_for(&probe.shell, home);
     out.push(EnvTarget::SourceLine {
         rc_path: interactive_rc,
         line: UNIX_SOURCE_LINE.to_string(),
@@ -893,6 +894,23 @@ fn unix_targets(
                 });
             }
         }
+    }
+}
+
+/// The interactive rc file this host's login shell reads.
+///
+/// The ONE answer both writers of a cfgd loader line take: the env engine's own
+/// source line and the macOS `environment` configurator's, which would
+/// otherwise land in a file the engine never keeps current.
+pub fn interactive_rc_path(home: &Path) -> PathBuf {
+    interactive_rc_for(&EnvHostProbe::detect(home).shell, home)
+}
+
+fn interactive_rc_for(shell: &str, home: &Path) -> PathBuf {
+    if shell.contains("zsh") {
+        home.join(".zshrc")
+    } else {
+        home.join(".bashrc")
     }
 }
 

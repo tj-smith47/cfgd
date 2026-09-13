@@ -552,6 +552,11 @@ fn is_managed_loader(line: &str, marker: &str) -> bool {
         || trimmed.starts_with("if ")
 }
 
+/// The path fragment identifying the macOS `environment` configurator's own
+/// managed file, whose loader line is a different one from the user-scope
+/// `~/.cfgd.env` line and must not be mistaken for it.
+pub(super) const MACOS_ENV_SH_MARKER: &str = "cfgd/env.sh";
+
 /// Ensure the cfgd source `line` is present in an rc file's `existing` content
 /// exactly once, upgrading any stale variant of cfgd's own source line in place.
 /// Returns `None` when the file already holds exactly the desired line and no
@@ -571,6 +576,8 @@ fn is_managed_loader(line: &str, marker: &str) -> bool {
 pub(super) fn merge_source_line(existing: &str, line: &str) -> Option<String> {
     let marker = if line.contains(".cfgd-env.ps1") {
         ".cfgd-env.ps1"
+    } else if line.contains(MACOS_ENV_SH_MARKER) {
+        MACOS_ENV_SH_MARKER
     } else {
         ".cfgd.env"
     };
@@ -609,6 +616,25 @@ pub(super) fn merge_source_line(existing: &str, line: &str) -> Option<String> {
         content.push_str(file_eol);
     }
     Some(content)
+}
+
+/// Ensure `rc_path` loads `line`, through the same merge, baseline guard and
+/// resolved write every managed source line takes.
+///
+/// `Ok(true)` when the file was written, `Ok(false)` when it already held
+/// exactly that line. The ONE writer of a cfgd loader line: the env engine's
+/// `InjectSourceLine` and the macOS `environment` configurator both reach it,
+/// so neither can append a duplicate of the other's line or write an rc file
+/// without the guard.
+pub fn inject_rc_source_line(rc_path: &std::path::Path, line: &str) -> crate::errors::Result<bool> {
+    let existing = read_rc_baseline(rc_path)?;
+    let Some(content) = merge_source_line(&existing, line) else {
+        return Ok(false);
+    };
+    guard_rc_write(rc_path, &existing)?;
+    crate::ensure_parent_dir(rc_path)?;
+    crate::atomic_write_resolved_str(rc_path, &content)?;
+    Ok(true)
 }
 
 /// The line terminator a `split_inclusive('\n')` segment carries, or `None` for

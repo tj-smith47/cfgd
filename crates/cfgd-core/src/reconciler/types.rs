@@ -194,6 +194,13 @@ pub enum ManagerAction {
     /// user-managed resource and never removed later: it is a tool cfgd needed.
     Prerequisite {
         tool: String,
+        /// What `installer` calls the tool, from
+        /// [`crate::providers::INSTALLABLE_TOOLS`]. Carried rather than
+        /// re-derived, so the line a preview printed and the command the apply
+        /// runs are one string: apt installs `pip3` under `python3-pip`, and a
+        /// node that re-looked-up at execute time could answer differently
+        /// from the one the reader approved.
+        package: String,
         installer: String,
         /// The managers that named the tool, in sorted order — one node serves
         /// all of them, and the line says so.
@@ -561,6 +568,21 @@ pub enum SystemAction {
         /// typo, surfaced as a warning); `false` when the configurator exists
         /// but is unavailable on this host (expected, surfaced neutrally).
         unknown: bool,
+    },
+    /// Configure `configurator` once `tool` is on the machine, reading the
+    /// desired set at execute time.
+    ///
+    /// The tool this configurator drives is absent, so the planner could not
+    /// call `diff` and has no per-key rows to promise. The `Bootstrap` phase
+    /// installs the tool ahead of `System`, and the executor then re-asks
+    /// `is_available` (the availability memo moved when the install landed) and
+    /// diffs against the live machine, the way an install re-reads what a
+    /// manager holds before it runs.
+    ConfigureAfterInstall {
+        configurator: String,
+        /// The binary the `Bootstrap` phase is installing for it.
+        tool: String,
+        origin: String,
     },
 }
 
@@ -1655,7 +1677,10 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 "system".to_string(),
                 super::format::system_resource_key(configurator, key),
             ),
-            SystemAction::Skip { configurator, .. } => ("system".to_string(), configurator.clone()),
+            SystemAction::Skip { configurator, .. }
+            | SystemAction::ConfigureAfterInstall { configurator, .. } => {
+                ("system".to_string(), configurator.clone())
+            }
         },
         Action::Script(sa) => {
             match sa {

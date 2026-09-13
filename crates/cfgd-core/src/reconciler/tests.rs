@@ -5191,6 +5191,7 @@ fn a_prerequisite_is_never_recorded_as_a_user_managed_resource() {
                     }),
                     Action::Manager(ManagerAction::Prerequisite {
                         tool: "curl".to_string(),
+                        package: "curl".to_string(),
                         installer: "apt".to_string(),
                         required_by: vec!["brew".to_string()],
                         depends_on: vec![ManagerAction::refresh_node("apt")],
@@ -7409,6 +7410,7 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
         }),
         Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["nix".to_string()],
             depends_on: vec![ManagerAction::refresh_node("apt")],
@@ -7562,11 +7564,11 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
                         "a daemon SetValue row is the composer's id"
                     );
                 }
-                SystemAction::Skip { .. } => {
+                SystemAction::Skip { .. } | SystemAction::ConfigureAfterInstall { .. } => {
                     assert_eq!(rtype, "system");
                     assert!(
                         !rid.contains(':') && !rid.contains('.'),
-                        "a daemon system Skip row is the bare configurator, got {rid:?}"
+                        "a daemon system row with no key is the bare configurator, got {rid:?}"
                     );
                 }
             },
@@ -8474,6 +8476,7 @@ fn every_action_variant() -> Vec<Action> {
         }),
         Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["brew".to_string()],
             depends_on: vec![],
@@ -13167,6 +13170,7 @@ fn every_manager_node_states_what_it_produced() {
         },
         ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["brew".to_string()],
             depends_on: Vec::new(),
@@ -20948,6 +20952,7 @@ fn action_matches_phase_filter_table() {
     // tool) — the exact drift finding 3 fixed.
     let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
         tool: "curl".to_string(),
+        package: "curl".to_string(),
         installer: "brew".to_string(),
         required_by: vec!["brew".to_string()],
         depends_on: vec![],
@@ -25448,6 +25453,7 @@ fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
 fn prerequisite_node(tool: &str, installer: &str, required_by: &[&str]) -> Action {
     Action::Manager(ManagerAction::Prerequisite {
         tool: tool.to_string(),
+        package: tool.to_string(),
         installer: installer.to_string(),
         required_by: required_by.iter().map(|m| (*m).to_string()).collect(),
         depends_on: Vec::new(),

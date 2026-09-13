@@ -1814,6 +1814,7 @@ mod tests {
             },
             ManagerAction::Prerequisite {
                 tool: "curl".into(),
+                package: "curl".into(),
                 installer: "apt".into(),
                 required_by: vec!["brew".into()],
                 depends_on: vec![],
@@ -2533,6 +2534,7 @@ mod tests {
         let managers = Owner::cfgd("managers");
         let curl = Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["brew".to_string()],
             depends_on: Vec::new(),

@@ -192,12 +192,17 @@ impl<'a> super::Reconciler<'a> {
         // and `aliases` the module wrote, and BEFORE the elision below drops
         // the entries those routes were minted from.
         let declared_routes = super::managers::declared_manager_routes(&module_routed);
+        // The `System` and `Secrets` phases are planned further down but run
+        // after this one, so the tools they need are collected here and
+        // installed as prerequisites of the same run.
+        let deferred_tools = self.deferred_tools(&resolved.merged, &module_actions);
         let mut manager_actions = super::managers::plan_managers_with_routes(
             self.registry,
             &profile_packages,
             &module_routed,
             &declared_routes,
             &[],
+            &deferred_tools,
         );
         // A tool this plan's own cascade provisions as a MANAGER is already
         // the run's statement about that tool; a bare module entry naming it
@@ -215,6 +220,7 @@ impl<'a> super::Reconciler<'a> {
                 &module_routed,
                 &declared_routes,
                 &relied_on,
+                &deferred_tools,
             );
         }
 
@@ -382,6 +388,106 @@ impl<'a> super::Reconciler<'a> {
         Ok(())
     }
 
+    /// The tools a consumer outside the manager graph needs on this machine,
+    /// each paired with the token naming that consumer.
+    ///
+    /// A system configurator and a secret backend are both "unavailable" for a
+    /// reason a package manager can fix, and both run in a phase the plan
+    /// reaches after `Bootstrap`. Naming them here is what lets one
+    /// `cfgd apply` install `gsettings` and then set the settings that
+    /// configurator owns, instead of reporting a skip a second run would have
+    /// to clear.
+    pub(super) fn deferred_tools(
+        &self,
+        profile: &MergedProfile,
+        modules: &[ResolvedModule],
+    ) -> Vec<(String, String)> {
+        let mut tools: Vec<(String, String)> =
+            crate::effective::effective_system_map(profile, modules)
+                .keys()
+                .filter_map(|key| {
+                    self.configurator_tool_to_install(key)
+                        .map(|tool| (tool.to_string(), format!("system:{key}")))
+                })
+                .collect();
+
+        // Only for a secret the backend would actually decrypt: a profile whose
+        // every secret is a provider reference gives sops nothing to do, and
+        // installing it would be a package nothing in the run consumes.
+        if profile.secrets.iter().any(|s| {
+            s.target.is_some() && crate::providers::parse_secret_reference(&s.source).is_none()
+        }) && let Some((tool, consumer)) = self.secret_backend_tool()
+        {
+            tools.push((tool.to_string(), consumer));
+        }
+        for secret in &profile.secrets {
+            if let Some((provider, _)) = crate::providers::parse_secret_reference(&secret.source)
+                && let Some((tool, consumer)) = self.secret_provider_tool(provider)
+            {
+                tools.push((tool.to_string(), consumer));
+            }
+        }
+        tools.sort();
+        tools.dedup();
+        tools
+    }
+
+    /// The tool a registered-but-unavailable configurator needs, when this run
+    /// can actually install it.
+    ///
+    /// `None` for a configurator that is available, for a key nothing
+    /// registers, for one whose unavailability no package can fix (it declares
+    /// no tool) and for one whose tool no registered manager packages — each of
+    /// which keeps the skip row the planner already writes.
+    pub(super) fn configurator_tool_to_install(&self, key: &str) -> Option<&'static str> {
+        let sc = self
+            .registry
+            .system_configurators()
+            .iter()
+            .find(|c| c.name() == key)?;
+        if sc.is_available() {
+            return None;
+        }
+        let tool = sc.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool).map(|_| tool)
+    }
+
+    /// The same answer for the secret backend, with the token a prerequisite
+    /// node names it by.
+    fn secret_backend_tool(&self) -> Option<(&'static str, String)> {
+        let backend = self.registry.secret_backend.as_ref()?;
+        if backend.is_available() {
+            return None;
+        }
+        let tool = backend.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool)
+            .map(|_| (tool, format!("secret:{}", backend.name())))
+    }
+
+    /// The same answer for one secret provider.
+    fn secret_provider_tool(&self, provider: &str) -> Option<(&'static str, String)> {
+        let p = self
+            .registry
+            .secret_providers
+            .iter()
+            .find(|p| p.name() == provider)?;
+        if p.is_available() {
+            return None;
+        }
+        let tool = p.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool)
+            .map(|_| (tool, format!("secret:{provider}")))
+    }
+
+    /// Why a declared secret's provider or backend is out of reach, naming the
+    /// managers that would have installed its tool.
+    fn secret_tool_unobtainable(&self, tool: Option<&'static str>) -> String {
+        match tool {
+            Some(tool) => format!(" — {}", crate::providers::tool_unobtainable_reason(tool)),
+            None => String::new(),
+        }
+    }
+
     pub(super) fn plan_system(
         &self,
         profile: &MergedProfile,
@@ -422,13 +528,36 @@ impl<'a> super::Reconciler<'a> {
             if available.iter().any(|c| c.name() == key) {
                 continue;
             }
+            // Unavailable only because its tool is missing, and this run can
+            // install it: the `Bootstrap` phase ahead of us schedules the
+            // install, so the settings are configured in this run rather than
+            // skipped until the next one. The desired set is read at execute
+            // time, `diff` being unrunnable while the tool is absent.
+            if let Some(tool) = self.configurator_tool_to_install(key) {
+                actions.push(Action::System(SystemAction::ConfigureAfterInstall {
+                    configurator: key.clone(),
+                    tool: tool.to_string(),
+                    origin: LOCAL_LAYER.to_string(),
+                }));
+                continue;
+            }
             let registered = self
                 .registry
                 .system_configurators()
                 .iter()
                 .any(|c| c.name() == key);
             let reason = if registered {
-                format!("'{}' is not available on this host", key)
+                let tool = self
+                    .registry
+                    .system_configurators()
+                    .iter()
+                    .find(|c| c.name() == key)
+                    .and_then(|c| c.required_tool());
+                format!(
+                    "'{}' is not available on this host{}",
+                    key,
+                    self.secret_tool_unobtainable(tool)
+                )
             } else {
                 format!("no configurator registered for '{}'", key)
             };
@@ -446,12 +575,18 @@ impl<'a> super::Reconciler<'a> {
     pub(super) fn plan_secrets(&self, profile: &MergedProfile) -> Vec<Action> {
         let mut actions = Vec::new();
 
+        // "Will this run be able to decrypt", not "can it right now": a
+        // backend whose tool the `Bootstrap` phase is installing is usable by
+        // the time `Secrets` runs, and planning the skip instead would leave
+        // the file undecrypted for a run that has everything it needs.
+        let backend_tool = self.secret_backend_tool();
         let has_backend = self
             .registry
             .secret_backend
             .as_ref()
             .map(|b| b.is_available())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || backend_tool.is_some();
 
         for secret in &profile.secrets {
             let has_envs = secret.envs.as_ref().is_some_and(|e| !e.is_empty());
@@ -464,7 +599,8 @@ impl<'a> super::Reconciler<'a> {
                     .registry
                     .secret_providers
                     .iter()
-                    .any(|p| p.name() == provider_name && p.is_available());
+                    .any(|p| p.name() == provider_name && p.is_available())
+                    || self.secret_provider_tool(provider_name).is_some();
 
                 if available {
                     // File-targeting action when a target path is set
@@ -498,9 +634,19 @@ impl<'a> super::Reconciler<'a> {
                         }));
                     }
                 } else {
+                    let tool = self
+                        .registry
+                        .secret_providers
+                        .iter()
+                        .find(|p| p.name() == provider_name)
+                        .and_then(|p| p.required_tool());
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
-                        reason: format!("provider '{}' not available", provider_name),
+                        reason: format!(
+                            "provider '{}' not available{}",
+                            provider_name,
+                            self.secret_tool_unobtainable(tool)
+                        ),
                         origin: LOCAL_LAYER.to_string(),
                     }));
                 }
@@ -540,9 +686,17 @@ impl<'a> super::Reconciler<'a> {
                     origin: LOCAL_LAYER.to_string(),
                 }));
             } else if !has_backend {
+                let tool = self
+                    .registry
+                    .secret_backend
+                    .as_ref()
+                    .and_then(|b| b.required_tool());
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
-                    reason: "no secret backend available".to_string(),
+                    reason: format!(
+                        "no secret backend available{}",
+                        self.secret_tool_unobtainable(tool)
+                    ),
                     origin: LOCAL_LAYER.to_string(),
                 }));
             }

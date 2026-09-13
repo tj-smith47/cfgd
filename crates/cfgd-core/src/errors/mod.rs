@@ -42,6 +42,9 @@ pub enum CfgdError {
     #[error(transparent)]
     Secret(#[from] SecretError),
 
+    #[error(transparent)]
+    System(#[from] SystemError),
+
     #[error("state error: {0}")]
     State(#[from] StateError),
 
@@ -91,6 +94,7 @@ impl CfgdError {
             Self::File(_) => "file",
             Self::Package(_) => "package",
             Self::Secret(_) => "secret",
+            Self::System(_) => "system",
             Self::State(_) => "state",
             Self::Daemon(_) => "daemon",
             Self::Source(_) => "source",
@@ -341,7 +345,7 @@ pub enum PackageError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
-    #[error("sops not found — install: https://github.com/getsops/sops#install")]
+    #[error("sops not found — run `cfgd doctor --fix` to install it")]
     SopsNotFound,
 
     #[error("sops encryption failed for {path}: {message}")]
@@ -571,6 +575,13 @@ pub enum BackupError {
         target: PathBuf,
         destination: PathBuf,
     },
+}
+
+/// A `SystemConfigurator` could not be driven.
+#[derive(Debug, thiserror::Error)]
+pub enum SystemError {
+    #[error("'{configurator}' is still unavailable after {tool} was installed")]
+    ConfiguratorUnavailable { configurator: String, tool: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1060,6 +1071,11 @@ mod tests {
                 "Secret",
                 None,
                 "every variant names sops, a provider, a path or a reference",
+            ),
+            (
+                "System",
+                None,
+                "the one variant names the configurator and the tool",
             ),
             (
                 "State",

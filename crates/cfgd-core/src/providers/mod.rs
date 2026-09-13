@@ -44,7 +44,9 @@ pub trait PackageStateStore {
 
 /// A `PackageStateStore` that remembers nothing — the fixture stub for a
 /// `PackageManager` test whose subject never reaches `cx.state` (bootstrap,
-/// install, uninstall). Re-exported as `test_helpers::NullPackageState`.
+/// install, uninstall), and the store a one-shot [`provision_tool`] runs under,
+/// since a package cfgd needed for ITSELF is never a managed resource.
+/// Re-exported as `test_helpers::NullPackageState`.
 pub struct NoOpPackageState;
 
 impl PackageStateStore for NoOpPackageState {
@@ -1010,30 +1012,439 @@ impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     }
 }
 
-/// The tools a system manager installs under a package of the same name — the
-/// closed population a `Bootstrap` node may run `<system manager> install
-/// <tool>` for.
+/// What one tool cfgd needs is called in each manager's repositories.
 ///
-/// Deliberately not "every tool a cascade names": `pip3` is a cascade
-/// prerequisite too, and no system manager ships a package called `pip3` (apt
-/// calls it `python3-pip`), so a node promising to install it would fail. A
-/// cascade blocked on such a tool is refused with the cause named instead.
-pub const SYSTEM_INSTALLABLE_TOOLS: &[&str] = &["curl"];
+/// Keyed by the tool's BINARY name, because that is what a bootstrap cascade
+/// shells out to and what [`crate::command_available`] answers for; the value
+/// is one entry per manager that packages it, keyed by the REGISTERED manager
+/// name. One declaration per tool, read by every caller that asks "could this
+/// host get it", so a second hand-written copy of a package name cannot make a
+/// node promise `apt install pip3`, which resolves nothing.
+///
+/// A manager absent from a tool's list declines it, and every decline has a
+/// reason:
+///
+/// - `curl` and `ssh-keygen` on the Windows three, and `ssh-keygen` on brew:
+///   they ship with Windows 10 and with macOS, so there is nothing to install.
+/// - `bash` on the Windows three: it is named by npm's nvm arm alone, and nvm
+///   is POSIX only.
+/// - `gsettings`, `xfconf-query` and `kwriteconfig6` on brew and the Windows
+///   three: they configure Linux desktops, which neither platform runs.
+/// - `sops` and `cosign` on dnf and yum: Fedora and RHEL package neither.
+/// - `cosign` on chocolatey: the community repository carries no package.
+/// - `age` on scoop: it lives in scoop's Extras bucket, and cfgd's scoop
+///   install path adds no bucket.
+/// - the secret CLIs (`op`, `bw`, `vault`, `lpass`) on every Unix system
+///   manager: each vendor publishes its own repository or tarball and no
+///   distribution packages them. `lpass` on the Windows three as well:
+///   LastPass publishes no Windows CLI.
+///
+/// The `pkg` entries name FreeBSD port ORIGINS, for the same reason
+/// `MediatedArms` does: an origin is flavour-free and keeps naming the right
+/// port as the default flavour moves. The `apt` entries for `sops` and `cosign`
+/// hold from Debian 13 and Ubuntu 24.10 on; on an older release apt's own
+/// "unable to locate package" error becomes the node's failure, which is a
+/// truer answer than cfgd guessing at a release number.
+pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "curl",
+        &[
+            ("apt", "curl"),
+            ("dnf", "curl"),
+            ("yum", "curl"),
+            ("zypper", "curl"),
+            ("pacman", "curl"),
+            ("apk", "curl"),
+            ("pkg", "ftp/curl"),
+            ("brew", "curl"),
+        ],
+    ),
+    (
+        "git",
+        &[
+            ("apt", "git"),
+            ("dnf", "git"),
+            ("yum", "git"),
+            ("zypper", "git"),
+            ("pacman", "git"),
+            ("apk", "git"),
+            ("pkg", "devel/git"),
+            ("brew", "git"),
+            ("winget", "Git.Git"),
+            ("chocolatey", "git"),
+            ("scoop", "git"),
+        ],
+    ),
+    ("pip3", PYTHON_TOOL_ARMS),
+    ("pip", PYTHON_TOOL_ARMS),
+    (
+        "bash",
+        &[
+            ("apt", "bash"),
+            ("dnf", "bash"),
+            ("yum", "bash"),
+            ("zypper", "bash"),
+            ("pacman", "bash"),
+            ("apk", "bash"),
+            ("pkg", "shells/bash"),
+            ("brew", "bash"),
+        ],
+    ),
+    (
+        "gpg",
+        &[
+            ("apt", "gnupg"),
+            ("dnf", "gnupg2"),
+            ("yum", "gnupg2"),
+            ("zypper", "gpg2"),
+            ("pacman", "gnupg"),
+            ("apk", "gnupg"),
+            ("pkg", "security/gnupg"),
+            ("brew", "gnupg"),
+            ("winget", "GnuPG.GnuPG"),
+            ("chocolatey", "gnupg"),
+            ("scoop", "gpg"),
+        ],
+    ),
+    (
+        "ssh-keygen",
+        &[
+            ("apt", "openssh-client"),
+            ("dnf", "openssh-clients"),
+            ("yum", "openssh-clients"),
+            ("zypper", "openssh-clients"),
+            ("pacman", "openssh"),
+            ("apk", "openssh-keygen"),
+            ("pkg", "security/openssh-portable"),
+        ],
+    ),
+    (
+        "gsettings",
+        &[
+            ("apt", "libglib2.0-bin"),
+            ("dnf", "glib2"),
+            ("yum", "glib2"),
+            ("zypper", "glib2-tools"),
+            ("pacman", "glib2"),
+            ("apk", "glib"),
+            ("pkg", "devel/glib20"),
+        ],
+    ),
+    (
+        "xfconf-query",
+        &[
+            ("apt", "xfconf"),
+            ("dnf", "xfconf"),
+            ("yum", "xfconf"),
+            ("zypper", "xfconf"),
+            ("pacman", "xfconf"),
+            ("apk", "xfconf"),
+            ("pkg", "x11/xfce4-conf"),
+        ],
+    ),
+    (
+        "kwriteconfig6",
+        &[
+            ("apt", "kde-cli-tools"),
+            ("dnf", "kf6-kconfig"),
+            ("yum", "kf6-kconfig"),
+            ("zypper", "kconfig"),
+            ("pacman", "kconfig"),
+            ("apk", "kconfig"),
+            ("pkg", "devel/kf6-kconfig"),
+        ],
+    ),
+    (
+        "sops",
+        &[
+            ("apt", "sops"),
+            ("zypper", "sops"),
+            ("pacman", "sops"),
+            ("apk", "sops"),
+            ("pkg", "security/sops"),
+            ("brew", "sops"),
+            ("winget", "Mozilla.SOPS"),
+            ("chocolatey", "sops"),
+            ("scoop", "sops"),
+        ],
+    ),
+    (
+        "age",
+        &[
+            ("apt", "age"),
+            ("dnf", "age"),
+            ("yum", "age"),
+            ("zypper", "age"),
+            ("pacman", "age"),
+            ("apk", "age"),
+            ("pkg", "security/age"),
+            ("brew", "age"),
+            ("winget", "FiloSottile.age"),
+            ("chocolatey", "age.portable"),
+        ],
+    ),
+    (
+        "cosign",
+        &[
+            ("apt", "cosign"),
+            ("zypper", "cosign"),
+            ("pacman", "cosign"),
+            ("apk", "cosign"),
+            ("pkg", "security/cosign"),
+            ("brew", "cosign"),
+            ("winget", "Sigstore.Cosign"),
+            ("scoop", "cosign"),
+        ],
+    ),
+    (
+        "op",
+        &[
+            ("brew", "1password-cli"),
+            ("winget", "AgileBits.1Password.CLI"),
+            ("chocolatey", "1password-cli"),
+            ("scoop", "1password-cli"),
+        ],
+    ),
+    (
+        "bw",
+        &[
+            ("brew", "bitwarden-cli"),
+            ("winget", "Bitwarden.CLI"),
+            ("chocolatey", "bitwarden-cli"),
+            ("scoop", "bitwarden-cli"),
+        ],
+    ),
+    (
+        "vault",
+        &[
+            ("brew", "hashicorp/tap/vault"),
+            ("winget", "Hashicorp.Vault"),
+            ("chocolatey", "vault"),
+            ("scoop", "vault"),
+        ],
+    ),
+    ("lpass", &[("brew", "lastpass-cli")]),
+];
+
+/// The Python distribution each manager packages `pip3` and `pip` in.
+///
+/// One list for both binary names: a cascade names whichever of the two its own
+/// probe found, and the package that delivers one delivers the other.
+const PYTHON_TOOL_ARMS: &[(&str, &str)] = &[
+    ("apt", "python3-pip"),
+    ("dnf", "python3-pip"),
+    ("yum", "python3-pip"),
+    ("zypper", "python3-pip"),
+    ("pacman", "python-pip"),
+    ("apk", "py3-pip"),
+    ("pkg", "devel/py-pip"),
+    ("brew", "python"),
+    ("winget", "Python.Python.3.13"),
+    ("chocolatey", "python"),
+    ("scoop", "python"),
+];
+
+/// The order a tool's installing manager is chosen in: this host's own system
+/// manager first, then brew.
+///
+/// brew trails every system manager because a tool a distribution packages
+/// belongs to the distribution: a Linux host running both gets `apt install
+/// git`, and a mac, where no system manager answers, falls through to brew.
+/// One run installs a given tool through one manager, so the order is a
+/// constant rather than a per-caller choice.
+pub const TOOL_INSTALLER_ORDER: &[&str] = &[
+    "apt",
+    "dnf",
+    "yum",
+    "zypper",
+    "pacman",
+    "apk",
+    "pkg",
+    "winget",
+    "chocolatey",
+    "scoop",
+    "brew",
+];
+
+/// The manager this run installs a tool through, and the package it installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolRoute {
+    /// The REGISTERED manager name, as `ProviderRegistry` spells it.
+    pub manager: &'static str,
+    /// What that manager calls the tool.
+    pub package: &'static str,
+}
+
+/// The executable a registered manager's name resolves to: the name itself for
+/// every manager but chocolatey, whose command is `choco`.
+///
+/// A caller holding no registry probes `PATH` for a manager by this name, so a
+/// second spelling of the exception is a manager that reads as absent wherever
+/// the registry is not in hand.
+pub fn system_manager_command(name: &str) -> &str {
+    match name {
+        "chocolatey" => "choco",
+        other => other,
+    }
+}
+
+/// What `manager` installs `tool` under, or `None` when it declines the tool.
+pub fn tool_package(tool: &str, manager: &str) -> Option<&'static str> {
+    INSTALLABLE_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .and_then(|(_, arms)| arms.iter().find(|(m, _)| *m == manager))
+        .map(|(_, package)| *package)
+}
+
+/// Every manager [`INSTALLABLE_TOOLS`] names for `tool`, in
+/// [`TOOL_INSTALLER_ORDER`]. Empty for a tool no manager packages, which is
+/// what a refusal has to say rather than trailing off after "none of".
+pub fn tool_route_managers(tool: &str) -> Vec<&'static str> {
+    TOOL_INSTALLER_ORDER
+        .iter()
+        .copied()
+        .filter(|manager| tool_package(tool, manager).is_some())
+        .collect()
+}
+
+/// The route this host takes to `tool`: the first manager in
+/// [`TOOL_INSTALLER_ORDER`] that packages it and that `available` says yes to.
+///
+/// The availability question is the caller's, because the two askers cannot see
+/// each other's inputs: a provider holding no registry probes `PATH`, and the
+/// planner holds the registry and asks each manager itself.
+pub fn tool_route(tool: &str, available: &dyn Fn(&str) -> bool) -> Option<ToolRoute> {
+    TOOL_INSTALLER_ORDER.iter().find_map(|manager| {
+        tool_package(tool, manager)
+            .filter(|_| available(manager))
+            .map(|package| ToolRoute { manager, package })
+    })
+}
+
+/// Why `tool` cannot be had here, naming the managers that would have installed
+/// it.
+///
+/// The reader learns which manager to make available, rather than being sent
+/// off to find the tool themselves.
+pub fn tool_unobtainable_reason(tool: &str) -> String {
+    let routes = tool_route_managers(tool);
+    match routes.split_last() {
+        None => format!("{tool} is not installed and no manager cfgd drives packages it"),
+        Some((last, [])) => {
+            format!("{tool} is not installed and {last} is not available on this host")
+        }
+        Some((last, rest)) => format!(
+            "{tool} is not installed and none of {}, {last} is available on this host",
+            rest.join(", ")
+        ),
+    }
+}
 
 /// Whether a tool a bootstrap cascade shells out to can be had on this host: it
-/// is on `PATH` already, or it is one of [`SYSTEM_INSTALLABLE_TOOLS`] and a
-/// system manager that would install it is available.
+/// is on `PATH` already, or [`INSTALLABLE_TOOLS`] names a manager for it that
+/// is available.
 ///
 /// Gating a plan on the tool being present *right now* is what dropped a
 /// manager silently — `resolve_package` stopped treating it as a candidate and
 /// the package resolved elsewhere or not at all, with nothing said.
 pub fn prerequisite_obtainable(tool: &str) -> bool {
-    crate::command_available(tool)
-        || (SYSTEM_INSTALLABLE_TOOLS.contains(&tool)
-            && SYSTEM_MANAGER_NAMES
-                .iter()
-                .filter(|manager| installs_prerequisites(manager))
-                .any(|manager| crate::command_available(manager)))
+    crate::command_available(tool) || host_tool_route(tool).is_some()
+}
+
+/// Install `packages` through `pm` and make what it landed resolvable to the
+/// rest of this process.
+///
+/// The ONE spawn path for a tool cfgd installs for itself: the `Prerequisite`
+/// node's executor and [`provision_tool`] both run it, so a tool installed
+/// during an apply and the same tool installed by a one-shot command cannot
+/// reach the machine two different ways. An install can land a binary in a
+/// directory that was already on `PATH` (the whole point of `apt install
+/// curl`), which registers no new directory and would leave a memoized "not
+/// found" standing, so the resolution memo is retired whichever way the install
+/// went.
+///
+/// The directories are registered for [`crate::command_path`] resolution at the
+/// PROCESS level only, and mint no bootstrap record: a manager's own bin
+/// directory is one it always had, not something cfgd created, so nothing about
+/// it belongs in the generated env file. `PackageManager::created_path_dirs` is
+/// the only path to that surface, and answers separately.
+pub fn install_tool_packages(
+    pm: &dyn PackageManager,
+    packages: &[String],
+    cx: &PackageContext<'_>,
+) -> crate::errors::Result<()> {
+    let result = pm.install(packages, cx);
+    crate::invalidate_command_resolution();
+    let dirs: Vec<String> = pm
+        .path_dirs(cx)
+        .iter()
+        .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
+        .collect();
+    if !dirs.is_empty() {
+        crate::register_bootstrapped_path_dirs(&dirs);
+    }
+    result
+}
+
+/// The sibling of [`crate::require_tool`] for a command that can get the tool
+/// instead of describing it: install `tool` through the first manager
+/// [`INSTALLABLE_TOOLS`] names that is registered here and available.
+///
+/// `seam_env` is the tool's own `CFGD_*_BIN` override, `""` for a tool with
+/// none, so a test pointing a seam at a shim is answered before any manager is
+/// consulted. The refusal is [`require_tool`](crate::require_tool)'s, worded
+/// with the routes that were considered, because a reader who is told which
+/// managers would have worked can make one available; a reader handed a URL
+/// cannot.
+pub fn provision_tool(
+    tool: &str,
+    seam_env: &str,
+    registry: &ProviderRegistry,
+    cx: &PackageContext<'_>,
+) -> std::result::Result<(), String> {
+    // provision-route: this function is what cfgd doctor --fix and an apply's
+    // prerequisite node both run, so the probe is the route's own first step.
+    if crate::require_tool_with_seam(seam_env, tool, None).is_ok() {
+        return Ok(());
+    }
+    let route = tool_route(tool, &|manager| {
+        registry
+            .package_managers()
+            .iter()
+            .any(|pm| pm.name() == manager && pm.is_available())
+    })
+    .ok_or_else(|| tool_unobtainable_reason(tool))?;
+    let Some(pm) = registry
+        .package_managers()
+        .iter()
+        .find(|pm| pm.name() == route.manager)
+    else {
+        return Err(tool_unobtainable_reason(tool));
+    };
+    install_tool_packages(pm.as_ref(), &[route.package.to_string()], cx)
+        .map_err(|e| format!("{} install {} failed: {e}", route.manager, route.package))?;
+    // The install reported success, which is the manager's answer about its own
+    // package, not about the binary the caller is waiting for: a package that
+    // delivers the tool under another name, or into a directory this process
+    // cannot see, leaves the caller to fail on the next line with no cause
+    // named.
+    // provision-route: the install cfgd doctor --fix just ran, re-probed.
+    if crate::require_tool_with_seam(seam_env, tool, None).is_ok() {
+        return Ok(());
+    }
+    Err(format!(
+        "{tool} is still not on PATH after {} installed {}",
+        route.manager, route.package
+    ))
+}
+
+/// [`tool_route`] answered from `PATH` alone, for every caller that holds no
+/// registry.
+pub fn host_tool_route(tool: &str) -> Option<ToolRoute> {
+    tool_route(tool, &|manager| {
+        crate::command_available(system_manager_command(manager))
+    })
 }
 
 /// The registered names of the managers that ship with an operating system, or
@@ -1059,28 +1470,9 @@ pub const SYSTEM_MANAGER_NAMES: &[&str] = &[
     "scoop",
 ];
 
-/// The Windows members of [`SYSTEM_MANAGER_NAMES`]: managers that ship with, or
-/// are the platform's own way of getting, software on Windows, and so can
-/// mediate a bootstrap there.
-///
-/// Held apart because the PREREQUISITE half of the question is not yet answered
-/// for them: [`SYSTEM_INSTALLABLE_TOOLS`] spells what cfgd's prerequisite tools
-/// are called on the Unix families only, and `winget install --id curl` resolves
-/// nothing. Both prerequisite questions exclude this list together through
-/// [`installs_prerequisites`], so neither side can promise a provisioning the
-/// other cannot schedule.
-pub const WINDOWS_MANAGER_NAMES: &[&str] = &["winget", "chocolatey", "scoop"];
-
 /// Whether a registered manager name is one of [`SYSTEM_MANAGER_NAMES`].
 pub fn is_system_manager(name: &str) -> bool {
     SYSTEM_MANAGER_NAMES.contains(&name)
-}
-
-/// Whether a system manager can install one of [`SYSTEM_INSTALLABLE_TOOLS`]:
-/// every member of [`SYSTEM_MANAGER_NAMES`] but the Windows three, whose package
-/// names for those tools nothing spells yet.
-pub fn installs_prerequisites(name: &str) -> bool {
-    is_system_manager(name) && !WINDOWS_MANAGER_NAMES.contains(&name)
 }
 
 // --- SystemConfigurator trait ---
@@ -1188,6 +1580,19 @@ pub trait SystemConfigurator: Send + Sync {
     /// Configurator name — must match the key in the profile's `system:` map
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
+
+    /// The binary this configurator drives, when its absence is the whole
+    /// reason [`Self::is_available`] answers `false`.
+    ///
+    /// Named so the planner can look the tool up in [`INSTALLABLE_TOOLS`] and
+    /// schedule the install in `Bootstrap`, ahead of the `System` phase that
+    /// needs it. A configurator whose availability turns on something no
+    /// package can supply (a running init system, a platform, a kernel
+    /// interface) declares nothing and keeps the default, because installing a
+    /// package would not change its answer.
+    fn required_tool(&self) -> Option<&'static str> {
+        None
+    }
 
     /// Read current state from the system
     fn current_state(&self) -> Result<serde_yaml::Value>;
@@ -1468,6 +1873,13 @@ pub struct OrphanedPackage {
 pub trait SecretBackend: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
+    /// The binary this backend shells out to, for the same reason
+    /// [`SystemConfigurator::required_tool`] names one: a declared secret whose
+    /// backend is merely uninstalled is work this run can still do, once
+    /// `Bootstrap` has installed the tool.
+    fn required_tool(&self) -> Option<&'static str> {
+        None
+    }
     fn encrypt_file(&self, path: &Path) -> Result<()>;
     fn decrypt_file(&self, path: &Path) -> Result<SecretString>;
     fn edit_file(&self, path: &Path) -> Result<()>;
@@ -1478,6 +1890,11 @@ pub trait SecretBackend: Send + Sync {
 pub trait SecretProvider: Send + Sync {
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
+    /// The binary this provider shells out to; see
+    /// [`SecretBackend::required_tool`].
+    fn required_tool(&self) -> Option<&'static str> {
+        None
+    }
     fn resolve(&self, reference: &str) -> Result<SecretString>;
 }
 
@@ -2935,13 +3352,13 @@ mod tests {
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
         let sink = NoteSink::default();
         SystemContext::with_notes(&printer, &sink)
-            .next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
+            .next_step("Open a new shell for the updated environment");
         SystemContext::with_notes(&printer, &sink).next_step("   ");
         let notes = sink.take();
         assert_eq!(notes.len(), 1, "a blank next step is refused: {notes:?}");
         assert_eq!(
             notes[0],
-            ActionNote::next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc")
+            ActionNote::next_step("Open a new shell for the updated environment")
         );
         assert!(
             crate::test_helpers::captured_text(&buf).is_empty(),

@@ -255,6 +255,9 @@ pub fn format_action_description(action: &Action) -> String {
             SystemAction::Skip { configurator, .. } => {
                 format!("system:{}:skip", configurator)
             }
+            SystemAction::ConfigureAfterInstall { configurator, .. } => {
+                format!("system:{}:after-install", configurator)
+            }
         },
         Action::Script(sa) => match sa {
             // Resource-id / state-matching key, NOT a display string: this
@@ -760,6 +763,16 @@ fn plan_item(action: &Action, arrow: &str) -> String {
                     format!("skip {}: {}", configurator, reason)
                 }
             }
+            SystemAction::ConfigureAfterInstall {
+                configurator,
+                tool,
+                origin,
+            } => format!(
+                "configure {} once {} is installed{}",
+                configurator,
+                tool,
+                provenance_suffix(origin)
+            ),
         },
         Action::Script(sa) => match sa {
             ScriptAction::Run {
@@ -831,15 +844,24 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
                 None => format!("provision {managers} via {via}"),
             }
         }
+        // The PACKAGE is what the command runs, and the tool is what the
+        // reader recognises, so a package that spells the tool differently
+        // (`apt install python3-pip` for `pip3`) names both. Suppressed where
+        // they are one word, which would say it twice.
         ManagerAction::Prerequisite {
             tool,
+            package,
             installer,
             required_by,
             ..
-        } => format!(
-            "{installer} install {tool} — required by {}",
-            required_by.join(", ")
-        ),
+        } => {
+            let subject = if package == tool {
+                format!("{installer} install {tool}")
+            } else {
+                format!("{installer} install {package} ({tool})")
+            };
+            format!("{subject} — required by {}", required_by.join(", "))
+        }
         ManagerAction::Refuse { manager, reason } => {
             format!("cannot provision {manager} — {reason}")
         }
@@ -1929,10 +1951,12 @@ mod tests {
                 .collect(),
             ManagerAction::Prerequisite {
                 tool,
+                package,
                 installer,
                 required_by,
                 depends_on: _,
             } => std::iter::once(tool.as_str())
+                .chain(std::iter::once(package.as_str()))
                 .chain(std::iter::once(installer.as_str()))
                 .chain(required_by.iter().map(String::as_str))
                 .collect(),
@@ -1976,6 +2000,7 @@ mod tests {
             },
             ManagerAction::Prerequisite {
                 tool: "sentinel-tool".into(),
+                package: "sentinel-package".to_string(),
                 installer: "sentinel-installer".into(),
                 required_by: vec!["sentinel-requirer".into()],
                 depends_on: Vec::new(),

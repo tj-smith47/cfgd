@@ -5,13 +5,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::providers::{
-    PackageAction, PackageManager, PackageManagerExt, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS,
-    installs_prerequisites,
+    PackageAction, PackageManager, PackageManagerExt, ProviderRegistry, SecretAction, ToolRoute,
+    tool_route, tool_unobtainable_reason,
 };
 
 use super::env_engine::ManagerPathDir;
 use super::types::{
     Action, DeclaredProvision, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan,
+    SystemAction,
 };
 
 /// What the run has to do about one manager.
@@ -51,8 +52,11 @@ impl MemberState {
 struct Graph {
     /// The managers in the closure and what the run does about each.
     members: BTreeMap<String, MemberState>,
-    /// Tool -> the managers that named it. One node serves all of them.
-    prerequisites: BTreeMap<String, BTreeSet<String>>,
+    /// Tool -> the route this host takes to it and the managers that named
+    /// it. One node serves all of them, and each tool carries its OWN route:
+    /// `op` comes from brew where `git` comes from apt, so a run-wide
+    /// installer would refuse one of the two on a host that can install both.
+    prerequisites: BTreeMap<String, (ToolRoute, BTreeSet<String>)>,
     /// Manager -> the tools its provision waits on.
     needs: BTreeMap<String, Vec<String>>,
     /// Manager -> the manager its cascade installs through.
@@ -167,7 +171,14 @@ pub fn plan_managers(
     module_routed: &[(PhaseName, Action)],
 ) -> Vec<Action> {
     let declared = declared_manager_routes(module_routed);
-    plan_managers_with_routes(registry, package_actions, module_routed, &declared, &[])
+    plan_managers_with_routes(
+        registry,
+        package_actions,
+        module_routed,
+        &declared,
+        &[],
+        &[],
+    )
 }
 
 /// [`plan_managers`] over routes derived somewhere else, and over a membership
@@ -184,22 +195,43 @@ pub fn plan_managers(
 /// retires that mediator and drops the cascade to its host arm — leaving the
 /// package the elision dropped delivered by nothing. The elision names the
 /// mediators its own pairs were installed through, and they stay members.
+///
+/// `extra_tools` names the tools consumers OUTSIDE the manager graph need — a
+/// system configurator's binary, a secret backend's CLI — each paired with the
+/// token naming the consumer. Those phases run after `Bootstrap`, so the tool
+/// is a prerequisite of this phase even though no manager's cascade shells out
+/// to it; a tool no registered manager packages is dropped here and leaves the
+/// skip row its own planner already writes.
 pub(super) fn plan_managers_with_routes(
     registry: &ProviderRegistry,
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
     declared: &BTreeMap<String, DeclaredProvision>,
     extra_wanted: &[String],
+    extra_tools: &[(String, String)],
 ) -> Vec<Action> {
-    // The one system manager every prerequisite in this run is installed from,
-    // resolved once so two prerequisites can never name two installers on the
-    // same host.
-    let installer = prerequisite_installer(registry).map(|pm| pm.name().to_string());
-
     let mut queue: VecDeque<String> =
         wanted_managers(registry, package_actions, module_routed, extra_wanted);
 
     let mut graph = Graph::default();
+    // Seeded before the walk so the installing manager joins the membership
+    // closure like any other: it gets its own node, and the prerequisite's edge
+    // resolves against it.
+    for (tool, consumer) in extra_tools {
+        if crate::command_available(tool) {
+            continue;
+        }
+        let Some(route) = registry_tool_route(registry, tool) else {
+            continue;
+        };
+        graph
+            .prerequisites
+            .entry(tool.clone())
+            .or_insert_with(|| (route, BTreeSet::new()))
+            .1
+            .insert(consumer.clone());
+        queue.push_back(route.manager.to_string());
+    }
     while let Some(name) = queue.pop_front() {
         if graph.members.contains_key(&name) {
             continue;
@@ -264,27 +296,32 @@ pub(super) fn plan_managers_with_routes(
             .collect();
         // Judged against the REGISTRY rather than `PATH`, so the planner never
         // promises an install it has no registered manager to schedule.
-        let unobtainable: Vec<&String> = missing
+        let routed: Vec<(String, Option<ToolRoute>)> = missing
             .iter()
-            .filter(|tool| {
-                installer.is_none() || !SYSTEM_INSTALLABLE_TOOLS.contains(&tool.as_str())
-            })
+            .map(|tool| (tool.clone(), registry_tool_route(registry, tool)))
+            .collect();
+        let unobtainable: Vec<&str> = routed
+            .iter()
+            .filter(|(_, route)| route.is_none())
+            .map(|(tool, _)| tool.as_str())
             .collect();
         if !unobtainable.is_empty() {
-            let reason = blocked_reason(&unobtainable, installer.as_deref());
+            let reason = blocked_reason(&unobtainable);
             graph.members.insert(name, MemberState::Refused { reason });
             continue;
         }
         if !missing.is_empty() {
-            // `unobtainable` was empty, so an installer exists.
-            if let Some(installer) = installer.as_ref() {
-                for tool in &missing {
+            for (tool, route) in routed {
+                // Every route is `Some`: the arm above refused the manager
+                // otherwise.
+                if let Some(route) = route {
                     graph
                         .prerequisites
-                        .entry(tool.clone())
-                        .or_default()
+                        .entry(tool)
+                        .or_insert_with(|| (route, BTreeSet::new()))
+                        .1
                         .insert(name.clone());
-                    queue.push_back(installer.clone());
+                    queue.push_back(route.manager.to_string());
                 }
             }
             graph.needs.insert(name.clone(), missing);
@@ -311,7 +348,7 @@ pub(super) fn plan_managers_with_routes(
 
     refuse_provisions_with_no_usable_installer(&mut graph);
     drop_prerequisites_nothing_still_needs(&mut graph);
-    build_actions(registry, &graph, installer.as_deref())
+    build_actions(registry, &graph)
 }
 
 /// The packages a provision node DELIVERS, under the manager that installs
@@ -407,19 +444,28 @@ fn wanted_managers(
 }
 
 /// Why a cascade cannot run, in the words of the tools it is blocked on.
-fn blocked_reason(tools: &[&String], installer: Option<&str>) -> String {
-    let list = tools
+///
+/// Each tool states the managers that WOULD have installed it, so a reader who
+/// makes one of them available gets the cascade back; a tool no manager
+/// packages says that instead.
+fn blocked_reason(tools: &[&str]) -> String {
+    tools
         .iter()
-        .map(|t| t.as_str())
+        .map(|tool| tool_unobtainable_reason(tool))
         .collect::<Vec<_>>()
-        .join(", ");
-    let is_are = if tools.len() == 1 { "is" } else { "are" };
-    match installer {
-        None => format!("{list} {is_are} missing and no system manager is available"),
-        Some(installer) => {
-            format!("{list} {is_are} missing and {installer} does not install it under that name")
-        }
-    }
+        .join("; ")
+}
+
+/// The route the REGISTRY takes to `tool`: the first manager
+/// [`crate::providers::TOOL_INSTALLER_ORDER`] names that is registered here and
+/// reports available.
+///
+/// The registry is the right prober rather than `PATH`, so the planner never
+/// promises an install it has no registered manager to schedule.
+pub(super) fn registry_tool_route(registry: &ProviderRegistry, tool: &str) -> Option<ToolRoute> {
+    tool_route(tool, &|manager| {
+        find_manager(registry, manager).is_some_and(|pm| pm.is_available())
+    })
 }
 
 /// Refuse every provision whose cascade installs through a manager this run
@@ -480,21 +526,17 @@ fn drop_prerequisites_nothing_still_needs(graph: &mut Graph) {
     for manager in &refused {
         graph.needs.remove(manager);
     }
-    for required_by in graph.prerequisites.values_mut() {
+    for (_, required_by) in graph.prerequisites.values_mut() {
         required_by.retain(|manager| !refused.contains(manager));
     }
     graph
         .prerequisites
-        .retain(|_, required_by| !required_by.is_empty());
+        .retain(|_, (_, required_by)| !required_by.is_empty());
 }
 
 /// Assemble the nodes in topological order, wiring each edge to the id of the
 /// node that satisfies it.
-fn build_actions(
-    registry: &ProviderRegistry,
-    graph: &Graph,
-    installer: Option<&str>,
-) -> Vec<Action> {
+fn build_actions(registry: &ProviderRegistry, graph: &Graph) -> Vec<Action> {
     let mut actions: Vec<Action> = Vec::new();
 
     for (manager, state) in &graph.members {
@@ -516,20 +558,19 @@ fn build_actions(
 
     // A prerequisite waits on the index of the manager installing it, which is
     // available by construction and so always carries a refresh node.
-    if let Some(installer) = installer {
-        for (tool, required_by) in &graph.prerequisites {
-            let depends_on = graph
-                .members
-                .get(installer)
-                .map(|state| vec![state.node_id(installer)])
-                .unwrap_or_default();
-            actions.push(Action::Manager(ManagerAction::Prerequisite {
-                tool: tool.clone(),
-                installer: installer.to_string(),
-                required_by: required_by.iter().cloned().collect(),
-                depends_on,
-            }));
-        }
+    for (tool, (route, required_by)) in &graph.prerequisites {
+        let depends_on = graph
+            .members
+            .get(route.manager)
+            .map(|state| vec![state.node_id(route.manager)])
+            .unwrap_or_default();
+        actions.push(Action::Manager(ManagerAction::Prerequisite {
+            tool: tool.clone(),
+            package: route.package.to_string(),
+            installer: route.manager.to_string(),
+            required_by: required_by.iter().cloned().collect(),
+            depends_on,
+        }));
     }
 
     let mut provisions: Vec<Provisioning<'_>> = Vec::new();
@@ -634,12 +675,20 @@ pub fn prune_to_surviving_consumers(plan: &mut Plan) {
                 continue;
             };
             let id = node.node_id();
-            let directly_consumed = !matches!(node, ManagerAction::Prerequisite { .. })
-                && node
+            // A prerequisite planned for a manager survives only through that
+            // manager's own node; one planned for a consumer outside the graph
+            // has no such node to hang from, so it is kept by its consumer
+            // directly.
+            let directly_consumed = match node {
+                ManagerAction::Prerequisite { required_by, .. } => required_by
+                    .iter()
+                    .any(|consumer| consumer.contains(':') && consumers.contains(consumer)),
+                _ => node
                     .provisioned_managers()
                     .iter()
                     .chain(std::iter::once(&node.manager()))
-                    .any(|m| consumers.contains(*m));
+                    .any(|m| consumers.contains(*m)),
+            };
             if directly_consumed {
                 keep.insert(id.clone());
             }
@@ -739,6 +788,22 @@ fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
                     for package in resolved {
                         note_consumer(&mut consumers, &package.manager);
                     }
+                }
+                // A consumer outside the manager graph names itself with its
+                // own kind, so a prerequisite planned for it survives a prune
+                // exactly as long as the action that asked for it does.
+                Action::System(SystemAction::SetValue { configurator, .. })
+                | Action::System(SystemAction::ConfigureAfterInstall { configurator, .. }) => {
+                    consumers.insert(format!("system:{configurator}"));
+                }
+                Action::Secret(SecretAction::Decrypt { backend, .. }) => {
+                    consumers.insert(format!("secret:{backend}"));
+                }
+                Action::Secret(
+                    SecretAction::Resolve { provider, .. }
+                    | SecretAction::ResolveEnv { provider, .. },
+                ) => {
+                    consumers.insert(format!("secret:{provider}"));
                 }
                 _ => {}
             }
@@ -999,22 +1064,6 @@ pub(super) fn fold_provision_path_dirs<'a>(
         }
     }
     dirs
-}
-
-/// The system manager a prerequisite is installed from on this host, in
-/// registration order — the platform's own preference — or `None` when the host
-/// has none, which is the refusal path.
-///
-/// Asks [`installs_prerequisites`] rather than `is_system_manager`: the Windows
-/// managers mediate a bootstrap but nothing yet spells what cfgd's prerequisite
-/// tools are called on them, so a node naming one would promise an install that
-/// resolves no package.
-fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageManager> {
-    registry
-        .package_managers()
-        .iter()
-        .map(|pm| pm.as_ref())
-        .find(|pm| installs_prerequisites(pm.name()) && pm.is_available())
 }
 
 #[cfg(test)]
@@ -1767,7 +1816,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_tool_no_system_manager_can_install_is_refused_with_the_cause_named() {
+    fn a_missing_tool_no_manager_packages_is_refused_with_the_cause_named() {
         let actions = plan_actions(
             installs(&["npm"]),
             vec![
@@ -1791,36 +1840,41 @@ mod tests {
                 .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
                 .collect::<Vec<_>>(),
             vec![format!(
-                "cannot provision npm — {ABSENT_TOOL} is missing and no system manager is available"
+                "cannot provision npm — {ABSENT_TOOL} is not installed and no manager cfgd \
+                 drives packages it"
             )],
             "and it names the cause rather than only the refusal"
         );
     }
 
     #[test]
-    fn a_missing_tool_the_system_manager_does_not_install_names_that_installer() {
+    fn a_missing_tool_whose_installers_are_all_unavailable_names_every_one_of_them() {
         let actions = plan_actions(
             installs(&["npm"]),
             vec![
-                MockPackageManager::new("apt"),
                 MockPackageManager::new("npm")
                     .unavailable()
-                    .bootstrappable_via("brew")
-                    .requiring(&[ABSENT_TOOL]),
-                MockPackageManager::new("brew"),
+                    .bootstrappable_via("apt")
+                    .requiring(&["op"]),
+                MockPackageManager::new("apt"),
             ],
         );
+        let items: Vec<String> = actions
+            .iter()
+            .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
+            .collect();
         assert_eq!(
-            actions
-                .iter()
-                .map(|a| format_plan_item(a, crate::output::theme::ICON_ARROW))
-                .collect::<Vec<_>>(),
+            items,
             vec![format!(
-                "cannot provision npm — {ABSENT_TOOL} is missing and apt does not install it \
-                 under that name"
+                "cannot provision npm — {}",
+                crate::providers::tool_unobtainable_reason("op")
             )],
-            "the host HAS a system manager; what it lacks is that manager's ability to \
-             install this tool, and the refusal says which"
+            "the refusal carries the tool table's own reason rather than a second wording"
+        );
+        assert!(
+            items[0].contains("none of winget, chocolatey, scoop, brew is available on this host"),
+            "and that reason lists every manager that would have installed it, so the reader \
+             can make one available: {items:?}"
         );
     }
 
@@ -2160,6 +2214,7 @@ mod tests {
         // claim on `prune_to_surviving_consumers`, previously untested.
         let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["npm".to_string()],
             depends_on: vec![ManagerAction::refresh_node("apt")],
@@ -2186,6 +2241,7 @@ mod tests {
         // gone.
         let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
             tool: "curl".to_string(),
+            package: "curl".to_string(),
             installer: "apt".to_string(),
             required_by: vec!["npm".to_string(), "pipx".to_string()],
             depends_on: vec![ManagerAction::refresh_node("apt")],
@@ -2778,7 +2834,7 @@ mod tests {
                 .build()
                 .registry;
             assert_eq!(
-                prerequisite_installer(&registry).is_some(),
+                registry_tool_route(&registry, "curl").is_some(),
                 crate::providers::prerequisite_obtainable("curl"),
                 "with no system manager reachable, both predicates must refuse curl"
             );
@@ -2793,7 +2849,7 @@ mod tests {
                 .build()
                 .registry;
             assert_eq!(
-                prerequisite_installer(&registry).is_some(),
+                registry_tool_route(&registry, "curl").is_some(),
                 crate::providers::prerequisite_obtainable("curl"),
                 "with a system manager on PATH, both predicates must agree curl is obtainable"
             );
