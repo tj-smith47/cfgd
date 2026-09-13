@@ -1100,7 +1100,15 @@ and whether each configured source is cached.
 
 ```sh
 cfgd doctor -o json   # structured health report
+cfgd doctor --fix     # install the missing prerequisites, then report
 ```
+
+`--fix` installs the tools the report would otherwise call missing — today `git`
+and `sops` — through this host's own package manager, using the same routes an
+apply takes (see [packages.md](packages.md#tools-cfgd-installs-for-you)). It
+runs before the checks, so the rows below it report the machine as `--fix` left
+it. A tool no manager on this host packages is reported with the managers that
+would have installed it, and the run carries on.
 
 `doctor` reads prerequisites, not managed state. It does not compare your managed files, env
 vars, aliases or system settings against the machine, and it records nothing — use

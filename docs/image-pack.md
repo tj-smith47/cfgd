@@ -264,7 +264,8 @@ programmatically. References not present in the lockfile are left untouched.
 
 `--attest` generates a SLSA v1 provenance predicate (repo URL + git HEAD, detected from
 the working tree's `origin` remote and `HEAD` ref) and attaches it as a cosign
-attestation of type `slsaprovenance1`. Requires cosign on `PATH`. Verify it with the
+attestation of type `slsaprovenance1`. Needs cosign, which cfgd installs through this
+host's package manager the first time it signs. Verify it with the
 matching type:
 
 ```bash

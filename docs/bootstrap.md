@@ -38,7 +38,7 @@ going to GitHub.
 
 The flow:
 
-1. **Check prerequisites**: verifies git is installed (exits non-zero if missing)
+1. **Check prerequisites**: verifies git is installed, and installs it through this host's package manager when it is not (exits non-zero only when no manager packages it)
 2. **Clone** the config repo into the target directory (skipped if already cloned)
 3. **Init git** if the directory isn't already a repository
 

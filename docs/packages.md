@@ -203,6 +203,76 @@ Your *current* shell is the one exception: it predates the env file, which is
 why `cfgd apply`, `cfgd init --apply*`, and `cfgd module create --apply` all end
 by naming the file to source.
 
+## Tools cfgd installs for you
+
+A manager's own installer is not the only thing cfgd shells out to. A system
+configurator drives a binary (`gsettings`, `xfconf-query`, `kwriteconfig6`), a
+secret backend drives another (`sops`, `age`), a module signature check drives
+`cosign`, and `cfgd init` needs `git` before it can clone anything. When one of
+those is missing, cfgd installs it rather than telling you to: the install is a
+prerequisite node in the `Bootstrap` phase, named in the plan like every other
+action, and the phase that needs the tool runs after it.
+
+```
+Phase: Bootstrap
+  cfgd:managers
+    ✓ refresh apt index (1.9s)
+    ✓ apt install libglib2.0-bin (gsettings) — required by system:gsettings (6.2s)
+
+Phase: System
+  ✓ set system:gsettings.org/gnome/desktop/interface/color-scheme: default → prefer-dark
+```
+
+`cfgd doctor --fix` does the same thing outside an apply, for the prerequisites
+`cfgd doctor` reports as missing.
+
+This is the table cfgd routes through. The manager is chosen in column order —
+this host's own system manager first, brew last — so a Linux machine running
+both apt and brew gets `apt install git`. An empty cell is a route cfgd
+declines, and the reasons follow the table.
+
+| Tool | apt | dnf | yum | zypper | pacman | apk | FreeBSD `pkg` | winget | choco | scoop | brew |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `curl` | `curl` | `curl` | `curl` | `curl` | `curl` | `curl` | `ftp/curl` | — | — | — | `curl` |
+| `git` | `git` | `git` | `git` | `git` | `git` | `git` | `devel/git` | `Git.Git` | `git` | `git` | `git` |
+| `pip3`, `pip` | `python3-pip` | `python3-pip` | `python3-pip` | `python3-pip` | `python-pip` | `py3-pip` | `devel/py-pip` | `Python.Python.3.13` | `python` | `python` | `python` |
+| `bash` | `bash` | `bash` | `bash` | `bash` | `bash` | `bash` | `shells/bash` | — | — | — | `bash` |
+| `gpg` | `gnupg` | `gnupg2` | `gnupg2` | `gpg2` | `gnupg` | `gnupg` | `security/gnupg` | `GnuPG.GnuPG` | `gnupg` | `gpg` | `gnupg` |
+| `ssh-keygen` | `openssh-client` | `openssh-clients` | `openssh-clients` | `openssh-clients` | `openssh` | `openssh-keygen` | `security/openssh-portable` | — | — | — | — |
+| `gsettings` | `libglib2.0-bin` | `glib2` | `glib2` | `glib2-tools` | `glib2` | `glib` | `devel/glib20` | — | — | — | — |
+| `xfconf-query` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `x11/xfce4-conf` | — | — | — | — |
+| `kwriteconfig6` | `kde-cli-tools` | `kf6-kconfig` | `kf6-kconfig` | `kconfig` | `kconfig` | `kconfig` | `devel/kf6-kconfig` | — | — | — | — |
+| `sops` | `sops` | — | — | `sops` | `sops` | `sops` | `security/sops` | `Mozilla.SOPS` | `sops` | `sops` | `sops` |
+| `age` | `age` | `age` | `age` | `age` | `age` | `age` | `security/age` | `FiloSottile.age` | `age.portable` | — | `age` |
+| `cosign` | `cosign` | — | — | `cosign` | `cosign` | `cosign` | `security/cosign` | `Sigstore.Cosign` | — | `cosign` | `cosign` |
+| `op` | — | — | — | — | — | — | — | `AgileBits.1Password.CLI` | `1password-cli` | `1password-cli` | `1password-cli` |
+| `bw` | — | — | — | — | — | — | — | `Bitwarden.CLI` | `bitwarden-cli` | `bitwarden-cli` | `bitwarden-cli` |
+| `vault` | — | — | — | — | — | — | — | `Hashicorp.Vault` | `vault` | `vault` | `hashicorp/tap/vault` |
+| `lpass` | — | — | — | — | — | — | — | — | — | — | `lastpass-cli` |
+
+The declines:
+
+- `curl` and `ssh-keygen` on Windows and macOS: both ship with the operating
+  system, so there is nothing to install.
+- `bash` on the three Windows managers: the only cfgd path that needs a POSIX
+  shell is `nvm`, which does not run there at all.
+- `gsettings`, `xfconf-query` and `kwriteconfig6` on brew and on Windows: they
+  configure Linux desktops, and neither platform has one to configure.
+- `sops` and `cosign` on dnf and yum: Fedora and RHEL package neither.
+- `cosign` on chocolatey: the community package is unmaintained.
+- `age` on scoop: scoop carries it in the Extras bucket, which cfgd's scoop path
+  never adds.
+- `op`, `bw`, `vault` and `lpass` on every Unix system manager: each vendor
+  publishes a tarball or its own repository rather than a distribution package.
+- `lpass` on the three Windows managers: LastPass ships no Windows CLI.
+
+The FreeBSD column names PORT ORIGINS, for the same reason the mediator table
+above does.
+
+A tool no manager on this host packages is not silently skipped: the work that
+needed it says so, naming the managers that would have installed it, so you know
+which one to make available.
+
 ## Index refresh
 
 cfgd refreshes the package index of every manager that is already on the machine,
