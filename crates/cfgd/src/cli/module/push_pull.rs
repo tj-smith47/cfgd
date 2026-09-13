@@ -164,18 +164,30 @@ fn build_module_signature(
             certificate_identity: None,
             certificate_oidc_issuer: None,
         },
+        // A KMS or PKCS#11 reference names no file to read a sibling
+        // `cosign.pub` beside, but the run that just signed with it holds
+        // cosign and the reference, which is everything cosign needs to hand
+        // back the public half.
         Some(key_ref) if is_non_filesystem_key_ref(key_ref) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "'{key_ref}' is a KMS/PKCS#11 key reference, not a filesystem path; \
-                     cfgd cannot derive its public key from a sibling `cosign.pub` file \
-                     (run `cosign public-key --key {key_ref}` and configure \
-                     spec.signature.cosign.publicKey manually) — the applied CRD will fail \
-                     the disallowUnsigned admission check until it is set"
-                ),
-            );
-            unsigned_cosign()
+            match cfgd_core::oci::public_key_of(key_ref) {
+                Ok(public_key) => cfgd_crd::CosignSignature {
+                    public_key: Some(public_key),
+                    keyless: false,
+                    certificate_identity: None,
+                    certificate_oidc_issuer: None,
+                },
+                Err(e) => {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Could not read the public key of '{key_ref}' from cosign: \
+                             {e}; the applied CRD will fail the disallowUnsigned admission \
+                             check until spec.signature.cosign.publicKey is set"
+                        ),
+                    );
+                    unsigned_cosign()
+                }
+            }
         }
         Some(key_path) => {
             let pub_key_path = Path::new(key_path).with_file_name("cosign.pub");
@@ -1313,8 +1325,14 @@ spec:
             );
         }
 
+        /// A KMS key has no sibling `cosign.pub`, and the run signing with it
+        /// already holds cosign, so the public half is read from cosign
+        /// rather than left to the reader.
         #[test]
-        fn sign_with_kms_key_reference_warns_and_fails_disallow_unsigned_admission() {
+        #[serial_test::serial]
+        fn sign_with_kms_key_reference_reads_the_public_key_from_cosign() {
+            const PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFk=\n-----END PUBLIC KEY-----";
+            let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_COSIGN_BIN", 0, PEM, "");
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature =
@@ -1324,21 +1342,40 @@ spec:
                     .expect("build crd json");
             let spec = crd_spec(&crd_json);
 
-            let result = check_unsigned_policy(&spec, true);
-
+            let argv = shim.argv_log();
             assert!(
-                result.is_err(),
-                "a KMS key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
+                argv.lines()
+                    .any(|l| l == "public-key --key awskms://alias/cfgd-signing-key"),
+                "the reference cfgd signed with is the one it asks the public half of: {argv}"
             );
-            let warning = cfgd_core::test_helpers::captured_text(&buf);
+            assert_eq!(
+                crd_json["spec"]["signature"]["cosign"]["publicKey"], PEM,
+                "and the answer is recorded on the module cfgd applies"
+            );
+            let result = check_unsigned_policy(&spec, true);
             assert!(
-                warning.contains("KMS/PKCS#11 key reference"),
-                "a KMS-style --key must be recognized instead of guessing a nonsense sibling path: {warning:?}"
+                result.is_ok(),
+                "a module carrying its public key passes the real disallowUnsigned \
+                 admission rule: {result:?}"
+            );
+            let output = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                !output.contains("disallowUnsigned"),
+                "and nothing warns about a key that was derived: {output:?}"
             );
         }
 
+        /// The same reference when cosign cannot answer: the module goes out
+        /// unsigned, and the warning says which step failed.
         #[test]
-        fn sign_with_pkcs11_key_reference_warns_and_fails_disallow_unsigned_admission() {
+        #[serial_test::serial]
+        fn sign_with_pkcs11_key_cosign_cannot_read_warns_and_fails_disallow_unsigned_admission() {
+            let _shim = cfgd_core::test_helpers::ToolShim::install(
+                "CFGD_COSIGN_BIN",
+                1,
+                "",
+                "no such token",
+            );
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature = build_module_signature(
@@ -1359,9 +1396,10 @@ spec:
             );
             let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
-                warning.contains("KMS/PKCS#11 key reference"),
-                "a pkcs11: --key must be recognized as a non-filesystem reference instead of being \
-                 mistaken for a path (it has no `://`, only `contains(\"://\")` would miss it): {warning:?}"
+                warning.contains("Could not read the public key of 'pkcs11:"),
+                "a pkcs11: --key is recognized as a non-filesystem reference rather than \
+                 mistaken for a path (it has no `://`, which `contains(\"://\")` alone \
+                 would miss), and the warning names the step that failed: {warning:?}"
             );
         }
 
