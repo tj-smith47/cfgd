@@ -208,7 +208,8 @@ based on `prefer` order and platform availability.
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
 `name`, each `aliases` value, and each `prefer` / `deny` token are checked when the module is
-parsed. One is refused when it is empty, when it holds whitespace, or when it holds one of `&`,
+parsed. One is refused when it is empty, when it holds whitespace, when it begins with `-` (every
+manager reads a leading dash as an option rather than as a package), or when it holds one of `&`,
 `<`, `>`, `(`, `)`, `^`, `|`, `"`, `%`, `!`, or a line break: a package name becomes an argument
 on a manager's command line, and on Windows several managers are reached through a `cmd.exe`
 shim where those characters would start a second command. Ordinary packaging spellings are

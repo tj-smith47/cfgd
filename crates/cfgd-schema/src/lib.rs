@@ -986,7 +986,9 @@ pub struct PackageNameError(pub String);
 /// shell metacharacter erases that line on Windows, where several managers are
 /// reached through a `cmd.exe` shim, so the name is refused where it is parsed
 /// rather than per manager. Whitespace goes with it: a name holding a space
-/// splits into two arguments under every `CommandLineToArgv` reader.
+/// splits into two arguments under every `CommandLineToArgv` reader. So does a
+/// leading `-`, which every manager reads as an option rather than as a
+/// package, on every platform.
 ///
 /// The ONE grammar behind both the machine's own `spec.packages` (profile,
 /// module entry, per-manager alias and `prefer` target) and the cluster-side
@@ -1009,6 +1011,14 @@ pub fn validate_package_name(subject: &str, name: &str) -> Result<(), PackageNam
             "{subject}: package name '{name}' must not contain whitespace ({c:?} splits it into two arguments)"
         )));
     }
+    // Every manager appends names positionally, and the system family runs
+    // under sudo, so a leading dash is read as an option by the manager rather
+    // than as a package on every platform, shim or no shim.
+    if name.starts_with('-') {
+        return Err(PackageNameError(format!(
+            "{subject}: package name '{name}' must not begin with '-'; a leading dash makes it an option to the package manager rather than a package"
+        )));
+    }
     // A version spec is spelled in range operators, three of which (`^`, `>`,
     // `<`) the name half refuses outright, so the two halves are judged apart:
     // the name against the metacharacter set, the spec against the characters
@@ -1019,12 +1029,23 @@ pub fn validate_package_name(subject: &str, name: &str) -> Result<(), PackageNam
         }
         _ => (name, None),
     };
-    if let Some(c) = named
-        .chars()
-        .find(|c| REFUSED_PACKAGE_NAME_CHARS.contains(c))
+    if let Some((at, c)) = named
+        .char_indices()
+        .find(|(_, c)| REFUSED_PACKAGE_NAME_CHARS.contains(c))
     {
+        // A range operator inside the name half is almost always a pip-style
+        // requirement (`black>=22`), which cfgd spells with the operator after
+        // an `@`. Only these three range operators are in the refused set at
+        // all: `~` and `=` are legal name characters, so a name carrying one
+        // never reaches here.
+        let hint = match c {
+            '^' | '>' | '<' if at > 0 => {
+                format!("; did you mean '{}@{}'?", &named[..at], &named[at..])
+            }
+            _ => String::new(),
+        };
         return Err(PackageNameError(format!(
-            "{subject}: package name '{name}' must not contain {c:?}; a package name becomes a command-line argument, and this character starts a second command on a Windows shim"
+            "{subject}: package name '{name}' must not contain {c:?}; a package name becomes a command-line argument, and this character starts a second command on a Windows shim{hint}"
         )));
     }
     if let Some(spec) = spec
@@ -1149,6 +1170,11 @@ mod tests {
             "foo!x!",
             "foo\nbar",
             "foo\rbar",
+            // A leading dash needs no shell: it is an option to the manager,
+            // and the system family runs under sudo.
+            "-o",
+            "--target-dir",
+            "-ripgrep",
             // The spec half admits version characters alone, so a
             // metacharacter cannot ride in behind a range operator.
             "tool@^1&calc",
@@ -1163,6 +1189,33 @@ mod tests {
                 "the refusal opens on the caller's own field path: {why}"
             );
         }
+    }
+
+    /// A pip-style requirement is the one real spelling this grammar refuses,
+    /// so its refusal carries cfgd's own spelling of the same intent rather
+    /// than leaving the reader to find it.
+    #[test]
+    fn a_range_operator_in_the_name_half_suggests_the_at_spelling() {
+        for (bad, wanted) in [
+            ("black>=22", "did you mean 'black@>=22'?"),
+            ("tool<3", "did you mean 'tool@<3'?"),
+            ("tool^1.2", "did you mean 'tool@^1.2'?"),
+        ] {
+            let why = validate_package_name("spec.packages.pipx[0]", bad)
+                .expect_err("a range operator is refused in the name half")
+                .to_string();
+            assert!(
+                why.ends_with(wanted),
+                "the refusal closes on the fix: {why}"
+            );
+        }
+        let why = validate_package_name("spec.packages.brew[0]", "foo&calc")
+            .expect_err("a metacharacter is refused")
+            .to_string();
+        assert!(
+            !why.contains("did you mean"),
+            "a character that is no version operator gets no version suggestion: {why}"
+        );
     }
 
     /// The refusal names the offending name itself, so a reader editing a long
