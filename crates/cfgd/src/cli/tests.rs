@@ -29930,6 +29930,65 @@ const PINNED_CONFLICT_ANNOTATION: &str = "installed (version unknown), source wa
 
 #[test]
 #[serial_test::serial]
+fn a_source_custom_manager_without_the_script_opt_in_aborts_a_machine_changing_run() {
+    // A custom manager's command templates run through the shell the moment
+    // cfgd asks whether the manager exists, so a source shipping one is a
+    // script surface under `constraints.noScripts`, which is on by default.
+    // The subscriber has not opted in, so the run that would change the
+    // machine must refuse and say how to consent.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: false,
+        ..Default::default()
+    });
+
+    let why = super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false))
+        .expect_err("a source shipping a custom manager needs the opt-in")
+        .to_string();
+    assert!(
+        why.contains("fakemgr") && why.contains("subscription.allowScripts"),
+        "the refusal names the manager and the opt-in that clears it: {why}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_source_custom_manager_without_the_script_opt_in_warns_on_a_read_only_run() {
+    // The other half of the same contract: a dashboard changes nothing, so it
+    // renders the violation as a warning instead of refusing to run at all.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: false,
+        ..Default::default()
+    });
+
+    // The read-only surfaces compose cache-only, so the source's layers exist
+    // only after a run that fetches; this one refuses AFTER the fetch.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::apply::cmd_apply(&f.h.cli(), &warm_printer, &apply_args(false))
+        .expect_err("the fetching run still refuses");
+
+    super::status::cmd_status(
+        &f.h.cli(),
+        f.h.printer(),
+        None,
+        super::status::StatusRun::default(),
+    )
+    .unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("violates its constraints")
+            && output.contains("fakemgr")
+            && output.contains("subscription.allowScripts"),
+        "the dashboard warns, naming the manager and the opt-in:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
 fn plan_previews_an_installed_source_package_as_included_and_mints_nothing() {
     // The satisfies-gate from the preview side: the machine already runs the
     // source's package, so the plan neither withholds it as pending nor — as
