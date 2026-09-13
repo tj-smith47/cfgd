@@ -11,8 +11,8 @@ operator:
     # the agent's (appVersion). Swept at tag time by the anchored version_files entry
     # on the cfgd-operator crate, whose `match` spans this repository line, the
     # comment lines under it and its own tag, so the CSI pin below cannot be
-    # rewritten with it. Putting `tag:` above `repository:` here stops the anchor
-    # matching and fails the audit job's `check version-files`.
+    # rewritten with it. Anything but a comment between `repository:` and `tag:`
+    # stops the anchor matching, and the audit job's `check version-files` fails.
     # `task chart:tags:check` catches a pin nobody pushed.
     tag: "0.8.0"
     pullPolicy: IfNotPresent

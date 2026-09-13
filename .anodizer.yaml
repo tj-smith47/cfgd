@@ -766,8 +766,8 @@ workspaces:
         # Each entry carries a `match` anchor because docs/installation.md is
         # also swept whole-file by the cfgd crate, and the operator and CSI
         # image pins in chart/cfgd/values.yaml once held the same literal. A
-        # `match` keys anodizer's guard on the pair (file, anchor), so neither
-        # crate can rewrite the other's lines. anodizer takes the author's word
+        # `match` scopes each rewrite to its own regions, so neither crate can
+        # rewrite the other's lines. anodizer takes the author's word
         # that two anchors are disjoint (version_plan.rs short-circuits its
         # refusals for an anchor pair), so the chart anchor ends at its own
         # block's `tag:` and spans only the comment lines in between: reorder a
