@@ -812,10 +812,6 @@ mod tests {
         }
     }
 
-    /// The pip arm's prerequisite, as the names pip actually goes by rather
-    /// than as whatever the arm currently declares: a plan naming a tool no pip
-    /// is called would be approved and then die looking for it.
-    ///
     /// Every mediator this host could answer with, seamed to a path holding
     /// nothing, so the cascade falls to the pip arm and the declaration under
     /// test is the one this manager makes on its own.
@@ -835,6 +831,10 @@ mod tests {
         held
     }
 
+    /// The pip arm's prerequisite, as the names pip actually goes by rather
+    /// than as whatever the arm currently declares: a plan naming a tool no pip
+    /// is called would be approved and then die looking for it.
+    ///
     /// Driven with every mediator seamed to a file that is not there, because
     /// the cascade reaches this arm only where no mediator answers, and a host
     /// carrying brew or apt would never run the comparison.
@@ -893,9 +893,6 @@ mod tests {
     /// directory has no pip to ask. The pipx the step installed is then the only
     /// thing left that says where the scripts landed, and without it the user's
     /// shell never sees the pipx this run installed.
-    ///
-    /// Driven with no home directory, because that is what leaves the probed
-    /// answer empty on a host where the launcher route itself cannot run.
     #[test]
     #[serial_test::serial]
     fn the_launcher_route_names_the_directory_the_installed_pipx_sits_in() {
@@ -912,7 +909,6 @@ mod tests {
             "APPDATA",
             appdata.path().to_string_lossy().as_ref(),
         );
-        let _home = cfgd_core::test_helpers::EnvVarGuard::unset("HOME");
         assert_eq!(
             installed_pipx_scripts_dir().as_deref(),
             Some(scripts.as_path()),
@@ -951,6 +947,14 @@ mod tests {
         let plan = PipxManager
             .bootstrap_plan()
             .expect("pipx always declares a bootstrap plan");
+        // The Windows arm has no `APPDATA` to name a directory with, by
+        // construction of this fixture, so only unix can compare two real
+        // answers.
+        #[cfg(unix)]
+        assert!(
+            !plan.creates_path_dirs.is_empty(),
+            "the pip arm declares a directory, or this comparison reads neither producer"
+        );
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
