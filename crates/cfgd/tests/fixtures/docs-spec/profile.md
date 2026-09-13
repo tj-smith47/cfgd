@@ -390,15 +390,16 @@ and `cfgd explain profile.spec.packages.<manager>` state both shapes; the `Varia
 Every package name is checked when the profile is parsed. A name is refused when it is empty,
 when it holds whitespace, when it begins with `-` (every manager reads a leading dash as an
 option rather than as a package), or when it holds one of `&`, `<`, `>`, `(`, `)`, `^`, `|`,
-`"`, `%`, `!`, or a line break: a package name becomes an argument on a manager's command line, and on
-Windows several managers are reached through a `cmd.exe` shim where those characters would start
-a second command. Ordinary packaging spellings are unaffected, including `@scope/pkg`, `foo@1.2`,
-`libfoo-dev:amd64`, `Microsoft.VisualStudio.2022.Community`, `foo[extra]`, `devel/py-pipx` and
-`github.com/x/y@latest`. A trailing version spec is judged as a version rather than as part of
-the name, so cfgd's own pin grammar (`tool@^14`, `tool@>=2.1`, `tool@v1.2.3`) still parses; the
-spec itself may hold only digits, identifiers and range operators. The same rule applies to a
-module's `spec.packages[]` entries (the `name`, the per-manager `aliases` values, and the
-`prefer` / `deny` tokens) and to the cluster-side `Module` and `MachineConfig` resources.
+`"`, `%`, `!`, or a line break: a package name becomes an argument on a manager's command line,
+and on Windows several managers are reached through a `cmd.exe` shim where those characters
+would start a second command. Ordinary packaging spellings are unaffected, including
+`@scope/pkg`, `foo@1.2`, `libfoo-dev:amd64`, `Microsoft.VisualStudio.2022.Community`,
+`foo[extra]`, `devel/py-pipx` and `github.com/x/y@latest`. A trailing version spec is judged as
+a version rather than as part of the name, so cfgd's own pin grammar (`tool@^14`, `tool@>=2.1`,
+`tool@v1.2.3`) still parses; the spec itself may hold only digits, identifiers and range
+operators. The same rule applies to a module's `spec.packages[]` entries (the `name`, the
+per-manager `aliases` values, and the `prefer` / `deny` tokens) and to the cluster-side `Module`
+and `MachineConfig` resources.
 
 ---
 
