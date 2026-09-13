@@ -67,15 +67,29 @@ pub(super) fn cargo_cmd() -> Command {
 
 /// Fallback locations for the rustup a mediated arm installs, for a run whose
 /// command resolution was memoized before the install put it there.
+///
+/// `~/.cargo/bin` is where rustup's own installer lands it; a Windows mediator
+/// lands it in its own shim tree instead (scoop's `shims`, chocolatey's `bin`),
+/// so those are named too rather than left to a `PATH` this process read before
+/// the arm ran.
 fn rustup_fallbacks() -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "rustup.exe"
     } else {
         "rustup"
     };
-    home_relative_dir("~/.cargo/bin")
-        .map(|dir| vec![dir.join(exe)])
-        .unwrap_or_default()
+    let mut dirs = vec![home_relative_dir("~/.cargo/bin")];
+    if cfg!(windows) {
+        dirs.push(home_relative_dir("~/scoop/shims"));
+        dirs.push(
+            std::env::var_os("ChocolateyInstall")
+                .map(|root| std::path::Path::new(&root).join("bin")),
+        );
+    }
+    dirs.into_iter()
+        .flatten()
+        .map(|dir| dir.join(exe))
+        .collect()
 }
 
 fn rustup_cmd() -> Command {
@@ -177,6 +191,10 @@ impl PackageManager for CargoManager {
         let planned = cx.planned_method();
         if planned.is_some_and(|method| method != RUSTUP_METHOD) || cfg!(windows) {
             bootstrap_via_system_manager(cx, &CARGO_MEDIATED, "cargo")?;
+            // The arm just put rustup on the machine, and the step below
+            // resolves it through the memoized `command_path`, which still
+            // holds the miss the plan's own probe recorded.
+            cfgd_core::invalidate_command_resolution();
             return install_default_toolchain(cx, planned);
         }
         bootstrap_via_shell_script(

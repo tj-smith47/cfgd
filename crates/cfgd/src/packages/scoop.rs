@@ -110,7 +110,10 @@ impl PackageManager for ScoopManager {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("scoop")
+        // Through the seam, like every spawn in this file: a probe that read
+        // `$PATH` while the spawn read the seam reported a manager absent that
+        // a run could actually drive.
+        super::shared::system_tool_available("scoop")
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
@@ -415,9 +418,8 @@ mod tests {
         };
         use serial_test::serial;
 
-        // Local wrapper: scoop is invoked by name via PATH, no env-var seam.
-        // Delegates to the shared helper so the shim-script body stays in
-        // one place across the package crate.
+        // Local wrapper around the shared helper, so the shim-script body stays
+        // in one place across the package crate.
         fn install_scoop_shim(
             exit_code: u8,
             stdout: &str,

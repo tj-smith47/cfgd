@@ -156,7 +156,7 @@ reason is an arm the manager declines.
 | Manager | brew | apt | dnf / yum | zypper | pacman | apk | FreeBSD `pkg` | winget | choco | scoop | Own installer |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `npm` | `node` | `nodejs`, `npm` | `nodejs`, `npm` | `nodejs24`, `npm24` | `nodejs`, `npm` | `nodejs`, `npm` | `www/npm` | `OpenJS.NodeJS.LTS` | `nodejs-lts` | `nodejs-lts` | `nvm` (POSIX only) |
-| `pipx` | `pipx` | `pipx` | `pipx` (dnf only) | `python3-pipx` | `python-pipx` | `pipx` | `devel/py-pipx` | none published | `pipx` | `pipx` | `pip` |
+| `pipx` | `pipx` | `pipx` | `pipx` (dnf only) | `python3-pipx` | `python-pipx` | `pipx` | `devel/py-pipx` | `Python.Python.3.13`, then `pip` | `pipx` | `pipx` | `pip` |
 | `go` | `go` | `golang` | `golang` | `go` | `go` | `go` | `lang/go` | `GoLang.Go` | `golang` | `go` | no own arm |
 | `cargo` | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | `Rustlang.Rustup` | `rustup.install` | `rustup` | `rustup` |
 | `flatpak` | Linux only | `flatpak` | `flatpak` | `flatpak` | `flatpak` | `flatpak` | Linux only | Linux only | Linux only | Linux only | no own arm |
@@ -168,8 +168,11 @@ A few cells need their reason spelled out:
 
 - `pipx` on yum: RHEL 7's repositories carry no pipx, and yum is the manager
   only on releases that old. A yum host reaches pipx through the `pip` arm.
-- `pipx` on winget: winget publishes no pipx at all, so a winget-only Windows
-  host also reaches it through the `pip` arm.
+- `pipx` on winget: winget publishes no pipx of its own, so the arm installs a
+  Python interpreter and the `pip` step behind it installs pipx with it. Two
+  commands, one arm: `winget install --id Python.Python.3.13 …` then
+  `pip install --user pipx`, which lands pipx in the user's own scripts
+  directory.
 - `cargo` everywhere but Windows: rustup's own installer is upstream's route on
   every POSIX host, and rustup is what then installs a toolchain. On Windows
   there is no `sh` for that installer, so the three Windows managers package

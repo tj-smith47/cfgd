@@ -108,7 +108,10 @@ impl PackageManager for ChocolateyManager {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("choco")
+        // Through the seam, like every spawn in this file: a probe that read
+        // `$PATH` while the spawn read the seam reported a manager absent that
+        // a run could actually drive.
+        super::shared::system_tool_available("choco")
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {

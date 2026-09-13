@@ -780,7 +780,7 @@ pub(super) fn brew_available() -> bool {
 /// probes exactly the command that will run it. That pairing is what makes a
 /// planned method safe to treat as binding: a plan can only name a mediator
 /// execution can spawn.
-type SystemArm = (&'static str, &'static str);
+pub(super) type SystemArm = (&'static str, &'static str);
 
 /// The arms a mediated bootstrap reaches on a Unix host, in the order it tries
 /// them. One table rather than a per-cascade one: which mediators a manager
@@ -823,7 +823,7 @@ type ArmPackages = (&'static str, &'static [&'static str]);
 /// PLANNED path deliberately looks in both tables instead (see [`arm_tool`]):
 /// a method is binding, and a plan that named an arm answers for it rather
 /// than being re-judged against the host's table.
-fn host_arms() -> &'static [SystemArm] {
+pub(super) fn host_arms() -> &'static [SystemArm] {
     if cfg!(windows) {
         WINDOWS_MANAGER_ARMS
     } else {
@@ -833,7 +833,7 @@ fn host_arms() -> &'static [SystemArm] {
 
 /// The command an arm spawns, whichever table holds it, or `None` for a method
 /// no arm names.
-fn arm_tool(method: &str) -> Option<&'static str> {
+pub(super) fn arm_tool(method: &str) -> Option<&'static str> {
     SYSTEM_MANAGER_ARMS
         .iter()
         .chain(WINDOWS_MANAGER_ARMS)
@@ -1008,6 +1008,19 @@ pub(super) fn planned_method_unavailable(manager: &str, method: &str) -> Package
         message: format!(
             "the plan installs {manager} via {method}, which is not available on this host; re-run to re-plan"
         ),
+    }
+}
+
+/// The plan named a mediator that is on this host but does not package the tool.
+///
+/// Told apart from [`planned_method_unavailable`] because the reader's next move
+/// differs: a mediator that is absent may be installed and the plan re-run, while
+/// one that does not carry the package will answer the same way forever, so
+/// "re-run to re-plan" would send the reader in a circle.
+pub(super) fn planned_method_declined(manager: &str, method: &str) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!("the plan installs {manager} via {method}, which does not package it"),
     }
 }
 
@@ -1326,7 +1339,7 @@ fn bootstrap_system_arms(
             return Err(planned_method_unavailable(manager_name, method).into());
         };
         let Some(pkgs) = arms.system_packages_for(method) else {
-            return Err(planned_method_unavailable(manager_name, method).into());
+            return Err(planned_method_declined(manager_name, method).into());
         };
         if !system_tool_available(tool) {
             return Err(planned_method_unavailable(manager_name, method).into());
@@ -1359,7 +1372,7 @@ fn bootstrap_system_arms(
 /// hosts that lack the real binary (see `require_tool_with_seam`'s pairing
 /// note), or the probe answers from `$PATH` while the spawn answers from the
 /// seam.
-fn system_tool_available(tool: &str) -> bool {
+pub(super) fn system_tool_available(tool: &str) -> bool {
     cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
 }
 
@@ -1389,8 +1402,8 @@ fn arm_install_commands(method: &str, pkgs: &[&str]) -> Option<Vec<Command>> {
 }
 
 /// Run one arm's install. The window's label names the COMMAND that is running
-/// (`apt-get`), while a failure names the METHOD (`apt`) — the manager the plan
-/// line, the concurrency lane and every other binding failure use.
+/// (`apt-get`), while a failure names the METHOD (`apt`), the manager the plan
+/// line, the concurrency lane and every other binding failure name.
 ///
 /// Several spawns settle as the FIRST failure, or as the last success: an arm
 /// whose manager takes one package per spawn has installed nothing useful once
@@ -1423,8 +1436,8 @@ fn run_system_install(
     last.ok_or_else(|| fail(format!("{method} declares no way to install {subject}")).into())
 }
 
-/// Try to install a manager via common system package managers (apt, then dnf,
-/// then zypper, then FreeBSD's pkg).
+/// Try to install a manager through this host's own package managers, in
+/// [`host_arms`] order, less the arms the caller's table declines.
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
 ///
 /// There is no fallback arm past this one: a caller reaching here has nothing

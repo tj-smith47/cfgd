@@ -9,10 +9,10 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, detect_brew_system_method,
-    partition_already_installed, pip_user_scripts_dir, pkg_run, planned_method_failed,
-    planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    run_pkg_query, tool_cmd_with_resolver, upgrade_each,
+    MediatedArms, bootstrap_via_brew_then_system, bootstrap_via_system_manager,
+    detect_brew_system_method, partition_already_installed, pip_user_scripts_dir, pkg_run,
+    planned_method_failed, planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver, upgrade_each,
 };
 
 pub struct PipxManager;
@@ -37,13 +37,26 @@ const PIPX_MEDIATED: MediatedArms = MediatedArms {
         ("pacman", &["python-pipx"]),
         ("apk", &["pipx"]),
         ("pkg", &["devel/py-pipx"]),
-        // no-driven-route-ok: winget publishes no pipx, so a winget-only host
-        // reaches pipx through the pip arm below instead.
-        ("winget", &[]),
+        // winget publishes no pipx of its own, so this arm delivers the
+        // interpreter and the `pip` arm below is what then installs pipx with
+        // it. The same two-step shape cargo's winget arm takes for rustup.
+        ("winget", &["Python.Python.3.13"]),
         ("chocolatey", &["pipx"]),
         ("scoop", &["pipx"]),
     ],
 };
+
+/// The one winget arm whose package is not pipx, named so the bootstrap and the
+/// plan agree on which arm needs the pip step behind it.
+const PIPX_WINGET_METHOD: &str = "winget";
+
+/// The arm this run installs pipx through: the method the plan bound, or the
+/// cascade's own answer for a caller outside a plan (`cfgd doctor`).
+fn pipx_method<'a>(cx: &'a cfgd_core::providers::PackageContext<'_>) -> &'a str {
+    cx.planned_method().unwrap_or_else(|| {
+        detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, &|_| false)
+    })
+}
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
@@ -157,6 +170,17 @@ impl PackageManager for PipxManager {
                     .requiring([pipx_pip_tool()])
                     .creating(pipx_pip_scripts_dir()),
             ),
+            // The winget arm installs a Python interpreter, not pipx, so the
+            // run does not end there: the pip step behind it lands pipx in the
+            // user's own scripts directory, which is the directory this plan
+            // promises. It names no required tool because the arm itself
+            // delivers the `pip` that step runs.
+            // every-platform-ok: winget is only ever the method on a host whose
+            // own probe found winget, and the pip step behind it spawns the
+            // interpreter's own pip with no shell in between.
+            PIPX_WINGET_METHOD => {
+                Some(BootstrapPlan::new(PIPX_WINGET_METHOD).creating(pipx_pip_scripts_dir()))
+            }
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -168,11 +192,10 @@ impl PackageManager for PipxManager {
         // between the two calls is enough. A context carrying no planned method
         // belongs to a caller outside a plan (`cfgd doctor`, a direct caller),
         // which has no decision to read and resolves the cascade as before.
-        let method = cx.planned_method().unwrap_or_else(|| {
-            detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, &|_| false)
-        });
-        match method {
-            "pip" => pipx_pip_scripts_dir()
+        match pipx_method(cx) {
+            // The winget arm joins the pip arm here: winget delivers the
+            // interpreter and pip puts pipx in the user's scripts directory.
+            PIPX_FALLBACK_METHOD | PIPX_WINGET_METHOD => pipx_pip_scripts_dir()
                 .into_iter()
                 .map(cfgd_core::to_posix_string)
                 .collect(),
@@ -183,9 +206,16 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Returns false without probing anything when the plan named `pip` —
-        // pipx's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(cx, "pipx", &PIPX_MEDIATED, PIPX_FALLBACK_METHOD)? {
+        if pipx_method(cx) == PIPX_WINGET_METHOD {
+            bootstrap_via_system_manager(cx, &PIPX_MEDIATED, "pipx")?;
+            // The interpreter winget just installed put `pip` on the machine,
+            // and the pip step below resolves it through the memoized
+            // `command_path`, which still holds the miss from before the arm ran.
+            cfgd_core::invalidate_command_resolution();
+        } else if bootstrap_via_brew_then_system(cx, "pipx", &PIPX_MEDIATED, PIPX_FALLBACK_METHOD)?
+        {
+            // Returns false without probing anything when the plan named `pip`,
+            // pipx's own fallback arm, which is the next thing below.
             return Ok(());
         }
 
@@ -369,7 +399,6 @@ pub(super) fn parse_pipx_list_versions(
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
     use cfgd_core::providers::PackageManagerExt;
 
@@ -550,10 +579,14 @@ mod tests {
         assert_eq!(pkgs[0].version, "24.1.1");
     }
 
+    /// Every arm pipx can be planned through, judged against pipx's own
+    /// declaration rather than a list of manager names typed here: the arms
+    /// `PIPX_MEDIATED` populates for this host's own manager table, plus brew,
+    /// plus the pip arm that answers when none of them is present.
     #[test]
-    fn pipx_bootstrap_plan_follows_the_brew_system_pip_cascade() {
+    fn pipx_is_planned_only_through_an_arm_this_host_can_run() {
         // The probes below assert what THIS host resolves, so hold the read
-        // guard — a sibling test empties PATH under the write guard.
+        // guard: a sibling test empties PATH under the write guard.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         // The plan always exists: the cascade's pip fallback names the tool it
         // would need even when no pip is present, so the planner can say WHY
@@ -562,40 +595,64 @@ mod tests {
         let plan = PipxManager
             .bootstrap_plan()
             .expect("pipx plans on every host via the pip fallback");
-        // A host with no brew and no system arm lands on the pip fallback. The
-        // system probes are the production arms' probe binaries (`apt-get`, not
-        // `apt` — BREW_SYSTEM_ARMS), FreeBSD's `pkg` among them.
-        if !brew_available()
-            && !command_available("apt-get")
-            && !command_available("dnf")
-            && !command_available("pkg")
-        {
-            assert_eq!(plan.method, "pip");
-        }
-        // Only `bootstrap`'s pip fallback installs into the user's own tree
-        // (`pip install --user`); brew and the system managers put pipx on
-        // the system PATH, so they declare no directory. The user tree is
-        // not the same directory on every platform — Windows sends console
-        // scripts to CPython's `nt_user` scheme under roaming AppData.
-        if plan.method == "pip" {
-            assert_eq!(plan.requires.len(), 1);
-            assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
-            let is_user_scripts_dir = |d: &String| {
-                if cfg!(windows) {
-                    d.contains("/Python/Python") && d.ends_with("/Scripts")
-                } else {
-                    d.ends_with("/.local/bin")
-                }
-            };
-            assert!(
-                plan.creates_path_dirs.iter().all(is_user_scripts_dir),
-                "{:?}",
-                plan.creates_path_dirs
+        let mediators: Vec<&str> = super::super::shared::host_arms()
+            .iter()
+            .filter(|(method, _)| PIPX_MEDIATED.system_packages_for(method).is_some())
+            .filter(|(_, tool)| super::super::shared::system_tool_available(tool))
+            .map(|(method, _)| *method)
+            .collect();
+        // The user tree is not the same directory on every platform: Windows
+        // sends console scripts to CPython's `nt_user` scheme under roaming
+        // AppData.
+        let is_user_scripts_dir = |d: &String| {
+            if cfg!(windows) {
+                d.contains("/Python/Python") && d.ends_with("/Scripts")
+            } else {
+                d.ends_with("/.local/bin")
+            }
+        };
+        if !brew_available() && mediators.is_empty() {
+            assert_eq!(
+                plan.method, PIPX_FALLBACK_METHOD,
+                "no mediator on this host packages pipx, so the pip arm is the only route left"
             );
-        } else {
-            assert!(["brew", "apt", "dnf", "pkg"].contains(&plan.method.as_str()));
-            assert!(plan.requires.is_empty());
-            assert!(plan.creates_path_dirs.is_empty());
+        }
+        match plan.method.as_str() {
+            // Only the pip arm installs into the user's own tree
+            // (`pip install --user`), and it is the one arm that names the tool
+            // it spawns.
+            PIPX_FALLBACK_METHOD => {
+                assert_eq!(plan.requires, vec![pipx_pip_tool().to_string()]);
+                assert!(
+                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                    "{:?}",
+                    plan.creates_path_dirs
+                );
+            }
+            // winget publishes no pipx, so its arm delivers the interpreter and
+            // the pip step behind it lands pipx in that same user tree.
+            PIPX_WINGET_METHOD => {
+                assert!(
+                    mediators.contains(&PIPX_WINGET_METHOD),
+                    "winget was planned on a host whose own probe does not find it"
+                );
+                assert!(plan.requires.is_empty());
+                assert!(
+                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                    "{:?}",
+                    plan.creates_path_dirs
+                );
+            }
+            // brew and every other mediator land pipx on the system PATH, so
+            // they declare no directory and name no tool of their own.
+            method => {
+                assert!(
+                    method == "brew" || mediators.contains(&method),
+                    "pipx was planned through {method}, which this host cannot run"
+                );
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
         }
     }
 
