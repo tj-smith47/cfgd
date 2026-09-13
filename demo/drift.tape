@@ -19,8 +19,8 @@ Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
 # 1320x820 at font size 15 measures 125x41. The grid is sized to the tallest
-# single render below — the closing `cfgd status -o wide`, 37 rows including
-# the line that typed it — plus four rows of headroom, because both
+# single render below — the closing `cfgd status -o wide`, 35 rows including
+# the line that typed it — plus six rows of headroom, because both
 # machine-wide renders are preceded by a clear and so never have to share the
 # frame with what came before them. The beats between the two clears do
 # accumulate past 41 rows and the earlier ones scroll away; each one has
@@ -164,8 +164,8 @@ Enter
 Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-# 37 lines → 5.2s
-Sleep 5200ms
+# 34 lines → 4.9s
+Sleep 4900ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

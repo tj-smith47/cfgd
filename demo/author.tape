@@ -21,13 +21,15 @@ Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
 # 1320x914 at font size 15 measures 125x46. The grid is sized to the tallest
-# single render below — the closing `cfgd status -o wide`, 42 rows including
+# single render below — the closing `cfgd status -o wide`, 40 rows including
 # the line that typed it, the plain dashboard's rows with the file aggregate
-# blown into one row per deployed file — plus four rows of headroom. That beat
+# blown into one row per deployed file — plus six rows of headroom. That beat
 # is preceded by a clear, so it never shares the frame with the authoring loop
 # above it; the loop's own beats scroll as they go, each whole on screen while
 # it is the beat being read. A taller grid only pads the closing frame with
-# empty background.
+# empty background. Beat 0b's `cfgd module show` is the one render taller
+# than this grid, at 94 rows, which is why that beat pages instead of
+# scrolling most of itself away unread.
 Set Height 914
 Set TypingSpeed 50ms
 Set Padding 20
@@ -65,6 +67,16 @@ Wait@30s /cfgd\$$/
 Type "cfgd profile update base --module -jarvis --module -clift"
 Enter
 Wait@30s /cfgd\$$/
+
+# Homebrew 7 refuses to load a non-official tap's formulae until that tap is
+# trusted, and it reads the index while tapping, so beat 5's on-camera
+# `brew-tap install charmbracelet/tap` fails outright without this. Trusting
+# the tap is the same one-off decision a person tapping it by hand makes, and
+# it is hidden for the reason the module strip above is: it is nothing this
+# tape claims.
+Type "brew trust charmbracelet/tap"
+Enter
+Wait@60s /cfgd\$$/
 Type "clear"
 Enter
 Sleep 500ms
@@ -78,6 +90,35 @@ Enter
 Wait@60s /cfgd\$$/
 # 31 lines → 4.6s
 Sleep 4600ms
+
+# Beat 0b: what the profile actually declares for one module, scripts
+# included, so beat 3's authoring lands against a visible inventory rather
+# than against a name. The render is 94 rows against this grid's 46, measured
+# off a real `cfgd module show nvim -s` in this image at 125x46, so it goes
+# through a pager instead of scrolling 48 rows off the top unread. `less -R`
+# rather than the `more` ubuntu:24.04 ships: `more` counts the SGR escapes as
+# printable width and breaks every highlighted script body at the wrong
+# column, so the demo image installs `less` for this beat. The report writes
+# to stderr like every other cfgd render, so the redirect is what reaches the
+# pager at all, and `--color always` is what survives the pipe.
+Type "cfgd module show nvim -s --color always 2>&1 | less -R"
+Enter
+# Nothing is on screen until every manager has been enumerated, about 15s in
+# this image, so the wait is on the first page rather than on a clock.
+Wait+Screen@60s /Module: nvim/
+# A full page is 45 rows, past the dwell rule's 6s ceiling either way.
+Sleep 6s
+Space
+Sleep 6s
+# The third page is the tail of the scripts section, four rows, where `less`
+# holds at `(END)` until it is told to leave. The returning prompt is what
+# proves it left, so the quit is waited on rather than held over with a
+# clock.
+Space
+Sleep 2s
+Type "q"
+Wait@10s /cfgd\$$/
+Sleep 2s
 
 # Beat 1: render the schema/field docs for a resource path — proves you can
 # discover what a profile accepts without opening docs or an editor.
