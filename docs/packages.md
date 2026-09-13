@@ -329,9 +329,10 @@ packages:
 ```
 
 Use the struct form when you need a manager's extra fields: brew `taps`/`casks`,
-a `file` manifest (Brewfile, package.json, Cargo.toml, apt list), flatpak `remote`,
-or snap `classic`. The struct form still rejects unknown keys, so a typo like
-`flatpak: {packges: [...]}` is reported loudly rather than silently dropped.
+a `file` manifest relative to the config root (Brewfile, package.json,
+Cargo.toml, apt list), flatpak `remote`, or snap `classic`. The struct form
+still rejects unknown keys, so a typo like `flatpak: {packges: [...]}` is
+reported loudly rather than silently dropped.
 
 ## Windows Package Managers
 

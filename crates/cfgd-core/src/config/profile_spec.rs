@@ -614,7 +614,7 @@ impl PackagesSpec {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
     /// Path to a Brewfile to apply instead of (or alongside) `taps`,
-    /// `formulae` and `casks`.
+    /// `formulae` and `casks`. Relative to the config root.
     #[serde(default)]
     pub file: Option<String>,
     /// Third-party taps to add before installing formulae/casks.
@@ -645,6 +645,7 @@ impl FromPackageList for BrewSpec {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
     /// Path to a package-list file to install from, one name per line.
+    /// Relative to the config root.
     #[serde(default)]
     pub file: Option<String>,
     /// APT package names to install.
@@ -666,7 +667,8 @@ impl FromPackageList for AptSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NpmSpec {
-    /// Path to a `package.json` to install dependencies from.
+    /// Path to a `package.json` to install dependencies from. Relative to the
+    /// config root.
     #[serde(default)]
     pub file: Option<String>,
     /// Package names to install globally (`npm install -g`).
@@ -690,6 +692,7 @@ impl FromPackageList for NpmSpec {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
     /// Path to a `Cargo.toml` whose binaries to install instead of `packages`.
+    /// Relative to the config root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// Crate names to install (`cargo install`).

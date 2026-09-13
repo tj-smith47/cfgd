@@ -409,7 +409,7 @@ Homebrew packages for macOS (and Linux Homebrew). A bare list of names is the sh
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Brewfile` to install from. When set, cfgd runs `brew bundle`. |
+| `file` | string | No | | Path to a `Brewfile` to install from, relative to the config root. When set, cfgd runs `brew bundle`. |
 | `taps` | list of string | No | `[]` | Homebrew taps to add before installing formulae/casks. |
 | `formulae` | list of string | No | `[]` | Homebrew formulae to install. |
 | `casks` | list of string | No | `[]` | Homebrew casks to install (macOS GUI apps). |
@@ -437,7 +437,7 @@ APT packages for Debian and Ubuntu. A bare list of names is the short form and f
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a file listing packages (one per line). |
+| `file` | string | No | | Path to a file listing packages (one per line), relative to the config root. |
 | `packages` | list of string | No | `[]` | APT package names to install. |
 
 ---
@@ -449,7 +449,7 @@ form.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`). |
+| `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`), relative to the config root. |
 | `packages` | list of string | No | `[]` | Crate names to install via `cargo install`. |
 
 **List shorthand** (when no `file` is needed):
@@ -478,7 +478,7 @@ npm global packages. A bare list of names is the short form and folds into `glob
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `package.json` to install from. |
+| `file` | string | No | | Path to a `package.json` to install from, relative to the config root. |
 | `global` | list of string | No | `[]` | npm package names to install globally (`npm install -g`). |
 
 ---

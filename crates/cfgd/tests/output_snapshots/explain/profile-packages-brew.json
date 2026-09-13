@@ -23,7 +23,7 @@
               "type": "[]string"
             },
             {
-              "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
+              "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
               "name": "file",
               "required": false,
               "type": "string"
