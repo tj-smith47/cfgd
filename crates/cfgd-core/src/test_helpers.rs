@@ -2588,6 +2588,16 @@ impl Drop for SpawnEnvGuard {
 /// when the outermost guard drops. See `PATH_ENV_LOCK` for the cross-thread
 /// limit.
 ///
+/// A test may also take it while mutating neither `PATH` nor the working
+/// directory, purely to hold every OTHER thread out of a spawn for the length
+/// of a window: the guarded spawn and `PATH`-resolution helpers in
+/// [`crate::command_output_with_timeout`], [`crate::command_path`] and
+/// [`crate::process_path_with_dirs_prepended`] take the shared read guard at
+/// the spawn, so the exclusive guard excludes all three. That is how a test
+/// setting a process-global `CFGD_*_BIN` seam keeps a sibling's manager sweep
+/// from spawning its shim. The exclusion reaches exactly as far as those
+/// helpers: a site spawning a `Command` itself evades it.
+///
 /// The one order that cannot be made re-entrant is shared-then-exclusive: a
 /// thread holding [`path_env_read_guard`]'s read guard cannot upgrade to the
 /// write guard, and degrading to a no-op would be worse than the hang it

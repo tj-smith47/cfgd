@@ -37885,9 +37885,11 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
 #[serial_test::serial]
 fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_nothing() {
     // The seam is process-global, so a sibling sweeping the managers would spawn
-    // this shim and the log would carry a `tap` this call never made. The
-    // spawn-exclusion guard comes first so it drops last, bracketing the window
-    // the seam is set in.
+    // this shim and the log would carry a `tap` this call never made. What keeps
+    // it out is the spawn side: every guarded spawn takes the shared read guard
+    // at the spawn itself, so no other thread can reach one while this exclusive
+    // window is open. The guard comes first so it drops last, bracketing the
+    // window the seam is set in.
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);

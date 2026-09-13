@@ -870,16 +870,19 @@ log_section "DRY — Repeated String Literals"
 # A `"..."` pattern with a length floor baked in cannot find a literal's own
 # opening quote: on `f("a", g("b"))` the floor rejects `"a"`, so the scan starts
 # again at that literal's CLOSING quote and reports the text BETWEEN two
-# literals as one. Pair the quotes first with an unbounded `"[^"]*"` (grep -o
+# literals as one. Pair the quotes first with an unbounded pattern (grep -o
 # resumes after each match, so quotes pair 1-2, 3-4, ...) and apply the floor
-# afterwards, where it can only reject a whole literal.
+# afterwards, where it can only reject a whole literal. The pairing is PCRE so
+# that an escaped `\"` stays part of its own literal: read as a real closing
+# quote it shifts every later pairing on the line by one, which both hides the
+# genuine literals and re-opens the cross-literal match.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
-        | grep -oh '"[^"]*"' \
+        | grep -ohP '"(?:[^"\\]|\\.)*"' \
         | awk 'length($0) >= 32' || true
 done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
@@ -923,10 +926,12 @@ log_section "DRY — Duplicated Function Definitions"
 # subcommands. Nothing is shared between them but the verb.
 #
 # `install_cmd_for` is excused by name in the awk list rather than per site: it
-# is the sanctioned per-manager declaration table (shared-utils.md,
-# `SimpleManager::install_cmd`, where the table owns HOW a family installs and
-# every surface emitting an install composes from it), so each manager owning
-# one is the convention itself, and every manager added later owes one too.
+# is the sanctioned per-manager declaration table these Windows managers answer
+# to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
+# and walked by
+# `every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once`,
+# so each manager owning one is the convention itself, and every manager added
+# later owes one too.
 #
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
@@ -1104,7 +1109,9 @@ ALLOWED_FN_PAIRS=(
     # same convention on unrelated types, `SpecChange::of` building one lockfile
     # diff row and `InventoryDetail::of` folding the `--show-*` trio into a view.
     # `drop_trait_impl_lines` cannot see an inherent impl, so without these the
-    # check reads three constructors as three free functions.
+    # check reads these constructors as free functions: four definitions across
+    # three files, reconciler/types.rs holding two, and what the gate counts is
+    # the distinct files, three.
     "of crates/cfgd-core/src/modules/lockfile.rs"
     "of crates/cfgd/src/cli/mod.rs"
 )
