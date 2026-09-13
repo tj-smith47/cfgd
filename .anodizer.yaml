@@ -261,6 +261,17 @@ workspaces:
         # links installation.md instead of carrying its own download URL, so it
         # holds no version literal and enrolment could only ever report
         # "nothing rewritten". Re-enroll it if it ever names a version again.
+        #
+        # docs/installation.md also carries four anchored regions from the
+        # operator and CSI crates. A whole-file sweep overlaps every anchored
+        # region in the file it sweeps, so anodizer refuses the run when one
+        # old version would become two different new ones. That is reachable
+        # the day the operator or CSI version converges on the cfgd version and
+        # the two bump differently in one release: `anodizer tag` stops with
+        # that refusal before writing anything. Anchoring this entry too would
+        # remove the overlap, and it would take six anchors to cover the eight
+        # occurrences this file holds, so the sweep stays whole-file and the
+        # refusal is the guard.
         version_files:
           - docs/installation.md
           - docs/skill.md
@@ -752,19 +763,25 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        # Anchored entries, not bare paths: docs/installation.md is also swept
-        # whole-file by the cfgd crate, and the operator and CSI image pins in
-        # chart/cfgd/values.yaml once held the same literal. A `match` keys
-        # anodizer's guard on the pair (file, anchor) instead of the file, so
-        # neither crate can rewrite the other's lines. `task chart:tags:check`
-        # still asks the registry for the image each pin renders.
+        # Each entry carries a `match` anchor because docs/installation.md is
+        # also swept whole-file by the cfgd crate, and the operator and CSI
+        # image pins in chart/cfgd/values.yaml once held the same literal. A
+        # `match` keys anodizer's guard on the pair (file, anchor), so neither
+        # crate can rewrite the other's lines. anodizer takes the author's word
+        # that two anchors are disjoint (version_plan.rs short-circuits its
+        # refusals for an anchor pair), so the chart anchor ends at its own
+        # block's `tag:` and spans only the comment lines in between: reorder a
+        # block to put `tag:` first and the anchor matches nothing, which
+        # `check version-files` fails on in the audit job.
+        # `task chart:tags:check` still asks the registry for the image each
+        # pin renders.
         version_files:
           - path: docs/installation.md
             match: 'Operator\s+{version}'
           - path: docs/installation.md
             match: '"operator": "{version}"'
           - path: chart/cfgd/values.yaml
-            match: 'repository: ghcr\.io/tj-smith47/cfgd-operator(?s:.*?)tag: "{version}"'
+            match: 'repository: ghcr\.io/tj-smith47/cfgd-operator\n(?:\s*#[^\n]*\n)*\s*tag: "{version}"'
         builds:
           - binary: cfgd-operator
             features: []
@@ -836,7 +853,7 @@ workspaces:
           - path: docs/installation.md
             match: '"csi": "{version}"'
           - path: chart/cfgd/values.yaml
-            match: 'repository: ghcr\.io/tj-smith47/cfgd-csi(?s:.*?)tag: "{version}"'
+            match: 'repository: ghcr\.io/tj-smith47/cfgd-csi\n(?:\s*#[^\n]*\n)*\s*tag: "{version}"'
         builds:
           - binary: cfgd-csi
             features: []
