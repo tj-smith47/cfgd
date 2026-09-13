@@ -8405,6 +8405,46 @@ fn every_action_variant() -> Vec<Action> {
         .into_iter()
         .map(|kind| Action::Module(ModuleAction::local("nvim", kind)))
         .collect();
+    let system_kinds = [
+        SystemAction::SetValue {
+            configurator: "gsettings".to_string(),
+            key: "org.gnome.x key".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "profile".to_string(),
+        },
+        SystemAction::Skip {
+            configurator: "systemdUnits".to_string(),
+            reason: "'systemdUnits' is not available on this host".to_string(),
+            origin: "profile".to_string(),
+            unknown: false,
+        },
+        // Both marks: the withheld one is the only action outside
+        // `RefreshLiveSession` that `pre_skip_reason` answers `Some` for, and a
+        // caller pricing withheld rows judges nothing without it.
+        SystemAction::ConfigureAfterInstall {
+            configurator: "gsettings".to_string(),
+            tool: "gsettings".to_string(),
+            origin: "profile".to_string(),
+            prerequisite_withheld: false,
+        },
+        SystemAction::ConfigureAfterInstall {
+            configurator: "gsettings".to_string(),
+            tool: "gsettings".to_string(),
+            origin: "profile".to_string(),
+            prerequisite_withheld: true,
+        },
+    ];
+    // The same compiler walk `module_kinds` takes: a `SystemAction` variant
+    // added without a member above cannot be matched here.
+    for kind in &system_kinds {
+        match kind {
+            SystemAction::SetValue { .. }
+            | SystemAction::Skip { .. }
+            | SystemAction::ConfigureAfterInstall { .. } => {}
+        }
+    }
+    actions.extend(system_kinds.into_iter().map(Action::System));
     actions.extend([
         Action::File(FileAction::Delete {
             target: PathBuf::from("/home/u/.conf"),
@@ -8434,19 +8474,6 @@ fn every_action_variant() -> Vec<Action> {
             source: "s.enc".to_string(),
             reason: "no backend".to_string(),
             origin: "profile".to_string(),
-        }),
-        Action::System(SystemAction::SetValue {
-            configurator: "gsettings".to_string(),
-            key: "org.gnome.x key".to_string(),
-            desired: "1".to_string(),
-            current: "0".to_string(),
-            origin: "profile".to_string(),
-        }),
-        Action::System(SystemAction::Skip {
-            configurator: "systemdUnits".to_string(),
-            reason: "'systemdUnits' is not available on this host".to_string(),
-            origin: "profile".to_string(),
-            unknown: false,
         }),
         Action::Script(ScriptAction::Run {
             entry: ScriptEntry::Simple("echo hi".to_string()),

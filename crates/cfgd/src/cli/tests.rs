@@ -9028,6 +9028,108 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
     );
 }
 
+/// A configurator or secret provider whose whole availability question is
+/// "is this binary here" names that binary through `required_tool()`, and the
+/// planner installs it in `Bootstrap` ahead of the phase that needs it. One
+/// that answers `false` for a reason no package changes — a kernel interface,
+/// a platform, an init system, a key file that does not exist — declares
+/// nothing, and says on its impl why installing something would not help.
+///
+/// Without the marker the two cases are one silence: a configurator that
+/// simply forgot to name its tool reads exactly like one that deliberately
+/// has none, and the host stays unconfigured with nothing reporting why. The
+/// population is derived from the trait impls themselves, so a configurator
+/// or provider added to either crate joins the walk with it.
+#[test]
+fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not() {
+    const TRAITS: [&str; 3] = ["SystemConfigurator", "SecretBackend", "SecretProvider"];
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = rust_sources_under(&cfgd.join("src"));
+    files.extend(rust_sources_under(&cfgd.join("../cfgd-core/src")));
+    files.sort();
+    let mut declared: Vec<String> = Vec::new();
+    let mut marked: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" || name == "test_helpers.rs" {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = production.lines().collect();
+        let blanked: Vec<String> = lines.iter().map(|l| blank_string_literals(l)).collect();
+        for i in 0..lines.len() {
+            let opener = blanked[i].trim_start();
+            if !opener.starts_with("impl ") {
+                continue;
+            }
+            if !TRAITS.iter().any(|t| opener.contains(&format!("{t} for "))) {
+                continue;
+            }
+            let site = format!(
+                "{}:{}: {}",
+                cfgd_core::to_posix_string(&path),
+                i + 1,
+                lines[i].trim()
+            );
+            // The impl's own body, brace-counted off the literal-blanked
+            // lines so a brace inside a string cannot close it early.
+            let mut depth = 0i32;
+            let mut body = String::new();
+            for code in blanked.iter().skip(i) {
+                depth += code.matches('{').count() as i32;
+                depth -= code.matches('}').count() as i32;
+                body.push_str(code);
+                body.push('\n');
+                if depth <= 0 {
+                    break;
+                }
+            }
+            if body.contains("fn required_tool") {
+                declared.push(site);
+                continue;
+            }
+            // The comment run directly above the impl, which is where a
+            // decline states what no install would change.
+            let mut why = None;
+            for above in lines[..i].iter().rev() {
+                let text = above.trim();
+                if !text.starts_with("//") {
+                    break;
+                }
+                if let Some(reason) = text.strip_prefix("// no-tool-ok:") {
+                    why = Some(reason.trim().to_string());
+                }
+            }
+            match why {
+                Some(reason) if !reason.is_empty() => marked.push(site),
+                _ => offenders.push(site),
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "each of these drives a tool the planner could install, or declines with \
+         `// no-tool-ok: <why installing something would not help>` on the impl:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        declared.len() >= 12,
+        "the walk found {} impls naming a tool, fewer than the workspace holds, so it \
+         read less than it claims",
+        declared.len()
+    );
+    assert!(
+        marked.len() >= 14,
+        "the walk found {} declining impls, fewer than the workspace holds, so it read \
+         less than it claims",
+        marked.len()
+    );
+}
+
 #[test]
 fn build_registry_has_secret_backend() {
     let registry = super::build_registry();
@@ -37692,6 +37794,63 @@ fn provision_tool_installs_through_the_manager_the_tool_table_routes_to() {
     );
 }
 
+/// The success arm: the install lands the binary, and `provision_tool` says so.
+///
+/// Every other pin here stops at a refusal, so the one path a reader depends on
+/// — cfgd got the tool — was carried by nothing. The tool appears BETWEEN the
+/// two probes, which is what the arm is for: the first resolution misses and is
+/// memoized, the install retires that memo, and the second resolution finds the
+/// binary sitting in the directory `PATH` already named. Without the
+/// invalidation the second probe reads the stale miss and the run reports a
+/// failure on a machine that has the tool.
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn provision_tool_reports_success_once_the_install_lands_the_binary() {
+    // The write guard, and the spawn stays inside its window: the whole claim
+    // is about what a PATH resolution answers before and after the install, so
+    // the window has to hold across both. The child it spawns is the shim at an
+    // absolute `CFGD_BREW_BIN` path.
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // Never expires, so nothing but the install's own invalidation can clear
+    // the miss this primes.
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::never_expires();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let probe = cfgd_core::test_helpers::ProbePath::containing(&[]);
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+
+    assert!(
+        !cfgd_core::command_available("cosign"),
+        "the probe PATH holds nothing, and this miss is what the install has to retire"
+    );
+    // What `brew install cosign` would have done, done here: the binary lands
+    // in a directory that was already on PATH, so nothing new is registered and
+    // only the memo stands between the caller and the tool.
+    let landed = probe.dir().join("cosign");
+    std::fs::write(&landed, "#!/bin/sh\nexit 0\n").expect("write the installed binary");
+    let mut perms = std::fs::metadata(&landed).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&landed, perms).expect("chmod");
+
+    let before = cfgd_core::command_resolution_generation();
+    let printer = test_printer();
+    let registry = brew_only_registry();
+    helpers::provision_tool(&printer, &registry, "cosign", "")
+        .expect("the install landed the binary, so the second probe finds it");
+
+    assert!(
+        shim.argv_log().lines().any(|l| l == "install cosign"),
+        "and it got there through the manager the table routes cosign to: {}",
+        shim.argv_log()
+    );
+    assert!(
+        cfgd_core::command_resolution_generation() > before,
+        "the install retires the resolution memo, which is the only reason the \
+         second probe can see what the first could not"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_nothing() {
@@ -37728,6 +37887,11 @@ fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_noth
 #[test]
 #[serial_test::serial]
 fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
+    // The write guard, and the spawn stays inside its window: `git` carries no
+    // seam, so an empty PATH is the only way to report it missing, and it is
+    // also what leaves brew the one manager `provision_tool` can reach. The
+    // child it spawns is the shim at an absolute `CFGD_BREW_BIN` path, so
+    // nothing in the window resolves a name through the PATH it emptied.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     // The memos outlive the empty-PATH window they were filled outside of, so
@@ -37765,6 +37929,8 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
 #[test]
 #[serial_test::serial]
 fn doctor_without_fix_installs_nothing() {
+    // The twin above states why the window is the write guard's; this pin
+    // spawns nothing at all inside it.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
@@ -37813,11 +37979,13 @@ fn apt_only_registry() -> cfgd_core::providers::ProviderRegistry {
 #[test]
 #[serial_test::serial]
 fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
-    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The read guard, not the write one: what makes the tool absent here is the
+    // consumer's own seam, which is the question the planner asks, so the
+    // process-global PATH only has to hold still.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
     let registry = apt_only_registry();
     let state = cfgd_core::test_helpers::test_state();
@@ -37900,16 +38068,242 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
     );
 }
 
+/// A tool the reader put behind its configurator's own `CFGD_*_BIN` seam is
+/// already on this host, so nothing is planned to install it.
+///
+/// The seeding pass used to ask `command_available` a second time after the
+/// configurator's `is_available()` had already answered through the seam, and
+/// a bare `PATH` lookup answers a different question: a gsettings kept outside
+/// `PATH` got a prerequisite node for a tool the run would never use.
+#[test]
+#[serial_test::serial]
+fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
+    // The read guard, not the write one: what makes the tool present here is
+    // the consumer's own seam, which is the question the planner asks, so the
+    // process-global PATH only has to hold still.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_GSETTINGS_BIN", 0, "", "");
+    let registry = apt_only_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.system.insert(
+        "gsettings".to_string(),
+        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
+            .expect("the fixture is a mapping"),
+    );
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let planned: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|a| match a {
+            cfgd_core::reconciler::Action::Manager(
+                cfgd_core::reconciler::ManagerAction::Prerequisite { tool, .. },
+            ) => Some(tool.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        planned.is_empty(),
+        "the seam answers that gsettings is here, so no install is planned: {planned:?}"
+    );
+}
+
+/// A run scoped to the `System` phase leaves the `Bootstrap` install out, so
+/// the configure step it kept can no longer converge: the plan says so where
+/// it lists the row, and prices the row outside the count the header promised.
+///
+/// `--phase system`, `--skip bootstrap` and `--only system` all reach this
+/// through the one mark `filter_plan` settles after both selector grammars
+/// have been resolved. Before it, the run executed the configure step anyway
+/// and failed on a tool it never attempted to install.
+#[test]
+#[serial_test::serial]
+fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_install_out_of() {
+    // The read guard, not the write one: what makes the tool absent here is the
+    // consumer's own seam, which is the question the planner asks, so the
+    // process-global PATH only has to hold still.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
+    let registry = apt_only_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.system.insert(
+        "gsettings".to_string(),
+        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
+            .expect("the fixture is a mapping"),
+    );
+    let mut plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let filter =
+        cfgd_core::reconciler::PhaseFilter::Phase(cfgd_core::reconciler::PhaseName::System);
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    super::plan_ops::filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        Some(&filter),
+        &printer,
+        &registry,
+        &std::collections::HashSet::new(),
+    );
+
+    let withheld: Vec<&'static str> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|a| match a {
+            cfgd_core::reconciler::Action::System(
+                cfgd_core::reconciler::SystemAction::ConfigureAfterInstall { .. },
+            ) => Some(a.pre_skip_reason()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        withheld,
+        vec![cfgd_core::reconciler::PREREQUISITE_NOT_IN_RUN],
+        "the configure step this run will deliver no tool for states why it cannot run"
+    );
+
+    let (tree_printer, tree_buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cfgd_core::reconciler::render_plan_tree(&plan, Some(&filter), &tree_printer);
+    let tree = cfgd_core::test_helpers::captured_text(&tree_buf);
+    assert!(
+        tree.contains("gsettings") && tree.contains(cfgd_core::reconciler::PREREQUISITE_NOT_IN_RUN),
+        "the row still renders, carrying its reason:\n{tree}"
+    );
+
+    let (header_printer, header_buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cfgd_core::reconciler::ApplyRun::new(
+        cfgd_core::reconciler::RunContext {
+            title: cfgd_core::reconciler::RunTitle::Plan,
+            config_path: None,
+            profile: None,
+            sources: &[],
+            modules: &[],
+            profile_inherits: &[],
+            trigger: None,
+            subject: None,
+            unit_source: None,
+        },
+        &plan,
+    )
+    .with_filter(Some(&filter))
+    .header(&header_printer);
+    let header = cfgd_core::test_helpers::captured_text(&header_buf);
+    assert!(
+        !header.contains("Actions"),
+        "and the header promises no action, because the one in scope is withheld:\n{header}"
+    );
+}
+
+/// The configure step's failure names what it observed, never an install it
+/// assumed ran.
+///
+/// The `Bootstrap` node here reports success and puts no binary on the machine
+/// — which is every failed vendor install, every manager whose package names
+/// the wrong binary, and the mock manager below. Worded from the install, the
+/// sentence read `'gsettings' is still unavailable after gsettings was
+/// installed`, asserting an outcome nothing checked.
+#[test]
+#[serial_test::serial]
+fn a_configure_step_whose_install_delivered_nothing_fails_on_what_it_observed() {
+    // The read guard, not the write one: what makes the tool absent here is the
+    // consumer's own seam, which is the question both probes ask, so the
+    // process-global PATH only has to hold still.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
+    let registry = apt_only_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.system.insert(
+        "gsettings".to_string(),
+        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
+            .expect("the fixture is a mapping"),
+    );
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let printer = cfgd_core::test_helpers::test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            cfgd_core::reconciler::ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .expect("the run completes; the configure step alone fails");
+    let failures: Vec<String> = result
+        .action_results
+        .iter()
+        .filter_map(|r| r.error.clone())
+        .collect();
+    assert_eq!(
+        failures,
+        vec!["'gsettings' is unavailable: gsettings is not on PATH".to_string()],
+        "the sentence states the probe's own answer"
+    );
+}
+
 /// The same shape for a declared sops secret: the backend is unavailable only
 /// because its tool is missing, which is a reason this run can remove.
 #[test]
 #[serial_test::serial]
 fn a_declared_sops_secret_plans_sops_ahead_of_the_decryption() {
-    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The read guard, not the write one: what makes the tool absent here is the
+    // consumer's own seam, which is the question the planner asks, so the
+    // process-global PATH only has to hold still.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
     let registry = apt_only_registry();
     let state = cfgd_core::test_helpers::test_state();
@@ -38074,7 +38468,7 @@ fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
         }
     }
     assert!(
-        sites >= 4,
+        sites >= 5,
         "the walk no longer reaches the call sites it judges: it found {sites}"
     );
     assert!(

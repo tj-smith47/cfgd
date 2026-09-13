@@ -538,6 +538,7 @@ impl<'a> super::Reconciler<'a> {
                     configurator: key.clone(),
                     tool: tool.to_string(),
                     origin: LOCAL_LAYER.to_string(),
+                    prerequisite_withheld: false,
                 }));
                 continue;
             }

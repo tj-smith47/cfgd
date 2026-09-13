@@ -1364,6 +1364,7 @@ pub(in crate::cli) fn filter_plan(
         reconciler::restrict_provision_batches(plan, phase, selector);
     }
     if skip.is_empty() && only.is_empty() {
+        reconciler::withhold_orphaned_prerequisites(plan, phase_filter);
         return false;
     }
     warn_legacy_module_patterns(printer, skip, only);
@@ -1557,7 +1558,7 @@ pub(in crate::cli) fn filter_plan(
     // them all) and delete every manager node it just kept, which is not a
     // prune, it is undoing the selection.
     if only.is_empty() {
-        reconciler::prune_to_surviving_consumers(plan);
+        reconciler::prune_to_surviving_consumers(plan, registry);
         plan.phases.retain(|p| !p.is_empty());
     }
 
@@ -1567,6 +1568,10 @@ pub(in crate::cli) fn filter_plan(
         warn_zero_match_tokens(plan, "skip", &skip_hits, &owners_present, known_modules);
     let only_missed =
         warn_zero_match_tokens(plan, "only", &only_hits, &owners_present, known_modules);
+    // Last, on both exits: the mark answers "will this run deliver the tool",
+    // which only a plan every selector has already been resolved against can
+    // say.
+    reconciler::withhold_orphaned_prerequisites(plan, phase_filter);
     skip_missed || only_missed
 }
 

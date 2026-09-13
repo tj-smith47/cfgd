@@ -69,6 +69,7 @@ fn load_terminal_settings() -> Result<Option<(std::path::PathBuf, serde_json::Va
     Ok(Some((path, settings)))
 }
 
+// no-tool-ok: writes the rc files itself, so it drives no binary and every host with a shell can run it
 impl SystemConfigurator for ShellConfigurator {
     fn name(&self) -> &str {
         "shell"

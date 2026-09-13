@@ -88,6 +88,7 @@ impl KernelModuleConfigurator {
     }
 }
 
+// no-tool-ok: turns on the running kernel exposing its module list, which no package supplies
 impl SystemConfigurator for KernelModuleConfigurator {
     fn name(&self) -> &str {
         "kernelModules"

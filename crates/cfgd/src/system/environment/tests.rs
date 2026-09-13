@@ -1715,3 +1715,90 @@ fn every_system_scope_env_file_is_readable_by_the_sessions_that_source_it() {
         "the widen must preserve the administrator's own mode, got {mode:o}"
     );
 }
+
+/// cfgd writes `~/.config/cfgd/env.sh` on macOS, so cfgd writes the rc line
+/// that loads it — and that line has to survive beside the env engine's own
+/// loader in the same file, because the two writers share one rc.
+///
+/// Both claims are checked off the engine's own target list rather than a
+/// hand-spelled path: the surface is planted from `managed_env_files` and
+/// `managed_env_source_lines`, and the check that judges it is
+/// `env_verify_results`. A second injection appending a duplicate, or an
+/// injection rewriting the file in a way that loses the engine's line, both
+/// show up as a standing `env-rc` row here.
+#[test]
+fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc_row() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    // The probe is the one seam that decides which rc file this writes, and it
+    // reads `$SHELL`: pinned to zsh, the pin drives the file a macOS login
+    // shell reads wherever the suite runs, instead of the box's own.
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/zsh".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: true,
+        },
+    );
+
+    let env = vec![cfgd_core::config::EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    let mut owners = cfgd_core::config::EntryOwners::default();
+    owners.claim(
+        &cfgd_core::reconciler::Owner::profile("mac").token(),
+        &env,
+        &[],
+    );
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&env, &[], &owners, &[], &[]);
+    let scope = cfgd_core::config::EnvScope::default();
+    let write = |path: &std::path::Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    for (path, content) in merged.managed_env_files(home.path(), scope) {
+        write(&path, content);
+    }
+    for (rc_path, line) in merged.managed_env_source_lines(home.path(), scope) {
+        write(&rc_path, format!("{line}\n"));
+    }
+
+    let printer = cfgd_core::test_helpers::test_printer();
+    let cx = cfgd_core::providers::SystemContext::new(&printer);
+    EnvironmentConfigurator::macos_inject_rc_source_line(&cx);
+    EnvironmentConfigurator::macos_inject_rc_source_line(&cx);
+
+    let rc = cfgd_core::reconciler::interactive_rc_path(home.path());
+    let body = std::fs::read_to_string(&rc).unwrap();
+    assert_eq!(
+        body.matches(cfgd_core::reconciler::MACOS_SYSTEM_ENV_SOURCE_LINE)
+            .count(),
+        1,
+        "the loader line lands once and a second run appends no duplicate:\n{body}"
+    );
+
+    let results = cfgd_core::reconciler::env_verify_results(&env, &[], &owners, scope, &[], &[]);
+    let rc_rows: Vec<&cfgd_core::reconciler::VerifyResult> = results
+        .iter()
+        .filter(|r| r.resource_type == cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE)
+        .collect();
+    assert!(
+        !rc_rows.is_empty(),
+        "the check judged no rc target at all, so it proved nothing about the surface"
+    );
+    let standing: Vec<&str> = rc_rows
+        .iter()
+        .filter(|r| !r.matches)
+        .map(|r| r.resource_id.as_str())
+        .collect();
+    assert!(
+        standing.is_empty(),
+        "a converged surface carrying the macOS loader line stands on no env-rc row:\n{}",
+        standing.join("\n")
+    );
+}

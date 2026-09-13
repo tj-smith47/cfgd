@@ -93,8 +93,8 @@ pub use types::{
     CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
     ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
     MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
-    OwnerKind, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult,
-    SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
+    OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
+    RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
     action_counts_as_drift, action_drift_rows, apply_heals_action_rows, attempted_count,
     module_files_unprobed, module_skipped_whole, package_action_drift_rows,
     package_drift_resource_id, package_entry_drift_id, split_package_drift_resource_id,
@@ -120,6 +120,7 @@ pub(crate) use env::all_recorded_path_dirs;
 /// `--skip`-only pass, never after `--only` narrowed the plan.
 pub use managers::{
     prerequisite_selectors, prune_to_surviving_consumers, restrict_provision_batches,
+    withhold_orphaned_prerequisites,
 };
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,

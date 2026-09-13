@@ -244,6 +244,7 @@ fn parse_sc_start_type(output: &str) -> Option<String> {
     None
 }
 
+// no-tool-ok: available on Windows alone, and no install makes another platform Windows
 impl SystemConfigurator for WindowsServiceConfigurator {
     fn name(&self) -> &str {
         "windowsServices"

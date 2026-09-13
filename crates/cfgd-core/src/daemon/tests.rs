@@ -2083,7 +2083,8 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
         warnings: Vec::new(),
     };
 
-    super::reconcile::narrow_to_module(&mut plan, "cli-tools");
+    let registry = crate::providers::ProviderRegistry::new();
+    super::reconcile::narrow_to_module(&mut plan, "cli-tools", &registry);
 
     let nodes: Vec<String> = plan
         .phases
@@ -2149,7 +2150,8 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
         warnings: Vec::new(),
     };
 
-    super::reconcile::narrow_to_module(&mut plan, "docs");
+    let registry = crate::providers::ProviderRegistry::new();
+    super::reconcile::narrow_to_module(&mut plan, "docs", &registry);
 
     assert!(
         plan.phases

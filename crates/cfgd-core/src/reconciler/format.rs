@@ -767,6 +767,7 @@ fn plan_item(action: &Action, arrow: &str) -> String {
                 configurator,
                 tool,
                 origin,
+                ..
             } => format!(
                 "configure {} once {} is installed{}",
                 configurator,
@@ -1354,6 +1355,7 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::PREREQUISITE_NOT_IN_RUN;
     use super::super::types::{
         Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
         SystemAction,
@@ -1404,12 +1406,23 @@ mod tests {
     /// doubled row.
     #[test]
     fn no_pre_skip_reason_repeats_a_noun_its_subject_already_names() {
-        let withheld: Vec<(Action, &str)> = vec![(
-            Action::Env(EnvAction::RefreshLiveSession {
-                vars: vec![("EDITOR".into(), "nvim".into())],
-            }),
-            crate::NO_SESSION_MANAGER,
-        )];
+        let withheld: Vec<(Action, &str)> = vec![
+            (
+                Action::Env(EnvAction::RefreshLiveSession {
+                    vars: vec![("EDITOR".into(), "nvim".into())],
+                }),
+                crate::NO_SESSION_MANAGER,
+            ),
+            (
+                Action::System(SystemAction::ConfigureAfterInstall {
+                    configurator: "gsettings".into(),
+                    tool: "gsettings".into(),
+                    origin: String::new(),
+                    prerequisite_withheld: true,
+                }),
+                PREREQUISITE_NOT_IN_RUN,
+            ),
+        ];
 
         for (action, reason) in &withheld {
             let subject =

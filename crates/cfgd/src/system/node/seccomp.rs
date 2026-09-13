@@ -30,6 +30,7 @@ impl SeccompConfigurator {
     const DEFAULT_PROFILES_DIR: &'static str = "/etc/cfgd/seccomp";
 }
 
+// no-tool-ok: turns on the running kernel carrying seccomp, which no package supplies
 impl SystemConfigurator for SeccompConfigurator {
     fn name(&self) -> &str {
         "seccomp"

@@ -613,7 +613,7 @@ fn reconcile_tick(
     // just that one module's packages/files/scripts and avoids reaching into
     // unrelated profile state.
     if let Some(name) = module_filter {
-        narrow_to_module(&mut plan, name);
+        narrow_to_module(&mut plan, name, registry);
     }
 
     // A resource whose source change is still awaiting a decision is not the
@@ -1418,7 +1418,11 @@ fn reconcile_tick(
 /// mid-run, which a manager already present never reaches. Narrowing by
 /// consumer rather than keeping the group whole is the same rule the planner
 /// mints by, so a tick for a module with no packages still plans nothing.
-pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str) {
+pub(super) fn narrow_to_module(
+    plan: &mut crate::reconciler::Plan,
+    module: &str,
+    registry: &crate::providers::ProviderRegistry,
+) {
     for phase in &mut plan.phases {
         phase.retain_groups(|owner| {
             (owner.kind == crate::reconciler::OwnerKind::Module && owner.name == module)
@@ -1430,7 +1434,7 @@ pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str)
     // phases too so drift recording and `reconciler.apply` only ever see the
     // filtered module's own work.
     plan.phases.retain(|p| !p.is_empty());
-    crate::reconciler::prune_to_surviving_consumers(plan);
+    crate::reconciler::prune_to_surviving_consumers(plan, registry);
 }
 
 /// Whether `plan` holds an `Action::Module` for `module_name` that stands for

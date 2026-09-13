@@ -147,6 +147,7 @@ impl WindowsRegistryConfigurator {
     }
 }
 
+// no-tool-ok: available on Windows alone, where reg.exe ships with the OS
 impl SystemConfigurator for WindowsRegistryConfigurator {
     fn name(&self) -> &str {
         "windowsRegistry"

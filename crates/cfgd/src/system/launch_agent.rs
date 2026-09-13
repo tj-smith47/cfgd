@@ -11,6 +11,7 @@ use std::path::Path;
 /// LaunchAgentConfigurator — manages macOS LaunchAgent plists.
 pub struct LaunchAgentConfigurator;
 
+// no-tool-ok: writes plists on macOS alone, and no install makes another platform macOS
 impl SystemConfigurator for LaunchAgentConfigurator {
     fn name(&self) -> &str {
         "launchAgents"

@@ -23,6 +23,7 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 /// ```
 pub struct CertificateConfigurator;
 
+// no-tool-ok: writes into the Linux trust store directories itself and drives no binary
 impl SystemConfigurator for CertificateConfigurator {
     fn name(&self) -> &str {
         "certificates"

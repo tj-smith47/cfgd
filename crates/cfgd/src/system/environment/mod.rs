@@ -386,6 +386,7 @@ impl EnvironmentConfigurator {
     }
 }
 
+// no-tool-ok: writes the env and rc files itself, so it drives no binary
 impl SystemConfigurator for EnvironmentConfigurator {
     fn name(&self) -> &str {
         "environment"

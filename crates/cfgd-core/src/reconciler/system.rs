@@ -53,7 +53,10 @@ impl<'a> super::Reconciler<'a> {
                 ))
             }
             SystemAction::ConfigureAfterInstall {
-                configurator, tool, ..
+                configurator,
+                tool,
+                prerequisite_withheld,
+                ..
             } => {
                 // Re-probed rather than trusted: the plan was read before this
                 // run's own Bootstrap phase installed the tool, and the
@@ -65,6 +68,13 @@ impl<'a> super::Reconciler<'a> {
                     .iter()
                     .find(|sc| sc.name() == configurator && sc.is_available())
                 else {
+                    // A run whose scope left the install out never tried, so it
+                    // reports what the plan already said rather than a failure
+                    // it did not observe. The row is priced as withheld either
+                    // way, off the same mark this reads.
+                    if *prerequisite_withheld {
+                        return Ok(format!("system:{configurator} (skipped)"));
+                    }
                     return Err(crate::errors::SystemError::ConfiguratorUnavailable {
                         configurator: configurator.clone(),
                         tool: tool.clone(),

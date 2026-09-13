@@ -17,6 +17,7 @@ fn defaults_cmd() -> std::process::Command {
 /// MacosDefaultsConfigurator — reads/writes macOS `defaults` domains.
 pub struct MacosDefaultsConfigurator;
 
+// no-tool-ok: available on macOS alone, and no install makes another platform macOS
 impl SystemConfigurator for MacosDefaultsConfigurator {
     fn name(&self) -> &str {
         "macosDefaults"

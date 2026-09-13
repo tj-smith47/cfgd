@@ -424,6 +424,11 @@ impl ManagerAction {
     }
 }
 
+/// Why a `ConfigureAfterInstall` this run will not deliver the tool for is
+/// withheld, worded so it names neither the configurator nor the tool the row's
+/// own subject already spells.
+pub const PREREQUISITE_NOT_IN_RUN: &str = "prerequisite install not in this run";
+
 /// A unified action across all resource types.
 #[derive(Debug, Serialize)]
 pub enum Action {
@@ -457,6 +462,13 @@ impl Action {
                     crate::NO_SESSION_MANAGER,
                 ))
             }
+            Action::System(SystemAction::ConfigureAfterInstall {
+                prerequisite_withheld: true,
+                ..
+            }) => Some(super::format::debug_checked_pre_skip_reason(
+                self,
+                PREREQUISITE_NOT_IN_RUN,
+            )),
             _ => None,
         }
     }
@@ -583,6 +595,17 @@ pub enum SystemAction {
         /// The binary the `Bootstrap` phase is installing for it.
         tool: String,
         origin: String,
+        /// Whether this run's own scope excludes the `Bootstrap` node that
+        /// would install [`Self::ConfigureAfterInstall::tool`].
+        ///
+        /// Minted `false` and settled once by
+        /// [`super::managers::withhold_orphaned_prerequisites`], after every
+        /// selector the invocation carried has been resolved against the plan.
+        /// `--phase system`, `--skip bootstrap` and `--only system` each leave
+        /// the configure step behind a tool nothing in the run will deliver,
+        /// and a run that executes it anyway fails on a tool it never tried to
+        /// install.
+        prerequisite_withheld: bool,
     },
 }
 

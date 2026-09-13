@@ -580,7 +580,7 @@ pub enum BackupError {
 /// A `SystemConfigurator` could not be driven.
 #[derive(Debug, thiserror::Error)]
 pub enum SystemError {
-    #[error("'{configurator}' is still unavailable after {tool} was installed")]
+    #[error("'{configurator}' is unavailable: {tool} is not on PATH")]
     ConfiguratorUnavailable { configurator: String, tool: String },
 }
 

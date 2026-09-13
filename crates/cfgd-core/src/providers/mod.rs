@@ -1016,28 +1016,18 @@ impl<T: PackageManager + ?Sized> PackageManagerExt for T {
 ///
 /// Keyed by the tool's BINARY name, because that is what a bootstrap cascade
 /// shells out to and what [`crate::command_available`] answers for; the value
-/// is one entry per manager that packages it, keyed by the REGISTERED manager
-/// name. One declaration per tool, read by every caller that asks "could this
-/// host get it", so a second hand-written copy of a package name cannot make a
-/// node promise `apt install pip3`, which resolves nothing.
+/// is one entry per manager in [`TOOL_INSTALLER_ORDER`], keyed by the REGISTERED
+/// manager name. One declaration per tool, read by every caller that asks
+/// "could this host get it", so a second hand-written copy of a package name
+/// cannot make a node promise `apt install pip3`, which resolves nothing.
 ///
-/// A manager absent from a tool's list declines it, and every decline has a
-/// reason:
-///
-/// - `curl` and `ssh-keygen` on the Windows three, and `ssh-keygen` on brew:
-///   they ship with Windows 10 and with macOS, so there is nothing to install.
-/// - `bash` on the Windows three: it is named by npm's nvm arm alone, and nvm
-///   is POSIX only.
-/// - `gsettings`, `xfconf-query` and `kwriteconfig6` on brew and the Windows
-///   three: they configure Linux desktops, which neither platform runs.
-/// - `sops` and `cosign` on dnf and yum: Fedora and RHEL package neither.
-/// - `cosign` on chocolatey: the community repository carries no package.
-/// - `age` on scoop: it lives in scoop's Extras bucket, and cfgd's scoop
-///   install path adds no bucket.
-/// - the secret CLIs (`op`, `bw`, `vault`, `lpass`) on every Unix system
-///   manager: each vendor publishes its own repository or tarball and no
-///   distribution packages them. `lpass` on the Windows three as well:
-///   LastPass publishes no Windows CLI.
+/// Every manager answers for every tool: a manager that packages the tool names
+/// it, and one that does not carries an EMPTY package plus a
+/// `// no-driven-route-ok: <why>` saying why, the same decline shape
+/// `MediatedArms::arms` uses. [`tool_package`] reads an empty package as no
+/// route, so a decline and an absence behave alike at every call site while
+/// `every_installable_tool_names_every_manager_or_declines_it` keeps a new row
+/// from shipping with a cell nobody classified.
 ///
 /// The `pkg` entries name FreeBSD port ORIGINS, for the same reason
 /// `MediatedArms` does: an origin is flavour-free and keeps naming the right
@@ -1057,6 +1047,11 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("apk", "curl"),
             ("pkg", "ftp/curl"),
             ("brew", "curl"),
+            // no-driven-route-ok: curl ships with Windows 10, so the Windows
+            // three have nothing to install.
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1088,6 +1083,11 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("apk", "bash"),
             ("pkg", "shells/bash"),
             ("brew", "bash"),
+            // no-driven-route-ok: bash is named by npm's nvm arm alone, and
+            // nvm is POSIX only.
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1116,6 +1116,12 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("pacman", "openssh"),
             ("apk", "openssh-keygen"),
             ("pkg", "security/openssh-portable"),
+            // no-driven-route-ok: ssh-keygen ships with macOS and with
+            // Windows 10, so neither platform has anything to install.
+            ("brew", ""),
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1128,6 +1134,12 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("pacman", "glib2"),
             ("apk", "glib"),
             ("pkg", "devel/glib20"),
+            // no-driven-route-ok: gsettings configures a Linux desktop, which
+            // neither macOS nor Windows runs.
+            ("brew", ""),
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1140,6 +1152,12 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("pacman", "xfconf"),
             ("apk", "xfconf"),
             ("pkg", "x11/xfce4-conf"),
+            // no-driven-route-ok: xfconf-query configures a Linux desktop,
+            // which neither macOS nor Windows runs.
+            ("brew", ""),
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1152,6 +1170,12 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("pacman", "kconfig"),
             ("apk", "kconfig"),
             ("pkg", "devel/kf6-kconfig"),
+            // no-driven-route-ok: kwriteconfig6 configures a Linux desktop,
+            // which neither macOS nor Windows runs.
+            ("brew", ""),
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
         ],
     ),
     (
@@ -1166,6 +1190,9 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("winget", "Mozilla.SOPS"),
             ("chocolatey", "sops"),
             ("scoop", "sops"),
+            // no-driven-route-ok: Fedora and RHEL package no sops.
+            ("dnf", ""),
+            ("yum", ""),
         ],
     ),
     (
@@ -1181,6 +1208,9 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("brew", "age"),
             ("winget", "FiloSottile.age"),
             ("chocolatey", "age.portable"),
+            // no-driven-route-ok: age lives in scoop's Extras bucket, and
+            // cfgd's scoop install path adds no bucket.
+            ("scoop", ""),
         ],
     ),
     (
@@ -1194,6 +1224,12 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("brew", "cosign"),
             ("winget", "Sigstore.Cosign"),
             ("scoop", "cosign"),
+            // no-driven-route-ok: Fedora and RHEL package no cosign.
+            ("dnf", ""),
+            ("yum", ""),
+            // no-driven-route-ok: the chocolatey community repository carries
+            // no cosign package.
+            ("chocolatey", ""),
         ],
     ),
     (
@@ -1203,6 +1239,15 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("winget", "AgileBits.1Password.CLI"),
             ("chocolatey", "1password-cli"),
             ("scoop", "1password-cli"),
+            // no-driven-route-ok: 1Password publishes its own repository and
+            // tarball, and no distribution packages the CLI.
+            ("apt", ""),
+            ("dnf", ""),
+            ("yum", ""),
+            ("zypper", ""),
+            ("pacman", ""),
+            ("apk", ""),
+            ("pkg", ""),
         ],
     ),
     (
@@ -1212,6 +1257,15 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("winget", "Bitwarden.CLI"),
             ("chocolatey", "bitwarden-cli"),
             ("scoop", "bitwarden-cli"),
+            // no-driven-route-ok: Bitwarden publishes its own tarball and npm
+            // package, and no distribution packages the CLI.
+            ("apt", ""),
+            ("dnf", ""),
+            ("yum", ""),
+            ("zypper", ""),
+            ("pacman", ""),
+            ("apk", ""),
+            ("pkg", ""),
         ],
     ),
     (
@@ -1221,9 +1275,35 @@ pub const INSTALLABLE_TOOLS: &[(&str, &[(&str, &str)])] = &[
             ("winget", "Hashicorp.Vault"),
             ("chocolatey", "vault"),
             ("scoop", "vault"),
+            // no-driven-route-ok: HashiCorp publishes its own repository, and
+            // no distribution packages the CLI.
+            ("apt", ""),
+            ("dnf", ""),
+            ("yum", ""),
+            ("zypper", ""),
+            ("pacman", ""),
+            ("apk", ""),
+            ("pkg", ""),
         ],
     ),
-    ("lpass", &[("brew", "lastpass-cli")]),
+    (
+        "lpass",
+        &[
+            ("brew", "lastpass-cli"),
+            // no-driven-route-ok: LastPass publishes no packaged CLI for a
+            // Unix distribution, and none at all for Windows.
+            ("apt", ""),
+            ("dnf", ""),
+            ("yum", ""),
+            ("zypper", ""),
+            ("pacman", ""),
+            ("apk", ""),
+            ("pkg", ""),
+            ("winget", ""),
+            ("chocolatey", ""),
+            ("scoop", ""),
+        ],
+    ),
 ];
 
 /// The Python distribution each manager packages `pip3` and `pip` in.
@@ -1294,6 +1374,9 @@ pub fn tool_package(tool: &str, manager: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == tool)
         .and_then(|(_, arms)| arms.iter().find(|(m, _)| *m == manager))
+        // An empty package is the table's decline, so every caller reads a
+        // declined cell exactly as it reads a manager the table never named.
+        .filter(|(_, package)| !package.is_empty())
         .map(|(_, package)| *package)
 }
 
@@ -3371,6 +3454,93 @@ mod tests {
         assert!(
             out.contains("→ Open a new shell"),
             "standalone, the next step settles as a hint: {out:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod installable_tools_tests {
+    use super::{INSTALLABLE_TOOLS, TOOL_INSTALLER_ORDER, tool_package};
+
+    /// Every tool's arms answer for every manager cfgd would route through,
+    /// and a cell that declines says why on the line above it.
+    ///
+    /// The table's declines used to be prose in its own doc comment: correct,
+    /// but read by nothing, so a tool added with eight arms shipped three
+    /// unclassified cells and the reader learned only that no route existed.
+    /// An empty package is the decline, spelled the way `MediatedArms::arms`
+    /// spells one, and `// no-driven-route-ok: <why>` carries the reason.
+    ///
+    /// Two halves, because neither answers the other's question: the data half
+    /// asks whether the cell exists at all, and the source half asks whether it
+    /// was classified. The read failing fails the walk.
+    #[test]
+    fn every_installable_tool_names_every_manager_or_declines_it() {
+        let mut missing = Vec::new();
+        for (tool, arms) in INSTALLABLE_TOOLS {
+            for manager in TOOL_INSTALLER_ORDER {
+                if !arms.iter().any(|(m, _)| m == manager) {
+                    missing.push(format!("{tool} names no cell for {manager}"));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "every tool answers for every manager, naming a package or declining with an \
+             empty one:\n{}",
+            missing.join("\n")
+        );
+
+        let source = crate::test_helpers::walked_file_body(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/providers/mod.rs"),
+        );
+        let table = source
+            .split_once("pub const INSTALLABLE_TOOLS")
+            .expect("the table is declared")
+            .1
+            .split_once("\n];\n")
+            .expect("the table is closed")
+            .0;
+        let lines: Vec<&str> = table.lines().collect();
+        let declines = lines
+            .iter()
+            .filter(|l| l.trim_end().ends_with("\"\"),"))
+            .count();
+        assert!(
+            declines >= 59,
+            "the source half no longer reaches the declines it judges: it found {declines}"
+        );
+        let mut unmarked = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim_end().ends_with("\"\"),") {
+                continue;
+            }
+            // The reason is one comment block above a run of declines sharing
+            // it, so the search walks back over the run rather than reading the
+            // single line above.
+            let marked = lines[..i]
+                .iter()
+                .rev()
+                .take_while(|above| {
+                    let text = above.trim();
+                    text.starts_with("//") || text.ends_with("\"\"),")
+                })
+                .any(|above| above.contains("no-driven-route-ok:"));
+            if !marked {
+                unmarked.push(format!("{}: {}", i + 1, line.trim()));
+            }
+        }
+        assert!(
+            unmarked.is_empty(),
+            "every declined cell carries `// no-driven-route-ok: <why>` on the comment \
+             block above its run:\n{}",
+            unmarked.join("\n")
+        );
+
+        assert_eq!(
+            tool_package("curl", "winget"),
+            None,
+            "a declined cell reads as no route, the way a manager the table never named does"
         );
     }
 }

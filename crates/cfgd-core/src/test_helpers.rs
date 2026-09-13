@@ -1863,6 +1863,13 @@ impl ProbePath {
             _path: path,
         }
     }
+
+    /// The one directory this `PATH` holds, for a test that has to put a
+    /// binary there AFTER a resolution has already missed it — which is how a
+    /// tool appearing mid-run is reproduced without a second `PATH` write.
+    pub fn dir(&self) -> &Path {
+        self._tmp.path()
+    }
 }
 
 /// One argv-dispatch arm of a shim written by [`write_tool_shim`].

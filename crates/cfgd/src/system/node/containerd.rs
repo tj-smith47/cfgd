@@ -65,6 +65,7 @@ impl ContainerdConfigurator {
     }
 }
 
+// no-tool-ok: containerd comes from the node's own provisioning, and no package cfgd can install puts a container runtime on a machine that has none
 impl SystemConfigurator for ContainerdConfigurator {
     fn name(&self) -> &str {
         "containerd"

@@ -218,9 +218,11 @@ pub(super) fn plan_managers_with_routes(
     // closure like any other: it gets its own node, and the prerequisite's edge
     // resolves against it.
     for (tool, consumer) in extra_tools {
-        if crate::command_available(tool) {
-            continue;
-        }
+        // No probe here: every producer of `extra_tools` already asked its own
+        // consumer whether the tool is reachable, through the consumer's
+        // `is_available()`, which reads that consumer's `CFGD_*_BIN` seam. A
+        // bare PATH lookup would answer a different question and re-plan an
+        // install for a tool the seam already points at.
         let Some(route) = registry_tool_route(registry, tool) else {
             continue;
         };
@@ -664,8 +666,8 @@ pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
     selectors
 }
 
-pub fn prune_to_surviving_consumers(plan: &mut Plan) {
-    let consumers = surviving_consumers(plan);
+pub fn prune_to_surviving_consumers(plan: &mut Plan, registry: &ProviderRegistry) {
+    let consumers = surviving_consumers(plan, registry);
     shrink_provision_batches(plan, &consumers);
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut keep: BTreeSet<String> = BTreeSet::new();
@@ -773,7 +775,7 @@ fn shrink_provision_batches(plan: &mut Plan, consumers: &BTreeSet<String>) {
 /// The managers the package work still in `plan` would run a command through,
 /// each recorded under the name it was declared with AND under its family, so
 /// a `brew-cask` install keeps the `brew` node the planner folded it onto.
-fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
+fn surviving_consumers(plan: &Plan, registry: &ProviderRegistry) -> BTreeSet<String> {
     let mut consumers = BTreeSet::new();
     for phase in &plan.phases {
         for action in phase.actions() {
@@ -796,8 +798,16 @@ fn surviving_consumers(plan: &Plan) -> BTreeSet<String> {
                 | Action::System(SystemAction::ConfigureAfterInstall { configurator, .. }) => {
                     consumers.insert(format!("system:{configurator}"));
                 }
-                Action::Secret(SecretAction::Decrypt { backend, .. }) => {
-                    consumers.insert(format!("secret:{backend}"));
+                // The REGISTRY's backend, never the action's own field: a
+                // secret declaring `backend: age` mints a `Decrypt` naming age
+                // while the prerequisite was planned for the one backend the
+                // registry holds, and the executor decrypts through that same
+                // registry backend whatever the field says. Reading the field
+                // here made the two tokens disagree and pruned the node.
+                Action::Secret(SecretAction::Decrypt { .. }) => {
+                    if let Some(backend) = registry.secret_backend.as_ref() {
+                        consumers.insert(format!("secret:{}", backend.name()));
+                    }
                 }
                 Action::Secret(
                     SecretAction::Resolve { provider, .. }
@@ -853,6 +863,54 @@ pub fn restrict_provision_batches(plan: &mut Plan, phase: &PhaseName, selector: 
                 }
                 *manager = selector.to_string();
                 batched.clear();
+            }
+        }
+    }
+}
+
+/// Mark every `ConfigureAfterInstall` whose `Bootstrap` prerequisite this run's
+/// own scope leaves out.
+///
+/// The configure step reads its desired set at execute time because the tool was
+/// absent when the plan was read, and it converges only if something puts the
+/// tool on the machine first. `--phase system`, `--skip bootstrap` and
+/// `--only system` each keep the configure step and drop the install, and the
+/// executor then fails on a tool this run never attempted. Settled here, once,
+/// after both selector grammars have been resolved against the plan: the
+/// `--skip`/`--only` pass has already removed its nodes from `plan`, and the
+/// `--phase` predicate is asked of every node still in it, so one pass answers
+/// for both. [`super::Action::pre_skip_reason`] then reads the mark, which is
+/// what keeps the header's count, the plan's row and the apply's tally saying
+/// one thing about the same action.
+pub fn withhold_orphaned_prerequisites(
+    plan: &mut Plan,
+    filter: Option<&super::types::PhaseFilter>,
+) {
+    let mut delivered: BTreeSet<&str> = BTreeSet::new();
+    for phase in &plan.phases {
+        for (owner, action) in phase.owned_actions() {
+            let Action::Manager(ManagerAction::Prerequisite { tool, .. }) = action else {
+                continue;
+            };
+            if filter.is_none_or(|f| {
+                super::apply::action_matches_phase_filter(&phase.name, owner, action, f)
+            }) {
+                delivered.insert(tool.as_str());
+            }
+        }
+    }
+    let delivered: BTreeSet<String> = delivered.into_iter().map(str::to_string).collect();
+    for phase in &mut plan.phases {
+        for (_, actions) in phase.groups_mut() {
+            for action in actions.iter_mut() {
+                if let Action::System(SystemAction::ConfigureAfterInstall {
+                    tool,
+                    prerequisite_withheld,
+                    ..
+                }) = action
+                {
+                    *prerequisite_withheld = !delivered.contains(tool.as_str());
+                }
             }
         }
     }
@@ -2221,12 +2279,55 @@ mod tests {
         });
         let mut plan = one_phase_plan(vec![curl_prereq], vec![pkg_install("npm", "typescript")]);
 
-        prune_to_surviving_consumers(&mut plan);
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
 
         assert!(
             !plan.phases.iter().any(|p| p.name == PhaseName::Bootstrap),
             "the prerequisite's sole dependent (npm's provision) is absent from the plan, \
              so it must be pruned and the now-empty Bootstrap phase dropped with it: {:?}",
+            plan.phases
+        );
+    }
+
+    #[test]
+    fn a_secret_declaring_its_own_backend_keeps_the_prerequisite_planned_for_the_registrys() {
+        // The executor decrypts through the registry's backend whatever the
+        // action's `backend` field says, so the field cannot be what names the
+        // consumer: read off the field, a secret declaring `backend: age`
+        // against a sops registry left the sops prerequisite with no dependent
+        // and the prune dropped it, while the decrypt still ran against a
+        // backend nothing installed.
+        let sops_prereq = Action::Manager(ManagerAction::Prerequisite {
+            tool: "sops".to_string(),
+            package: "sops".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["secret:sops".to_string()],
+            depends_on: Vec::new(),
+        });
+        let decrypt = Action::Secret(crate::providers::SecretAction::Decrypt {
+            source: std::path::PathBuf::from("secrets/db.enc.yaml"),
+            target: std::path::PathBuf::from("/nowhere/db.yaml"),
+            backend: "age".to_string(),
+            origin: "profile".to_string(),
+        });
+        let mut plan = one_phase_plan(vec![sops_prereq], vec![decrypt]);
+
+        let mut registry = crate::providers::ProviderRegistry::new();
+        registry.secret_backend = Some(Box::new(crate::test_helpers::MockSecretBackend::new(
+            "sops",
+        )));
+        prune_to_surviving_consumers(&mut plan, &registry);
+
+        assert!(
+            plan.phases
+                .iter()
+                .flat_map(|p| p.actions())
+                .any(|a| matches!(
+                    a,
+                    Action::Manager(ManagerAction::Prerequisite { tool, .. }) if tool == "sops"
+                )),
+            "the decrypt runs through the registry backend, so its prerequisite survives: {:?}",
             plan.phases
         );
     }
@@ -2258,7 +2359,8 @@ mod tests {
             vec![pkg_install("pipx", "black")],
         );
 
-        prune_to_surviving_consumers(&mut plan);
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
 
         let prereq_phase = plan
             .phases
@@ -2317,7 +2419,8 @@ mod tests {
             vec![pkg_install("npm", "typescript")],
         );
 
-        prune_to_surviving_consumers(&mut plan);
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
 
         assert_eq!(
             provision_lines(&plan),
@@ -2342,7 +2445,8 @@ mod tests {
             vec![pkg_install("pipx", "black")],
         );
 
-        prune_to_surviving_consumers(&mut plan);
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
 
         assert_eq!(
             provision_lines(&plan),
@@ -2389,7 +2493,8 @@ mod tests {
             vec![pkg_install("pipx", "black"), pkg_install("pnpm", "vite")],
         );
 
-        prune_to_surviving_consumers(&mut plan);
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
 
         assert_eq!(
             provision_lines(&plan),
