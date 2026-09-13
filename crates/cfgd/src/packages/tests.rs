@@ -2719,11 +2719,19 @@ fn parse_cargo_toml_invalid_toml() {
 
 /// A manifest's names reach the same argv a declared one does, so the merge
 /// judges them against the same grammar the profile parse used, and names the
-/// file that carried the refused one.
+/// file, and where a file holds several lists the list, that carried the
+/// refused one.
 #[test]
 fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("Brewfile"), "brew \"foo&calc\"\n").unwrap();
+    // A Brewfile holds three lists whose positions each restart at zero, so it
+    // carries a clean tap ahead of the refused formula: a subject naming only
+    // the file and the index would read the same for either list.
+    std::fs::write(
+        dir.path().join("Brewfile"),
+        "tap \"homebrew/cask-fonts\"\nbrew \"foo&calc\"\n",
+    )
+    .unwrap();
     std::fs::write(dir.path().join("packages.apt.txt"), "foo&calc\n").unwrap();
     std::fs::write(
         dir.path().join("package.json"),
@@ -2736,9 +2744,9 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
     )
     .unwrap();
 
-    for (file, spec) in [
+    for (subject, spec) in [
         (
-            "Brewfile",
+            "Brewfile formulae[0]",
             PackagesSpec {
                 brew: Some(cfgd_core::config::BrewSpec {
                     file: Some("Brewfile".into()),
@@ -2748,7 +2756,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             },
         ),
         (
-            "packages.apt.txt",
+            "packages.apt.txt[0]",
             PackagesSpec {
                 apt: Some(cfgd_core::config::AptSpec {
                     file: Some("packages.apt.txt".into()),
@@ -2758,7 +2766,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             },
         ),
         (
-            "package.json",
+            "package.json[0]",
             PackagesSpec {
                 npm: Some(cfgd_core::config::NpmSpec {
                     file: Some("package.json".into()),
@@ -2768,7 +2776,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             },
         ),
         (
-            "Cargo.toml",
+            "Cargo.toml[0]",
             PackagesSpec {
                 cargo: Some(cfgd_core::config::CargoSpec {
                     file: Some("Cargo.toml".into()),
@@ -2783,8 +2791,8 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             .expect_err("a manifest name a command line reads as syntax is refused")
             .to_string();
         assert!(
-            why.contains(&format!("{file}[0]")) && why.contains("foo&calc"),
-            "the refusal names the manifest, the position and the name: {why}"
+            why.contains(subject) && why.contains("foo&calc"),
+            "the refusal names the manifest, the list, the position and the name: {why}"
         );
     }
 }

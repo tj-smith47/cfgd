@@ -802,6 +802,31 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
         .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
 }
 
+/// What `raw` is rooted at, when it is rooted at all: `Some("a drive or share")`
+/// or `Some("a filesystem root")`, `None` for a value that resolves inside
+/// whatever directory it is joined to.
+///
+/// Judged on the raw string rather than [`std::path::Path::components`], which
+/// answers only for the host's own grammar: `C:\list.txt` and `\\server\share`
+/// iterate as one ordinary component on unix, and `C:list.txt` is drive-relative
+/// on Windows while parsing as an ordinary name everywhere else. A value written
+/// on one OS reaches the others through a config repository or a source, so a
+/// shape `Path::join` would read as rooted on ANY host is refused on all of them.
+pub fn path_is_rooted(raw: &str) -> Option<&'static str> {
+    let mut chars = raw.chars();
+    let drive_relative = matches!(
+        (chars.next(), chars.next()),
+        (Some(c), Some(':')) if c.is_ascii_alphabetic()
+    );
+    if raw.starts_with("\\\\") || drive_relative {
+        return Some("a drive or share");
+    }
+    if raw.starts_with('/') || raw.starts_with('\\') {
+        return Some("a filesystem root");
+    }
+    None
+}
+
 /// Validate that `raw` is a plain relative name: at least one segment, every
 /// segment an ordinary name.
 ///
@@ -819,18 +844,11 @@ pub fn validate_plain_name(raw: &str) -> Result<(), String> {
     if raw.is_empty() {
         return Err("it is empty".to_string());
     }
-    let rooted = |kind: &str| {
-        Err(format!(
+    if let Some(kind) = path_is_rooted(raw) {
+        return Err(format!(
             "it starts from {kind}; a name is resolved inside the directory it belongs to, \
              and `Path::join` throws the parent away when the value is rooted"
-        ))
-    };
-    for component in std::path::Path::new(raw).components() {
-        match component {
-            std::path::Component::Prefix(_) => return rooted("a drive or share"),
-            std::path::Component::RootDir => return rooted("a filesystem root"),
-            _ => {}
-        }
+        ));
     }
     for segment in raw.split(['/', '\\']) {
         if segment.is_empty() {
@@ -1307,6 +1325,25 @@ mod tests {
             parse_duration_str("-5s").is_err(),
             "negative durations should be rejected"
         );
+    }
+
+    /// The rooted shapes a path may carry are refused whatever host reads the
+    /// value, so a manifest or a name written on Windows is judged the same way
+    /// on unix.
+    #[test]
+    fn path_is_rooted_names_what_a_rooted_value_starts_from_on_every_host() {
+        for candidate in ["/x", r"C:\x", r"\\srv\share", "C:x"] {
+            assert!(
+                path_is_rooted(candidate).is_some(),
+                "'{candidate}' is rooted and must be named as such"
+            );
+        }
+        for candidate in ["./x", "lists/x"] {
+            assert!(
+                path_is_rooted(candidate).is_none(),
+                "'{candidate}' resolves inside the directory it is joined to"
+            );
+        }
     }
 
     #[test]

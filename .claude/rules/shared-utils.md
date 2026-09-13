@@ -333,6 +333,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 - `resolve_managed_file_source(source, config_dir)` — the ONE resolution of a `spec.files[].source` against the config dir, taken by BOTH readers of that field.
 - `validate_path_within(path, root)` — canonicalize and verify containment.
 - `validate_no_traversal(path)` — reject a reference containing `..` or naming nothing of its own; use for any path cfgd reads or writes.
+- `cfgd_schema::path_is_rooted(raw)` — what a declared path is rooted at (`a drive or share` / `a filesystem root`), judged on the RAW string so a Windows shape is refused on every host; `validate_plain_name` and the package-manifest containment guard both ask it before joining.
 - `validate_plain_name(raw)` — stricter, judged on the RAW string, for any string that NAMES something cfgd creates under a root it may later delete or mount wholesale; Windows shapes are rejected on every host.
 - `atomic_write(target, content)` / `atomic_write_str` — atomic temp+rename write returning the SHA256; use instead of `fs::write` in ALL production code. Replaces a symlink at the target rather than following it.
 - `atomic_write_merged(target, content)` — the `strategy: Patch` write: resolve a symlink first, so the target keeps its mode and its link identity.
