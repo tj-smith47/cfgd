@@ -10,7 +10,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 use super::shared::{
     bootstrap_via_shell_script, install_batch_then_per_package, partition_already_installed,
     resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
-    strip_version_suffix, tool_cmd_with_resolver, upgrade_each,
+    strip_version_suffix, tool_cmd_at, upgrade_each,
 };
 
 pub struct NixManager;
@@ -32,11 +32,11 @@ pub(super) fn nix_env_available() -> bool {
 }
 
 pub(super) fn nix_cmd() -> Command {
-    tool_cmd_with_resolver("nix", find_nix)
+    tool_cmd_at("nix", find_nix())
 }
 
 pub(super) fn nix_env_cmd() -> Command {
-    tool_cmd_with_resolver("nix-env", find_nix_env)
+    tool_cmd_at("nix-env", find_nix_env())
 }
 
 // Single source for the multi-user installer's profile bin dir, so

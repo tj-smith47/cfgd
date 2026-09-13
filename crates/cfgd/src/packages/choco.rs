@@ -8,7 +8,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
 use super::shared::{
     canonical_ci_pkg_name, partition_already_installed, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver, upgrade_each,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_at, upgrade_each,
 };
 
 pub struct ChocolateyManager;
@@ -34,7 +34,7 @@ pub(super) fn choco_bin_dir() -> Option<std::path::PathBuf> {
 /// Windows host, and a probe that answered from `$PATH` while the spawn
 /// answered from the seam is how the two disagreed.
 fn choco_cmd() -> Command {
-    tool_cmd_with_resolver("choco", || resolve_tool_with_fallbacks("choco", &[]))
+    tool_cmd_at("choco", resolve_tool_with_fallbacks("choco", &[]))
 }
 
 /// The spawn that installs `pkgs` through chocolatey. The ONE declaration of

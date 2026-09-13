@@ -11,7 +11,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_brew_arm, bootstrap_via_system_manager, detect_brew_or_system_method,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
 };
 
 pub struct GoInstallManager;
@@ -54,7 +54,7 @@ pub(super) fn go_available() -> bool {
 }
 
 pub(super) fn go_cmd() -> Command {
-    tool_cmd_with_resolver("go", find_go)
+    tool_cmd_at("go", find_go())
 }
 
 /// Where `go install` puts a binary — the ONE answer `installed_packages` and

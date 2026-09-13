@@ -62,7 +62,7 @@ pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> 
 /// fall back to the bare name so the caller surfaces the normal "not found" error.
 ///
 /// Pure and platform-neutral so it is unit-testable off Windows; the Windows-only
-/// wiring lives in [`build_pkg_command`].
+/// wiring lives in [`tool_cmd_at`].
 #[cfg(any(windows, test))]
 pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -> Vec<String> {
     let Some(path) = resolved else {
@@ -91,11 +91,19 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
     }
 }
 
-/// Build a base `Command` for a package-manager binary, resolving it to a full
-/// path so a Windows script shim (`.ps1`/`.cmd`) is invoked correctly rather than
-/// dying with "program not found" (see `windows_pkg_argv`). On non-Windows this
-/// is just `Command::new(<resolved-or-name>)`.
-fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
+/// Build a base `Command` for a package-manager binary at the path its resolver
+/// already answered with, falling back to the bare name when the resolver found
+/// nothing so the caller surfaces the normal "not found" error.
+///
+/// The resolver reads the `CFGD_<NAME>_BIN` seam itself and judges the file it
+/// names, which is why this factory reads no seam of its own: a second read
+/// under a weaker standard would spawn a path the resolver had already declined
+/// while the run reported the tool the resolver did choose.
+///
+/// A Windows script shim (`.ps1`/`.cmd`) is invoked through its interpreter
+/// rather than dying with "program not found" (see `windows_pkg_argv`). On
+/// non-Windows this is just `Command::new(<resolved-or-name>)`.
+pub(super) fn tool_cmd_at(name: &str, resolved: Option<PathBuf>) -> Command {
     #[cfg(windows)]
     {
         let argv = windows_pkg_argv(name, resolved.as_deref());
@@ -109,23 +117,6 @@ fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
     {
         Command::new(resolved.unwrap_or_else(|| PathBuf::from(name)))
     }
-}
-
-/// Build a `Command` for `name`, using `resolver` for the binary path and
-/// falling back to a plain `Command::new(name)` when `resolver` returns `None`.
-/// Honors the `CFGD_<NAME>_BIN` env-var seam first, short-circuiting the
-/// resolver entirely (tests don't want resolver-side filesystem checks
-/// running). On Windows the resolved path is invoked shim-aware so `.cmd`/`.ps1`
-/// managers (scoop, npm) actually run. Mirrors the `X_cmd()` pattern that
-/// cargo/pipx/go had open-coded.
-pub(super) fn tool_cmd_with_resolver<F>(name: &str, resolver: F) -> Command
-where
-    F: FnOnce() -> Option<PathBuf>,
-{
-    if let Ok(custom) = std::env::var(tool_seam_var(name)) {
-        return Command::new(custom);
-    }
-    build_pkg_command(name, resolver())
 }
 
 /// The leading self-tag a manager stamps on its own advisory lines, stripped
@@ -1128,7 +1119,12 @@ fn pip_python_version(pip_tool: &str) -> Option<String> {
     if let Some(cached) = VERSION.get() {
         return Some(cached.clone());
     }
-    let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
+    // The route's own `find_pip` reads the same list: a pip only one of the two
+    // can see makes the plan promise a directory the run never records.
+    let mut cmd = tool_cmd_at(
+        pip_tool,
+        resolve_tool_with_fallbacks(pip_tool, &super::pipx::pip_fallbacks()),
+    );
     cmd.arg("--version");
     hand_child_bootstrapped_path(&mut cmd);
     let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
@@ -1597,7 +1593,7 @@ pub(super) fn sudo_cmd(program: &str) -> Command {
 }
 
 /// Build a Command for `program`, honoring the `CFGD_<NAME>_BIN` env-var seam
-/// the same way [`tool_cmd_with_resolver`] does, but for tools that normally
+/// the same way [`tool_cmd_at`] does, but for tools that normally
 /// require `sudo`. When the seam is set, returns a direct
 /// `Command::new(<seam path>)` (skipping the sudo wrapper entirely — the test
 /// shim already runs as the test user). When the seam is unset, falls back

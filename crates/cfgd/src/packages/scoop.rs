@@ -9,7 +9,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageMa
 use super::shared::{
     canonical_ci_pkg_name, home_relative_dir, install_batch_then_per_package, parse_version_field,
     partition_already_installed, resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver, upgrade_each,
+    tool_cmd_at, upgrade_each,
 };
 
 pub struct ScoopManager;
@@ -30,11 +30,11 @@ pub(super) fn scoop_shims_dir() -> Option<std::path::PathBuf> {
 /// Build a `Command` for scoop, resolved shim-aware. scoop ships on Windows only as
 /// `scoop.ps1`/`scoop.cmd` (never `scoop.exe`), so a bare `Command::new("scoop")`
 /// dies with "program not found" even though the tool is on `$PATH`. Routing through
-/// `tool_cmd_with_resolver` resolves the full shim path and invokes it via
+/// `tool_cmd_at` with the resolved full shim path invokes it via
 /// `powershell -File` / `cmd /c` on Windows (a plain PATH lookup on Unix). No
 /// fallbacks: scoop always lives in its shims dir on `$PATH`.
 fn scoop_cmd() -> Command {
-    tool_cmd_with_resolver("scoop", || resolve_tool_with_fallbacks("scoop", &[]))
+    tool_cmd_at("scoop", resolve_tool_with_fallbacks("scoop", &[]))
 }
 
 /// The spawn that installs `pkgs` through scoop. The ONE declaration of scoop's

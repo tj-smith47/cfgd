@@ -11,8 +11,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, partition_already_installed,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam,
-    tool_cmd_with_resolver, upgrade_each,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, sudo_cmd_with_seam, tool_cmd_at,
+    upgrade_each,
 };
 
 pub struct SnapManager;
@@ -52,7 +52,7 @@ pub(super) fn snap_available() -> bool {
 }
 
 pub(super) fn snap_cmd() -> Command {
-    tool_cmd_with_resolver("snap", find_snap)
+    tool_cmd_at("snap", find_snap())
 }
 
 impl PackageManager for SnapManager {
@@ -505,7 +505,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
     // through sudo_cmd_with_seam: when CFGD_SNAP_BIN is set, the install /
     // uninstall / update paths skip sudo entirely and invoke the shim
     // directly. Read-only paths (snap_cmd / installed_packages /
-    // available_version) honor the seam via tool_cmd_with_resolver.
+    // available_version) honor the seam via find_snap.
     // ---------------------------------------------------------------------
 
     #[cfg(unix)]

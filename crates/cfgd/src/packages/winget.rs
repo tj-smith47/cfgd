@@ -8,7 +8,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageMa
 
 use super::shared::{
     canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
 };
 
 pub struct WingetManager;
@@ -18,7 +18,7 @@ pub struct WingetManager;
 /// through it, so a test can drive winget's argv without a Windows host and the
 /// availability probe answers from the same place the spawn does.
 fn winget_cmd() -> Command {
-    tool_cmd_with_resolver("winget", || resolve_tool_with_fallbacks("winget", &[]))
+    tool_cmd_at("winget", resolve_tool_with_fallbacks("winget", &[]))
 }
 
 /// The spawn that installs one package id through winget. The ONE declaration of

@@ -11,8 +11,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 use super::shared::detect_system_method;
 use super::shared::{
     MediatedArms, bootstrap_via_system_manager, parse_version_field, partition_already_installed,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
-    upgrade_each,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_at, upgrade_each,
 };
 
 pub struct FlatpakManager;
@@ -47,7 +46,7 @@ pub(super) fn flatpak_available() -> bool {
 }
 
 pub(super) fn flatpak_cmd() -> Command {
-    tool_cmd_with_resolver("flatpak", find_flatpak)
+    tool_cmd_at("flatpak", find_flatpak())
 }
 
 impl PackageManager for FlatpakManager {

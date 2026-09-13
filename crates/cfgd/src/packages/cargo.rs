@@ -12,7 +12,7 @@ use super::shared::detect_windows_method;
 use super::shared::{
     MediatedArms, bootstrap_via_shell_script, bootstrap_via_system_manager, command_failure_reason,
     home_relative_dir, pkg_run, planned_step_failed, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
 };
 
 pub struct CargoManager;
@@ -62,7 +62,7 @@ pub(super) fn cargo_available() -> bool {
 }
 
 pub(super) fn cargo_cmd() -> Command {
-    tool_cmd_with_resolver("cargo", find_cargo)
+    tool_cmd_at("cargo", find_cargo())
 }
 
 /// Fallback locations for the rustup a mediated arm installs, for a run whose
@@ -90,9 +90,10 @@ fn rustup_fallbacks() -> Vec<PathBuf> {
 }
 
 fn rustup_cmd() -> Command {
-    tool_cmd_with_resolver("rustup", || {
-        resolve_tool_with_fallbacks("rustup", &rustup_fallbacks())
-    })
+    tool_cmd_at(
+        "rustup",
+        resolve_tool_with_fallbacks("rustup", &rustup_fallbacks()),
+    )
 }
 
 /// Install the default toolchain behind a rustup a mediated arm just placed.
@@ -735,13 +736,19 @@ tokei v12.1.2:
 
         use cfgd_core::test_helpers::EnvVarGuard;
 
-        /// Point the seam env-var at a non-existent path so the spawned
-        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
-        /// arm in `available_version` (which prices through `run_pkg_query`).
+        /// Point the seam env-var at a file nothing can execute, so the spawn
+        /// itself fails and exercises the `CommandFailed` map_err arm in
+        /// `available_version` (which prices through `run_pkg_query`).
+        ///
+        /// The file has to exist: the resolution behind the factory declines a
+        /// seam naming nothing, and this host's own cargo would answer instead.
         #[test]
         #[serial]
         fn cargo_available_version_spawn_failure_maps_to_command_failed() {
-            let _g = EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-cargo-shim-does-not-exist");
+            let dir = tempfile::tempdir().expect("tempdir");
+            let unspawnable = dir.path().join("cargo");
+            std::fs::write(&unspawnable, "").expect("write the unspawnable file");
+            let _g = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
             let err = CargoManager
                 .available_version("ripgrep")
                 .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");

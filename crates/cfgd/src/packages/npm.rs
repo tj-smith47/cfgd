@@ -18,8 +18,7 @@ use super::shared::detect_brew_system_method;
 #[cfg(windows)]
 use super::shared::detect_windows_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
 };
 // The nvm arm's own helpers, with the arm itself.
 #[cfg(not(windows))]
@@ -551,7 +550,7 @@ pub(super) fn npm_available() -> bool {
 }
 
 pub(super) fn npm_cmd() -> Command {
-    tool_cmd_with_resolver("npm", find_npm)
+    tool_cmd_at("npm", find_npm())
 }
 
 /// Append `--prefix <dir>` to `cmd` only when the resolver chose the
@@ -1878,11 +1877,18 @@ mod tests {
             );
         }
 
-        /// Point the seam env-var at a non-existent path so the spawned
-        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
-        /// arm rather than a non-zero exit (which the shim handles differently).
-        fn install_unspawnable() -> EnvVarGuard {
-            EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-npm-shim-does-not-exist")
+        /// Point the seam env-var at a file nothing can execute, so the spawn
+        /// itself fails and exercises the `CommandFailed` map_err arm rather
+        /// than a non-zero exit (which the shim handles differently).
+        ///
+        /// The file has to exist: the resolution behind the factory declines a
+        /// seam naming nothing, and this host's own npm would answer instead.
+        fn install_unspawnable() -> (tempfile::TempDir, EnvVarGuard) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let unspawnable = dir.path().join("npm");
+            std::fs::write(&unspawnable, "").expect("write the unspawnable file");
+            let guard = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
+            (dir, guard)
         }
 
         #[test]
