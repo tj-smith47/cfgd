@@ -25,8 +25,8 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 | Chocolatey | Windows | `chocolatey` | Community package manager; cfgd bootstraps it automatically |
 | Scoop | Windows | `scoop` | User-directory installs; cfgd bootstraps it automatically |
 
-Every family whose command above opens on `sudo` leads its install, removal and
-index refresh with it. cfgd drops the `sudo` when it already runs as root.
+Every family whose command above opens on `sudo` leads every command it builds
+with it. cfgd drops the `sudo` when it already runs as root.
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
