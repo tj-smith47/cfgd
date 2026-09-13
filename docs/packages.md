@@ -7,23 +7,26 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 | Manager | Platforms | Config Key | What It Does |
 |---|---|---|---|
 | Homebrew | macOS, Linux | `brew` | Manages taps, formulae, and casks separately |
-| apt | Debian/Ubuntu | `apt` | `apt-get install` with sudo handling |
-| dnf | Fedora/RHEL 8+ | `dnf` | `dnf install` |
-| yum | RHEL 7/CentOS 7 | `yum` | `yum install` |
-| pacman | Arch/Manjaro | `pacman` | `pacman -S` |
-| apk | Alpine | `apk` | `apk add` |
-| zypper | OpenSUSE | `zypper` | `zypper install` |
-| pkg | FreeBSD | `pkg` | `pkg install` |
+| apt | Debian/Ubuntu | `apt` | `sudo apt-get install` |
+| dnf | Fedora/RHEL 8+ | `dnf` | `sudo dnf install` |
+| yum | RHEL 7/CentOS 7 | `yum` | `sudo yum install` |
+| pacman | Arch/Manjaro | `pacman` | `sudo pacman -S` |
+| apk | Alpine | `apk` | `sudo apk add` |
+| zypper | OpenSUSE | `zypper` | `sudo zypper install` |
+| pkg | FreeBSD | `pkg` | `sudo pkg install` |
 | Cargo | Any (with Rust) | `cargo` | `cargo install` |
 | npm | Any (with Node) | `npm` | `npm install -g` |
 | pipx | Any (with Python) | `pipx` | `pipx install` |
-| Snap | Linux (with snapd) | `snap` | `snap install` |
+| Snap | Linux (with snapd) | `snap` | `sudo snap install` |
 | Flatpak | Linux (with flatpak) | `flatpak` | `flatpak install` |
 | Nix | Any (with Nix) | `nix` | `nix profile install` |
 | Go | Any (with Go) | `go` | `go install` |
 | winget | Windows | `winget` | Windows Package Manager (Microsoft Store + winget repo) |
 | Chocolatey | Windows | `chocolatey` | Community package manager; cfgd bootstraps it automatically |
 | Scoop | Windows | `scoop` | User-directory installs; cfgd bootstraps it automatically |
+
+Every family whose command above opens on `sudo` leads its install, removal and
+index refresh with it. cfgd drops the `sudo` when it already runs as root.
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
