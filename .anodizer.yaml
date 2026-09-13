@@ -1262,6 +1262,12 @@ partial:
   by: os
 
 nightly:
+  # The retention sweep lists prior nightlies by release NAME, so this must
+  # render the same string every night. `release.name_template` renders
+  # "cfgd {{ Tag }}", and a nightly's tag carries its short commit, which would
+  # make every night's name unique and leave every past nightly unreachable.
+  # The three tracks share the name; the sweep scopes them apart by tag family.
+  name_template: "{{ ProjectName }} nightly"
   publish_release: true
   keep_single_release: true
   # The release workflow pushes its bump commit straight to master, so on most
