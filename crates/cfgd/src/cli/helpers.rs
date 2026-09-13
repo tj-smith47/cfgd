@@ -501,12 +501,17 @@ impl PackageRef {
 /// package literally called `brew.tap:charmbracelet/tap`, which installs
 /// nothing and is discovered only when the apply fails. The name keeps every
 /// colon after the first, so `apt:libc6:amd64` is the apt package `libc6:amd64`.
+///
+/// Both returns carry a name the config parser will judge on the next load, so
+/// the same grammar refuses it here: a setter that writes a name the parser
+/// then refuses leaves a document no command can read until it is hand-edited.
 pub(in crate::cli) fn parse_package_flag(
     s: &str,
     custom_managers: &[String],
     native: &str,
 ) -> anyhow::Result<PackageRef> {
     let Some((prefix, name)) = s.split_once(':') else {
+        validate_flag_package_name(s)?;
         return Ok(PackageRef {
             schema_path: None,
             slot: None,
@@ -519,6 +524,7 @@ pub(in crate::cli) fn parse_package_flag(
             "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
         );
     }
+    validate_flag_package_name(name)?;
     if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
         return Ok(PackageRef {
             schema_path: Some(path.path.to_string()),
@@ -542,6 +548,15 @@ pub(in crate::cli) fn parse_package_flag(
         custom_managers,
         native,
     ))
+}
+
+/// Judge a `--package` name against the grammar the config parser holds.
+///
+/// The removal direction takes the same check: a name the parser will not hold
+/// cannot be present to remove, and refusing both keeps one answer for what a
+/// package may be called.
+fn validate_flag_package_name(name: &str) -> anyhow::Result<()> {
+    cfgd_schema::validate_package_name("--package", name).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// The `--package` tokens that WOULD remove `name` from `packages`, for a bare

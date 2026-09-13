@@ -2139,6 +2139,38 @@ fn source_remove_missing_without_flag_still_6() {
     assert_eq!(v["error"], "not_found");
 }
 
+/// A `--package` name the config parser will not hold is refused at the flag,
+/// not written and then refused on the next load: a written one leaves a
+/// profile no command can read until it is hand-edited.
+#[test]
+fn profile_update_refuses_a_package_name_the_parser_would_reject() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("profiles/base.yaml");
+    let before = std::fs::read_to_string(&profile).unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "update", "base", "--package", "brew:foo&calc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .failure();
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("--package") && err.contains("foo&calc"),
+        "the refusal names the flag and the name, got:\n{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&profile).unwrap(),
+        before,
+        "a refused --package writes nothing"
+    );
+}
+
 #[test]
 fn profile_delete_missing_ignore_not_found_is_0() {
     let dir = tempfile::tempdir().unwrap();
