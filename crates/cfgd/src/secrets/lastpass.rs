@@ -21,6 +21,10 @@ impl SecretProvider for LastPassProvider {
         command_available_with_seam(LPASS_BIN_ENV, "lpass")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("lpass")
+    }
+
     fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "folder/item/field" or "item/field" or just "item"
         // Uses `lpass show --field <field> <item>` or `lpass show --password <item>`

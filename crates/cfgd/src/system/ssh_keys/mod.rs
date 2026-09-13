@@ -225,6 +225,10 @@ impl SystemConfigurator for SshKeysConfigurator {
         cfgd_core::command_available("ssh-keygen")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("ssh-keygen")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         // Return empty sequence — state is computed on demand during diff
         Ok(serde_yaml::Value::Sequence(Vec::new()))

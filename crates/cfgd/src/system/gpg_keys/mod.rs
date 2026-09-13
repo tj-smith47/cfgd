@@ -352,6 +352,10 @@ impl SystemConfigurator for GpgKeysConfigurator {
         cfgd_core::command_available_with_seam(GPG_BIN_ENV, "gpg")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("gpg")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         // Return an empty sequence; actual state is interrogated on demand in diff().
         Ok(serde_yaml::Value::Sequence(Vec::new()))

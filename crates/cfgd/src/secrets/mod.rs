@@ -277,7 +277,9 @@ pub fn check_secrets_health(
     config_dir: &Path,
     age_key_override: Option<&Path>,
 ) -> SecretsHealthCheck {
-    let sops_output = std::process::Command::new("sops").arg("--version").output();
+    let sops_output = cfgd_core::tool_cmd(sops::SOPS_BIN_ENV, "sops")
+        .arg("--version")
+        .output();
 
     let (sops_available, sops_version) = match sops_output {
         Ok(output) if output.status.success() => {

@@ -21,6 +21,10 @@ impl SecretProvider for OnePasswordProvider {
         command_available_with_seam(OP_BIN_ENV, "op")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("op")
+    }
+
     fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "op://Vault/Item/Field" or legacy "Vault/Item/Field"
         let op_ref = if reference.starts_with("op://") {

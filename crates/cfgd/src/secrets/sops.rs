@@ -11,7 +11,11 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 /// Env-var seam for the `sops` binary path. Production reads no env var and
 /// `Command::new` resolves `"sops"` via PATH; tests set this to a
 /// `cfgd_core::test_helpers::ToolShim` script.
-const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
+///
+/// `pub(crate)` because `doctor`'s own sops probe is a second spawn of the same
+/// binary: reading a different seam there is a doctor that reports on one copy
+/// of sops while every decrypt runs another.
+pub(crate) const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
 
 /// SOPS-based secret backend. Encrypts values within structured YAML/JSON files,
 /// keeping keys visible for meaningful diffs. Wraps the `sops` CLI binary.
@@ -60,6 +64,10 @@ impl SecretBackend for SopsBackend {
 
     fn is_available(&self) -> bool {
         command_available_with_seam(SOPS_BIN_ENV, "sops")
+    }
+
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("sops")
     }
 
     fn encrypt_file(&self, path: &Path) -> Result<()> {

@@ -125,6 +125,10 @@ impl SystemConfigurator for XfconfConfigurator {
         cfgd_core::command_available_with_seam(XFCONF_QUERY_BIN_ENV, "xfconf-query")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("xfconf-query")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     }

@@ -98,6 +98,10 @@ impl SystemConfigurator for GsettingsConfigurator {
         cfgd_core::command_available_with_seam(GSETTINGS_BIN_ENV, "gsettings")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("gsettings")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     }

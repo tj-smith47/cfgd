@@ -239,6 +239,33 @@ impl EnvironmentConfigurator {
         Self::parse_export_file(&env_sh.to_string_lossy())
     }
 
+    /// Load `~/.config/cfgd/env.sh` from the user's interactive rc, through the
+    /// env engine's own source-line writer.
+    ///
+    /// cfgd writes the file, so cfgd writes the line that loads it: an
+    /// instruction to paste one by hand leaves the machine unconverged until
+    /// somebody does, and the engine's merge is what keeps a second run from
+    /// appending a duplicate.
+    fn macos_inject_rc_source_line(cx: &SystemContext<'_>) {
+        let home = cfgd_core::expand_tilde(Path::new("~"));
+        let rc = cfgd_core::reconciler::interactive_rc_path(&home);
+        match cfgd_core::reconciler::inject_rc_source_line(
+            &rc,
+            cfgd_core::reconciler::MACOS_SYSTEM_ENV_SOURCE_LINE,
+        ) {
+            Ok(true) => cx.report(Role::Info, format!("Updated {}", rc.posix())),
+            Ok(false) => {}
+            Err(e) => cx.report(
+                Role::Warn,
+                format!(
+                    "Failed to write {}: {}",
+                    rc.posix(),
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            ),
+        }
+    }
+
     /// Write `~/.config/cfgd/env.sh` — users source this from their shell rc.
     fn macos_write_env_sh(managed: &BTreeMap<String, String>) -> Result<()> {
         let env_sh = Self::macos_env_sh_path();
@@ -451,7 +478,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                         Role::Info,
                         format!("Updated {}", Self::macos_env_sh_path().posix()),
                     );
-                    cx.next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
+                    Self::macos_inject_rc_source_line(cx);
                 }
                 Err(e) => {
                     cx.report(

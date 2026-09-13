@@ -50,6 +50,13 @@ impl SecretBackend for AgeBackend {
         self.key_path.exists() && command_available_with_seam(AGE_BIN_ENV, "age")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        // Only when the key file is already there: installing age cannot
+        // conjure a recipient, so a host with no key is not made available by
+        // any install and the planner must not promise one.
+        self.key_path.exists().then_some("age")
+    }
+
     fn encrypt_file(&self, path: &Path) -> Result<()> {
         let recipient = self.recipient_from_key()?;
         let output_path = path.with_extension(

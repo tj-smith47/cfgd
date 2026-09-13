@@ -183,6 +183,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
         },
         reconciler::Action::System(sa) => match sa {
             reconciler::SystemAction::SetValue { .. } => "set",
+            reconciler::SystemAction::ConfigureAfterInstall { .. } => "configure",
             reconciler::SystemAction::Skip { .. } => "skip",
         },
         reconciler::Action::Script(_) => "run",
@@ -355,6 +356,7 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
         },
         reconciler::Action::System(sa) => match sa {
             reconciler::SystemAction::SetValue { origin, .. } => norm(origin),
+            reconciler::SystemAction::ConfigureAfterInstall { origin, .. } => norm(origin),
             reconciler::SystemAction::Skip { origin, .. } => norm(origin),
         },
         reconciler::Action::Script(sa) => match sa {
@@ -892,7 +894,8 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
             reconciler::SystemAction::SetValue {
                 configurator, key, ..
             } => format!("{}.{}.{}", prefix, configurator, key),
-            reconciler::SystemAction::Skip { configurator, .. } => {
+            reconciler::SystemAction::Skip { configurator, .. }
+            | reconciler::SystemAction::ConfigureAfterInstall { configurator, .. } => {
                 format!("{}.{}", prefix, configurator)
             }
         },
