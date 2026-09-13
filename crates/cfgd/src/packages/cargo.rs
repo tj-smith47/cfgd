@@ -473,7 +473,25 @@ tokei v12.1.2:
         assert_eq!(my_tool.version, "0.1.0 (/home/user/projects/my-tool)");
     }
 
+    /// Every mediator arm's seam pointed at nothing, so a mediator this machine
+    /// really carries cannot answer ahead of the one a delivery names.
+    ///
+    /// The cascade takes the FIRST arm the run can use, asking the delivery and
+    /// then the host on each arm in turn, so an available winget answers a
+    /// chocolatey delivery on a host that has both.
+    fn no_host_mediator_answers() -> Vec<cfgd_core::test_helpers::EnvVarGuard> {
+        super::super::shared::host_arms()
+            .iter()
+            .map(|(_, tool)| {
+                let var: &'static str =
+                    Box::leak(super::super::shared::tool_seam_var(tool).into_boxed_str());
+                cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-mediator")
+            })
+            .collect()
+    }
+
     #[test]
+    #[serial_test::serial]
     fn cargo_bootstrap_plan_names_rustup_curl_and_the_cargo_bin_dir() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
@@ -482,8 +500,9 @@ tokei v12.1.2:
         if cfg!(windows) {
             // Windows has no `sh` for rustup's installer, so the route there is
             // a mediator that packages rustup itself. Each arm is driven by a
-            // delivery rather than by the host probe, so which of the three this
+            // delivery against silenced seams, so which of the three this
             // machine carries cannot decide what the plan declares.
+            let _silenced = no_host_mediator_answers();
             for method in ["winget", "chocolatey", "scoop"] {
                 let plan = cfgd_core::with_test_home(home.path(), || {
                     CargoManager.bootstrap_plan_given(&|m| m == method)
@@ -520,13 +539,16 @@ tokei v12.1.2:
     }
 
     #[test]
+    #[serial_test::serial]
     fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
         let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let _silenced = no_host_mediator_answers();
         let home = tempfile::tempdir().unwrap();
         cfgd_core::with_test_home(home.path(), || {
-            // The Windows arms are driven by a delivery, for the same reason
-            // the sibling above drives them: a host carrying no mediator plans
-            // nothing, and the declaration is what this compares.
+            // The Windows arms are driven by a delivery against silenced seams,
+            // for the same reason the sibling above drives them: a host carrying
+            // no mediator plans nothing, and the declaration is what this
+            // compares.
             let plan = if cfg!(windows) {
                 CargoManager
                     .bootstrap_plan_given(&|m| m == "winget")
