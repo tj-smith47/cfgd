@@ -1,0 +1,19 @@
+# EXPECTED: NOT flagged. Each line's first literal ends on an escaped quote. An
+# extractor that reads that backslash-quote as a real closing quote pairs it
+# against the next quote on the line, so it reports the 40-plus characters
+# BETWEEN the two literals as one repeated literal. Reading the escape as part
+# of its own literal leaves two genuine literals, both under the gate's
+# 32-character floor, and nothing to report. This is the clean-direction twin
+# of bad_repeated_literal_with_escaped_quote.txt, which only proves the gate
+# still fires; this one goes red the moment the escape handling is undone.
+fn first() -> Diagnostic {
+    record_two("x\"", resolve_something_with_a_long_name_here("choco", &[]))
+}
+
+fn second() -> Diagnostic {
+    record_two("x\"", resolve_something_with_a_long_name_here("choco", &[]))
+}
+
+fn third() -> Diagnostic {
+    record_two("x\"", resolve_something_with_a_long_name_here("choco", &[]))
+}

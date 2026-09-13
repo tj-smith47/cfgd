@@ -2595,8 +2595,12 @@ impl Drop for SpawnEnvGuard {
 /// [`crate::process_path_with_dirs_prepended`] take the shared read guard at
 /// the spawn, so the exclusive guard excludes all three. That is how a test
 /// setting a process-global `CFGD_*_BIN` seam keeps a sibling's manager sweep
-/// from spawning its shim. The exclusion reaches exactly as far as those
-/// helpers: a site spawning a `Command` itself evades it.
+/// from spawning its shim. The exclusion follows the seam rather than that
+/// list: it reaches every site that takes the read guard at its own seam, the
+/// script and lane spawn paths in `reconciler/scripts.rs` and
+/// `reconciler/lanes.rs` included, and only a site that takes none evades it.
+/// `every_production_path_read_takes_the_read_guard` is what keeps that set
+/// honest, so the list of seams is the walk's to state, not this doc's.
 ///
 /// The one order that cannot be made re-entrant is shared-then-exclusive: a
 /// thread holding [`path_env_read_guard`]'s read guard cannot upgrade to the

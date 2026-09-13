@@ -875,14 +875,23 @@ log_section "DRY — Repeated String Literals"
 # afterwards, where it can only reject a whole literal. The pairing is PCRE so
 # that an escaped `\"` stays part of its own literal: read as a real closing
 # quote it shifts every later pairing on the line by one, which both hides the
-# genuine literals and re-opens the cross-literal match.
+# genuine literals and re-opens the cross-literal match. Any `"` that is not a
+# string delimiter shifts the pairing the same way, so the alternation
+# recognises all four literal shapes the Rust-side twin `blank_string_literals`
+# (crates/cfgd-core/src/test_helpers.rs) recognises: a hashed raw string, a bare
+# raw string, a plain or byte string carrying escapes, and a char literal.
+# Longest-first, so `r#"..."#` is not read as a bare `r"..."`. A char literal is
+# matched only to consume its quotes and is dropped before the floor, never
+# being the subject of this gate; raw and plain strings stay candidates, a
+# repeated raw literal being a repeat like any other.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
-        | grep -ohP '"(?:[^"\\]|\\.)*"' \
+        | grep -ohP 'r(#+)".*?"\1|r"[^"]*"|b?"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)\x27' \
+        | grep -v "^'" \
         | awk 'length($0) >= 32' || true
 done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
@@ -928,10 +937,11 @@ log_section "DRY — Duplicated Function Definitions"
 # `install_cmd_for` is excused by name in the awk list rather than per site: it
 # is the sanctioned per-manager declaration table these Windows managers answer
 # to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
-# and walked by
-# `every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once`,
-# so each manager owning one is the convention itself, and every manager added
-# later owes one too.
+# and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
+# and packages/winget.rs each call it the ONE declaration of that manager's
+# install verb), so each manager owning one is the convention itself, and every
+# manager added later owes one too. No walk covers these three today; the
+# convention is held by those docs.
 #
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
