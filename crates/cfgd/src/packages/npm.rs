@@ -850,7 +850,6 @@ pub(super) fn parse_npm_list_versions(
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
     use cfgd_core::providers::PackageManagerExt;
 
@@ -984,29 +983,31 @@ mod tests {
         assert_eq!(pkgs[0].version, "4.18.2");
     }
 
+    /// Every arm npm can be planned through, judged against npm's own table and
+    /// this host's own arm list rather than four manager names typed here: brew,
+    /// then each arm `NPM_MEDIATED` populates whose tool this host carries, then
+    /// npm's own nvm installer where there is a shell to run it.
     #[test]
-    fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
+    fn npm_is_planned_through_the_first_arm_this_host_can_run() {
+        // The probes below assert what THIS host resolves, so hold the read
+        // guard: a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let planned = NpmManager.bootstrap_plan();
-        // The method names whichever arm of `bootstrap`'s cascade this host
-        // reaches; only the nvm fallback shells out to tools of its own, and no
-        // arm creates a PATH dir the manager can name before node exists
+        // Only the nvm fallback shells out to tools of its own, and no arm
+        // creates a PATH dir the manager can name before node exists
         // (`path_dirs` reads the resolved prefix out of state). Whether the nvm
         // arm's tools can be had is `feasible_bootstrap_plan`'s question.
-        let can = |t: &str| command_available(t);
-        let expected_method = if brew_available() {
+        let expected_method: Option<&str> = if brew_available() {
             Some("brew")
-        } else if can("apt") {
-            Some("apt")
-        } else if can("dnf") {
-            Some("dnf")
-        } else if can("pkg") {
-            Some("pkg")
-        } else if cfg!(windows) {
-            // nvm's installer needs a shell Windows has not got, so a host no
-            // mediator reaches is offered no arm at all.
-            None
         } else {
-            Some("nvm")
+            super::super::shared::host_arms()
+                .iter()
+                .filter(|(method, _)| NPM_MEDIATED.system_packages_for(method).is_some())
+                .find(|(_, tool)| super::super::shared::system_tool_available(tool))
+                .map(|(method, _)| *method)
+                // nvm's installer needs a shell Windows has not got, so a
+                // Windows host no mediator reaches is offered no arm at all.
+                .or((!cfg!(windows)).then_some(NPM_FALLBACK_METHOD))
         };
         let Some(expected_method) = expected_method else {
             assert!(
@@ -1019,8 +1020,8 @@ mod tests {
         assert_eq!(plan.method, expected_method);
         assert_eq!(
             plan.requires,
-            if expected_method == "nvm" {
-                vec!["curl".to_string(), "bash".to_string()]
+            if expected_method == NPM_FALLBACK_METHOD {
+                nvm_bootstrap_plan().requires
             } else {
                 Vec::<String>::new()
             }

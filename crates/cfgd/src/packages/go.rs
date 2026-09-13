@@ -131,7 +131,8 @@ impl PackageManager for GoInstallManager {
         // so the plan creates no directory of its own.
         //
         // Feasibility and method come from ONE probe of the mediators
-        // `bootstrap` can actually spawn — brew, then apt/dnf/zypper. Asking a
+        // `bootstrap` can actually spawn: brew, then this host's own arms in
+        // `host_arms` order, less the ones this table declines. Asking a
         // wider question (is ANY system manager present?) and then naming a
         // fallback answered `via dnf` on a winget-only Windows host: a
         // mediator that cannot run, which under a binding plan is a guaranteed
@@ -616,45 +617,57 @@ mod tests {
     }
 
     /// A plan's method is BINDING at execution, so `go` may only be planned
-    /// through a mediator this host can spawn — and must not be dropped while
-    /// one is present. Ground truth is spelled out here rather than read back
-    /// from the detector, and probes the same seams the bootstrap spawns from.
+    /// through a mediator this host can spawn, and must not be dropped while one
+    /// is present. Both sides are derived from `GO_MEDIATED` and this host's own
+    /// arm list, so a table that gains an arm is judged by this test rather than
+    /// read past by a list of names typed here.
     #[test]
     fn go_is_planned_only_through_a_mediator_this_host_can_actually_run() {
-        let runnable = |tool: &str| {
-            cfgd_core::command_available_with_seam(
-                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-                tool,
-            )
-        };
+        // The probes below assert what THIS host resolves, so hold the read
+        // guard: a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let brew = super::super::shared::brew_available();
+        // `arm_tool` answers for an arm in either platform's table, which is
+        // what a binding method needs: the run spawns the tool the plan named
+        // rather than re-judging the method against the host.
+        let runnable = |method: &str| {
+            super::super::shared::arm_tool(method)
+                .is_some_and(super::super::shared::system_tool_available)
+        };
+        let mediated = super::super::shared::host_arms()
+            .iter()
+            .filter(|(method, _)| GO_MEDIATED.system_packages_for(method).is_some());
         match GoInstallManager.bootstrap_plan() {
             Some(plan) => {
                 // `bootstrap` installs the toolchain through brew or a system
-                // manager, which put `go` on the system PATH — nothing to declare.
-                let ok = match plan.method.as_str() {
-                    "brew" => brew,
-                    "apt" => runnable("apt-get"),
-                    "dnf" => runnable("dnf"),
-                    "zypper" => runnable("zypper"),
-                    "pkg" => runnable("pkg"),
-                    other => panic!("go planned through an unknown mediator: {other}"),
-                };
+                // manager, which put `go` on the system PATH, so there is
+                // nothing for the plan to declare.
+                let method = plan.method.as_str();
                 assert!(
-                    ok,
-                    "a plan may only name a mediator this host can run, got {}",
-                    plan.method
+                    GO_MEDIATED.packages_for(method).is_some(),
+                    "go was planned through {method}, which its own table names no package for"
+                );
+                assert!(
+                    if method == "brew" {
+                        brew
+                    } else {
+                        runnable(method)
+                    },
+                    "a plan may only name a mediator this host can run, got {method}"
                 );
                 assert!(plan.requires.is_empty());
                 assert!(plan.creates_path_dirs.is_empty());
             }
-            None => assert!(
-                !brew
-                    && !["apt-get", "dnf", "zypper", "pkg"]
-                        .into_iter()
-                        .any(runnable),
-                "a runnable mediator must not be answered with no plan"
-            ),
+            None => {
+                let reachable: Vec<&str> = mediated
+                    .filter(|(_, tool)| super::super::shared::system_tool_available(tool))
+                    .map(|(method, _)| *method)
+                    .collect();
+                assert!(
+                    !brew && reachable.is_empty(),
+                    "a runnable mediator must not be answered with no plan: {reachable:?}"
+                );
+            }
         }
     }
 

@@ -2038,20 +2038,51 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         3,
         "each of cargo's three arms settles the toolchain behind it: {toolchain}"
     );
+
+    // pipx's winget arm is the one arm that installs something other than the
+    // tool: winget delivers a Python interpreter and the pip step behind it
+    // installs pipx with it. The pip half resolves by bare name through `PATH`
+    // rather than through a `CFGD_*_BIN` seam, so it is driven where a named
+    // PATH shim exists, and both spawns are asserted rather than the arm alone.
+    #[cfg(unix)]
+    {
+        let (_pip_dir, _pip_path, pip_log) =
+            cfgd_core::test_helpers::install_named_path_shim_logged("pip3", 0, "", "");
+        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+        mediated_manager("pipx")
+            .bootstrap(&cx)
+            .expect("pipx via winget must install");
+        let interpreter = winget("Python.Python.3.13");
+        let logged = shim.argv_log();
+        assert!(
+            logged.lines().any(|line| line.trim() == interpreter),
+            "pipx via winget must spawn `{interpreter}`, logged: {logged}"
+        );
+        let pip = pip_log.argv_log();
+        assert!(
+            pip.lines().any(|line| line.trim() == "install --user pipx"),
+            "the pip step behind the winget arm installs pipx, logged: {pip}"
+        );
+    }
 }
 
 /// An arm a mediator declined is not a route, so a plan that somehow named one
-/// is refused rather than answered with the Linux names. The same refusal a
-/// mediator present-but-unnamed arm gets, which is what keeps a declined arm
-/// from silently installing the wrong package.
+/// is refused rather than answered with the Linux names.
+///
+/// The refusal says the manager does not package the tool, which is a different
+/// fact from the manager being absent: yum really is on a RHEL 7 host, so
+/// "re-run to re-plan" would send the reader round a circle that never closes.
 #[test]
 #[serial_test::serial]
 fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     for (manager, method, seam) in [
         ("pipx", "yum", "CFGD_YUM_BIN"),
-        ("pipx", "winget", "CFGD_WINGET_BIN"),
         ("cargo", "apt", "CFGD_APT_GET_BIN"),
+        ("cargo", "pkg", "CFGD_PKG_BIN"),
     ] {
         let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
         let (printer, _buf) =
@@ -2062,8 +2093,10 @@ fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
             .expect_err("a declined arm installs nothing");
         let msg = err.to_string();
         assert!(
-            msg.contains(&format!("installs {manager} via {method}")),
-            "the refusal names the manager and the method: {msg}"
+            msg.contains(&format!(
+                "installs {manager} via {method}, which does not package it"
+            )),
+            "the refusal names the manager, the method and the reason: {msg}"
         );
         assert_eq!(
             shim.invocation_count(),
@@ -3317,6 +3350,19 @@ fn all_package_managers_unique_names() {
     );
 }
 
+/// Whether a mediator THIS manager declares is on this host, read off the
+/// manager's own arms table and this host's own arm list rather than a tool
+/// list typed here: a table that gains or loses an arm moves this answer with
+/// it, where a retyped list went on asserting the old population.
+fn a_declared_mediator_is_present(m: &dyn cfgd_core::providers::PackageManager) -> bool {
+    if m.mediated_packages("brew").is_some() && super::shared::brew_available() {
+        return true;
+    }
+    super::shared::host_arms().iter().any(|(method, tool)| {
+        m.mediated_packages(method).is_some() && super::shared::system_tool_available(tool)
+    })
+}
+
 /// Which managers can be provisioned here, and which can never be.
 ///
 /// A manager's own bootstrap arm runs only where its installer can: the POSIX
@@ -3325,19 +3371,37 @@ fn all_package_managers_unique_names() {
 /// Windows alone, and snap and flatpak are Linux mediators. A plan's method is
 /// binding at execution, so a manager with no runnable arm here plans nothing
 /// rather than naming one.
+///
+/// A manager whose own arm this platform cannot run is still provisionable
+/// through a mediator: on Windows npm, cargo, pipx and go all reach their tool
+/// through winget, chocolatey or scoop, which is the whole point of the Windows
+/// rows in their tables. Their bootstrappability there tracks whether such a
+/// mediator is actually on the host, so the expectation is derived from the
+/// tables rather than asserted blanket.
 #[test]
 fn all_package_managers_bootstrap_consistency() {
     let managers = all_package_managers();
 
-    let mut bootstrappable: HashSet<&str> = ["pipx", "go"].into();
+    // Provisionable everywhere, by a mediator where their own arm cannot run:
+    // npm's nvm and rustup's installer are POSIX-only, and the three Windows
+    // managers package node and rustup themselves.
+    let mut bootstrappable: HashSet<&str> = ["pipx", "go", "npm", "cargo"].into();
     if cfg!(windows) {
         bootstrappable.extend(["chocolatey", "scoop"]);
     } else {
-        bootstrappable.extend(["brew", "cargo", "npm", "nix"]);
+        bootstrappable.extend(["brew", "nix"]);
     }
     if cfg!(target_os = "linux") {
         bootstrappable.extend(["snap", "flatpak"]);
     }
+
+    // The managers whose ONLY route here is a mediator: they plan a bootstrap
+    // exactly when one of their declared mediators is on this host.
+    let mediated_only: HashSet<&str> = if cfg!(windows) {
+        ["go", "npm", "cargo", "pipx"].into()
+    } else {
+        ["go"].into()
+    };
 
     // The complement, derived from the registry rather than retyped, so a
     // manager added to cfgd is classified by this test instead of escaping it.
@@ -3363,29 +3427,20 @@ fn all_package_managers_bootstrap_consistency() {
                 m.name()
             );
         } else if bootstrappable.contains(m.name()) {
-            // `go` alone bootstraps only through brew or a *system* package
-            // manager (not curl, which the others fall back to), so a shell
-            // without one on PATH — e.g. brew not exported into a non-login
-            // macOS session — correctly reports it non-bootstrappable.
-            // Assert the wiring in whichever direction the environment
-            // dictates instead of a blanket true that false-fails there;
-            // CI runners and the FreeBSD host both have a system manager, so
-            // this still asserts go IS bootstrappable. The mediators are named
-            // here rather than read back from the detector, so a detector that
-            // stopped seeing one of them fails this test instead of agreeing
-            // with itself.
-            if m.name() == "go" {
-                let mediator_present = super::shared::brew_available()
-                    || ["apt-get", "dnf", "zypper", "pkg"].into_iter().any(|tool| {
-                        cfgd_core::command_available_with_seam(
-                            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-                            tool,
-                        )
-                    });
+            // A mediator-only manager reports bootstrappable exactly where one
+            // of its own mediators is present, so a shell without one on PATH
+            // (brew not exported into a non-login macOS session) correctly
+            // reports it non-bootstrappable instead of failing a blanket claim.
+            // CI runners and the FreeBSD host both carry a system manager, so
+            // this still asserts the positive there. On Windows pipx keeps a
+            // second route: the pip arm answers once an interpreter is present,
+            // so its plan may stand with no mediator at all.
+            if mediated_only.contains(m.name()) && m.name() != "pipx" {
                 assert_eq!(
                     m.bootstrap_plan().is_some(),
-                    mediator_present,
-                    "go bootstrappability must track the mediators its bootstrap can run"
+                    a_declared_mediator_is_present(m.as_ref()),
+                    "{}'s bootstrappability must track the mediators its bootstrap can run",
+                    m.name()
                 );
             } else {
                 assert!(

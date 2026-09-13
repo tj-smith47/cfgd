@@ -37130,7 +37130,7 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
     assert!(
         gated >= 8,
         "the walk no longer reaches the plans whose arm one platform runs and another \
-         does not — it found {gated}"
+         does not: it found {gated}"
     );
     assert!(
         offenders.is_empty(),
@@ -37210,13 +37210,16 @@ const WITHHELD_BOOTSTRAP_ROUTES: &[(&str, &str)] = &[
 /// The marker a withheld route and a declined arm both carry.
 const NO_DRIVEN_ROUTE_MARKER: &str = "// no-driven-route-ok:";
 
-/// Whether a `bootstrap_plan_given` body can answer `None` — the shape that
+/// Whether a `bootstrap_plan_given` body can answer `None`, the shape that
 /// says "this host is offered no route at all", whether a `cfg` withholds it on
 /// one platform or the body withholds it everywhere.
 fn plan_body_withholds_a_route(body: &[&str]) -> bool {
     body.iter().any(|l| {
         let t = l.trim();
-        t == "None" || t == "None," || t.ends_with(" None")
+        // A match arm answers `=> None,` on one line, so the tell is the tail of
+        // the expression rather than a line holding nothing else. A comment is
+        // excluded outright: a body talking about `None` is not answering it.
+        !t.starts_with("//") && t.trim_end_matches(',').ends_with("None")
     })
 }
 
@@ -37227,8 +37230,8 @@ fn plan_body_withholds_a_route(body: &[&str]) -> bool {
 /// only the source can say whether it is true.
 ///
 /// So a body that withholds a route belongs to a manager whose route genuinely
-/// cannot exist — the roster above, named here so a manager outside it fails —
-/// or it says why on the branch with `// no-driven-route-ok: <why>`.
+/// cannot exist (the roster above, named here so a manager outside it fails), or
+/// it says why on the branch with `// no-driven-route-ok: <why>`.
 #[test]
 fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
@@ -37278,13 +37281,13 @@ fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
     }
     assert!(
         withholding >= 11,
-        "the walk no longer reaches the managers that withhold a route — it found \
+        "the walk no longer reaches the managers that withhold a route: it found \
          {withholding}"
     );
     assert!(
         offenders.is_empty(),
         "a manager that hands back no bootstrap plan is claiming no manager on that \
-         platform can install its tool — give it an arm in its table, add it to \
+         platform can install its tool: give it an arm in its table, add it to \
          WITHHELD_BOOTSTRAP_ROUTES, or say why with `{NO_DRIVEN_ROUTE_MARKER} <why>`:\n{}",
         offenders.join("\n")
     );
@@ -37327,9 +37330,13 @@ fn declared_arms_tables(body: &str) -> Vec<DeclaredArms> {
             if !t.contains("&[])") {
                 continue;
             }
+            // Upward from the decline itself through the comment lines and the
+            // sibling declines above it, stopping at the first POPULATED arm:
+            // one reason covers a contiguous run of declines, and an arm that
+            // installs something ends the run it could otherwise reach over.
             let marked = (n + 1..=i).rev().take_while(|&j| {
                 let p = lines[j].trim();
-                j == i || p.starts_with("//") || p.starts_with("(\"")
+                j == i || p.starts_with("//") || (p.starts_with("(\"") && p.contains("&[])"))
             });
             if !marked
                 .clone()
@@ -37388,7 +37395,7 @@ fn every_mediated_arms_table_names_every_system_manager_or_declines_it() {
     }
     assert!(
         tables >= 6,
-        "the walk no longer reaches the mediators that declare an arms table — it found \
+        "the walk no longer reaches the mediators that declare an arms table: it found \
          {tables}"
     );
     assert!(
@@ -37422,6 +37429,18 @@ fn the_withheld_route_walks_read_an_unmarked_refusal() {
         !unmarked.iter().any(|l| l.contains(NO_DRIVEN_ROUTE_MARKER)),
         "the fixture carries no reason, so a manager off the roster fails on it"
     );
+    let arm = vec![
+        head,
+        "        match detect_brew_system_method(&X_MEDIATED, \"pip\", d) {",
+        "            \"winget\" => None,",
+        "            method => Some(BootstrapPlan::new(method)),",
+        "        }",
+        "    }",
+    ];
+    assert!(
+        plan_body_withholds_a_route(&arm),
+        "a match arm answering `=> None,` withholds a route like any other"
+    );
     let offering = vec![
         head,
         "        detect_windows_method(&X_MEDIATED, d).map(BootstrapPlan::new)",
@@ -37430,6 +37449,16 @@ fn the_withheld_route_walks_read_an_unmarked_refusal() {
     assert!(
         !plan_body_withholds_a_route(&offering),
         "a body that can only answer a method withholds nothing"
+    );
+    let talking = vec![
+        head,
+        "        // A host with no mediator is answered None by the caller.",
+        "        detect_windows_method(&X_MEDIATED, d).map(BootstrapPlan::new)",
+        "    }",
+    ];
+    assert!(
+        !plan_body_withholds_a_route(&talking),
+        "a comment naming `None` is not a body answering it"
     );
 
     let silent = declared_arms_tables(
@@ -37465,6 +37494,21 @@ fn the_withheld_route_walks_read_an_unmarked_refusal() {
     assert!(
         marked.declined_unmarked.is_empty(),
         "one reason above a contiguous run of declines covers the run"
+    );
+
+    let separated = declared_arms_tables(
+        "const Z_MEDIATED: MediatedArms = MediatedArms {\n    \
+         brew: None,\n    arms: &[\n        // no-driven-route-ok: nothing there \
+         packages it.\n        (\"winget\", &[]),\n        (\"scoop\", &[\"z\"]),\n        \
+         (\"chocolatey\", &[]),\n    ],\n};\n",
+    );
+    let [separated] = separated.as_slice() else {
+        panic!("the fixture declares one table");
+    };
+    assert_eq!(
+        separated.declined_unmarked,
+        ["chocolatey"],
+        "an arm that installs something ends the run the reason above it covers"
     );
 }
 
