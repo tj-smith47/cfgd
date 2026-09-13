@@ -82,11 +82,13 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
             "-File".into(),
             p,
         ],
-        // Pass the shim path UNQUOTED: Rust wraps a space-bearing argv token in quotes
-        // itself, and cmd.exe's "exactly two quotes around an executable file" rule then
-        // preserves them. Quoting here instead would get the inner quotes backslash-escaped
-        // and reach cmd.exe malformed.
-        Some("cmd") | Some("bat") => vec!["cmd".into(), "/c".into(), p],
+        // Pass the shim path UNQUOTED and behind `call`: Rust wraps a space-bearing
+        // argv token in quotes itself, but cmd.exe keeps those quotes only under its
+        // "the first token after /c opens with a quote, carries exactly two of them
+        // and none of &<>()@^| between them" rule, which `C:\Program Files (x86)\…`
+        // fails outright. `call` takes that first position instead, leaving the
+        // quoted path alone, and propagates the shim's own exit code.
+        Some("cmd") | Some("bat") => vec!["cmd".into(), "/c".into(), "call".into(), p],
         _ => vec![p],
     }
 }
@@ -1239,6 +1241,8 @@ pub(super) fn brew_path() -> Option<&'static str> {
 /// Honors `CFGD_BREW_BIN` for tests: when set, short-circuits all detection
 /// and runs the shim directly. The shim is responsible for any sudo / PATH
 /// setup the test cares about.
+// seam-read-ok: brew's seam answers alone, missing file included, so this
+// factory and `brew_available` judge it under the one standard.
 pub(super) fn brew_cmd() -> Command {
     if let Ok(custom) = std::env::var(BREW_BIN_ENV) {
         return Command::new(custom);
@@ -1592,12 +1596,16 @@ pub(super) fn sudo_cmd(program: &str) -> Command {
     }
 }
 
-/// Build a Command for `program`, honoring the `CFGD_<NAME>_BIN` env-var seam
-/// the same way [`tool_cmd_at`] does, but for tools that normally
-/// require `sudo`. When the seam is set, returns a direct
+/// Build a Command for `program`, reading the `CFGD_<NAME>_BIN` env-var seam
+/// itself, unlike [`tool_cmd_at`], which spawns the path its caller's resolver
+/// already judged. For tools that normally require `sudo`.
+///
+/// When the seam is set, returns a direct
 /// `Command::new(<seam path>)` (skipping the sudo wrapper entirely — the test
 /// shim already runs as the test user). When the seam is unset, falls back
 /// to [`sudo_cmd`].
+// seam-read-ok: this factory IS the seam reader for a tool no resolver answers
+// for, the sudo wrapper being what a resolved path would have to replace.
 pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
     if let Ok(custom) = std::env::var(tool_seam_var(program)) {
         let p = PathBuf::from(custom);

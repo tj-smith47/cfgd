@@ -1894,16 +1894,26 @@ fn windows_pkg_argv_ps1_shim_runs_via_powershell_file() {
     );
 }
 
+/// The shim path never sits first after `/c`, where cmd.exe's own quote rule
+/// would strip the quotes Rust puts around `C:\Program Files (x86)\scoop.cmd`
+/// and run `C:\Program`.
 #[test]
 fn windows_pkg_argv_cmd_shim_runs_via_cmd_slash_c() {
     let argv = windows_pkg_argv("npm", Some(std::path::Path::new("C:/Program/npm.cmd")));
     assert_eq!(
         argv,
-        vec!["cmd".to_string(), "/c".into(), "C:/Program/npm.cmd".into()]
+        vec![
+            "cmd".to_string(),
+            "/c".into(),
+            "call".into(),
+            "C:/Program/npm.cmd".into()
+        ]
     );
     let bat = windows_pkg_argv("tool", Some(std::path::Path::new("C:/bin/tool.bat")));
     assert_eq!(bat[0], "cmd");
     assert_eq!(bat[1], "/c");
+    assert_eq!(bat[2], "call");
+    assert_eq!(bat[3], "C:/bin/tool.bat");
 }
 
 #[test]
@@ -2573,5 +2583,156 @@ fn a_manager_with_no_freebsd_port_never_reaches_the_pkg_arm() {
         0,
         "pkg never ran: {}",
         pkg.argv_log()
+    );
+}
+
+/// One source line as CODE: every literal body blanked and any trailing `//`
+/// comment cut, so a tell inside a string or a comment is not read as one.
+fn code_of(line: &str) -> String {
+    let blanked = cfgd_core::test_helpers::blank_string_literals(line);
+    match blanked.find("//") {
+        Some(at) => blanked[..at].to_string(),
+        None => blanked,
+    }
+}
+
+/// The name a `*_cmd*` function declaration on this CODE line declares, if it
+/// declares one.
+fn command_factory_name(code: &str) -> Option<String> {
+    let (_, rest) = code.split_once("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (name.contains("_cmd") && rest[name.len()..].starts_with('(')).then_some(name)
+}
+
+/// The `*_cmd*` factories in one source whose body reads a `CFGD_<NAME>_BIN`
+/// seam with no `// seam-read-ok:` hatch above them, as `(name, 1-based line)`.
+///
+/// Split out from the walk so the three shapes a tell arrives in (inside a
+/// literal, inside a comment, and as real code after a statement) can be fed
+/// to it directly.
+fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
+    const TELLS: [&str; 2] = ["std::env::var(", "tool_seam_var("];
+    let lines: Vec<&str> = src.lines().collect();
+    let mut offenders = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(name) = command_factory_name(&code_of(line)) else {
+            continue;
+        };
+        // The whole comment block above the head, so a reason too long for one
+        // line still hatches the factory it was written for.
+        let hatched = line.contains("// seam-read-ok:")
+            || lines[..i]
+                .iter()
+                .rev()
+                .take_while(|l| l.trim_start().starts_with("//"))
+                .any(|l| l.contains("// seam-read-ok:"));
+        if hatched {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut opened = false;
+        for body_line in &lines[i..] {
+            let body_code = code_of(body_line);
+            depth += body_code.matches('{').count() as i32;
+            depth -= body_code.matches('}').count() as i32;
+            opened |= depth > 0;
+            if TELLS.iter().any(|t| body_code.contains(t)) {
+                offenders.push((name.clone(), i + 1));
+                break;
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+    }
+    offenders
+}
+
+/// A manager's command factory spawns the path its resolver chose.
+///
+/// A factory reading `CFGD_<NAME>_BIN` for itself judges the seam under a
+/// weaker standard than the resolver already did, so it can spawn a path the
+/// resolver declined while the run reports the tool the resolver picked. The
+/// two factories that are their own resolver carry the hatch and say why.
+#[test]
+fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
+    // This crate's own manifest dir: the sources under test are compiled from
+    // it, so the walk cannot read one tree while the binary was built from
+    // another.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut hatched: Vec<String> = Vec::new();
+    let mut factories = 0usize;
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        // A `tests.rs` is a whole test region declared from its parent, so it
+        // carries no `#[cfg(test)]` of its own for the cut to find.
+        if path.file_name().is_some_and(|f| f == "tests.rs") {
+            continue;
+        }
+        let src = cfgd_core::test_helpers::production_slice_of(&path);
+        factories += src
+            .lines()
+            .filter(|l| command_factory_name(&code_of(l)).is_some())
+            .count();
+        for line in src.lines() {
+            if line.contains("// seam-read-ok:") {
+                hatched.push(path.display().to_string());
+            }
+        }
+        for (name, line) in unhatched_seam_reading_factories(&src) {
+            offenders.push(format!("{}:{line}: {name}", path.display()));
+        }
+    }
+    assert!(
+        factories >= 12,
+        "the walk read {factories} command factories, fewer than this crate holds"
+    );
+    assert_eq!(
+        hatched.len(),
+        2,
+        "`brew_cmd` and `sudo_cmd_with_seam` are the two factories that are their \
+         own resolver; a third needs its reason read here: {hatched:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a command factory spawns the path its resolver already judged, so it reads \
+         no `CFGD_<NAME>_BIN` seam of its own; hatch a factory that IS the resolver \
+         with `// seam-read-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The walk reads a seam tell only where it runs: inside a string literal and
+/// inside a comment it is text, after a statement it is a read.
+#[test]
+fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
+    let in_a_literal = "fn quiet_cmd() -> Command {\n    let s = \"std::env::var(\";\n}\n";
+    let in_a_comment =
+        "fn quiet_cmd() -> Command {\n    // std::env::var(FOO) is not read here\n}\n";
+    let after_a_statement =
+        "fn loud_cmd() -> Command {\n    let n = 1;\n    std::env::var(n);\n}\n";
+    let hatched = "// seam-read-ok: it is its own resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
+    let hatched_over_two_lines = "/// what it does\n// seam-read-ok: it is its own\n// resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
+    let past_the_body = "fn quiet_cmd() -> Command {\n    Command::new(\"x\")\n}\n\nfn other() {\n    std::env::var(n);\n}\n";
+
+    for (label, src) in [
+        ("a literal", in_a_literal),
+        ("a comment", in_a_comment),
+        ("a hatched factory", hatched),
+        ("a hatch spanning two lines", hatched_over_two_lines),
+        ("a sibling below the body", past_the_body),
+    ] {
+        assert!(
+            unhatched_seam_reading_factories(src).is_empty(),
+            "{label} is no seam read: {:?}",
+            unhatched_seam_reading_factories(src)
+        );
+    }
+    assert_eq!(
+        unhatched_seam_reading_factories(after_a_statement),
+        vec![("loud_cmd".to_string(), 1)],
     );
 }
