@@ -2041,13 +2041,10 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
 
     // pipx's winget arm is the one arm that installs something other than the
     // tool: winget delivers a Python interpreter and the pip step behind it
-    // installs pipx with it. The pip half resolves by bare name through `PATH`
-    // rather than through a `CFGD_*_BIN` seam, so it is driven where a named
-    // PATH shim exists, and both spawns are asserted rather than the arm alone.
-    #[cfg(unix)]
+    // installs pipx with it. Both spawns are asserted rather than the arm
+    // alone, each through its own seam, so the row runs on every host.
     {
-        let (_pip_dir, _pip_path, pip_log) =
-            cfgd_core::test_helpers::install_named_path_shim_logged("pip3", 0, "", "");
+        let pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
         let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -2061,12 +2058,130 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
             logged.lines().any(|line| line.trim() == interpreter),
             "pipx via winget must spawn `{interpreter}`, logged: {logged}"
         );
-        let pip = pip_log.argv_log();
+        let pip_log = pip.argv_log();
         assert!(
-            pip.lines().any(|line| line.trim() == "install --user pipx"),
-            "the pip step behind the winget arm installs pipx, logged: {pip}"
+            pip_log
+                .lines()
+                .any(|line| line.trim() == "install --user pipx"),
+            "the pip step behind the winget arm installs pipx, logged: {pip_log}"
         );
     }
+}
+
+/// The winget route registers the directory its pip came from.
+///
+/// A Windows installer adds the interpreter's directory to the user's `PATH` in
+/// the registry, which this process cannot see, so nothing later in the run
+/// would resolve that pip or the pipx the step below lands beside it.
+/// `command_path` searches what a bootstrap registered as well as `$PATH`, and
+/// this is what puts it there.
+#[test]
+#[serial_test::serial]
+fn the_winget_route_registers_the_directory_its_pip_came_from() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
+    let planted = std::path::PathBuf::from(std::env::var("CFGD_PIP_BIN").expect("the seam is set"));
+    let interpreter_dir = planted.parent().expect("the shim has a directory");
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+    mediated_manager("pipx")
+        .bootstrap(&cx)
+        .expect("pipx via winget must install");
+
+    let registered = cfgd_core::bootstrapped_path_dirs();
+    assert!(
+        registered.iter().any(|dir| dir == interpreter_dir),
+        "the run must keep resolving what the interpreter carries: {registered:?}"
+    );
+}
+
+/// A two-step route names the tool that actually failed.
+///
+/// winget did its half: it installed the interpreter it packages. When the pip
+/// behind it cannot be found, or runs and fails, the refusal has to say pip, or
+/// the reader goes off checking a winget that worked and re-runs a plan that
+/// will fail the same way forever.
+#[test]
+#[serial_test::serial]
+fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+
+    let refusal = |cx_printer: &cfgd_core::output::Printer| {
+        let cx =
+            cfgd_core::test_helpers::test_bootstrap_context(cx_printer).for_provision("winget");
+        mediated_manager("pipx")
+            .bootstrap(&cx)
+            .expect_err("the pip step behind the arm did not finish")
+            .to_string()
+    };
+
+    // pip ran and exited non-zero, carrying its own diagnostic.
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let _pip =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let failed = refusal(&printer);
+    assert!(
+        failed.contains("pip could not finish installing pipx")
+            && failed.contains("no matching dist"),
+        "the refusal names pip and carries what pip said: {failed}"
+    );
+    assert!(
+        !failed.contains("winget could not install"),
+        "winget installed what it packages, so it is not the failing party: {failed}"
+    );
+    drop(_pip);
+
+    // No pip at all after the arm ran: the same attribution, no diagnostic to
+    // carry. `PATH` is emptied so this host's own pip cannot answer for one the
+    // interpreter never left behind.
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _pip_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+    let _pip3_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP3_BIN");
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let absent = refusal(&printer);
+    assert!(
+        absent.contains("pip could not finish installing pipx"),
+        "an absent pip is still pip's half of the route: {absent}"
+    );
+    assert!(
+        !absent.contains("which is not available on this host"),
+        "winget is here and ran; it is not the thing that went missing: {absent}"
+    );
+}
+
+/// The same attribution on cargo's two-step route: a Windows mediator installs
+/// rustup, and the toolchain rustup then fails to fetch is rustup's failure,
+/// not the mediator's.
+#[test]
+#[serial_test::serial]
+fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediator() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _rustup =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 1, "", "could not download");
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+    let err = mediated_manager("cargo")
+        .bootstrap(&cx)
+        .expect_err("the toolchain step behind the arm did not finish")
+        .to_string();
+    assert!(
+        err.contains("rustup could not finish installing cargo")
+            && err.contains("could not download"),
+        "the refusal names rustup and carries what rustup said: {err}"
+    );
+    assert!(
+        !err.contains("winget could not install"),
+        "winget installed the rustup it packages, so it is not the failing party: {err}"
+    );
 }
 
 /// An arm a mediator declined is not a route, so a plan that somehow named one
@@ -3417,10 +3532,12 @@ fn all_package_managers_bootstrap_consistency() {
 
     for m in &managers {
         if not_bootstrappable.contains(m.name()) {
-            // Safety invariant (every platform): a system package manager must
-            // never report bootstrappable — cfgd cannot self-install the OS's
-            // own manager, and claiming otherwise would drive a nonsensical
-            // install attempt.
+            // Safety invariant (every platform): a manager outside the set
+            // above reports no plan at all. The key is that complement, not
+            // whether the manager is a system one: chocolatey and scoop are
+            // system managers that Windows DOES bootstrap, through their own
+            // PowerShell installers, while apt and winget ship with the
+            // operating system and cfgd cannot install either.
             assert!(
                 m.bootstrap_plan().is_none(),
                 "{} should NOT be bootstrappable",
