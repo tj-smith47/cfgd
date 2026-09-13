@@ -15785,6 +15785,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
         );
     }
 }
+
 /// Every daemon-log marker the e2e suites grep for is a string the daemon can
 /// still emit. A shell suite pins a log line by substring and nothing in a Rust
 /// rename touches it, so `Health:`, `Reloading configuration (SIGHUP)`,
@@ -15889,6 +15890,7 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
          finding the suites it exists to police"
     );
 }
+
 /// Every third-party download a Dockerfile or a CI script performs retries a
 /// transient fault AND verifies what it got. One bare `curl` timing out at exit
 /// 28 failed the E2E infrastructure job and cascaded to every suite behind it,
@@ -31481,7 +31483,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
                             .any(|(_, l)| OWNER_READERS.iter().any(|r| l.contains(r)))
                         && !behind.iter().any(|(_, l)| l.contains(HATCH))
                     {
-                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                        offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
                     }
                 }
                 if !TELLS.iter().any(|t| line.contains(t)) {
@@ -31496,7 +31498,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
                 {
                     continue;
                 }
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
             }
         }
         assert!(
@@ -31567,7 +31569,7 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
                         .iter()
                         .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
                 {
-                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
                 }
             }
             if !line.contains("is_shell_drift_kind(") {
@@ -31579,7 +31581,7 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
                 .iter()
                 .any(|(_, l)| VERBOSE.iter().any(|v| l.contains(v)))
             {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
             }
         }
     }
@@ -31655,7 +31657,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
                     continue;
                 }
                 if line.contains("\"script\"") && SUBJECTS.iter().any(|s| line.contains(s)) {
-                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
                 }
             }
         }
@@ -31782,7 +31784,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                         })
                     });
                 if !composed_nearby && !composed_by_binding {
-                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
                 }
             }
         }
@@ -31990,14 +31992,25 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         }
     }
 }
+
 /// winget, chocolatey and scoop are not `SimpleManager` families, so the verb
-/// table the walk above holds cannot reach them: each of the three declares its
-/// own install spawn in its own file, as `install_cmd_for`, read by that
-/// manager's `install` and by the bootstrap arm that delivers a mediated
-/// manager. A second install spelling written inside one of those files splits
-/// one declared install into two argvs, the way `cfgd module export` and the
-/// apply path once split apt's, and the split stays invisible until a package
+/// table the walk above holds cannot reach them: a manager outside that table
+/// declares its own install spawn in its own file, as `install_cmd_for`, read
+/// by that manager's `install` and by the bootstrap arm that delivers a
+/// mediated manager. The population is every file under `packages/` holding
+/// that declaration, derived from the anchor the audit's own DRY exclusion
+/// names, so a fourth manager copying the convention joins the walk with it. A
+/// second install spelling written inside one of those files splits one
+/// declared install into two argvs, the way `cfgd module export` and the apply
+/// path once split apt's, and the split stays invisible until a package
 /// resolves differently depending on which spawn ran.
+///
+/// The word is judged by allowlist and not by a tell for the argv builders:
+/// outside its declaration each file spells `install` in exactly two shapes
+/// that reach no argv, and anything else carrying the word answers to the
+/// declaration or to the hatch. A tell has to recognize every builder there
+/// is, and the first one it missed was a `.args([` whose elements sit on
+/// their own lines, which is winget's own declaration shape.
 ///
 /// A raw `Command::new` on one of the three names, anywhere under `packages/`,
 /// is the same defect one layer down: it skips the `CFGD_*_BIN` seam the
@@ -32014,7 +32027,7 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
         "Command::new(\"choco\")",
         "Command::new(\"scoop\")",
     ];
-    const DECLARING_FILES: &[&str] = &["winget.rs", "choco.rs", "scoop.rs"];
+    const NAMED: &[&str] = &["winget.rs", "choco.rs", "scoop.rs"];
 
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
@@ -32028,61 +32041,40 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
                 above.starts_with("//") && above.contains(MARKER)
             })
     };
-    // The verb reaching a SPAWN is the word as an argument of the argv builder.
-    // The error-kind labels these three hand `run_pkg_cmd_live` carry the same
-    // word as a plain argument of an ordinary call, so they are not this.
-    let spawns_install = |line: &str| {
-        line.contains("\"install\"") && (line.contains(".arg(") || line.contains(".args("))
+    // The call whose argument list each line sits in. An argument written on
+    // its own line names no call, so the word's own shape cannot tell an
+    // error-kind label from an argv element. Brackets are counted on the
+    // literal-blanked line less any trailing comment, because chocolatey's
+    // bootstrap carries unbalanced parentheses inside its PowerShell script.
+    let enclosing_calls = |lines: &[(usize, String)]| {
+        let mut out: Vec<Option<String>> = Vec::with_capacity(lines.len());
+        let mut open: Vec<String> = Vec::new();
+        for (_, line) in lines {
+            out.push(open.last().cloned());
+            let blanked = cfgd_core::test_helpers::blank_string_literals(line);
+            for ch in blanked.split("//").next().unwrap_or_default().chars() {
+                match ch {
+                    '(' | '[' => open.push(line.trim().to_string()),
+                    ')' | ']' => {
+                        open.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    };
+    // The two shapes carrying the word outside a declaration that reach no
+    // argv: winget's `upgrade_verb`, whose install IS its raise, and the
+    // error-kind label each of the three hands `run_pkg_cmd_live`.
+    let reaches_no_argv = |line: &str, call: Option<&str>| {
+        line.contains("Some(\"install\")")
+            || (line.trim() == "\"install\"," && call.is_some_and(|c| c.contains("run_pkg_cmd")))
     };
 
     let mut offenders = Vec::new();
-    for file in DECLARING_FILES {
-        let path = packages.join(file);
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
-        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
-        let opens: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, l))| l.contains(DECLARATION))
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(
-            opens.len(),
-            1,
-            "{file}: the one `install_cmd_for` is the span this walk allows the verb inside, \
-             and it found {}",
-            opens.len()
-        );
-        let start = opens[0];
-        let end = start
-            + lines[start..]
-                .iter()
-                .position(|(_, l)| l.as_str() == "}")
-                .unwrap_or_else(|| panic!("{file}: `install_cmd_for` has no closing brace"));
-        let mut words_outside = 0usize;
-        for (i, (n, line)) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("//") || (start..=end).contains(&i) {
-                continue;
-            }
-            if line.contains("\"install\"") {
-                words_outside += 1;
-            }
-            if spawns_install(line) && !hatched(&lines, i) {
-                offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
-            }
-        }
-        // Anti-vacuity in the direction that decides the walk: each file spells
-        // the word outside its declaration already (an error-kind label,
-        // winget's `upgrade_verb`), so a green run is the walk reading those
-        // lines and telling them apart from a spawn, not the walk missing them.
-        assert!(
-            words_outside > 0,
-            "{file}: no `install` word was read outside the declaration, so nothing proves the \
-             walk tells a spawn argument from a kind label"
-        );
-    }
-
-    let (mut seen, mut declaring_seen) = (0usize, 0usize);
+    let mut declaring: Vec<String> = Vec::new();
+    let mut seen = 0usize;
     for path in rust_sources_under(&packages) {
         let name = path
             .file_name()
@@ -32092,9 +32084,6 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
             continue;
         }
         seen += 1;
-        if DECLARING_FILES.contains(&name) {
-            declaring_seen += 1;
-        }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines = cfgd_core::test_helpers::logical_source_lines(&production);
         for (i, (n, line)) in lines.iter().enumerate() {
@@ -32102,17 +32091,73 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
                 continue;
             }
             if RAW_SPAWNS.iter().any(|s| line.contains(s)) {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                offenders.push(format!("{}:{n}: {}", path.display(), line.trim()));
             }
         }
+        let opens: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, l))| l.contains(DECLARATION))
+            .map(|(i, _)| i)
+            .collect();
+        if opens.is_empty() {
+            continue;
+        }
+        declaring.push(name.to_string());
+        assert_eq!(
+            opens.len(),
+            1,
+            "{name}: the one `install_cmd_for` is the span this walk allows the verb inside, \
+             and it found {}",
+            opens.len()
+        );
+        let start = opens[0];
+        assert!(
+            !lines[start].1.starts_with(char::is_whitespace),
+            "{name}: `install_cmd_for` is a free function and the span ends at the first \
+             column-zero brace, so declared inside an impl that brace is the impl's own and \
+             the span swallows every method under it"
+        );
+        let end = start
+            + lines[start..]
+                .iter()
+                .position(|(_, l)| l.as_str() == "}")
+                .unwrap_or_else(|| panic!("{name}: `install_cmd_for` has no closing brace"));
+        let calls = enclosing_calls(&lines);
+        let mut words_outside = 0usize;
+        for (i, (n, line)) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//")
+                || (start..=end).contains(&i)
+                || !line.contains("\"install\"")
+            {
+                continue;
+            }
+            if reaches_no_argv(line, calls[i].as_deref()) {
+                words_outside += 1;
+            } else if !hatched(&lines, i) {
+                offenders.push(format!("{name}:{n}: {}", line.trim()));
+            }
+        }
+        // Anti-vacuity in the direction that decides the walk: each declaring
+        // file already spells the word outside its declaration in one of the
+        // two allowed shapes, so a green run is the walk reading those lines
+        // and allowing them by shape, not the walk failing to reach them.
+        assert!(
+            words_outside > 0,
+            "{name}: no `install` word was read outside the declaration in a shape this walk \
+             allows, so nothing proves it tells a kind label from a spawn argument"
+        );
     }
-    assert_eq!(
-        declaring_seen,
-        DECLARING_FILES.len(),
-        "the raw-spawn walk must reach the three files whose factories it protects"
-    );
+
+    for name in NAMED {
+        assert!(
+            declaring.iter().any(|d| d.as_str() == *name),
+            "{name} declares `install_cmd_for`, so the derived population must hold it; it \
+             holds {declaring:?}"
+        );
+    }
     assert!(
-        seen > declaring_seen,
+        seen > declaring.len(),
         "the raw-spawn walk read {seen} sources, which cannot be the whole of packages/"
     );
 
@@ -35268,7 +35313,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
                 {
                     continue;
                 }
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
             }
         }
         assert!(
@@ -35342,7 +35387,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
                 {
                     continue;
                 }
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
             }
         }
         assert!(

@@ -940,9 +940,10 @@ log_section "DRY — Duplicated Function Definitions"
 # and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
 # and packages/winget.rs each call it the ONE declaration of how that manager
 # installs), so each manager owning one is the convention itself, and every
-# manager added later owes one too. The walk over these three is
+# manager added later owes one too. The walk is
 # every_windows_manager_install_the_cli_emits_comes_from_its_declaration
-# (crates/cfgd/src/cli/tests.rs).
+# (crates/cfgd/src/cli/tests.rs), which derives its population from this same
+# anchor, so a manager that copies the convention is walked with it.
 #
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
