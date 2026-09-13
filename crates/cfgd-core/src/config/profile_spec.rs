@@ -972,16 +972,7 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
 /// templates), so a manager or a sub-list added to the schema is covered the
 /// day it is added instead of the day someone remembers this function.
 pub fn validate_package_specs(packages: &PackagesSpec) -> Result<()> {
-    validate_package_specs_under("spec.packages", packages)
-}
-
-/// [`validate_package_specs`], rooted at a path of the caller's own.
-///
-/// For a caller that put the names there itself rather than reading them out
-/// of `spec.packages`: a manifest file merged into the lists after the
-/// document was parsed is judged under the file that carried it, so the
-/// refusal names where the name came from.
-pub fn validate_package_specs_under(root: &str, packages: &PackagesSpec) -> Result<()> {
+    let root = "spec.packages";
     let value = serde_json::to_value(packages).map_err(|e| ConfigError::Invalid {
         message: format!("{root} could not be read: {e}"),
     })?;

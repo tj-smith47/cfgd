@@ -939,20 +939,20 @@ pub fn resolve_manifest_packages_cached(
     config_dir: &Path,
     cache: &ManifestCache,
 ) -> Result<()> {
-    let mut merged: Vec<String> = Vec::new();
-
     // Brew: parse Brewfile, merge taps/formulae/casks
     if let Some(ref mut brew) = packages.brew
         && let Some(ref file) = brew.file
     {
         let path = manifest_path(config_dir, file)?;
-        merged.push(file.clone());
         if path.exists()
             && let ParsedManifest::Brew(taps, formulae, casks) =
                 cache.get_or_parse(&path, "brew", |p| {
                     parse_brewfile(p).map(|(t, f, c)| ParsedManifest::Brew(t, f, c))
                 })?
         {
+            for list in [&taps, &formulae, &casks] {
+                validate_merged_names(file, list)?;
+            }
             cfgd_core::union_extend(&mut brew.taps, &taps);
             cfgd_core::union_extend(&mut brew.formulae, &formulae);
             cfgd_core::union_extend(&mut brew.casks, &casks);
@@ -964,9 +964,9 @@ pub fn resolve_manifest_packages_cached(
         && let Some(ref file) = apt.file
     {
         let path = manifest_path(config_dir, file)?;
-        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
+            validate_merged_names(file, &pkgs)?;
             cfgd_core::union_extend(&mut apt.packages, &pkgs);
         }
     }
@@ -976,9 +976,9 @@ pub fn resolve_manifest_packages_cached(
         && let Some(ref file) = npm.file
     {
         let path = manifest_path(config_dir, file)?;
-        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
+            validate_merged_names(file, &pkgs)?;
             cfgd_core::union_extend(&mut npm.global, &pkgs);
         }
     }
@@ -988,19 +988,11 @@ pub fn resolve_manifest_packages_cached(
         && let Some(ref file) = cargo.file
     {
         let path = manifest_path(config_dir, file)?;
-        merged.push(file.clone());
         if path.exists() {
             let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
+            validate_merged_names(file, &pkgs)?;
             cfgd_core::union_extend(&mut cargo.packages, &pkgs);
         }
-    }
-
-    // A name read out of a manifest becomes an argv token on the same command
-    // line a declared one does, and the parse that judged the declared lists
-    // ran before this merge appended to them.
-    if !merged.is_empty() {
-        let root = format!("spec.packages, merged from {}", merged.join(", "));
-        cfgd_core::config::validate_package_specs_under(&root, packages)?;
     }
 
     Ok(())
@@ -1008,11 +1000,49 @@ pub fn resolve_manifest_packages_cached(
 
 /// The path a declared `<manager>.file` names, refusing one that reaches
 /// outside the config directory it is resolved against.
+///
+/// A source-delivered profile can declare `<manager>.file`, and every parser
+/// below takes what it reads as package names, so the declaration answers to
+/// the same containment the house gives `spec.files[].source`: relative to the
+/// config directory, no `..`, and, once the file exists, still inside it after
+/// symlinks are resolved.
 fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
-    cfgd_core::validate_no_traversal(Path::new(file)).map_err(|why| ConfigError::Invalid {
+    let refuse = |why: &str| ConfigError::Invalid {
         message: format!("package manifest '{file}' is not a path cfgd will read: {why}"),
-    })?;
-    Ok(config_dir.join(file))
+    };
+    let declared = Path::new(file);
+    // `Path::join` DISCARDS the base for a rooted or drive/UNC-prefixed path,
+    // so the config directory would bound nothing and the declared path would
+    // be read verbatim.
+    if matches!(
+        declared.components().next(),
+        Some(std::path::Component::RootDir | std::path::Component::Prefix(_))
+    ) {
+        return Err(refuse("it must be relative to the config directory").into());
+    }
+    cfgd_core::validate_no_traversal(declared).map_err(|why| refuse(&why))?;
+    let path = config_dir.join(file);
+    // Only canonicalization sees a symlink that sits inside the config
+    // directory and points out of it.
+    if path.exists() && cfgd_core::validate_path_within(&path, config_dir).is_err() {
+        return Err(refuse("it resolves outside the config directory").into());
+    }
+    Ok(path)
+}
+
+/// Judge the package names one manifest file just contributed, naming the file
+/// and the position the refused name sits at.
+///
+/// A name read out of a manifest becomes an argv token on the same command line
+/// a declared one does, and the parse that judged the declared lists ran before
+/// this merge appended to them. Judging per file is what lets the refusal name
+/// which of several declared manifests carried the name.
+fn validate_merged_names(file: &str, names: &[String]) -> Result<()> {
+    for (i, name) in names.iter().enumerate() {
+        cfgd_schema::validate_package_name(&format!("{file}[{i}]"), name)
+            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

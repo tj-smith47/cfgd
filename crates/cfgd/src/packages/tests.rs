@@ -2783,10 +2783,53 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             .expect_err("a manifest name a command line reads as syntax is refused")
             .to_string();
         assert!(
-            why.contains(file) && why.contains("foo&calc"),
-            "the refusal names the manifest and the name: {why}"
+            why.contains(&format!("{file}[0]")) && why.contains("foo&calc"),
+            "the refusal names the manifest, the position and the name: {why}"
         );
     }
+}
+
+/// Two manifests are declared and only one carries a refused name, so the
+/// refusal has to name that one rather than every file the merge read.
+#[test]
+fn a_manifest_refusal_names_only_the_file_that_carried_the_name() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("packages.apt.txt"),
+        "ripgrep
+fd-find
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[dependencies]\nclap = \"4\"\n\"foo&calc\" = \"1\"\n",
+    )
+    .unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        cargo: Some(cfgd_core::config::CargoSpec {
+            file: Some("Cargo.toml".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, dir.path())
+        .expect_err("the offending manifest is refused")
+        .to_string();
+    assert!(
+        why.contains("Cargo.toml[1]") && why.contains("foo&calc"),
+        "the refusal names the file that carried the name and its position: {why}"
+    );
+    assert!(
+        !why.contains("packages.apt.txt"),
+        "the clean manifest is not named: {why}"
+    );
 }
 
 /// A declared manifest path is resolved against the config directory, so one
@@ -2808,6 +2851,94 @@ fn a_manifest_path_that_climbs_out_of_the_config_dir_is_refused() {
     assert!(
         why.contains("../elsewhere/packages.txt") && why.contains(".."),
         "the refusal names the declared path: {why}"
+    );
+}
+
+/// An absolute path discards the config directory at the join, so the
+/// containment the declaration answers to would bound nothing.
+#[test]
+fn an_absolute_manifest_path_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "ripgrep\n").unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some(outside.to_string_lossy().into_owned()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, &config_dir)
+        .expect_err("an absolute manifest path is refused")
+        .to_string();
+    assert!(
+        why.contains("relative to the config directory"),
+        "the refusal says what a manifest path must be: {why}"
+    );
+    assert!(
+        spec.apt.as_ref().is_some_and(|apt| apt.packages.is_empty()),
+        "nothing outside the config directory was read"
+    );
+}
+
+/// A symlink sitting inside the config directory can still point out of it,
+/// and only canonicalization sees that.
+#[test]
+#[cfg(unix)]
+fn a_manifest_symlink_pointing_out_of_the_config_dir_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "ripgrep\n").unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, config_dir.join("packages.apt.txt")).unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, &config_dir)
+        .expect_err("a manifest symlink escaping the config dir is refused")
+        .to_string();
+    assert!(
+        why.contains("packages.apt.txt") && why.contains("outside the config directory"),
+        "the refusal names the declared path and why: {why}"
+    );
+    assert!(
+        spec.apt.as_ref().is_some_and(|apt| apt.packages.is_empty()),
+        "nothing the symlink pointed at was read"
+    );
+}
+
+/// The containment refuses what leaves the config directory and nothing else:
+/// an ordinary in-tree manifest still merges.
+#[test]
+fn a_relative_in_tree_manifest_path_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lists")).unwrap();
+    std::fs::write(dir.path().join("lists/apt.txt"), "ripgrep\n").unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("lists/apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    assert_eq!(
+        spec.apt.as_ref().map(|apt| apt.packages.clone()),
+        Some(vec!["ripgrep".to_string()]),
+        "an in-tree manifest still merges"
     );
 }
 

@@ -53,7 +53,7 @@ pub use profile_spec::{
     FlatpakSpec, ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, ProfileDocument,
     ProfileMetadata, ProfileSpec, SecretSpec, SnapSpec, SystemSettings, render_backup_name_pattern,
     validate_backup_specs, validate_managed_file_specs, validate_package_specs,
-    validate_package_specs_under, validate_secret_specs,
+    validate_secret_specs,
 };
 
 // The value types cfgd-schema owns, kept resolvable at their long-standing
