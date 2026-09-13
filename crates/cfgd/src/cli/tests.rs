@@ -31990,6 +31990,139 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         }
     }
 }
+/// winget, chocolatey and scoop are not `SimpleManager` families, so the verb
+/// table the walk above holds cannot reach them: each of the three declares its
+/// own install spawn in its own file, as `install_cmd_for`, read by that
+/// manager's `install` and by the bootstrap arm that delivers a mediated
+/// manager. A second install spelling written inside one of those files splits
+/// one declared install into two argvs, the way `cfgd module export` and the
+/// apply path once split apt's, and the split stays invisible until a package
+/// resolves differently depending on which spawn ran.
+///
+/// A raw `Command::new` on one of the three names, anywhere under `packages/`,
+/// is the same defect one layer down: it skips the `CFGD_*_BIN` seam the
+/// resolver answers from, and scoop ships on Windows only as `scoop.ps1` or
+/// `scoop.cmd`, so such a spawn dies with "program not found" on the very host
+/// the manager exists for.
+#[test]
+fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
+    // The sibling walk's hatch, so one marker answers for both install rules.
+    const MARKER: &str = "install-verb-ok:";
+    const DECLARATION: &str = "fn install_cmd_for(";
+    const RAW_SPAWNS: &[&str] = &[
+        "Command::new(\"winget\")",
+        "Command::new(\"choco\")",
+        "Command::new(\"scoop\")",
+    ];
+    const DECLARING_FILES: &[&str] = &["winget.rs", "choco.rs", "scoop.rs"];
+
+    let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("packages");
+    // A hatch is read off the line itself or the comment directly above it, the
+    // way the walk above reads the same marker.
+    let hatched = |lines: &[(usize, String)], i: usize| {
+        lines[i].1.contains(MARKER)
+            || i.checked_sub(1).is_some_and(|prev| {
+                let above = lines[prev].1.trim_start();
+                above.starts_with("//") && above.contains(MARKER)
+            })
+    };
+    // The verb reaching a SPAWN is the word as an argument of the argv builder.
+    // The error-kind labels these three hand `run_pkg_cmd_live` carry the same
+    // word as a plain argument of an ordinary call, so they are not this.
+    let spawns_install = |line: &str| {
+        line.contains("\"install\"") && (line.contains(".arg(") || line.contains(".args("))
+    };
+
+    let mut offenders = Vec::new();
+    for file in DECLARING_FILES {
+        let path = packages.join(file);
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+        let opens: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, l))| l.contains(DECLARATION))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            opens.len(),
+            1,
+            "{file}: the one `install_cmd_for` is the span this walk allows the verb inside, \
+             and it found {}",
+            opens.len()
+        );
+        let start = opens[0];
+        let end = start
+            + lines[start..]
+                .iter()
+                .position(|(_, l)| l.as_str() == "}")
+                .unwrap_or_else(|| panic!("{file}: `install_cmd_for` has no closing brace"));
+        let mut words_outside = 0usize;
+        for (i, (n, line)) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || (start..=end).contains(&i) {
+                continue;
+            }
+            if line.contains("\"install\"") {
+                words_outside += 1;
+            }
+            if spawns_install(line) && !hatched(&lines, i) {
+                offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
+            }
+        }
+        // Anti-vacuity in the direction that decides the walk: each file spells
+        // the word outside its declaration already (an error-kind label,
+        // winget's `upgrade_verb`), so a green run is the walk reading those
+        // lines and telling them apart from a spawn, not the walk missing them.
+        assert!(
+            words_outside > 0,
+            "{file}: no `install` word was read outside the declaration, so nothing proves the \
+             walk tells a spawn argument from a kind label"
+        );
+    }
+
+    let (mut seen, mut declaring_seen) = (0usize, 0usize);
+    for path in rust_sources_under(&packages) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" {
+            continue;
+        }
+        seen += 1;
+        if DECLARING_FILES.contains(&name) {
+            declaring_seen += 1;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+        for (i, (n, line)) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || hatched(&lines, i) {
+                continue;
+            }
+            if RAW_SPAWNS.iter().any(|s| line.contains(s)) {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        declaring_seen,
+        DECLARING_FILES.len(),
+        "the raw-spawn walk must reach the three files whose factories it protects"
+    );
+    assert!(
+        seen > declaring_seen,
+        "the raw-spawn walk read {seen} sources, which cannot be the whole of packages/"
+    );
+
+    assert!(
+        offenders.is_empty(),
+        "winget, chocolatey and scoop each install through the `install_cmd_for` their own file \
+         declares, spawned through that file's resolved factory:\n{}",
+        offenders.join("\n")
+    );
+}
 
 /// A command renders its output under ONE section, named for the command, and
 /// never a second section named for the verb its own title already spent.

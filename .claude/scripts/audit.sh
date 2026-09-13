@@ -938,10 +938,11 @@ log_section "DRY — Duplicated Function Definitions"
 # is the sanctioned per-manager declaration table these Windows managers answer
 # to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
 # and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
-# and packages/winget.rs each call it the ONE declaration of that manager's
-# install verb), so each manager owning one is the convention itself, and every
-# manager added later owes one too. No walk covers these three today; the
-# convention is held by those docs.
+# and packages/winget.rs each call it the ONE declaration of how that manager
+# installs), so each manager owning one is the convention itself, and every
+# manager added later owes one too. The walk over these three is
+# every_windows_manager_install_the_cli_emits_comes_from_its_declaration
+# (crates/cfgd/src/cli/tests.rs).
 #
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
