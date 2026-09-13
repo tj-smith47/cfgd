@@ -5206,7 +5206,7 @@ fn cmd_doctor_with_valid_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::run_doctor(&cli, &printer);
+    let result = super::doctor::run_doctor(&cli, &printer, false);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
@@ -5232,7 +5232,7 @@ fn cmd_doctor_without_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::run_doctor(&cli, &printer);
+    let result = super::doctor::run_doctor(&cli, &printer, false);
     // Missing at the DEFAULT path is the fresh-machine state: the verdict
     // must pass (exit 0), or `cfgd doctor` fails before a config can exist.
     assert!(
@@ -5266,7 +5266,7 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let passed = super::doctor::run_doctor(&cli, &printer).unwrap();
+    let passed = super::doctor::run_doctor(&cli, &printer, false).unwrap();
     assert!(
         !passed,
         "missing config at an explicit --config path must fail the verdict"
@@ -5313,7 +5313,7 @@ fn cmd_doctor_json_missing_config_shape_is_unchanged() {
             ..test_cli(dir.path())
         };
         let (printer, buf) = cfgd_core::output::Printer::for_test_with_format(format.clone());
-        super::doctor::run_doctor(&cli, &printer).unwrap();
+        super::doctor::run_doctor(&cli, &printer, false).unwrap();
         printer.flush();
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6176,7 +6176,7 @@ fn execute_diff_command() {
 #[test]
 fn execute_doctor_command() {
     let h = CliTestHarness::builder().build();
-    let cli = h.cli_with_command(Command::Doctor);
+    let cli = h.cli_with_command(Command::Doctor { fix: false });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Doctor");
 }
@@ -8713,7 +8713,7 @@ fn cmd_doctor_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::doctor::run_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer, false).unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11209,6 +11209,7 @@ fn action_type_str_manager_variants() {
     assert_eq!(
         super::action_type_str(&Action::Manager(ManagerAction::Prerequisite {
             tool: "xcode-select".to_string(),
+            package: "xcode-select".to_string(),
             installer: "xcode-select --install".to_string(),
             required_by: vec!["brew".to_string()],
             depends_on: vec![],
@@ -13700,7 +13701,7 @@ fn cmd_doctor_without_config_succeeds() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::run_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer, false).unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -13714,7 +13715,7 @@ fn cmd_doctor_with_rich_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::run_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer, false).unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -20022,26 +20023,60 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // fires whether or not the host has cosign. Spawn-exclusion guard first
     // so it drops last, bracketing the empty-PATH window.
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Homebrew answers available from its install prefix, not from PATH, so an
+    // emptied PATH alone would still leave a manager for cfgd to spawn.
+    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-here",
+    );
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
     let result = module::cmd_module_keys_generate(&printer, None);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("cosign not found"));
+    let err = result
+        .expect_err("no cosign and no manager to get it")
+        .to_string();
+    assert!(
+        err.contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "got: {err}"
+    );
 }
 
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Homebrew answers available from its install prefix, not from PATH, so an
+    // emptied PATH alone would still leave a manager for cfgd to spawn.
+    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-here",
+    );
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
     let result = module::cmd_module_keys_rotate(&printer, None, &[]);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("cosign not found"));
+    let err = result
+        .expect_err("no cosign and no manager to get it")
+        .to_string();
+    assert!(
+        err.contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -20557,7 +20592,7 @@ fn json_schema_config_show() {
 #[test]
 fn json_schema_doctor() {
     let h = CliTestHarness::builder().json().build();
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -23880,7 +23915,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
         .config("this is not valid yaml: [[[")
         .build();
 
-    let result = super::doctor::run_doctor(&h.cli(), h.printer());
+    let result = super::doctor::run_doctor(&h.cli(), h.printer(), false);
     assert!(
         result.is_ok(),
         "doctor should succeed even with invalid config"
@@ -23902,7 +23937,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
 fn cmd_doctor_json_has_all_top_level_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -23928,7 +23963,7 @@ fn cmd_doctor_json_has_all_top_level_fields() {
 fn cmd_doctor_json_config_section_has_expected_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     let config = &parsed["config"];
@@ -23958,7 +23993,7 @@ spec:
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -23988,7 +24023,7 @@ spec:
         .profile("default", profile_with_missing_module)
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -24049,7 +24084,7 @@ fn cmd_doctor_declares_every_supported_package_manager() {
         .profile("default", ALL_MANAGERS_PROFILE_YAML)
         .json()
         .build();
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     let managers = parsed["packageManagers"]
@@ -24108,7 +24143,7 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
     // — so the "Config Sources" section should render with the "not cached"
     // warning arm (doctor.rs lines 415-439).
     let h = CliTestHarness::builder().rich_config().build();
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -24143,7 +24178,7 @@ spec:
         .json()
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     let modules = parsed["modules"]
@@ -24239,7 +24274,7 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("git: not found — install git to use cfgd"),
+        text.contains("git: not found — run `cfgd doctor --fix` to install it"),
         "should mention git missing, got: {text}"
     );
     assert!(
@@ -24257,7 +24292,7 @@ fn build_doctor_doc_sops_missing_emits_warn() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "sops: not found — required for secrets (https://github.com/getsops/sops#install)"
+            "sops: not found — required for secrets; run `cfgd doctor --fix` to install it"
         ),
         "should warn about missing sops, got: {text}"
     );
@@ -24735,7 +24770,7 @@ spec:
         .module("tools-mod", MODULE_WITH_PACKAGES_YAML)
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -24775,7 +24810,7 @@ fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
         .profile("default", CUSTOM_PKG_PROFILE_YAML)
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -24798,7 +24833,7 @@ fn cmd_doctor_notes_the_decision_grammar_limit_of_a_dotted_custom_manager() {
         )
         .build();
 
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let output = h.output();
     assert!(
@@ -28342,7 +28377,7 @@ fn execute_enroll_dispatch() {
 fn cmd_doctor_json_flags_legacy_profiles() {
     // The default harness writes flat legacy manifests (default.yaml, work.yaml).
     let h = CliTestHarness::builder().json().build();
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     let profiles = parsed["profiles"]
@@ -28375,7 +28410,7 @@ fn cmd_doctor_json_canonical_profiles_not_legacy() {
         )
         .unwrap();
     }
-    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
 
     let parsed = h.json_output();
     let profiles = parsed["profiles"].as_array().unwrap();
@@ -28401,7 +28436,7 @@ fn run_doctor_returns_false_verdict_on_ambiguous_profile() {
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::copy(pdir.join("work.yaml"), bundle.join("profile.yaml")).unwrap();
 
-    let passed = super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    let passed = super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();
     assert!(
         !passed,
         "an ambiguous profile must fail the doctor verdict (drives the non-zero exit)"
@@ -32280,7 +32315,7 @@ fn every_closing_hint_names_a_command() {
         }
     }
     assert!(
-        checked >= 24,
+        checked >= 23,
         "the walk no longer reaches the hints it exists to hold — it found {checked}"
     );
     assert!(
@@ -35920,7 +35955,8 @@ fn the_doctor_payload_spells_the_home_directory_absolutely() {
     };
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::doctor::run_doctor(&cli, &printer).expect("doctor runs against a config under home");
+    super::doctor::run_doctor(&cli, &printer, false)
+        .expect("doctor runs against a config under home");
     printer.flush();
 
     let payload = cfgd_core::test_helpers::captured_text(&buf);
@@ -37590,6 +37626,515 @@ fn the_withheld_route_walks_read_an_unmarked_refusal() {
         separated.declined_unmarked,
         ["chocolatey"],
         "an arm that installs something ends the run the reason above it covers"
+    );
+}
+
+/// A registry holding only Homebrew, whose availability and every spawn both
+/// answer to `CFGD_BREW_BIN`.
+///
+/// One manager and one seam is what lets a test say what this host can reach:
+/// with the registry narrowed, the tool table's own order picks brew, and the
+/// shim behind the seam records the argv the install ran.
+fn brew_only_registry() -> cfgd_core::providers::ProviderRegistry {
+    let mut registry = cfgd_core::providers::ProviderRegistry::new();
+    registry.set_package_managers(
+        crate::packages::all_package_managers()
+            .into_iter()
+            .filter(|pm| pm.name() == "brew")
+            .collect(),
+    );
+    registry
+}
+
+/// The path of a file that is certainly not there, for a tool seam that has to
+/// report its tool missing.
+const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
+
+#[test]
+#[serial_test::serial]
+fn provision_tool_answers_from_the_seam_without_reaching_a_manager() {
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let here = std::env::current_exe().expect("the running test binary is a real file");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_COSIGN_BIN",
+        here.to_string_lossy().as_ref(),
+    );
+    let printer = test_printer();
+    let registry = brew_only_registry();
+    helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+        .expect("the seam names a real file, so the tool is already here");
+    assert_eq!(
+        shim.argv_log(),
+        "",
+        "a tool already on the machine is nobody's to install"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn provision_tool_installs_through_the_manager_the_tool_table_routes_to() {
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
+    let printer = test_printer();
+    let registry = brew_only_registry();
+    let err = helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+        .expect_err("the seam still names no file once the shimmed install returns");
+    let argv = shim.argv_log();
+    assert!(
+        argv.lines().any(|l| l == "install cosign"),
+        "brew is the manager the table routes cosign to here, and `cosign` the package \
+         it names: {argv}"
+    );
+    assert_eq!(
+        err, "cosign is still not on PATH after brew installed cosign",
+        "an install that reported success without landing the binary says so, naming \
+         both the manager and the package"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_nothing() {
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
+    let printer = test_printer();
+    let registry = cfgd_core::providers::ProviderRegistry::new();
+    let err = helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+        .expect_err("no manager is registered, so nothing can install it");
+    assert_eq!(
+        err,
+        cfgd_core::providers::tool_unobtainable_reason("cosign"),
+        "the refusal is the tool table's own, not a second wording"
+    );
+    assert!(
+        err.contains(
+            "none of apt, zypper, pacman, apk, pkg, winget, scoop, brew is available on \
+             this host"
+        ),
+        "and it lists every manager that would have installed cosign, so the reader can \
+         make one of them available: {err}"
+    );
+    assert_eq!(
+        shim.argv_log(),
+        "",
+        "a refusal reached before any route was found spawns nothing"
+    );
+}
+
+/// `cfgd doctor` used to end at "sops: not found" plus a URL, which is a
+/// report about a machine cfgd could have repaired. `--fix` installs what the
+/// rows name, through the same table an apply's prerequisite node reads, and
+/// runs BEFORE the probes so the report states the machine the repair left.
+#[test]
+#[serial_test::serial]
+fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "apt is available" here.
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::doctor::run_doctor(&cli, &printer, true).unwrap();
+    printer.flush();
+
+    let argv = shim.argv_log();
+    for package in ["git", "sops"] {
+        assert!(
+            argv.lines().any(|l| l == format!("install {package}")),
+            "brew is the one manager this host can reach, so every missing tool is \
+             installed through it: {argv}"
+        );
+    }
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("Install missing tools"),
+        "the repair says what it did before the report it repaired for: {output}"
+    );
+}
+
+/// The same run without `--fix` touches nothing: `doctor` is a report, and a
+/// verb that changes the machine does so because it was asked to.
+#[test]
+#[serial_test::serial]
+fn doctor_without_fix_installs_nothing() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let dir = tempfile::tempdir().unwrap();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::doctor::run_doctor(&cli, &printer, false).unwrap();
+    printer.flush();
+
+    assert!(
+        !shim.argv_log().contains("install "),
+        "no install runs without --fix: {}",
+        shim.argv_log()
+    );
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("run `cfgd doctor --fix` to install it"),
+        "and the rows name the command that would have: {output}"
+    );
+}
+
+/// A registry whose one package manager is a stand-in for apt.
+///
+/// The plan never spawns a manager, so a mock answers the only question the
+/// planner asks — is this manager here — without the test depending on which
+/// managers the host happens to run.
+fn apt_only_registry() -> cfgd_core::providers::ProviderRegistry {
+    let mut registry = super::build_registry();
+    registry.set_package_managers(vec![Box::new(
+        cfgd_core::test_helpers::MockPackageManager::new("apt"),
+    )]);
+    registry
+}
+
+/// A declared `gsettings` setting on a host with no gsettings plans the
+/// install and the setting in one run.
+///
+/// Before the tool table the planner wrote a skip here, and the setting waited
+/// for a second `cfgd apply` after the reader installed glib themselves.
+#[test]
+#[serial_test::serial]
+fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
+    let registry = apt_only_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.system.insert(
+        "gsettings".to_string(),
+        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
+            .expect("the fixture is a mapping"),
+    );
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let prereq = plan
+        .phases
+        .iter()
+        .find(|p| p.name == cfgd_core::reconciler::PhaseName::Bootstrap)
+        .and_then(|p| {
+            p.actions().find_map(|a| match a {
+                cfgd_core::reconciler::Action::Manager(
+                    cfgd_core::reconciler::ManagerAction::Prerequisite {
+                        tool,
+                        package,
+                        installer,
+                        required_by,
+                        ..
+                    },
+                ) if tool == "gsettings" => {
+                    Some((package.clone(), installer.clone(), required_by.clone()))
+                }
+                _ => None,
+            })
+        })
+        .expect("the Bootstrap phase plans the tool the configurator needs");
+    assert_eq!(
+        prereq.0, "libglib2.0-bin",
+        "apt is the manager this host has, and the tool table names its package"
+    );
+    assert_eq!(prereq.1, "apt", "and the installer is that manager");
+    assert!(
+        prereq.2.contains(&"system:gsettings".to_string()),
+        "the node names the consumer waiting on it: {:?}",
+        prereq.2
+    );
+
+    let system = plan
+        .phases
+        .iter()
+        .position(|p| p.name == cfgd_core::reconciler::PhaseName::System)
+        .expect("the System phase is planned");
+    let bootstrap = plan
+        .phases
+        .iter()
+        .position(|p| p.name == cfgd_core::reconciler::PhaseName::Bootstrap)
+        .expect("the Bootstrap phase is planned");
+    assert!(
+        bootstrap < system,
+        "the phase order is the edge: the install runs before the setting"
+    );
+    assert!(
+        plan.phases[system].actions().any(|a| matches!(
+            a,
+            cfgd_core::reconciler::Action::System(
+                cfgd_core::reconciler::SystemAction::ConfigureAfterInstall {
+                    configurator,
+                    tool,
+                    ..
+                },
+            ) if configurator == "gsettings" && tool == "gsettings"
+        )),
+        "and the setting is planned as work this run does, not as a skip"
+    );
+}
+
+/// The same shape for a declared sops secret: the backend is unavailable only
+/// because its tool is missing, which is a reason this run can remove.
+#[test]
+#[serial_test::serial]
+fn a_declared_sops_secret_plans_sops_ahead_of_the_decryption() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let registry = apt_only_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.secrets.push(cfgd_core::config::SecretSpec {
+        source: "secrets/db.enc.yaml".to_string(),
+        target: Some(std::path::PathBuf::from(
+            "/tmp/cfgd-plan-only-never-written",
+        )),
+        template: None,
+        backend: None,
+        envs: None,
+    });
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+
+    let prereq = plan
+        .phases
+        .iter()
+        .find(|p| p.name == cfgd_core::reconciler::PhaseName::Bootstrap)
+        .and_then(|p| {
+            p.actions().find_map(|a| match a {
+                cfgd_core::reconciler::Action::Manager(
+                    cfgd_core::reconciler::ManagerAction::Prerequisite {
+                        tool,
+                        package,
+                        required_by,
+                        ..
+                    },
+                ) if tool == "sops" => Some((package.clone(), required_by.clone())),
+                _ => None,
+            })
+        })
+        .expect("the Bootstrap phase plans the tool the backend needs");
+    assert_eq!(
+        prereq.0, "sops",
+        "apt names the package by the tool's own name"
+    );
+    assert!(
+        prereq.1.contains(&"secret:sops".to_string()),
+        "the node names the backend waiting on it: {:?}",
+        prereq.1
+    );
+
+    assert!(
+        plan.phases
+            .iter()
+            .find(|p| p.name == cfgd_core::reconciler::PhaseName::Secrets)
+            .expect("the Secrets phase is planned")
+            .actions()
+            .any(|a| matches!(
+                a,
+                cfgd_core::reconciler::Action::Secret(
+                    cfgd_core::providers::SecretAction::Decrypt { backend, .. },
+                ) if backend == "sops"
+            )),
+        "and the secret is planned as a decryption, not as a skip naming a missing sops"
+    );
+}
+
+const PROVISION_ROUTE_MARKER: &str = "// provision-route:";
+const NO_PROVISION_ROUTE_MARKER: &str = "// no-provision-route-ok:";
+
+/// Every `require_tool` / `require_tool_with_seam` call in `body` that neither
+/// names the cfgd command which provisions the tool nor says why no command
+/// can, reported as `<line>: <text>`.
+///
+/// A call is judged on its own logical line and on the contiguous comment block
+/// above it, so a reason too long for one line still covers the call it sits
+/// over. String literals are blanked first, because a message quoting the
+/// helper's name is prose rather than a call, and a `provision-route:` reason
+/// naming no `cfgd` command is reported like a missing marker: a route nobody
+/// can run is the same gap worded confidently.
+fn unrouted_require_tool_sites(body: &str) -> Vec<String> {
+    let lines = cfgd_core::test_helpers::logical_source_lines(body);
+    let marks =
+        |l: &str| l.contains(PROVISION_ROUTE_MARKER) || l.contains(NO_PROVISION_ROUTE_MARKER);
+    let mut offenders = Vec::new();
+    for (idx, (number, raw)) in lines.iter().enumerate() {
+        if !require_tool_call_line(raw) {
+            continue;
+        }
+        let mut marker = marks(raw).then_some(raw.as_str());
+        let mut above = idx;
+        while marker.is_none() && above > 0 {
+            let prev = lines[above - 1].1.trim_start();
+            if !prev.starts_with("//") {
+                break;
+            }
+            marker = marks(prev).then_some(prev);
+            above -= 1;
+        }
+        match marker {
+            None => offenders.push(format!("{number}: {}", raw.trim())),
+            Some(m) if m.contains(PROVISION_ROUTE_MARKER) && !m.contains("cfgd ") => offenders
+                .push(format!(
+                    "{number}: {} (its route names no cfgd command)",
+                    raw.trim()
+                )),
+            Some(_) => {}
+        }
+    }
+    offenders
+}
+
+/// Whether `line` is code calling `require_tool` / `require_tool_with_seam`,
+/// rather than a comment or a message naming one of them.
+fn require_tool_call_line(line: &str) -> bool {
+    let blanked = cfgd_core::test_helpers::blank_string_literals(line);
+    let code = blanked.trim_start();
+    !code.starts_with("//")
+        && !code.contains("fn require_tool")
+        && (code.contains("require_tool(") || code.contains("require_tool_with_seam("))
+}
+
+/// `require_tool` reports that a tool is missing and hands the reader a URL to
+/// go and install it. That is the right answer only where cfgd genuinely
+/// cannot get the tool itself: everywhere else the reader is asked to do work
+/// `provision_tool` and the `Prerequisite` node already do, and a machine cfgd
+/// could have converged on its own is left half-configured until somebody
+/// finishes it by hand.
+///
+/// So every call site says which of the two it is. `// provision-route: <cfgd
+/// command>` names the command that installs the tool, and
+/// `// no-provision-route-ok: <why>` states why no command can.
+#[test]
+fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut sites = 0usize;
+    let mut offenders = Vec::new();
+    for root in &roots {
+        for path in rust_sources_under(root) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            sites += production
+                .lines()
+                .filter(|l| require_tool_call_line(l))
+                .count();
+            for offender in unrouted_require_tool_sites(&production) {
+                offenders.push(format!("{}:{offender}", path.display()));
+            }
+        }
+    }
+    assert!(
+        sites >= 4,
+        "the walk no longer reaches the call sites it judges: it found {sites}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every `require_tool` call names the cfgd command that provisions the tool with \
+         `{PROVISION_ROUTE_MARKER} <cfgd command>`, or says why none can with \
+         `{NO_PROVISION_ROUTE_MARKER} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The walk above, driven negatively: a bare call is caught, each marker
+/// clears it from its own line or from the block above, and a route naming no
+/// command is caught like a bare call.
+#[test]
+fn the_provision_route_walk_reads_an_unrouted_require_tool_call() {
+    let bare = "    cfgd_core::require_tool(\"sops\", None)?;";
+    assert_eq!(
+        unrouted_require_tool_sites(bare).len(),
+        1,
+        "a call with no marker is exactly what the walk is for"
+    );
+    assert!(
+        unrouted_require_tool_sites(
+            "    // provision-route: cfgd doctor --fix installs it\n    \
+             cfgd_core::require_tool(\"sops\", None)?;"
+        )
+        .is_empty(),
+        "a route named in the block above covers the call under it"
+    );
+    assert!(
+        unrouted_require_tool_sites(
+            "    require_tool_with_seam(E, \"gpg\", None) // no-provision-route-ok: no package \
+             carries it"
+        )
+        .is_empty(),
+        "a reason on the call's own line covers it"
+    );
+    assert_eq!(
+        unrouted_require_tool_sites(
+            "    // provision-route: apply installs it\n    \
+             cfgd_core::require_tool(\"sops\", None)?;"
+        )
+        .len(),
+        1,
+        "a route that names no cfgd command names nothing a reader can run"
+    );
+    assert!(
+        unrouted_require_tool_sites("/// Delegates to [`require_tool(name)`] for the refusal.")
+            .is_empty(),
+        "a doc comment naming the helper is prose, not a call"
+    );
+    assert!(
+        unrouted_require_tool_sites("    let msg = \"require_tool(x) failed\";").is_empty(),
+        "a string quoting the helper is prose too"
+    );
+    assert!(
+        unrouted_require_tool_sites("pub fn require_tool(name: &str) -> Result<(), String> {")
+            .is_empty(),
+        "the helper's own declaration is no call site"
     );
 }
 

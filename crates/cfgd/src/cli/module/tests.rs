@@ -1984,13 +1984,26 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // fires whether or not the host has cosign. Spawn-exclusion guard first
     // so it drops last, bracketing the empty-PATH window.
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Homebrew answers available from its install prefix, not from PATH, so an
+    // emptied PATH alone would still leave a manager for cfgd to spawn.
+    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-here",
+    );
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
     assert!(
-        err.to_string().contains("cosign not found"),
-        "should report cosign missing, got: {err}"
+        err.to_string()
+            .contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "should report cosign missing and name the managers that install it, got: {err}"
     );
 }
 
@@ -4551,13 +4564,26 @@ fn cmd_module_update_combined_operations() {
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Homebrew answers available from its install prefix, not from PATH, so an
+    // emptied PATH alone would still leave a manager for cfgd to spawn.
+    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-here",
+    );
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
     assert!(
-        err.to_string().contains("cosign not found"),
-        "should report cosign missing, got: {err}"
+        err.to_string()
+            .contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "should report cosign missing and name the managers that install it, got: {err}"
     );
 }
 

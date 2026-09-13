@@ -301,6 +301,7 @@ fn action_type_str_manager_variants() {
     assert_eq!(
         action_type_str(&Action::Manager(ManagerAction::Prerequisite {
             tool: "xcode-select".to_string(),
+            package: "xcode-select".to_string(),
             installer: "xcode-select --install".to_string(),
             required_by: vec!["brew".to_string()],
             depends_on: vec![],
@@ -358,6 +359,7 @@ fn manager_action_output_prerequisite_names_the_tool_and_installer() {
     // command that runs, but the tool is what this row is about.
     let out = manager_action_output(&Action::Manager(ManagerAction::Prerequisite {
         tool: "curl".to_string(),
+        package: "curl".to_string(),
         installer: "apt".to_string(),
         required_by: vec!["brew-cask".to_string(), "pipx".to_string()],
         depends_on: vec!["manager:refresh:apt".to_string()],
@@ -592,6 +594,7 @@ fn action_path_env_inject() {
 fn action_path_manager_prerequisite_keys_on_its_tool_not_its_installer() {
     let prereq = Action::Manager(ManagerAction::Prerequisite {
         tool: "curl".to_string(),
+        package: "curl".to_string(),
         installer: "brew".to_string(),
         required_by: vec!["brew".to_string()],
         depends_on: vec![],
@@ -612,6 +615,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
     let managers_owner = reconciler::Owner::cfgd(reconciler::MANAGERS_GROUP);
     let prereq = Action::Manager(ManagerAction::Prerequisite {
         tool: "curl".to_string(),
+        package: "curl".to_string(),
         installer: "brew".to_string(),
         required_by: vec!["brew".to_string()],
         depends_on: vec![],

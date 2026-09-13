@@ -2091,6 +2091,17 @@ fn ensure_dir_writable_nonexistent_path_returns_ok() {
 fn check_prerequisites_with_test_printer() {
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Homebrew answers available from its install prefix, not from PATH, so an
+    // emptied PATH alone would still leave a manager for cfgd to spawn.
+    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-here",
+    );
 
     {
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
@@ -2115,8 +2126,46 @@ fn check_prerequisites_with_test_printer() {
         "should show error when git is missing, got: {output}"
     );
     assert!(
-        output.contains("Install with `"),
-        "the install hint is the actionable half of the message: {output}"
+        output.contains("apt"),
+        "with no manager to install git the refusal names the ones that would have: \
+         {output}"
+    );
+}
+
+/// git missing at `cfgd init` is a machine cfgd can repair, so it installs it
+/// rather than ending on an install hint the reader has to carry out.
+///
+/// `init` names no other tool: its whole prerequisite is the git it clones and
+/// commits with.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn check_prerequisites_installs_git_through_the_tool_table() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let (printer, cap) = Printer::for_test_doc();
+    let result = check_prerequisites(&printer);
+    drop(printer);
+
+    let argv = shim.argv_log();
+    assert!(
+        argv.lines().any(|l| l == "install git"),
+        "brew is the one manager this host can reach, and the table names `git` as its \
+         package: {argv}"
+    );
+    let output = cap.human();
+    assert!(
+        !result,
+        "the shimmed install lands no binary, so the probe after it still fails: {output}"
+    );
+    assert!(
+        output.contains("still not on PATH after brew installed git"),
+        "and the refusal says the install ran and did not land it: {output}"
     );
 }
 
