@@ -2163,25 +2163,34 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
 #[serial_test::serial]
 fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediator() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
     let _rustup =
         cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 1, "", "could not download");
-    let (printer, _buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
-    let err = mediated_manager("cargo")
-        .bootstrap(&cx)
-        .expect_err("the toolchain step behind the arm did not finish")
-        .to_string();
-    assert!(
-        err.contains("rustup could not finish installing cargo")
-            && err.contains("could not download"),
-        "the refusal names rustup and carries what rustup said: {err}"
-    );
-    assert!(
-        !err.contains("winget could not install"),
-        "winget installed the rustup it packages, so it is not the failing party: {err}"
-    );
+    // All three Windows arms deliver rustup alone and reach the toolchain step
+    // through the same call, so each one can point the blame at its own
+    // mediator.
+    for (method, seam) in [
+        ("winget", "CFGD_WINGET_BIN"),
+        ("chocolatey", "CFGD_CHOCO_BIN"),
+        ("scoop", "CFGD_SCOOP_BIN"),
+    ] {
+        let _mediator = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = mediated_manager("cargo")
+            .bootstrap(&cx)
+            .expect_err("the toolchain step behind the arm did not finish")
+            .to_string();
+        assert!(
+            err.contains("rustup could not finish installing cargo")
+                && err.contains("could not download"),
+            "the refusal names rustup and carries what rustup said: {err}"
+        );
+        assert!(
+            !err.contains(&format!("{method} could not install")),
+            "{method} installed the rustup it packages, so it is not the failing party: {err}"
+        );
+    }
 }
 
 /// An arm a mediator declined is not a route, so a plan that somehow named one
@@ -5712,6 +5721,38 @@ fn npm_nvm_fallback_requires_bash() {
             plan.requires.iter().any(|t| t == tool),
             "the nvm arm fetches with curl and runs under bash, so it declares {tool}: {:?}",
             plan.requires
+        );
+    }
+}
+
+/// One list answers "where is pip" for both halves of the two-step route.
+///
+/// The half that RUNS pip and the half that asks which interpreter it belongs
+/// to resolve it separately. A fallback only one of them reads makes the plan
+/// promise a scripts directory the run then never records, which is what a
+/// Windows interpreter off `$PATH` produced.
+#[test]
+fn both_pip_resolutions_read_the_one_fallback_list() {
+    // This crate's own manifest dir: the sources under test are compiled from
+    // it, so the walk cannot read one tree while the binary was built from
+    // another.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    for (file, head) in [
+        ("pipx.rs", "fn find_pip("),
+        ("shared/mod.rs", "fn pip_python_version("),
+    ] {
+        let src = cfgd_core::test_helpers::production_slice_of(&root.join(file));
+        let at = src
+            .find(head)
+            .unwrap_or_else(|| panic!("{file} no longer declares `{head}`"));
+        let body = &src[at..];
+        let end = body
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{file}: `{head}` has no closing brace"));
+        assert!(
+            body[..end].contains("pip_fallbacks()"),
+            "{file}: `{head}` resolves pip through a fallback list of its own:\n{}",
+            &body[..end]
         );
     }
 }
