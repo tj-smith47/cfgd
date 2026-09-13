@@ -181,11 +181,8 @@ impl PipRoute {
 /// After that it is `$PATH` and the directories a bootstrap registered, then the
 /// places a Windows Python install leaves pip without touching either.
 fn find_pip() -> Option<PipRoute> {
-    if let Ok(seam) = std::env::var(tool_seam_var("pip")) {
-        let planted = PathBuf::from(seam);
-        if planted.is_file() {
-            return Some(PipRoute::direct("pip", planted));
-        }
+    if let Some(planted) = seam_pip() {
+        return Some(planted);
     }
     let fallbacks = pip_fallbacks();
     pip_tool_order()
@@ -199,6 +196,22 @@ fn find_pip() -> Option<PipRoute> {
                 .flatten()
                 .map(PipRoute::launcher)
         })
+}
+
+/// The pip a `CFGD_PIP_BIN` or `CFGD_PIP3_BIN` seam names, in the order this
+/// host prefers the two tools, or `None` when neither seam names a file.
+///
+/// Both seams are read ahead of every host probe, so a reader who nominated a
+/// pip3 gets that one rather than whichever `pip` happens to be on `$PATH`; a
+/// seam naming no file is not a pip and the walk behind this answers instead.
+/// What the seam decides is BINDING: the route runs the pip it names, and a
+/// non-zero exit is that pip's failure rather than a reason to resolve a second
+/// one.
+fn seam_pip() -> Option<PipRoute> {
+    pip_tool_order().into_iter().find_map(|tool| {
+        let planted = PathBuf::from(std::env::var(tool_seam_var(tool)).ok()?);
+        planted.is_file().then(|| PipRoute::direct(tool, planted))
+    })
 }
 
 /// Where a pip this machine holds can be found off `$PATH`. Read by the two
@@ -1169,6 +1182,51 @@ mod tests {
             route.command().get_program(),
             std::ffi::OsStr::new(ABSENT),
             "the route spawns the pip it resolved, not the seam it declined"
+        );
+    }
+
+    /// A pip a seam names outranks one the host carries under the other name.
+    ///
+    /// The two names are walked in the order this host prefers them, and the
+    /// walk's own resolver reads only the seam belonging to the name it is on.
+    /// So the seam of the name that comes SECOND used to lose to whatever the
+    /// host had under the first, and a reader who nominated a pip watched cfgd
+    /// install with another one.
+    #[test]
+    #[serial_test::serial]
+    fn a_pip_a_seam_names_outranks_a_host_pip_of_the_other_name() {
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let [preferred, other] = pip_tool_order();
+
+        let planted = tempfile::tempdir().unwrap();
+        let nominated = cfgd_core::test_helpers::write_probe_tool(planted.path(), other);
+        let host = tempfile::tempdir().unwrap();
+        cfgd_core::test_helpers::write_probe_tool(host.path(), preferred);
+
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path = cfgd_core::test_helpers::EnvVarGuard::set(
+            "PATH",
+            host.path().to_str().expect("utf-8 tempdir"),
+        );
+        let preferred_var: &'static str =
+            Box::leak(super::tool_seam_var(preferred).into_boxed_str());
+        let other_var: &'static str = Box::leak(super::tool_seam_var(other).into_boxed_str());
+        let _preferred_seam = cfgd_core::test_helpers::EnvVarGuard::unset(preferred_var);
+        let _other_seam = cfgd_core::test_helpers::EnvVarGuard::set(
+            other_var,
+            nominated.to_str().expect("utf-8 tempdir"),
+        );
+
+        let route = find_pip().expect("both names are resolvable here");
+        assert_eq!(
+            route.tool, other,
+            "the seam decides which pip the route runs"
+        );
+        assert_eq!(
+            route.command().get_program(),
+            nominated.as_os_str(),
+            "and it spawns the file the seam named"
         );
     }
 

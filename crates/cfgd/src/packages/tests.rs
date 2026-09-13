@@ -2137,12 +2137,21 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     drop(_pip);
 
     // No pip at all after the arm ran: the same attribution, no diagnostic to
-    // carry. `PATH` is emptied so this host's own pip cannot answer for one the
-    // interpreter never left behind.
+    // carry. Every route to a pip this host holds is closed, or the machine
+    // answers for the one the interpreter never left behind: `PATH`, both
+    // seams, the `%LOCALAPPDATA%` tree a Windows installer writes into, and the
+    // `py` launcher Windows keeps beside itself, which a real Python install
+    // leaves at `%SystemRoot%\py.exe` and which really did run a
+    // `pip install --user pipx` here.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let _pip_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
     let _pip3_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP3_BIN");
+    let empty = tempfile::tempdir().expect("tempdir");
+    let empty_dir = empty.path().to_string_lossy().into_owned();
+    let _local_appdata =
+        cfgd_core::test_helpers::EnvVarGuard::set("LOCALAPPDATA", empty_dir.as_str());
+    let _system_root = cfgd_core::test_helpers::EnvVarGuard::set("SystemRoot", empty_dir.as_str());
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let absent = refusal(&printer);
@@ -2153,6 +2162,48 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     assert!(
         !absent.contains("which is not available on this host"),
         "winget is here and ran; it is not the thing that went missing: {absent}"
+    );
+}
+
+/// A pip the reader nominated through the seam is the route's pip, and its
+/// failure ends the route.
+///
+/// The host's own pip is on `PATH` and works. If the seam were merely one
+/// candidate among the names `pip_tool_order` walks, the route would retry
+/// against that one, install pipx for real on the machine running the suite,
+/// and report a success the reader's pip never had.
+#[test]
+#[serial_test::serial]
+fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _seam =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+
+    // A pip that answers every argv with success, reachable by bare name.
+    let host = tempfile::tempdir().expect("tempdir");
+    cfgd_core::test_helpers::write_tool_shim(
+        host.path(),
+        "pip",
+        &[cfgd_core::test_helpers::ShimArm::always("", "", 0)],
+    );
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        host.path().to_str().expect("utf-8 tempdir"),
+    );
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+    let err = mediated_manager("pipx")
+        .bootstrap(&cx)
+        .expect_err("the pip the seam names failed, so the route did")
+        .to_string();
+    assert!(
+        err.contains("pip could not finish installing pipx") && err.contains("no matching dist"),
+        "the refusal carries what the seam's own pip said: {err}"
     );
 }
 
@@ -3816,6 +3867,10 @@ fn all_package_managers_bootstrap_consistency() {
 /// being planned delivers brew, whatever this host has. The brew arm is
 /// declared by `mediated_packages("brew")`, so a manager that grows one is
 /// walked here without being named.
+///
+/// Windows is the complementary claim over the same population: brew has no
+/// build there, so a method binding at execution may never name it, and the
+/// cascade answers with a Windows mediator or with nothing at all.
 #[test]
 fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
     let brew_delivered = |m: &str| m == "brew";
@@ -3824,9 +3879,18 @@ fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
         if m.mediated_packages("brew").is_none() || m.name() == "brew" {
             continue;
         }
-        let plan = m
-            .bootstrap_plan_given(&brew_delivered)
-            .unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
+        let planned = m.bootstrap_plan_given(&brew_delivered);
+        if cfg!(windows) {
+            assert!(
+                planned.as_ref().is_none_or(|p| p.method != "brew"),
+                "{} named an arm Windows cannot run: {planned:?}",
+                m.name()
+            );
+            walked.push(m.name().to_string());
+            continue;
+        }
+        let plan =
+            planned.unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
         assert_eq!(
             plan.method,
             "brew",
@@ -5819,6 +5883,7 @@ fn every_mediated_manager_names_its_pkg_origin() {
 /// would put the `PATH` restore outside the lock, where a parallel reader in the
 /// same binary can observe the emptied value.
 struct SilencedMediators {
+    _memo: cfgd_core::test_helpers::CommandPathMemoTtlGuard,
     _seams: Vec<cfgd_core::test_helpers::EnvVarGuard>,
     _brew: cfgd_core::test_helpers::EnvVarGuard,
     _path: cfgd_core::test_helpers::EnvVarGuard,
@@ -5834,6 +5899,9 @@ struct SilencedMediators {
 /// open for as long as it reads a cascade; [`SilencedMediators`] owns the order
 /// they release in.
 fn silence_every_mediator_but_pkg() -> SilencedMediators {
+    // A mediator this process resolved moments ago would otherwise answer from
+    // the memo, which the emptied `PATH` below cannot reach.
+    let memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let brew = cfgd_core::test_helpers::EnvVarGuard::set(
@@ -5845,6 +5913,7 @@ fn silence_every_mediator_but_pkg() -> SilencedMediators {
         .map(cfgd_core::test_helpers::EnvVarGuard::unset)
         .collect();
     SilencedMediators {
+        _memo: memo,
         _seams: seams,
         _brew: brew,
         _path: path,
@@ -5858,18 +5927,29 @@ fn silence_every_mediator_but_pkg() -> SilencedMediators {
 ///
 /// Every mediator that outranks `pkg` is silenced, so only the run's own
 /// delivery answers and the method is asserted on any host.
+///
+/// `pkg` is a POSIX arm whose port tree Windows has no shell for, so the arm is
+/// withheld there and the complementary fact is what runs: the plan, if the
+/// cascade names one at all, is not `pkg`. The origin below reads the arm table
+/// rather than the host, so it is asserted everywhere.
 #[test]
 #[serial_test::serial]
 fn a_freebsd_host_plans_pipx_via_pkg() {
     let _guards = silence_every_mediator_but_pkg();
     let pipx = super::pipx::PipxManager;
-    let plan = pipx
-        .bootstrap_plan_given(&|m| m == "pkg")
-        .expect("pkg delivers pipx");
-    assert_eq!(
-        plan.method, "pkg",
-        "a run delivering pkg alone provisions pipx through it"
-    );
+    let planned = pipx.bootstrap_plan_given(&|m| m == "pkg");
+    if cfg!(windows) {
+        assert!(
+            planned.as_ref().is_none_or(|p| p.method != "pkg"),
+            "a FreeBSD port is no route on Windows: {planned:?}"
+        );
+    } else {
+        let plan = planned.expect("pkg delivers pipx");
+        assert_eq!(
+            plan.method, "pkg",
+            "a run delivering pkg alone provisions pipx through it"
+        );
+    }
     assert_eq!(
         pipx.mediated_packages("pkg").as_deref(),
         Some(["devel/py-pipx".to_string()].as_slice()),
@@ -5880,18 +5960,28 @@ fn a_freebsd_host_plans_pipx_via_pkg() {
 /// The same for npm, whose `pkg` arm is otherwise asserted by its origin
 /// alone: a run delivering `pkg` reaches npm's port rather than the `nvm`
 /// installer, which needs a network and a shell FreeBSD's base system lacks.
+///
+/// The same host split as its pipx sibling: the `pkg` arm is POSIX, so Windows
+/// is offered it by no delivery, and npm has no arm of its own to decline
+/// toward there. The origin is read off the arm table on every host.
 #[test]
 #[serial_test::serial]
 fn a_freebsd_host_plans_npm_via_pkg() {
     let _guards = silence_every_mediator_but_pkg();
     let npm = super::npm::NpmManager;
-    let plan = npm
-        .bootstrap_plan_given(&|m| m == "pkg")
-        .expect("pkg delivers npm");
-    assert_eq!(
-        plan.method, "pkg",
-        "a run delivering pkg alone provisions npm through it"
-    );
+    let planned = npm.bootstrap_plan_given(&|m| m == "pkg");
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "no Windows mediator is here and a FreeBSD port is no route: {planned:?}"
+        );
+    } else {
+        let plan = planned.expect("pkg delivers npm");
+        assert_eq!(
+            plan.method, "pkg",
+            "a run delivering pkg alone provisions npm through it"
+        );
+    }
     assert_eq!(
         npm.mediated_packages("pkg").as_deref(),
         Some(["www/npm".to_string()].as_slice()),

@@ -956,7 +956,10 @@ pub(super) fn detect_brew_or_system_method(
     arms: &MediatedArms,
     delivered: &dyn Fn(&str) -> bool,
 ) -> Option<&'static str> {
-    if arms.brew.is_some() && (delivered("brew") || brew_available()) {
+    // brew has no Windows build, so a brew arm is not a route there whatever a
+    // run claims to deliver: naming it would bind the execution to a mediator
+    // `bootstrap_brew_arm` then refuses for being unavailable.
+    if arms.brew.is_some() && !cfg!(windows) && (delivered("brew") || brew_available()) {
         return Some("brew");
     }
     detect_system_arm(arms, delivered)
