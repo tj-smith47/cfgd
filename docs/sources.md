@@ -520,6 +520,7 @@ When `true` (the default), the source cannot deliver anything that executes code
 | Backup hooks | `spec.backups[].preBackup` / `postBackup` | `cfgd apply`, `cfgd backup run`, `cfgd backup restore`, the daemon's timer | composition time |
 | Patch filters | `spec.files.managed[].patch.script` (`strategy: Patch`) | every command that evaluates the file — including read-only `cfgd diff` / `status` / `verify` / `compliance` | composition time |
 | Module-body scripts | the same lifecycle hooks, `prefer: [script]` package installs, and `spec.files[].patch.script` on any module delivered via `provides.modules` | apply / reconcile / evaluation | module-load time |
+| Custom package managers | `spec.packages.custom[].{check,listInstalled,install,uninstall,update}` | every command that asks whether the manager is available, and every install or removal through it | composition time |
 
 How the block shows up depends on whether the command changes the machine:
 
@@ -904,7 +905,7 @@ CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and every surface is named in a warning on any command that composes sources. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it; a source-delivered module carrying a script is rejected at load time in every mode |
+| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, `spec.packages.custom[]` command templates, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and every surface is named in a warning on any command that composes sources. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it; a source-delivered module carrying a script is rejected at load time in every mode |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level over `files.managed[].target` and `backups[].destination` (see [`allowedTargetPaths`](#allowedtargetpaths)) |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |

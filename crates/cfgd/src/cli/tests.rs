@@ -28601,6 +28601,10 @@ struct DecisionShape<'a> {
     /// YAML appended to the SOURCE's team profile `spec:` block (two-space
     /// indent), for a source that delivers more than the managed file.
     extra_team_spec: &'a str,
+    /// The subscription opts in to running what the source delivers. Required
+    /// of any fixture whose source-side spec carries a script surface, a
+    /// custom package manager's command templates included.
+    allow_scripts: bool,
 }
 
 impl Default for DecisionShape<'_> {
@@ -28612,6 +28616,7 @@ impl Default for DecisionShape<'_> {
             extra_profile_spec: "",
             sibling: false,
             extra_team_spec: "",
+            allow_scripts: false,
         }
     }
 }
@@ -28665,8 +28670,13 @@ fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n{local_files}{}",
         shape.extra_profile_spec,
     );
+    let allow_scripts = if shape.allow_scripts {
+        "        allowScripts: true\n"
+    } else {
+        ""
+    };
     let config = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{}",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{allow_scripts}{}",
         remote.url(),
         remote.head_branch(),
         shape.extra_spec,
@@ -29831,6 +29841,7 @@ fn a_source_batch_under_a_dotted_custom_manager_is_withheld_fail_closed() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -29861,6 +29872,7 @@ fn the_dotted_manager_withholding_warns_on_the_plan_the_operator_reads() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -29928,6 +29940,7 @@ fn plan_previews_an_installed_source_package_as_included_and_mints_nothing() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -29973,6 +29986,7 @@ fn apply_records_an_installed_source_package_as_auto_accepted() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30013,6 +30027,7 @@ fn a_declined_apply_records_no_auto_accepted_row() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30053,6 +30068,7 @@ fn a_version_conflict_annotates_the_pending_row_in_the_plan_payload() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30086,6 +30102,7 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
     let (apply_printer, _buf) =
@@ -30115,6 +30132,7 @@ fn the_version_conflict_annotation_reaches_the_decide_listing() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
     let (apply_printer, _buf) =
@@ -30154,6 +30172,7 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30188,6 +30207,7 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30220,6 +30240,7 @@ fn decide_listing_names_the_undecidable_source_batch() {
         output_json: true,
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 
@@ -30256,6 +30277,7 @@ fn decide_listing_renders_the_undecidable_batch_warning() {
     let f = decision_fixture_shaped(DecisionShape {
         extra_spec: NOTIFYING_POLICY,
         extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        allow_scripts: true,
         ..Default::default()
     });
 

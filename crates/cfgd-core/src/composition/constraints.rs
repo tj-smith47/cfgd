@@ -42,6 +42,18 @@ pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
         }
     }
 
+    // A custom manager's five command templates are free-form shell, run
+    // through `sh -c` / `cmd.exe /C` the moment cfgd asks whether the manager
+    // is available. They sit inside `spec.packages`, which is otherwise data.
+    if let Some(ref packages) = spec.packages {
+        for custom in &packages.custom {
+            surfaces.push(format!(
+                "a command template on custom package manager '{}'",
+                custom.name
+            ));
+        }
+    }
+
     surfaces
 }
 
